@@ -52,10 +52,10 @@ const skip = (why: string) => {
 const prior = new Set(regrade ? [] : log.latest().map((g) => `${g.item}/${g.arm}/${g.snapshot}`));
 const gradedBefore = (item: string, arm: string, snapshot: string) =>
     prior.has(`${item}/${arm}/${snapshot}`);
-const append = (g: GradeRecord) => {
-    const record = { ...g, version: log.nextVersion(g.item, g.arm) };
-    log.append(record);
-    graded.push(record);
+const append = (...grades: GradeRecord[]) => {
+    const records = grades.map((g) => ({ ...g, version: log.nextVersion(g.item, g.arm) }));
+    log.appendAll(records);
+    graded.push(...records);
 };
 for (const probe of scenario.probes.filter((p) => p.type !== "P7")) {
     for (const arm of arms) {
@@ -85,7 +85,8 @@ const pairs = p7.flatMap((probe) =>
             skip("P7 without two completed snapshots");
             return [];
         }
-        if (gradedBefore(probe.id, arm, a.id) && gradedBefore(probe.id, "host", b.id)) {
+        // The pair lands in one write, so one graded side means the pair stands.
+        if (gradedBefore(probe.id, arm, a.id) || gradedBefore(probe.id, "host", b.id)) {
             skip("already graded");
             return [];
         }
@@ -117,7 +118,7 @@ if (pairs.length > 0) {
                     calibration: null,
                     permutation: null,
                 };
-                for (const g of gradeP7(judgment, context, rules)) append(g);
+                append(...gradeP7(judgment, context, rules));
             } catch (caught) {
                 judgeErrors++;
                 console.error(`${probe.id} (${arm}): ${String(caught)}`);

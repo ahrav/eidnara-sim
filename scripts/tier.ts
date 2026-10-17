@@ -7,7 +7,7 @@ import { aaScale, loadGraded } from "../src/report/tier";
 import { Children, SIGTERM_EXIT } from "../src/run/children";
 import { releaseLease, takeLease } from "../src/run/journal";
 import { gradedMainRuns, resizeFromM } from "../src/run/resize";
-import { loadScenario } from "../src/run/run";
+import { loadScenario, writeAtomic } from "../src/run/run";
 import {
     compressFaults,
     planConflicts,
@@ -22,7 +22,7 @@ import { loadPrereg } from "../src/scenario/inputs";
 
 const USAGE =
     "usage: bun scripts/tier.ts --tier S --out <dir> [--hosts pi,opencode] [--turn-ms N] [--resize-from <M tier dir>] [--plan-only]";
-const fail = (why: string) => {
+const fail = (why: string): never => {
     console.error(`${why}\n${USAGE}`);
     process.exit(2);
 };
@@ -58,10 +58,15 @@ const config = loadConfig();
 const prereg = loadPrereg(tier);
 const hosts = (arg("hosts") ?? prereg.hosts.join(",")).split(",") as ("pi" | "opencode")[];
 const priorPlan = join(out, "tier-plan.json");
-const turnMs = Number(
-    arg("turn-ms") ??
-        (existsSync(priorPlan) ? JSON.parse(readFileSync(priorPlan, "utf8")).turn_ms : 75_000),
-);
+const priorTurnMs = (): unknown => {
+    if (!existsSync(priorPlan)) return 75_000;
+    try {
+        return JSON.parse(readFileSync(priorPlan, "utf8")).turn_ms;
+    } catch {
+        return fail(`${priorPlan} is unreadable; pass --turn-ms to replace it`);
+    }
+};
+const turnMs = Number(arg("turn-ms") ?? priorTurnMs());
 if (!Number.isInteger(turnMs) || turnMs <= 0) fail("--turn-ms must be a positive integer");
 if (new Set(hosts).size !== hosts.length || !hosts.every((h) => prereg.hosts.includes(h)))
     fail(`--hosts must name distinct hosts from ${prereg.hosts.join(",")}`);
@@ -132,7 +137,7 @@ if (conflicts.length > 0) {
     );
     exit(2);
 }
-writeFileSync(
+writeAtomic(
     priorPlan,
     `${JSON.stringify({ tier, turn_ms: turnMs, items_per_type: items ?? null, plan }, null, 2)}\n`,
 );
@@ -184,7 +189,7 @@ const runJob = async (job: TierJob) => {
     const span = runSpan(job.dir, launched);
     const scenario = scenarios.get(job.seed) as Scenario;
     if (!existsSync(join(job.dir, "scenario.json")))
-        writeFileSync(join(job.dir, "scenario.json"), `${JSON.stringify(scenario)}\n`);
+        writeAtomic(join(job.dir, "scenario.json"), `${JSON.stringify(scenario)}\n`);
     const log = join(job.dir, "tier.log");
     const faults = compressFaults(scenario, job.events);
     const moved = JSON.stringify(faults) !== JSON.stringify(scenario.faults);

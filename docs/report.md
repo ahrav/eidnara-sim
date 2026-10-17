@@ -60,6 +60,8 @@ driver writes `<arm>/memory.json` at `finish` with every memory note and
 its delivery count, from which the panel reports the memory writes and the
 writes with zero later reads.
 
+The cost table's `TOTAL` row sums every component's calls and tokens; its
+estimate is the arm's non-harness spend, as the heading states.
 `judgeCost(run)` prices the P7 judge calls the grader wrote to
 `judge-calls.jsonl` under its own arm `judge`. A judge call compares a
 memory arm with the host arm, so the figure belongs to the run; it is
@@ -69,11 +71,21 @@ memory arm with the host arm, so the figure belongs to the run; it is
 
 `scripts/report.ts <run dir>... [--out <dir>]` groups the runs by tier and
 writes `report-<tier>.md` and the gate verdict as `report-<tier>.json`, or
-prints the Markdown. `loadGraded` refuses a run directory whose manifest
+prints the Markdown. It exits 1 after writing when the property witness
+holds a violated record, so a verdict over runs that broke an invariant
+does not pass unremarked. `loadGraded` refuses a run directory whose manifest
 records a `prereg_sha256` other than the hash of the tier's current
 pre-registration, or whose `scenario.json` hashes to other than the
 manifest's `scenario_hash`, so a verdict carries the registration and the
-scenario its runs were made under. Each run directory needs `grades.jsonl` from
+scenario its runs were made under; a run started with `--faults` takes the
+manifest's `fault_override` as its fault schedule, and its `faults.jsonl` lines, one per attempt, merge into the
+proxy's fault witnesses, a fault once `fired` staying fired. `grades.jsonl` gives the
+run its latest grade per item and arm, and every P7 judgment (latest per
+item, arm, and `inputs`), so a P7 pair takes the host grade from the same
+judgment as the treatment's, a P7 exclusion counts against its own
+judgment, and the host's P7 row in the accuracy and cost panels is its
+judgment against `arms.default`; a judgment whose `gate_eligible` is false
+pairs nothing. Each run directory needs `grades.jsonl` from
 `scripts/grade-run.ts` for its probe items; a run without one reports its
 run-level metrics alone.
 
@@ -96,12 +108,19 @@ excluded, and probe items of a session where a fault landed in one arm
 only form the fault-asymmetric stratum; a fault landed where the
 scheduler recorded `FaultObserved` or the proxy stamped a call's
 `fault_ref`, which is how provider faults show. The input's `incomplete`
-list names each pre-registered host and seed without a run, each run whose
-`host` or treatment arm has no `EndArm` entry, and each probe type, P13 and
-P14 included, with fewer paired items outside the excluded and
-fault-asymmetric sets than `stopping_rule.paired_items_per_probe_type`;
-the tier passes only with an empty list. Two runs with one host and seed
-are refused. The input's `journal_seq_at_eval` records, per run id, the
+list names each pre-registered host and seed without a run, each run with
+a pre-registered arm (`arms.run`) that has no `EndArm` entry, each run whose manifest
+`events` stops short of its scenario's events, each manifest setting
+(`eidnara_commit`, `models`, `context_limit`, the preflight's clock
+`distortions`, and its host versions) the runs disagree on, each run with
+scheduled proxy faults and no `faults.jsonl`, each registered A/A pair whose count
+of control arms that reached `EndArm` across the runs differs from
+`aa_controls.repeats`, each run-unit gate metric a run has no value for, each probe type,
+P13 and P14 included, with fewer paired items outside the excluded and
+fault-asymmetric sets than `stopping_rule.paired_items_per_probe_type`,
+and each CUSUM rule without its A/A scale; the tier passes only with an
+empty list. Two runs with one host and seed, or a run outside the
+pre-registered hosts and seeds, are refused. The input's `journal_seq_at_eval` records, per run id, the
 last journal `seq` the observations read. `tierInput` orders the runs by
 the pre-registration's hosts then seeds, so items tied in issue order
 across runs keep one order whatever order the directories arrive in.
@@ -110,21 +129,22 @@ across runs keep one order whatever order the directories arrive in.
 fault-asymmetric items: the standard deviation of their paired item
 differences, over the per-item maximum across the harm metrics, as the
 harm statistic is built, and over the P1 items.
-`scripts/report.ts` gives each rule the scale of the tier its `sd_source`
-names: the A/A pairs of that tier's runs when they are in the same
-invocation, else the `cusum_sd` that `<tier>-resizing.json` beside the
-run directories recorded from them. The same file's
-`paired_items_per_probe_type` is the count the campaign-completeness
-check uses for a resized tier, passed beside the pre-registration so the
-verdict keeps the registered hash. Every run of the tier binds to one
-identical record; runs beside different records are refused as one
-campaign.
+`cusumScale` gives each rule the scale of the tier its `sd_source` names
+once that tier's own campaign is complete, so L's rules take M's A/A pairs
+when the complete M runs are in the same `scripts/report.ts` invocation,
+else the `cusum_sd` that `<tier>-resizing.json` beside the run directories
+recorded from the complete M campaign. The scale pools the controls that
+reached `EndArm`. The same file's `paired_items_per_probe_type` is the
+count the campaign-completeness check uses for a resized tier, passed
+beside the pre-registration so the verdict keeps the registered hash.
+Every run of the tier binds to one identical record; runs beside
+different records are refused as one campaign.
 
 The falsification set (`src/report/falsify.ts`) pairs, per run, each A/A
 control with its arm, or else the treatment with `host`, and pools the
 pairs: P1-control pass per item, the
 gateway 4xx share per session with no scheduled fault, the pushback share
-per session before the treatment's divergence index, and the wall time the
+per session before the first divergence index in either arm, and the wall time the
 harness spent from the preceding scripted event's completion (its `Event`
 entry) to each scripted clock jump. On an A/B pair the daemon arm's
 background work holds the clock, so the idle-gap check measures that work
@@ -135,18 +155,21 @@ A run recorded before the sampler took the `heap` field has no heap
 samples, so its `daemon_heap_growth_bytes_per_session` is `inconclusive`
 and the resources gate fails until the run is repeated.
 
-`renderTier` writes, in order: the accuracy table by probe type in the v1
+`renderTier` writes, in order: the runs, arms, and each run's recorded
+clock distortions, the accuracy table by probe type in the v1
 sweep report's layout, the gate verdict with every metric's n, difference,
 interval, p, detectable difference, resolution ratio, verdict, and gate
 result (a bound family shows its observed per-run values, or a binary
 metric's treatment rate over the pairs the verdict kept), the campaign's
 open requirements, the harm
-panel, oracle activations with the uncovered list, recovery, soak for the
-daemon arms with the longest sampling gap, intrusiveness with each arm's latency delta against its run's `host`,
+panel, oracle activations with the uncovered list, recovery (a run with
+an `untriggered` witness is named and left out of it, SIM-P32), soak for the
+daemon arms per run with the longest sampling gap, intrusiveness with each arm's latency delta against its run's `host`,
 cost with the run's judge calls priced once (`judgeCost`), the
-falsification set with the pairs it used, the A/A reports (`<run>/aa.json`, or a note
+falsification set with the pairs it used, the A/A reports (`<run>/aa.json`, each with its `run`, or a note
 that control arms ran without one), the claim boundary, and the
-pre-registration. The intrusiveness table takes each arm's latency delta
+pre-registration. The soak, intrusiveness, and cost tables name each
+row's run, and the intrusiveness table takes each arm's latency delta
 against the `host` arm of the same run. It refuses a report whose own text, outside the
 attached boundary and pre-registration, contains the word parity.
 
@@ -161,7 +184,9 @@ store path the driver found missing after the first `session_end`, or
 `<arm> unchecked` for an arm that never reached that check or whose
 `transcripts.json` a stop cut short. It then
 reads each host's transcripts back, Pi's session files under
-`.pi/agent/sessions` and OpenCode's `session` table in `opencode.db`, and
+`.pi/agent/sessions` (regular files under a real directory; a symlinked
+root or entry is left unread) and OpenCode's `session` table in
+`opencode.db`, and
 compares each `sim-<session>` creation time with the session's scheduled
 wall time (`base_wall_ms` plus the `session_start` event's scenario time). The table
 names the reached sessions the store lacks, says whether the creation
@@ -172,7 +197,7 @@ an order break, is a D2 caveat for that host.
 The continuity table gives each host and arm's P8 and P9 pass rate, over
 non-excluded items, beside the v1
 harness's cross-session recall (host 0 to 3%, Eidnara 99 to 100%). For
-every pass it counts the passes whose turn ran a reading or searching
-command (`cat`, `grep`, `rg`, `find`, `sqlite3`, Pi's `read`, and the
-like) naming the host's transcript store, so a `host` pass is split
-between transcript search and the rest.
+every pass it counts the passes whose turn ran a simple command whose
+program is a reader or searcher (`cat`, `grep`, `rg`, `find`, `sqlite3`,
+Pi's `read`, and the like) with the host's transcript store among its
+words, so a `host` pass is split between transcript search and the rest.

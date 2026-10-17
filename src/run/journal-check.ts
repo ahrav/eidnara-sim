@@ -34,8 +34,10 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
         const arm = e.arm ?? "";
         const seq = Number(e.seq);
         const ms = Number(e.scenario_ms);
-        if (ms < (last.get(arm) ?? 0)) report.decreasing_scenario_ms.push(seq);
-        last.set(arm, ms);
+        const before = last.get(arm) ?? 0;
+        // A time that is not a finite number cannot be shown in order and breaks it.
+        if (!Number.isFinite(ms) || ms < before) report.decreasing_scenario_ms.push(seq);
+        if (Number.isFinite(ms)) last.set(arm, ms);
         const busy = open.get(arm) ?? new Set<string>();
         open.set(arm, busy);
         const done = ran.get(arm) ?? new Set<string>();
@@ -51,18 +53,24 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
         if (e.kind === "EndJob") busy.delete(`job:${String(e.job)}`);
         if (e.kind !== "AdvanceClock") continue;
         if (busy.size > 0) report.advance_while_busy.push(seq);
+        // The jump's origin is the arm's clock before it; a record that claims another origin is
+        // off schedule whatever destination it names.
         const from = Number(e.from_ms);
+        const off = (why: boolean) => {
+            if ((why || from !== before) && !report.off_schedule_jumps.includes(seq))
+                report.off_schedule_jumps.push(seq);
+        };
         const pending = [...schedule.events].filter(([id]) => !done.has(id)).map(([, t]) => t);
         if (e.fault !== undefined) {
             report.sleep_jumps++;
             const duration = schedule.sleeps.get(String(e.fault));
-            if (duration !== ms - from) report.off_schedule_jumps.push(seq);
+            off(duration !== ms - from);
             if (pending.some((t) => t > from && t < ms)) report.events_inside_sleep.push(seq);
             continue;
         }
         report.next_event_jumps++;
         const later = pending.filter((t) => t > from);
-        if (later.length === 0 || Math.min(...later) !== ms) report.off_schedule_jumps.push(seq);
+        off(later.length === 0 || Math.min(...later) !== ms);
     }
     return report;
 }

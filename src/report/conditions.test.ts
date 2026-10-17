@@ -156,9 +156,16 @@ test("a transcript path in a command counts as a read only with a reading or sea
     const host = g.run.arms[0] as ArmLogs;
     host.tools = [
         { turn: "e-1", command: "rm -rf ~/.pi/agent/sessions", exit: 0, scenario_ms: 0 },
+        { turn: "e-1", command: "echo cat ~/.pi/agent/sessions", exit: 0, scenario_ms: 0 },
+        {
+            turn: "e-1",
+            command: "grep x f.txt; echo ~/.pi/agent/sessions",
+            exit: 0,
+            scenario_ms: 0,
+        },
         {
             turn: "e-3",
-            command: "sqlite3 ~/.local/share/opencode/opencode.db 'select 1'",
+            command: "cd /tmp && sqlite3 ~/.local/share/opencode/opencode.db 'select 1'",
             exit: 0,
             scenario_ms: 0,
         },
@@ -194,4 +201,15 @@ test("a truncated transcripts.json reads as an unchecked arm instead of failing 
     writeFileSync(join(g.run.dir, "eidnara/transcripts.json"), "");
     const c = runConditions(g);
     expect(c.transcripts[1]).toEqual({ arm: "eidnara", paths: [], missing: null });
+});
+
+test("a transcript root that is itself a symlink is left unread", () => {
+    const g = fixture();
+    const sessions = join(g.run.dir, "host/r/home/.pi/agent/sessions");
+    rmSync(sessions, { recursive: true });
+    symlinkSync("/", sessions);
+    expect(runConditions(g).transcript_order[0]).toMatchObject({
+        sessions: 0,
+        missing: ["s-1", "s-2"],
+    });
 });
