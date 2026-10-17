@@ -351,10 +351,15 @@ export class Gateway {
                     | { message?: { content?: Array<{ text?: string }> } }
                     | undefined;
                 const blocks = (output?.message?.content ?? []).map((b) => b.text ?? "");
-                retain(blocks.filter(Boolean).join("\n"));
-                done.finish_reason = (response.json.stopReason as string | undefined) ?? null;
                 sink.status(200, { "content-type": "application/json" });
-                sink.write(Buffer.from(JSON.stringify(response.json)));
+                const delivered =
+                    !sink.signal.aborted && sink.write(Buffer.from(JSON.stringify(response.json)));
+                if (delivered) {
+                    retain(blocks.filter(Boolean).join("\n"));
+                    done.finish_reason = (response.json.stopReason as string | undefined) ?? null;
+                } else {
+                    done.error = "client disconnected before the response was delivered";
+                }
             } else {
                 sink.status(200, { "content-type": "application/vnd.amazon.eventstream" });
                 let complete = 0;

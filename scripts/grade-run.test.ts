@@ -42,6 +42,8 @@ interface RunOptions {
     scenario_hash?: string;
     /** Arms whose journal stops before `EndArm`, with the number of events they ended. */
     interrupted?: Record<string, number>;
+    /** Per arm, events whose terminal `Event` is the scheduler's `failed(interrupted)` recovery, with no `EndTurn`. */
+    unended?: Record<string, string[]>;
 }
 
 function run(o: RunOptions): string {
@@ -66,7 +68,7 @@ function run(o: RunOptions): string {
         },
     ];
     const body = {
-        manifest: { seed: 1, tier: "S" },
+        manifest: { seed: 101, tier: "S" },
         probes: o.probes.map((p, i) => ({ ...p, session: "s-1", event: `e-${i + 1}` })),
         events,
     };
@@ -75,7 +77,7 @@ function run(o: RunOptions): string {
     const manifest = {
         schema: "sim-run-manifest/v1",
         tier: "S",
-        seed: 1,
+        seed: 101,
         host: "pi",
         order: ["host", "eidnara"],
         events: o.events ?? events.length,
@@ -91,7 +93,10 @@ function run(o: RunOptions): string {
     for (const arm of manifest.order) {
         const ended = o.interrupted?.[arm] ?? ran.length;
         journal.push({ kind: "StartArm", arm });
-        for (const e of ran.slice(0, ended)) journal.push({ kind: "Event", arm, event: e.id });
+        for (const e of ran.slice(0, ended)) {
+            const outcome = o.unended?.[arm]?.includes(String(e.id)) ? "failed(interrupted)" : "ok";
+            journal.push({ kind: "Event", arm, event: e.id, outcome });
+        }
         if (ended === ran.length && !(arm in (o.interrupted ?? {}))) {
             journal.push({ kind: "EndArm", arm });
         }
@@ -107,6 +112,8 @@ function run(o: RunOptions): string {
 }
 
 let seq = 0;
+/** The `(run, arm, seq)` call records already written, since cumulative snapshots repeat earlier calls. */
+const writtenCalls = new Set<string>();
 /** Appends a snapshot row and, for its agent calls, the `calls.jsonl` records the proxy would have written. */
 /** The turn index capture derives for a call: the index of its user turn, else the preceding one. */
 function withTurnIndices(s: Snapshot): Snapshot {
@@ -154,6 +161,9 @@ function snapshot(dir: string, arm: string, given: Snapshot, journaled = true): 
     const calls = s.artefacts.find((a) => a.class === "proxy-call");
     if (calls?.class === "proxy-call" && journaled) {
         for (const c of calls.calls) {
+            const written = `${dir}/${arm}/${c.seq}`;
+            if (writtenCalls.has(written)) continue;
+            writtenCalls.add(written);
             const record = {
                 seq: c.seq,
                 wall_ms: 0,
@@ -218,16 +228,24 @@ const p7snapshot = (item: string, turn = "e-1"): Snapshot => ({
 
 describe("grade-run", () => {
     test("grades a journaled snapshot and keys skipped items by arm and reason", async () => {
-        const dir = run({ probes: [p5.probe] });
+        const dir = run({ probes: [p5.probe], unended: { host: ["e-1"] } });
         snapshot(dir, "eidnara", snap);
         const summary = await gradeRun(dir, null);
         expect(summary.verdicts).toEqual({ "eidnara/P5": { pass: 1 } });
-        expect(summary.skipped).toEqual({ host: { "no journaled snapshot": 1 } });
+        expect(summary.skipped).toEqual({ host: { "probe turn interrupted": 1 } });
+    });
+
+    test("a probe event that ended without an EndTurn and without a snapshot makes the journal invalid", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        await expect(gradeRun(dir, null)).rejects.toThrow(
+            "ends event e-1 for P5-a (host) as ok without an EndTurn",
+        );
     });
 
     test("the journaled first attempt is graded; the arm's later snapshots of the item are counted", async () => {
         const failing = { ...(fixture("P5-fail").snapshots[0] as Snapshot), item: snap.item };
-        const dir = run({ probes: [p5.probe] });
+        const dir = run({ probes: [p5.probe], unended: { host: ["e-1"] } });
         snapshot(dir, "eidnara", { ...failing, turn: "e-1-interrupted" }, false);
         snapshot(dir, "eidnara", snap);
         snapshot(dir, "eidnara", { ...failing, turn: "e-1-retry" }, false);
@@ -326,7 +344,7 @@ describe("grade-run", () => {
     });
 
     test("the summary names the grade versions it aggregates", async () => {
-        const dir = run({ probes: [p5.probe] });
+        const dir = run({ probes: [p5.probe], unended: { host: ["e-1"] } });
         snapshot(dir, "eidnara", snap);
         expect((await gradeRun(dir, null)).versions).toEqual({ "1": 1 });
         expect((await gradeRun(dir, null)).versions).toEqual({ "2": 1 });
@@ -417,7 +435,7 @@ describe("grade-run", () => {
     });
 
     test("a turn that ended ok, or named a snapshot, without a journaled snapshot makes the journal invalid", async () => {
-        const named = run({ probes: [p5.probe] });
+        const named = run({ probes: [p5.probe], unended: { host: ["e-1"] } });
         snapshot(named, "eidnara", snap);
         const journal = join(named, "journal.jsonl");
         const kept = readFileSync(journal, "utf8")
@@ -436,6 +454,81 @@ describe("grade-run", () => {
         expect((await gradeRun(failed, null)).skipped).toEqual({
             host: { "probe turn failed": 1 },
         });
+    });
+
+    test("a manifest whose seed is not pre-registered for its tier is refused", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        for (const name of ["manifest.json", "scenario.json"]) {
+            const path = join(dir, name);
+            const doc = JSON.parse(readFileSync(path, "utf8"));
+            if (name === "manifest.json") doc.seed = 7;
+            else doc.manifest.seed = 7;
+            if (name === "scenario.json") {
+                const { scenario_hash: _h, ...body } = doc;
+                doc.scenario_hash = sha256Hex(canonicalJson(body));
+                const manifestPath = join(dir, "manifest.json");
+                const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+                manifest.scenario_hash = doc.scenario_hash;
+                writeFileSync(manifestPath, JSON.stringify(manifest));
+            }
+            writeFileSync(
+                path,
+                name === "scenario.json" ? canonicalJson(doc) : JSON.stringify(doc),
+            );
+        }
+        await expect(gradeRun(dir, null)).rejects.toThrow("seed 7 is not pre-registered for S");
+    });
+
+    test("a manifest whose model list is not a nonempty array of strings is refused", async () => {
+        const dir = run({ probes: [p5.probe], unended: { host: ["e-1"] } });
+        snapshot(dir, "eidnara", snap);
+        const path = join(dir, "manifest.json");
+        const manifest = JSON.parse(readFileSync(path, "utf8"));
+        manifest.models = "global.anthropic.claude-opus-5-5";
+        writeFileSync(path, JSON.stringify(manifest));
+        await expect(gradeRun(dir, null)).rejects.toThrow("manifest records no model list");
+    });
+
+    test("a journal that is a symlink is refused before it is read", async () => {
+        const dir = run({ probes: [p5.probe], unended: { host: ["e-1"] } });
+        snapshot(dir, "eidnara", snap);
+        const real = join(dir, "journal.real.jsonl");
+        renameSync(join(dir, "journal.jsonl"), real);
+        symlinkSync(real, join(dir, "journal.jsonl"));
+        await expect(gradeRun(dir, null)).rejects.toThrow("not a regular file");
+    });
+
+    test("a snapshot that omits a later call of its own turn is refused", async () => {
+        const p8 = fixture("P8-pass");
+        const base = p8.snapshots[0] as Snapshot;
+        const two = {
+            ...base,
+            artefacts: base.artefacts.map((a) =>
+                a.class === "proxy-call"
+                    ? {
+                          ...a,
+                          calls: [
+                              ...a.calls,
+                              ...a.calls.map((c) => ({
+                                  ...c,
+                                  seq: c.seq + 1,
+                                  response_text: "later",
+                              })),
+                          ],
+                      }
+                    : a,
+            ),
+        } as Snapshot;
+        const dir = run({ probes: [p8.probe], unended: { host: ["e-1"] } });
+        snapshot(dir, "eidnara", two);
+        const log = join(dir, "eidnara", "snapshots.jsonl");
+        const row = JSON.parse(readFileSync(log, "utf8").trim());
+        for (const a of row.artefacts) if (a.class === "proxy-call") a.calls.pop();
+        writeFileSync(log, `${JSON.stringify(row)}\n`);
+        await expect(gradeRun(dir, null)).rejects.toThrow(
+            /holds 1 calls, but calls.jsonl records call 2 within its turn e-1/,
+        );
     });
 
     test("a manifest scheduling more events than the scenario compiles is refused", async () => {
@@ -509,7 +602,7 @@ describe("grade-run", () => {
     test("a P10 snapshot whose turn has no agent call aborts grading instead of grading an empty answer", async () => {
         const p10 = fixture("P10-pass");
         const base = p10.snapshots[0] as Snapshot;
-        const dir = run({ probes: [p10.probe] });
+        const dir = run({ probes: [p10.probe], unended: { host: ["e-1"] } });
         snapshot(dir, "eidnara", {
             ...base,
             artefacts: base.artefacts.map((a) =>
@@ -574,7 +667,7 @@ describe("grade-run", () => {
         };
         for (const c of calls.calls) if (c.turn === "e-1") c.turn = "e-2";
         (calls.calls.at(-1) as Record<string, unknown>).response_text_truncated = true;
-        const dir = run({ probes: [p5.probe, p8.probe] });
+        const dir = run({ probes: [p5.probe, p8.probe], unended: { host: ["e-1", "e-2"] } });
         snapshot(dir, "eidnara", snap);
         snapshot(dir, "eidnara", cut);
         const summary = await gradeRun(dir, null);
@@ -613,14 +706,14 @@ describe("grade-run", () => {
 
     test("a journaled snapshot's agent calls must be recorded in calls.jsonl under its arm", async () => {
         const p8 = fixture("P8-pass");
-        const dir = run({ probes: [p8.probe] });
+        const dir = run({ probes: [p8.probe], unended: { host: ["e-1"] } });
         snapshot(dir, "eidnara", p8.snapshots[0] as Snapshot);
         expect((await gradeRun(dir, null)).verdicts).toEqual({ "eidnara/P8": { pass: 1 } });
-        const missing = run({ probes: [p8.probe] });
+        const missing = run({ probes: [p8.probe], unended: { host: ["e-1"] } });
         snapshot(missing, "eidnara", p8.snapshots[0] as Snapshot);
         writeFileSync(join(missing, "calls.jsonl"), "");
         await expect(gradeRun(missing, null)).rejects.toThrow("which calls.jsonl does not record");
-        const edited = run({ probes: [p8.probe] });
+        const edited = run({ probes: [p8.probe], unended: { host: ["e-1"] } });
         snapshot(edited, "eidnara", p8.snapshots[0] as Snapshot);
         const path = join(edited, "eidnara", "snapshots.jsonl");
         const row = JSON.parse(readFileSync(path, "utf8").trim());
@@ -632,10 +725,29 @@ describe("grade-run", () => {
         await expect(gradeRun(edited, null)).rejects.toThrow(
             "with content that differs from calls.jsonl",
         );
-        const earlier = run({ probes: [p8.probe, { ...p8.probe, id: "P8-b" }] });
+        const earlier = run({
+            probes: [p8.probe, { ...p8.probe, id: "P8-b" }],
+            unended: { host: ["e-1", "e-2"] },
+        });
         const base = p8.snapshots[0] as Snapshot;
         snapshot(earlier, "eidnara", base);
-        snapshot(earlier, "eidnara", { ...base, item: "P8-b", turn: "e-2" });
+        const later = {
+            ...base,
+            item: "P8-b",
+            turn: "e-2",
+            artefacts: base.artefacts.map((a) =>
+                a.class === "proxy-call"
+                    ? {
+                          ...a,
+                          calls: [
+                              ...a.calls,
+                              ...a.calls.map((c) => ({ ...c, seq: c.seq + 1, turn: "e-2" })),
+                          ],
+                      }
+                    : a,
+            ),
+        } as Snapshot;
+        snapshot(earlier, "eidnara", later);
         const log = join(earlier, "eidnara", "snapshots.jsonl");
         const [first, second] = readFileSync(log, "utf8")
             .trim()

@@ -4,6 +4,7 @@ import { loadConfig, type SimConfig } from "../src/config/config";
 import {
     AnswerRefused,
     assertArtefactsOnly,
+    EvidenceRefused,
     GradeRefused,
     type Snapshot,
 } from "../src/grade/artefacts";
@@ -196,6 +197,11 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     const rules = prereg.grading;
     const arms = manifest.order as string[];
     const seedIndex = prereg.seeds.indexOf(manifest.seed);
+    if (seedIndex < 0) {
+        throw new Error(
+            `seed ${String(manifest.seed)} is not pre-registered for ${String(manifest.tier)}`,
+        );
+    }
     const permitted = (prereg.arms.order_by_seed[seedIndex] ?? prereg.arms.run) as string[];
     const subsequence = (() => {
         let at = 0;
@@ -211,7 +217,14 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             `manifest order ${JSON.stringify(arms)} is not a nonempty subsequence of the ${String(manifest.tier)} order ${JSON.stringify(permitted)}`,
         );
     }
-    const models = manifest.models as string[];
+    const models = manifest.models as unknown;
+    if (
+        !Array.isArray(models) ||
+        models.length === 0 ||
+        !models.every((m) => typeof m === "string")
+    ) {
+        throw new Error("manifest records no model list");
+    }
     const entries = readJournal(join(dir, "journal.jsonl"));
     const events = manifest.events as unknown;
     if (
@@ -267,7 +280,11 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
      * never entered, makes the journal invalid; no ended turn at all is an interrupted or
      * absent turn.
      */
-    const unjournaled = (arm: string, item: string): string => {
+    const eventOutcomes = new Map<string, string>();
+    for (const e of entries.filter((e) => e.kind === "Event")) {
+        eventOutcomes.set(`${String(e.arm)}/${String(e.event)}`, String(e.outcome));
+    }
+    const unjournaled = (arm: string, item: string, event: string | undefined): string => {
         const turns = probeTurns.get(`${arm}/${item}`) ?? [];
         const named = turns.find((t) => t.snapshot !== null);
         if (named) {
@@ -278,7 +295,14 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         if (turns.some((t) => t.outcome === "ok")) {
             throw new Error(`the journal ends a turn for ${item} (${arm}) ok without a snapshot`);
         }
-        return turns.length > 0 ? "probe turn failed" : "no journaled snapshot";
+        if (turns.length > 0) return "probe turn failed";
+        const outcome = event === undefined ? undefined : eventOutcomes.get(`${arm}/${event}`);
+        if (outcome !== undefined && outcome !== "failed(interrupted)") {
+            throw new Error(
+                `the journal ends event ${event} for ${item} (${arm}) as ${outcome} without an EndTurn`,
+            );
+        }
+        return outcome === undefined ? "no journaled snapshot" : "probe turn interrupted";
     };
     const probes = new Map(scenario.probes.map((p) => [p.id, p]));
     const snapshots = new Map<string, RowMeta[]>();
@@ -400,6 +424,14 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         const calls = row.artefacts.find((a) => a.class === "proxy-call");
         if (calls?.class !== "proxy-call") continue;
         const recorded = callsOf(callIndex, meta.arm, String(meta.session), turnIndex);
+        const probeTurn = turnIndex.get(meta.turn);
+        let boundary = recorded.length - 1;
+        while (boundary >= 0 && recorded[boundary]?.turn_index !== probeTurn) boundary--;
+        if (boundary >= calls.calls.length) {
+            throw new Error(
+                `snapshot ${meta.id} holds ${calls.calls.length} calls, but calls.jsonl records call ${String(recorded[boundary]?.seq)} within its turn ${meta.turn}`,
+            );
+        }
         calls.calls.forEach((held, i) => {
             const record = recorded[i];
             if (record === undefined) {
@@ -458,7 +490,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             const sides = { [arm]: attempts(arm, probe.id), host: attempts("host", probe.id) };
             const lost = new Set<string>();
             for (const [side, rows] of Object.entries(sides)) {
-                if (!rows) skip(side, unjournaled(side, probe.id));
+                if (!rows) skip(side, unjournaled(side, probe.id, probe.event));
                 else if (rows[0]?.turn_outcome !== "ok") skip(side, "P7 probe turn failed");
                 else continue;
                 lost.add(side);
@@ -494,15 +526,15 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             }
             const mine = attempts(arm, probe.id);
             if (!mine) {
-                skip(arm, unjournaled(arm, probe.id));
+                skip(arm, unjournaled(arm, probe.id, probe.event));
                 continue;
             }
             let grade: GradeRecord | null;
             try {
                 grade = gradeItem(probe, mine, rules);
             } catch (caught) {
-                if (!(caught instanceof AnswerRefused)) throw caught;
-                skip(arm, "answer refused");
+                if (!(caught instanceof EvidenceRefused)) throw caught;
+                skip(arm, caught instanceof AnswerRefused ? "answer refused" : "evidence refused");
                 console.error(`${probe.id} (${arm}): ${String(caught)}`);
                 continue;
             }

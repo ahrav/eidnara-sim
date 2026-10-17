@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { loadConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
+import { ArtefactReader } from "../grade/artefacts";
 import { gradeItem } from "../grade/probes";
 import { diffPaths } from "../grade/text";
 import { HarnessFailure, type ScenarioEvent } from "../run/scheduler";
@@ -1009,6 +1010,44 @@ test("a recorder rebuilt over an index lock moves the workspace to a fresh index
     const again = new SnapshotRecorder(armDir, "eidnara", () => [], 5_000);
     expect(again.tree(repo)).toMatch(/^[0-9a-f]{40}$/);
     expect(existsSync(join(gitDir, `${basename(repo)}.2.index`))).toBe(true);
+});
+
+test("a session that changed a rule file leaves the next session a refused prior-session diff", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.trackIgnoreRules(basename(repo), {}, null, null);
+    recorder.sessionStart("s-1", basename(repo), repo);
+    writeFileSync(join(repo, ".gitignore"), "secret.txt\n");
+    writeFileSync(join(repo, "secret.txt"), "hidden");
+    recorder.sessionEnd("s-1", basename(repo), repo);
+    rmSync(join(repo, ".gitignore"));
+    recorder.sessionStart("s-2", basename(repo), repo);
+    const before = recorder.tree(repo);
+    recorder.capture(
+        { probe: "q", session: "s-2", id: "e-5" },
+        basename(repo),
+        repo,
+        before,
+        [],
+        false,
+    );
+    const snap = JSON.parse(readFileSync(join(armDir, "snapshots.jsonl"), "utf8"));
+    const prior = snap.artefacts.find((a: { role?: string }) => a.role === "prior-session");
+    expect(prior.patch).toBe("");
+    expect(prior.refused).toContain(".gitignore (added)");
+    expect(() => new ArtefactReader(snap).diff("prior-session")).toThrow(
+        "prior-session diff unrecorded",
+    );
+});
+
+test("the workspace walk checks its deadline once per directory, so a forest of empty directories ends in time", () => {
+    const repo = gitRepo();
+    for (let i = 0; i < 3_000; i++) mkdirSync(join(repo, "empties", `d${i}`), { recursive: true });
+    const recorder = new SnapshotRecorder(tmp(), "eidnara", () => [], 0);
+    const started = Date.now();
+    expect(() => recorder.survey(repo)).toThrow("timed out");
+    expect(Date.now() - started).toBeLessThan(2_000);
 });
 
 test("a tool run reported at its start is on record, and its end report replaces it", () => {

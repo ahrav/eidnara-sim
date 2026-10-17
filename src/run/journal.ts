@@ -153,6 +153,7 @@ export function keepCompleteLines(path: string): number {
 export function readJournal(path: string): Entry[] & { bytes?: number } {
     const entries: Entry[] & { bytes?: number } = [];
     entries.bytes = 0;
+    requireAppendable(path);
     if (!existsSync(path)) return entries;
     const lines = readFileSync(path, "utf8").split("\n");
     lines.forEach((line, i) => {

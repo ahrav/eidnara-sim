@@ -29,6 +29,8 @@ interface RecorderState {
     ended?: string | null;
     starts: Record<string, string>;
     last: Record<string, { from: string; to: string }>;
+    /** Per project, why the last session left no tree pair; the next session's snapshots carry it. */
+    lastGap?: Record<string, string>;
     /** Per project, the paths the source repository tracks although its ignore rules match them. */
     forced?: Record<string, string[]>;
     /** Per project, the generation of its index file; a lock a killed git left behind moves the project to the next. */
@@ -275,7 +277,9 @@ export class SnapshotRecorder {
         const deadline = Date.now() + (this.gitTimeoutMs ?? Number.POSITIVE_INFINITY);
         let seen = 0;
         const pending = [dir];
-        for (let at = pending.shift(); at !== undefined; at = pending.shift()) {
+        for (let next = 0; next < pending.length; next++) {
+            const at = pending[next] as string;
+            if (Date.now() >= deadline) throw new GitBound(`workspace walk of ${dir}: timed out`);
             for (const entry of entriesOf(at)) {
                 if (++seen > WORKSPACE_ENTRY_CAP || Date.now() >= deadline) {
                     const why =
@@ -483,12 +487,37 @@ export class SnapshotRecorder {
         this.save();
     }
 
+    /**
+     * Closes a session: its end tree completes the prior-session diff later sessions carry. The
+     * workspace's rule files are checked against the reset baseline first, as at a probe turn,
+     * since a rule the session added would shape that tree; a changed rule or a bounded git run
+     * leaves the project without a tree pair and records why, and the next session's snapshots
+     * carry that reason in place of the prior-session diff.
+     */
     sessionEnd(session: string, project: string, dir: string): void {
         if (this.state.ended === session) return;
         const from = this.state.starts[project];
-        const to = from ? this.boundedTree(dir) : null;
-        if (from && to) this.state.last[project] = { from, to };
-        else delete this.state.last[project];
+        let to: string | null = null;
+        let gap: string | null = from ? null : "the session's start tree was not recorded";
+        if (from) {
+            try {
+                const { ignoreFiles } = this.survey(dir);
+                const changed = this.ignoreChanges(dir, project, ignoreFiles);
+                if (changed.length > 0) gap = `rule files changed: ${changed.join(", ")}`;
+                else to = this.tree(dir);
+            } catch (caught) {
+                if (!(caught instanceof GitBound)) throw caught;
+                console.error(`snapshot: ${caught.message}`);
+                gap = caught.message;
+            }
+        }
+        if (from && to) {
+            this.state.last[project] = { from, to };
+            delete this.state.lastGap?.[project];
+        } else {
+            delete this.state.last[project];
+            this.state.lastGap = { ...this.state.lastGap, [project]: gap ?? "unrecorded" };
+        }
         this.state.session = null;
         this.state.ended = session;
         this.save();
@@ -544,9 +573,19 @@ export class SnapshotRecorder {
             { id: `${id}:calls`, class: "proxy-call", calls: this.callsFor(e.session) },
         ];
         const prior = this.state.last[project];
+        const gap = this.state.lastGap?.[project];
         if (prior) {
             const patch = this.diff(prior.from, prior.to);
             artefacts.push({ id: `${id}:prior-diff`, class: "diff", role: "prior-session", patch });
+        } else if (gap) {
+            const role = "prior-session";
+            artefacts.push({
+                id: `${id}:prior-diff`,
+                class: "diff",
+                role,
+                patch: "",
+                refused: gap,
+            });
         }
         const snapshot: Snapshot = {
             id,

@@ -13,6 +13,8 @@ export interface DiffArtefact {
     /** `turn`: the probe turn's changes; `prior-session`: the project's previous session. */
     role: "turn" | "prior-session";
     patch: string;
+    /** Why the recorder could not take this diff; a grader reading it refuses the item. */
+    refused?: string;
 }
 
 export interface Command {
@@ -82,8 +84,11 @@ export interface Snapshot {
 
 export class GradeRefused extends Error {}
 
+/** A refusal that concerns one item's evidence as recorded; the grader excludes the item. */
+export class EvidenceRefused extends GradeRefused {}
+
 /** A refusal that concerns one item's answer evidence; the grader excludes the item. */
-export class AnswerRefused extends GradeRefused {}
+export class AnswerRefused extends EvidenceRefused {}
 
 const ROLES: Record<string, readonly string[]> = {
     diff: ["turn", "prior-session"],
@@ -156,6 +161,11 @@ export class ArtefactReader {
 
     diff(role: DiffArtefact["role"] = "turn"): string {
         const d = this.find((a): a is DiffArtefact => a.class === "diff" && a.role === role);
+        if (d?.refused) {
+            throw new EvidenceRefused(
+                `snapshot ${this.snapshot.id}: ${role} diff unrecorded: ${d.refused}`,
+            );
+        }
         return d?.patch ?? "";
     }
 

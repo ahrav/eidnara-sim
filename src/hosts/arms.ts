@@ -593,14 +593,18 @@ export class OpencodeSimHost extends SimHost {
     /**
      * Runs one turn under `timeoutMs` and then logs the tool parts of the messages it added, on
      * every outcome: the next turn treats those messages as seen, so a turn that errored or hit
-     * its deadline logs its tools here or never. The deadline also bounds the message listings
-     * before and after the turn: a listing that stalls before the turn fails the turn, and one
-     * that stalls after it fails the turn as a capture gap, since its tool runs are then
-     * unknown. A failed turn whose listing also fails keeps its own error and names the gap.
+     * its deadline logs its tools here or never. The deadline is absolute and bounds the message
+     * listings before and after the turn together with the turn itself: the turn gets what the
+     * pre-turn listing left minus a reserve for the post-turn listing (a quarter of the deadline,
+     * at most one second); a listing that stalls before the turn fails the turn, and one that
+     * stalls after it fails the turn as a capture gap, since its tool runs are then unknown. A
+     * failed turn whose listing also fails keeps its own error and names the gap.
      */
     async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
         const deadline = Date.now() + timeoutMs;
-        const remaining = () => Math.max(1_000, deadline - Date.now());
+        const remaining = () => Math.max(0, deadline - Date.now());
+        /** Kept back from the turn so the post-turn tool listing fits inside the same deadline. */
+        const reserve = Math.min(1_000, Math.floor(timeoutMs / 4));
         let seen: Set<string>;
         try {
             const listed = await this.messages(timeoutMs);
@@ -612,8 +616,12 @@ export class OpencodeSimHost extends SimHost {
             return { error: `tool capture: ${String(caught)}`.slice(0, 2000) };
         }
         const startScenario = this.ctx.now?.() ?? 0;
-        const outcome = await this.turn(text, remaining());
+        if (remaining() <= reserve) {
+            return { error: `turn deadline of ${timeoutMs} ms passed during the message listing` };
+        }
+        const outcome = await this.turn(text, remaining() - reserve);
         try {
+            if (remaining() === 0) throw new Error("turn deadline passed before the tool listing");
             await this.logTurnTools(seen, startScenario, remaining());
         } catch (caught) {
             this.unlogged = seen;

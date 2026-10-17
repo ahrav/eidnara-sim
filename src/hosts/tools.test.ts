@@ -289,7 +289,7 @@ test("reattaching to an OpenCode session reports the tool parts its messages alr
     ]);
 });
 
-test("a slow pre-turn listing leaves the turn only the remaining deadline", async () => {
+test("a slow pre-turn listing leaves the turn the remaining deadline minus the listing reserve", async () => {
     let listed = 0;
     let turnDeadline = -1;
     const client = {
@@ -325,8 +325,8 @@ test("a slow pre-turn listing leaves the turn only the remaining deadline", asyn
     };
     void original;
     await host.prompt("go", 1_600);
-    expect(turnDeadline).toBeGreaterThanOrEqual(1_000);
-    expect(turnDeadline).toBeLessThan(1_100);
+    expect(turnDeadline).toBeGreaterThanOrEqual(500);
+    expect(turnDeadline).toBeLessThan(700);
 });
 
 test("a timed-out message listing aborts its request", async () => {
@@ -399,4 +399,36 @@ test("tool parts a failed post-turn listing missed are reported before the next 
     expect(reported).toEqual([
         { command: "cargo build", exit: 0, scenario_ms: 100, call: "oc:p1" },
     ]);
+});
+
+test("a turn whose listing used its deadline fails without prompting", async () => {
+    let prompted = 0;
+    const client = {
+        session: {
+            messages: async () => {
+                await Bun.sleep(90);
+                return { data: [] };
+            },
+            prompt: async () => {
+                prompted++;
+                return { data: { info: {} } };
+            },
+            abort: async () => ({}),
+        },
+    };
+    const host = new OpencodeSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        client,
+        sid: "s",
+        oc: { stderr: () => "" },
+    });
+    const result = await host.prompt("go", 100);
+    expect(result.error).toBe("turn deadline of 100 ms passed during the message listing");
+    expect(prompted).toBe(0);
 });

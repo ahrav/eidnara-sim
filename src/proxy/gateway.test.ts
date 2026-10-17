@@ -555,6 +555,38 @@ describe("call records", () => {
         expect(records.records[0]?.response_text).toBe("done");
     });
 
+    test("a non-streaming reply the client left before is recorded without its text", async () => {
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const slow: Upstream = {
+            async converse() {
+                await gate;
+                const message = { role: "assistant", content: [{ text: "unseen" }] };
+                const usage = { inputTokens: 1, outputTokens: 1 };
+                return { json: { output: { message }, stopReason: "end_turn", usage } };
+            },
+        };
+        const { gateway, records } = await start(null, slow);
+        const client = http2Connect(gateway.urls[1] as string);
+        try {
+            const request = client.request({ ":method": "POST", ":path": "/model/m/converse" });
+            request.end(JSON.stringify(AGENT_BODY));
+            await Bun.sleep(50);
+            request.close(8);
+            await Bun.sleep(50);
+            release();
+            while (gateway.inFlight > 0) await Bun.sleep(10);
+        } finally {
+            client.close();
+        }
+        expect(records.records[0]).toMatchObject({
+            error: "client disconnected before the response was delivered",
+        });
+        expect(records.records[0]?.response_text).toBeUndefined();
+    });
+
     test("a reply past the recorded-text cap is marked truncated", async () => {
         const long: Upstream = {
             async converse() {
