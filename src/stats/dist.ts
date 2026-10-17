@@ -14,23 +14,29 @@ export function logGamma(x: number): number {
     return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(a);
 }
 
+const MIN_NORMAL = 2 ** -1022;
+
 export function binomialPmf(k: number, n: number, p: number): number {
     if (k < 0 || k > n) return 0;
     if (p === 0) return k === 0 ? 1 : 0;
     if (p === 1) return k === n ? 1 : 0;
-    if (n <= 1000) {
+    const [pk, qk] = [p ** k, (1 - p) ** (n - k)];
+    if (n <= 1000 && pk >= MIN_NORMAL && qk >= MIN_NORMAL) {
         let choose = 1;
         for (let i = 1; i <= Math.min(k, n - k); i++)
             choose = (choose * (n - Math.min(k, n - k) + i)) / i;
-        return choose * p ** k * (1 - p) ** (n - k);
+        return choose * pk * qk;
     }
     const log = logGamma(n + 1) - logGamma(k + 1) - logGamma(n - k + 1);
     return Math.exp(log + k * Math.log(p) + (n - k) * Math.log(1 - p));
 }
 
 export function binomialCdf(k: number, n: number, p: number): number {
+    if (k < 0) return 0;
+    if (k >= n) return 1;
+    if (n > 1000) return incompleteBeta(1 - p, n - k, k + 1);
     let sum = 0;
-    for (let i = 0; i <= Math.min(k, n); i++) sum += binomialPmf(i, n, p);
+    for (let i = 0; i <= k; i++) sum += binomialPmf(i, n, p);
     return Math.min(1, sum);
 }
 
@@ -98,7 +104,8 @@ export function incompleteBeta(x: number, a: number, b: number): number {
     );
     const tiny = 1e-300;
     let [f, c, d] = [1, 1, 0];
-    for (let i = 0; i <= 400; i++) {
+    let step = 0;
+    for (let i = 0; i <= 10_000 && Math.abs(1 - step) >= 1e-15; i++) {
         const m = Math.floor(i / 2);
         const num =
             i === 0
@@ -111,10 +118,11 @@ export function incompleteBeta(x: number, a: number, b: number): number {
         d = 1 / d;
         c = 1 + num / c;
         c = Math.abs(c) < tiny ? tiny : c;
-        const step = c * d;
+        step = c * d;
         f *= step;
-        if (Math.abs(1 - step) < 1e-15) break;
     }
+    if (Math.abs(1 - step) >= 1e-15)
+        throw new RangeError("incompleteBeta: the continued fraction did not converge");
     return (front * (f - 1)) / a;
 }
 
@@ -138,17 +146,6 @@ export function digamma(x: number): number {
     }
     const f = 1 / (y * y);
     return r + Math.log(y) - 0.5 / y - f * (1 / 12 - f * (1 / 120 - f * (1 / 252 - f / 240)));
-}
-
-export function trigamma(x: number): number {
-    let r = 0;
-    let y = x;
-    while (y < 6) {
-        r += 1 / (y * y);
-        y += 1;
-    }
-    const f = 1 / (y * y);
-    return r + 1 / y + f / 2 + (f / y) * (1 / 6 - f * (1 / 30 - f / 42));
 }
 
 /** The upper tail `1 - normalCdf(x)`, computed directly so it keeps precision far out. */

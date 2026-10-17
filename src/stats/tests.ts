@@ -1,8 +1,15 @@
 import { Rng } from "../rng";
-import { betaQuantile, binomialCdf, digamma, normalCdf, normalQuantile, trigamma } from "./dist";
+import { betaQuantile, binomialCdf, digamma, normalCdf, normalQuantile } from "./dist";
+
+function counts(fn: string, values: readonly number[]): void {
+    if (!values.every((v) => Number.isInteger(v) && v >= 0))
+        throw new RangeError(`${fn}: counts must be nonnegative integers`);
+}
 
 /** Two-sided exact binomial test of `x` successes in `n` at one half: the sign test. */
 export function signTest(x: number, n: number): number {
+    counts("signTest", [x, n]);
+    if (x > n) throw new RangeError("signTest: more successes than trials");
     if (n === 0) return 1;
     return Math.min(1, 2 * binomialCdf(Math.min(x, n - x), n, 0.5));
 }
@@ -18,6 +25,7 @@ export interface McNemar {
 
 /** The exact McNemar test on the discordant counts, with R `exact2x2::mcnemar.exact` limits. */
 export function mcnemarExact(b: number, c: number, alpha = 0.05): McNemar {
+    counts("mcnemarExact", [b, c]);
     const n = b + c;
     const lo = b === 0 ? 0 : betaQuantile(alpha / 2, b, c + 1);
     const hi = c === 0 ? 1 : betaQuantile(1 - alpha / 2, b + 1, c);
@@ -49,6 +57,7 @@ export function newcombe(
 ): [number, number] {
     const n = a + b + c + d;
     if (n === 0) throw new RangeError("newcombe: an empty table has no difference");
+    counts("newcombe", [a, b, c, d]);
     const z = normalQuantile(1 - alpha / 2);
     const [p1, p2] = [(a + b) / n, (a + c) / n];
     const [l1, u1] = wilson(a + b, n, z);
@@ -64,13 +73,19 @@ export function newcombe(
     ];
 }
 
-/** Holm's step-down adjusted p-values, in the input order. */
+/**
+ * Holm's step-down adjusted p-values, in the input order. A NaN input stays NaN and the
+ * remaining inputs are adjusted among themselves.
+ */
 export function holm(ps: readonly number[]): number[] {
-    const order = ps.map((p, i) => [p, i] as const).sort((x, y) => x[0] - y[0]);
-    const out = new Array<number>(ps.length);
+    const order = ps
+        .map((p, i) => [p, i] as const)
+        .filter(([p]) => !Number.isNaN(p))
+        .sort((x, y) => x[0] - y[0]);
+    const out = new Array<number>(ps.length).fill(Number.NaN);
     let running = 0;
     order.forEach(([p, i], k) => {
-        running = Math.max(running, Math.min(1, (ps.length - k) * p));
+        running = Math.max(running, Math.min(1, (order.length - k) * p));
         out[i] = running;
     });
     return out;
@@ -128,6 +143,7 @@ function resample<T>(xs: readonly T[], rng: Rng): T[] {
 
 /** The jackknife acceleration of BCa (Efron and Tibshirani, 1993, eq. 14.15). */
 export function acceleration<T>(xs: readonly T[], stat: (s: T[]) => number): number {
+    if (xs.length < 2) return 0;
     const jack = xs.map((_, i) => stat(xs.filter((__, j) => j !== i)));
     const m = mean(jack);
     const num = jack.reduce((s, t) => s + (m - t) ** 3, 0);
@@ -147,10 +163,17 @@ export function bootstrap<T>(
     const reps = Array.from({ length: o.replicates }, () => stat(resample(xs, rng))).sort(
         (x, y) => x - y,
     );
+    if (![estimate, ...reps].every(Number.isFinite))
+        return { estimate, lo: Number.NaN, hi: Number.NaN };
     if (!o.bca)
         return { estimate, lo: percentile(reps, alpha / 2), hi: percentile(reps, 1 - alpha / 2) };
-    const below =
-        reps.filter((r) => r < estimate).length + reps.filter((r) => r === estimate).length / 2;
+    const below = Math.min(
+        reps.length - 0.5,
+        Math.max(
+            0.5,
+            reps.filter((r) => r < estimate).length + reps.filter((r) => r === estimate).length / 2,
+        ),
+    );
     const z0 = normalQuantile(below / reps.length);
     const a = acceleration(xs, stat);
     const adjust = (q: number) => {
@@ -200,13 +223,17 @@ export interface NegBinFit {
     theta: number;
     /**
      * False when an iteration limit ran out, a number is not finite, or the arms separate (a
-     * coefficient past 30 in magnitude); its numbers are then not estimates.
+     * fitted log-mean past 30 in magnitude); its numbers are then not estimates.
      */
     converged: boolean;
 }
 
 /** Above this theta the counts carry no overdispersion, and the fit is Poisson. */
 const THETA_MAX = 1e8;
+
+const THETA_MIN = 1e-8;
+
+const HARMONIC_MAX = 1000;
 
 function weightedCross(x: number[][], w: number[], v?: number[]): number[][] {
     const p = (x[0] ?? []).length;
@@ -218,59 +245,81 @@ function weightedCross(x: number[][], w: number[], v?: number[]): number[][] {
     );
 }
 
-function thetaStep(y: number[], m: number[], t: number): number {
-    let [score, info] = [0, 0];
-    y.forEach((yi, j) => {
+/**
+ * The derivative of the log-likelihood in theta at fixed means `m`. The rearranged terms
+ * reduce cancellation at large `t`; the harmonic form of the digamma difference is used up to
+ * `HARMONIC_MAX` so the work per observation stays bounded.
+ */
+function thetaScore(y: number[], m: number[], t: number): number {
+    return y.reduce((s, yi, j) => {
         const u = m[j] as number;
-        score +=
-            digamma(yi + t) - digamma(t) + Math.log(t) + 1 - Math.log(t + u) - (yi + t) / (t + u);
-        info += -trigamma(yi + t) + trigamma(t) - 1 / t + 2 / (t + u) - (yi + t) / (t + u) ** 2;
-    });
-    return score / info;
+        let psi = 0;
+        if (yi <= HARMONIC_MAX) for (let k = 0; k < yi; k++) psi += 1 / (t + k);
+        else psi = digamma(yi + t) - digamma(t);
+        return s + psi - Math.log1p(u / t) + (u - yi) / (t + u);
+    }, 0);
+}
+
+/**
+ * `thetaAt` estimates the score's root at fixed means `m` by bisection in log theta. The sign
+ * at `THETA_MAX` comes from the score's large-theta limit, `-sum((y - m)^2 - y) / (2 theta^2)`,
+ * because the direct sum is rounding noise there.
+ */
+function thetaAt(y: number[], m: number[]): number {
+    const excess = y.reduce((s, yi, j) => s + (yi - (m[j] as number)) ** 2 - yi, 0);
+    if (excess <= 0) return THETA_MAX;
+    if (thetaScore(y, m, THETA_MIN) <= 0) return THETA_MIN;
+    let [lo, hi] = [Math.log(THETA_MIN), Math.log(THETA_MAX)];
+    for (let i = 0; i < 100 && hi - lo > 1e-12; i++) {
+        const mid = (lo + hi) / 2;
+        if (thetaScore(y, m, Math.exp(mid)) > 0) lo = mid;
+        else hi = mid;
+    }
+    return Math.exp((lo + hi) / 2);
 }
 
 /**
  * A negative-binomial GLM with log link, fitted as R `MASS::glm.nb` does: iteratively
- * reweighted least squares for the coefficients alternating with Newton steps for theta,
- * which stops at `THETA_MAX` when the counts are not overdispersed.
+ * reweighted least squares for the coefficients alternating with the theta that maximises
+ * the likelihood at the current means.
  */
-export function negativeBinomial(x: number[][], y: number[], iterations = 50): NegBinFit {
+export function negativeBinomial(x: number[][], y: number[], iterations = 200): NegBinFit {
     const p = (x[0] ?? []).length;
+    if (y.length === 0 || p === 0)
+        throw new RangeError("negativeBinomial: an empty design has no fit");
+    if (x.length !== y.length)
+        throw new RangeError("negativeBinomial: the design and the response differ in length");
+    if (x.some((row) => row.length !== p || !row.every(Number.isFinite)))
+        throw new RangeError("negativeBinomial: every design row needs the same finite columns");
+    counts("negativeBinomial", y);
     let beta = new Array<number>(p).fill(0);
-    beta[0] = Math.log(Math.max(mean(y), 1e-8));
+    let m = y.map((v) => v + 0.1);
     let theta = 1;
     let settled = false;
-    const mu = () =>
-        x.map((row) => Math.exp(row.reduce((s, v, j) => s + v * (beta[j] as number), 0)));
-    const weights = (m: number[]) => m.map((u) => u / (1 + u / theta));
+    const weights = () => m.map((u) => u / (1 + u / theta));
     for (let outer = 0; outer < iterations; outer++) {
-        for (let inner = 0; inner < 25; inner++) {
-            const m = mu();
-            const w = weights(m);
+        let stable = false;
+        for (let inner = 0; inner < 25 && !stable; inner++) {
+            const w = weights();
             const z = m.map((u, i) => Math.log(u) + ((y[i] as number) - u) / u);
-            const next = solve(weightedCross(x, w), weightedCross(x, w, z)[0] as number[]);
-            const moved = next.reduce(
-                (s, b, j) => Math.max(s, Math.abs(b - (beta[j] as number))),
+            beta = solve(weightedCross(x, w), weightedCross(x, w, z)[0] as number[]);
+            const eta = x.map((row) => row.reduce((s, v, j) => s + v * (beta[j] as number), 0));
+            const moved = eta.reduce(
+                (s, e, i) => Math.max(s, Math.abs(e - Math.log(m[i] as number))),
                 0,
             );
-            beta = next;
-            if (moved < 1e-10) break;
+            m = eta.map(Math.exp);
+            stable = moved < 1e-10;
         }
-        const m = mu();
-        let t = theta;
-        for (let i = 0; i < 50 && t < THETA_MAX; i++) {
-            const step = thetaStep(y, m, t);
-            t = Math.min(THETA_MAX, Math.max(t + step, 1e-8));
-            if (!Number.isFinite(step) || Math.abs(step) < 1e-12 * t) break;
-        }
-        const done = Math.abs(t - theta) < 1e-10 * theta || t >= THETA_MAX;
+        const t = thetaAt(y, m);
+        const done = stable && Math.abs(t - theta) < 1e-8 * theta;
         theta = t;
         if (done) {
             settled = true;
             break;
         }
     }
-    const xtwx = weightedCross(x, weights(mu()));
+    const xtwx = weightedCross(x, weights());
     const se = beta.map((_, j) =>
         Math.sqrt(
             solve(
@@ -280,6 +329,6 @@ export function negativeBinomial(x: number[][], y: number[], iterations = 50): N
         ),
     );
     const finite = [...beta, ...se, theta].every(Number.isFinite);
-    const converged = settled && finite && beta.every((b) => Math.abs(b) <= 30);
+    const converged = settled && finite && m.every((u) => Math.abs(Math.log(u)) <= 30);
     return { coefficients: beta, se, theta, converged };
 }
