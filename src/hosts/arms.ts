@@ -405,6 +405,9 @@ export class DaemonStack {
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
+        // The lifetime's identity is read while it is alive; after termination /proc has no start.
+        const stackPid = this.pid(stack);
+        const stackStart = stackPid === null ? null : processStart(stackPid);
         await stack.terminateHost();
         this.stack = null;
         const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
@@ -415,11 +418,10 @@ export class DaemonStack {
         // after any rollback the drains perform, so a rollback cannot erase it.
         const live = String(stack.logPath ?? "");
         const marker = this.readMarker();
-        const stackPid = this.pid(stack);
         const sameLifetime =
             marker?.owner?.pid != null &&
             marker.owner.pid === stackPid &&
-            marker.owner.start === processStart(stackPid as number);
+            marker.owner.start === stackStart;
         const {
             stdout: _held,
             stdout_target: _target,

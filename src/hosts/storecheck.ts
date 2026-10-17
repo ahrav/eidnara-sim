@@ -132,6 +132,11 @@ export function parseStoreCheck(value: unknown, where: string): StoreCheck {
                 a.end_message - b.end_message ||
                 a.sequence - b.sequence,
         );
+    // The store keys segments by (session, sequence); a check that lists one twice is malformed.
+    const identities = new Set(bounds.map((b) => `${b.session_id}\0${b.sequence}`));
+    if (identities.size !== bounds.length) {
+        throw new Error(`${where}: store check lists a segment identity twice`);
+    }
     const derived = derive(bounds);
     const agrees =
         JSON.stringify(derived.overlaps) === JSON.stringify(check.overlaps) &&

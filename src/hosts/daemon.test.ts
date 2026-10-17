@@ -447,6 +447,34 @@ test("a restart saves the held stdout through the marker, so a kill mid-append r
     expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe("out\nold\n");
 });
 
+test("a stop after a failed kill recognises the lifetime it terminates itself", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    writeFileSync(logPath, "stderr\n");
+    const child = Bun.spawn(["sleep", "300"]);
+    const stack = {
+        logPath,
+        child: { pid: child.pid },
+        crashHost: async () => {
+            throw new Error("kill refused");
+        },
+        terminateHost: async () => {
+            child.kill();
+            await child.exited;
+        },
+    };
+    const hh = {
+        __hermeticHostTest: {
+            diagnostics: () => ({ stdout: "ready\n", stderr: "", retainedLog: "" }),
+        },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    await expect(daemon.crash()).rejects.toThrow("kill refused");
+    await daemon.stop();
+    expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe("stderr\nready\n");
+});
+
 test("a stop treats a reused pid with another start time as a new lifetime", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
     const logPath = join(dir, "direct-host.log");
