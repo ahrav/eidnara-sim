@@ -514,6 +514,31 @@ test("a stop treats a reused pid with another start time as a new lifetime", asy
     );
 });
 
+test("the marker names the replacement while its readiness is still awaited", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    const marker = join(dir, "daemon.log.source");
+    writeFileSync(logPath, "old\n");
+    let duringWait: unknown = null;
+    const stack = {
+        logPath,
+        child: { pid: process.ppid },
+        restartHost: async () => {
+            stack.child = { pid: process.pid };
+            await Bun.sleep(400);
+            duringWait = JSON.parse(readFileSync(marker, "utf8")).owner?.pid;
+            throw new Error("replacement never became ready");
+        },
+    };
+    const hh = {
+        __hermeticHostTest: { diagnostics: () => ({ stdout: "", stderr: "", retainedLog: "" }) },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    await expect(daemon.restart()).rejects.toThrow("never became ready");
+    expect(duringWait).toBe(process.pid);
+});
+
 test("the marker names the replacement daemon as soon as it is up", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
     const logPath = join(dir, "direct-host.log");

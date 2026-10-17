@@ -382,10 +382,29 @@ export class DaemonStack {
     async restart(): Promise<void> {
         if (this.heldStdout === null) this.hold();
         const live = String(this.stack.logPath ?? "");
-        await this.stack.restartHost();
-        // The replacement owns the marker from here, so a kill before the logs are saved still
-        // lets a resume stop it before starting another daemon against the same store; the held
-        // stdout then lands through the marker, so a kill mid-append rolls it back.
+        // The replacement owns the marker from the moment the stack assigns its child, while its
+        // readiness is still awaited, so a kill in that wait still lets a resume stop it before
+        // starting another daemon against the same store.
+        const killed = this.pid();
+        let settled = false;
+        const publish = (async () => {
+            while (!settled) {
+                const pid = this.pid();
+                if (pid !== null && pid !== killed) {
+                    const marker = this.readMarker();
+                    if (marker) this.writeMarker({ ...marker, owner: this.owner() });
+                    return;
+                }
+                await Bun.sleep(25);
+            }
+        })();
+        try {
+            await this.stack.restartHost();
+        } finally {
+            settled = true;
+            await publish;
+        }
+        // The held stdout lands through the marker, so a kill mid-append rolls it back.
         const owner = this.owner();
         const marker = this.readMarker();
         if (marker) {

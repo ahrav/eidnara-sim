@@ -2,6 +2,7 @@ import type { StoreCheck } from "../hosts/storecheck";
 import type { FaultEpisode } from "../scenario/faults";
 import { Clock } from "./clock";
 import type { Entry, EntryKind, Journal } from "./journal";
+import type { OffsetWrite } from "./timeinject";
 
 export interface ScenarioEvent {
     id: string;
@@ -55,11 +56,12 @@ export interface SchedulerOptions {
     idleLimitMs?: number;
     settleMs?: number;
     /**
-     * Runs at each arm's start and at every clock jump. A returned number is the whole-second
-     * clock offset the arm's processes now read, journaled as `offset_s`: on a `ClockOffset`
-     * entry at the arm's start, and on the jump's own `AdvanceClock` entry otherwise.
+     * Runs at each arm's start and at every clock jump. A returned record carries the whole-second
+     * clock offset the arm's processes now read and the wall instant it took effect, journaled as
+     * `offset_s` and `offset_wall_ms`: on a `ClockOffset` entry at the arm's start, and on the
+     * jump's own `AdvanceClock` entry otherwise.
      */
-    onClock?: (arm: string, scenarioMs: number) => number | undefined;
+    onClock?: (arm: string, scenarioMs: number) => OffsetWrite | undefined;
     /** Runs before `EndArm` and `EndRun` are journaled; a throw leaves the arm or run open. */
     beforeEnd?: () => void;
 }
@@ -123,10 +125,7 @@ export class Scheduler {
             if (mine.some((e) => e.kind === "EndArm")) continue;
             this.arm = arm;
             const start = mine.at(-1)?.scenario_ms ?? 0;
-            const offsetAt = (ms: number) => {
-                const offset_s = this.o.onClock?.(arm, ms);
-                return typeof offset_s === "number" ? { offset_s } : {};
-            };
+            const offsetAt = (ms: number): Partial<OffsetWrite> => this.o.onClock?.(arm, ms) ?? {};
             this.clock = new Clock(start, this.o.journal, Date.now, offsetAt);
             const initial = offsetAt(start);
             if (initial.offset_s !== undefined) this.log({ kind: "ClockOffset", ...initial });

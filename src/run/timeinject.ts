@@ -50,22 +50,29 @@ export function faketimeEnv(file: string): Record<string, string> {
     };
 }
 
+/** What an offset write left for the journal: the whole seconds and the wall instant of the rename. */
+export interface OffsetWrite {
+    offset_s: number;
+    offset_wall_ms: number;
+}
+
 /**
  * The offset targets `baseMs + scenarioMs` at wall time `wallMs`, with up to 500 ms of rounding
- * error, and is returned in whole seconds so the journal can record what the processes read.
+ * error. The returned record names the whole seconds the processes read from the rename on and
+ * the wall instant of that rename, so the journal can place log stamps by the offset in effect.
  */
 export function writeOffset(
     file: string,
     baseMs: number,
     scenarioMs: number,
     wallMs = Date.now(),
-): number {
+): OffsetWrite {
     const seconds = Math.round((baseMs + scenarioMs - wallMs) / 1000);
     mkdirSync(dirname(file), { recursive: true });
     const staged = `${file}.${process.pid}`;
     writeFileSync(staged, `${seconds >= 0 ? "+" : ""}${seconds}\n`);
     renameSync(staged, file);
-    return seconds;
+    return { offset_s: seconds, offset_wall_ms: Date.now() };
 }
 
 export function readOffsetSeconds(file: string): number {

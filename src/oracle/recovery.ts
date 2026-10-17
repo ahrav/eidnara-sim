@@ -78,7 +78,10 @@ function logMs(line: string): number | null {
 function timeline(arm: ArmLogs, base: number): Timeline {
     // An entry that anchors a window or a span needs finite coordinates; a malformed one refuses
     // the arm rather than placing every log line outside its windows.
-    const finite = (e: Entry, field: "seq" | "wall_ms" | "scenario_ms" | "offset_s"): number => {
+    const finite = (
+        e: Entry,
+        field: "seq" | "wall_ms" | "scenario_ms" | "offset_s" | "offset_wall_ms",
+    ): number => {
         const value = e[field];
         if (typeof value !== "number" || !Number.isFinite(value)) {
             throw new Error(
@@ -114,10 +117,14 @@ function timeline(arm: ArmLogs, base: number): Timeline {
             stamps,
         };
     }
+    // A span opens when its offset took effect (the rename the harness recorded as
+    // offset_wall_ms), which precedes the journal entry; entries without it open at the entry.
+    const effective = (e: Entry) =>
+        typeof e.offset_wall_ms === "number" ? finite(e, "offset_wall_ms") : finite(e, "wall_ms");
     const spans = offsets.map((e, i) => ({
         offset: finite(e, "offset_s") * 1000,
-        from: finite(e, "wall_ms"),
-        to: offsets[i + 1] ? finite(offsets[i + 1] as Entry, "wall_ms") : Number.POSITIVE_INFINITY,
+        from: effective(e),
+        to: offsets[i + 1] ? effective(offsets[i + 1] as Entry) : Number.POSITIVE_INFINITY,
     }));
     // Two offsets written in one millisecond leave the earlier span empty; the newer owns the instant.
     for (const [i, span] of spans.entries()) {
@@ -321,9 +328,14 @@ function storeReasons(checks: Checks, postCrash = true): string[] {
 
 export function recoveries(run: RunLogs): Recovery[] {
     return run.arms.flatMap((arm) => {
-        const observations = new Map(
-            arm.journal.filter((e) => e.kind === "FaultObserved").map((e) => [e.fault, e]),
-        );
+        const observations = new Map<unknown, Entry>();
+        for (const e of arm.journal.filter((x) => x.kind === "FaultObserved")) {
+            // The scheduler observes each fault once; a second observation is a malformed journal.
+            if (observations.has(e.fault)) {
+                throw new Error(`${arm.arm}: fault ${String(e.fault)} is observed twice`);
+            }
+            observations.set(e.fault, e);
+        }
         // Each infrastructure fault once, anchored at its FaultFired when the journal has one.
         const anchors = new Map<unknown, Entry>();
         for (const e of arm.journal) {
