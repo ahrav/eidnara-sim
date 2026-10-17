@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
-import { type Entry, readJournal } from "../run/journal";
+import { type Entry, readJsonl } from "../run/journal";
 import { checkJournal } from "../run/journal-check";
 import { referenceArm } from "../run/run";
 import { LABELS } from "../usersim/plan";
@@ -34,8 +34,7 @@ const outcome = (instances: number, bad: string[], what: string) =>
           ? { status: "unreached" as const, detail: `no ${what}` }
           : { status: "witnessed" as const, detail: `${instances} ${what}` };
 
-const jsonl = <T>(path: string): T[] =>
-    existsSync(path) ? (readJournal(path) as unknown as T[]) : [];
+const jsonl = <T>(path: string): T[] => readJsonl<T>(path);
 
 function context(g: GradedRun): Ctx {
     const grades = join(g.run.dir, "grades.jsonl");

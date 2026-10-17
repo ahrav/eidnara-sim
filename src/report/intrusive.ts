@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { MemoryNote } from "../hosts/storecheck";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
 import { runOracles } from "../oracle/oracles";
-import { readJournal } from "../run/journal";
+import { readJsonl } from "../run/journal";
 import type { PairingRecord } from "../usersim/usersim";
 
 export interface Intrusiveness {
@@ -19,7 +19,7 @@ const REVERT =
 const SHINGLE = 5;
 
 function jsonl<T>(path: string): T[] {
-    return existsSync(path) ? (readJournal(path) as unknown as T[]) : [];
+    return readJsonl<T>(path);
 }
 
 export function notesOf(dir: string, arm: string): MemoryNote[] | null {

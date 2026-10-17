@@ -244,8 +244,8 @@ export async function runTier(o: RunOptions): Promise<void> {
     plainPath(o.out);
     requirePinnedPath(o.config);
     mkdirSync(o.out, { recursive: true });
-    takeLease(o.out);
-    const cleanup: Array<() => Promise<void> | void> = [() => releaseLease(o.out)];
+    const lease = takeLease(o.out);
+    const cleanup: Array<() => Promise<void> | void> = [() => releaseLease(o.out, lease)];
     let done: Promise<void> | null = null;
     const teardown = () => {
         done ??= (async () => {
@@ -458,8 +458,8 @@ async function runArms(
         downstream: (e) =>
             appendFileSync(join(o.out, "downstream.jsonl"), `${JSON.stringify(e)}\n`),
         observe: (e) => {
-            const driver = drivers[scope.arm];
-            if (driver) scheduler.observe(e.component, driver);
+            if (scheduler.runningArm() !== scope.arm) return;
+            scheduler.observe(e.component);
             if (!BACKGROUND.has(e.component)) return;
             const id = `${e.component}-${jobSeq++}`;
             const key = `${scope.arm}/${e.component}`;

@@ -30,12 +30,15 @@ export function fixtureEvents(turns = 6): ScenarioEvent[] {
 if (import.meta.main) {
     const dir = process.argv[2] as string;
     const turnMs = Number(process.argv[3] ?? 150);
-    takeLease(dir);
-    const journal = new Journal(join(dir, "journal.jsonl"));
+    const issueMs = Number(process.argv[5] ?? 0);
+    const lease = takeLease(dir);
+    const journal = new Journal(join(dir, "journal.jsonl"), lease.within);
     const driver = (arm: string): ArmDriver => ({
+        bind: () => undefined,
         reset: async () => appendFileSync(join(dir, "resets.log"), `${arm}\n`),
         event: async (e) => {
             if (e.kind === "user_turn") {
+                if (issueMs) await Bun.sleep(issueMs);
                 appendFileSync(join(dir, "bill.log"), `${arm} ${e.id}\n`);
                 await Bun.sleep(turnMs);
             }
@@ -53,5 +56,5 @@ if (import.meta.main) {
     });
     await scheduler.run();
     journal.close();
-    releaseLease(dir);
+    releaseLease(dir, lease);
 }

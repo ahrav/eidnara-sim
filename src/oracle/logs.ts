@@ -4,7 +4,7 @@ import type { Command } from "../grade/artefacts";
 import type { StoreCheck } from "../hosts/storecheck";
 import type { Preregistration } from "../prereg/schema";
 import type { CallRecord } from "../proxy/records";
-import { type Entry, readJournal } from "../run/journal";
+import { type Entry, readJsonl } from "../run/journal";
 import type { Sample as ResourceSample } from "../run/sampler";
 import type { Scenario } from "../scenario/compile";
 
@@ -33,7 +33,7 @@ export interface RunLogs {
 }
 
 function jsonl<T>(path: string): T[] {
-    return existsSync(path) ? (readJournal(path) as unknown as T[]) : [];
+    return readJsonl<T>(path);
 }
 
 const lines = (path: string) =>
@@ -48,7 +48,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
     const kinds = new Map(scenario.events.map((e) => [String(e.id), String(e.kind)]));
     const calls = jsonl<CallRecord>(join(dir, "calls.jsonl"));
-    const journal = readJournal(join(dir, "journal.jsonl"));
+    const journal = readJsonl<Entry>(join(dir, "journal.jsonl"));
     const arms = (manifest.order as string[]).map((arm) => ({
         arm,
         calls: calls.filter((c) => c.arm === arm),

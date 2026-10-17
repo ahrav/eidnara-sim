@@ -30,6 +30,7 @@ import {
     wireBase64,
 } from "./gateway";
 import {
+    episodeStream,
     excludedFromFaultMetrics,
     FaultInjector,
     type ProxyFault,
@@ -298,7 +299,7 @@ function hostSeesJson(type: FaultType, r: JsonResult): boolean {
 }
 
 const INTERMITTENT_SEQUENCE = (() => {
-    const rng = new Rng(7);
+    const rng = episodeStream(new Rng(7), "fault-000");
     return Array.from({ length: 10 }, () => rng.next() < 0.3);
 })();
 
@@ -527,7 +528,11 @@ describe("witnesses", () => {
             params: {},
         } as ProxyFault;
         const injector = new FaultInjector([fault], new Rng(1), 100);
+        Bun.sleepSync(5);
+        const beforeArm = performance.now();
+        Bun.sleepSync(5);
         injector.arm("f");
+        Bun.sleepSync(30);
         const base = {
             arm: "a",
             session: null,
@@ -546,6 +551,7 @@ describe("witnesses", () => {
             error: null,
             wall_ms: 0,
         } as const;
+        expect(injector.take("agent", 9, beforeArm)).toBeNull();
         const taken = injector.take("agent", 0);
         expect(taken?.id).toBe("f");
         const t0 = performance.now();
@@ -571,6 +577,18 @@ describe("witnesses", () => {
             fault_ref: null,
             started_wall_ms: 9e15,
         } as const;
+        const early = {
+            ...base,
+            seq: 3,
+            component: "agent",
+            fault_ref: null,
+            started_wall_ms: 0,
+        } as const;
+        injector.observe(early, 3, t0 - 10);
+        expect(injector.report()[0]).toMatchObject({
+            status: "untriggered",
+            host_observed_seq: [],
+        });
         injector.observe(inside, 2, t0 + 50);
         expect(injector.report()[0]).toMatchObject({ status: "fired", host_observed_seq: [2] });
         injector.observe(late, 1, t0 + 500);
@@ -1582,6 +1600,49 @@ describe("every request yields one record", () => {
         ]);
         expect(gateway.failures).toEqual([]);
     }, 20_000);
+
+    test("a record carries the scope that owned the request when its first bytes arrived, copied out of a shared scope object", async () => {
+        const shared = {
+            arm: "first",
+            session: null as string | null,
+            turn: null as string | null,
+        };
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => shared,
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const body = JSON.stringify(AGENT_BODY);
+        const sock = tcp(Number(new URL(gateway.urls[0] as string).port), "127.0.0.1");
+        await new Promise<void>((r) => sock.on("connect", () => r()));
+        const reply = new Promise<string>((r) => {
+            let buf = "";
+            sock.on("data", (c) => {
+                buf += c.toString();
+            });
+            sock.on("close", () => r(buf));
+        });
+        const head = `POST /model/m/converse HTTP/1.1\r\nHost: x\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n`;
+        const sentAt = Date.now();
+        sock.write(`${head}${body.slice(0, 10)}`);
+        await Bun.sleep(150);
+        shared.arm = "second";
+        const finishedAt = Date.now();
+        sock.write(body.slice(10));
+        expect((await reply).startsWith("HTTP/1.1 200")).toBe(true);
+        while (records.records.length === 0) await Bun.sleep(5);
+        const [record] = records.records as [CallRecord];
+        expect(record.arm).toBe("first");
+        expect(record.started_wall_ms).toBeGreaterThanOrEqual(sentAt);
+        expect(record.started_wall_ms).toBeLessThanOrEqual(finishedAt - 50);
+        expect(record.first_byte_ms as number).toBeGreaterThanOrEqual(50);
+    });
 
     test("an unsupported Expect header yields a 417 and a rejected record", async () => {
         const { records, url } = await start(null);

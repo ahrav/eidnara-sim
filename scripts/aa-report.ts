@@ -4,7 +4,7 @@ import { GradeLog } from "../src/grade/probes";
 import { armBase } from "../src/hosts/arms";
 import type { Tier } from "../src/prereg/schema";
 import { bootstrapMean, disagreementRate, pairedDiffs } from "../src/report/paired";
-import { readJournal } from "../src/run/journal";
+import { readJsonl } from "../src/run/journal";
 import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 import type { PairingRecord } from "../src/usersim/usersim";
@@ -21,7 +21,7 @@ const fact = new Map(scenario.probes.map((p) => [p.id, p.fact ?? p.id]));
 const clusterOf = (item: string) => fact.get(item) ?? item;
 const graded = join(dir, "grades.jsonl");
 const grades = existsSync(graded) ? new GradeLog(graded).latest() : [];
-const pairing = readJournal(join(dir, "pairing.jsonl")) as unknown as PairingRecord[];
+const pairing = readJsonl<PairingRecord>(join(dir, "pairing.jsonl"));
 /** A percentile interval over fewer clusters than this undercovers, so it decides nothing. */
 const MIN_CLUSTERS = 5;
 const controls = (manifest.order as string[]).filter((a) => a.includes("~"));

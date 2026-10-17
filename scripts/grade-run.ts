@@ -36,7 +36,7 @@ import { Rng } from "../src/rng";
 import {
     type Entry,
     keepCompleteLines,
-    readJournal,
+    readJsonl,
     releaseLease,
     requireAppendable,
     takeLease,
@@ -62,11 +62,11 @@ export interface Summary {
  * the digests recorded in the manifest.
  */
 export async function gradeRun(dir: string, config: SimConfig | null): Promise<Summary> {
-    takeLease(dir);
+    const lease = takeLease(dir);
     try {
         return await grade(dir, config);
     } finally {
-        releaseLease(dir);
+        releaseLease(dir, lease);
     }
 }
 
@@ -226,7 +226,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     ) {
         throw new Error("manifest records no model list");
     }
-    const entries = readJournal(join(dir, "journal.jsonl"));
+    const entries = readJsonl<Entry>(join(dir, "journal.jsonl"));
     const events = manifest.events as unknown;
     if (
         !Number.isSafeInteger(events) ||

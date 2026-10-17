@@ -1,6 +1,5 @@
-import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { type Entry, readJournal } from "../run/journal";
+import { type Entry, readJsonl } from "../run/journal";
 import type { FALSIFICATION } from "../stats/gate";
 import type { PairingRecord } from "../usersim/usersim";
 import type { GradedRun } from "./observe";
@@ -47,7 +46,7 @@ export function falsificationPairs(
         );
     };
     const path = join(g.run.dir, "pairing.jsonl");
-    const pairing = existsSync(path) ? (readJournal(path) as unknown as PairingRecord[]) : [];
+    const pairing = readJsonl<PairingRecord>(path);
     const pushback = (a: string) => {
         const cut = new Map(
             pairing
