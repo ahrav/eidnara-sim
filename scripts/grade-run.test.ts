@@ -118,9 +118,16 @@ function snapshot(dir: string, arm: string, s: Snapshot, journaled = true): void
                 wall_ms: 0,
                 scenario_ms: c.scenario_ms,
                 arm,
+                turn: c.turn,
                 component: "agent",
                 model: "global.anthropic.claude-opus-5-5",
                 status: 200,
+                error: null,
+                finish_reason: "end_turn",
+                input_tokens: c.input_tokens,
+                output_tokens: c.output_tokens,
+                ...(c.response_text ? { response_text: c.response_text } : {}),
+                ...(c.response_text_truncated ? { response_text_truncated: true } : {}),
             };
             appendFileSync(join(dir, "calls.jsonl"), `${JSON.stringify(record)}\n`);
         }
@@ -333,6 +340,18 @@ describe("grade-run", () => {
         snapshot(missing, "eidnara", p8.snapshots[0] as Snapshot);
         writeFileSync(join(missing, "calls.jsonl"), "");
         await expect(gradeRun(missing, null)).rejects.toThrow("which calls.jsonl does not record");
+        const edited = run({ probes: [p8.probe] });
+        snapshot(edited, "eidnara", p8.snapshots[0] as Snapshot);
+        const path = join(edited, "eidnara", "snapshots.jsonl");
+        const row = JSON.parse(readFileSync(path, "utf8").trim());
+        for (const a of row.artefacts) {
+            if (a.class !== "proxy-call") continue;
+            for (const c of a.calls) if (c.component === "agent") c.response_text = "";
+        }
+        writeFileSync(path, `${JSON.stringify(row)}\n`);
+        await expect(gradeRun(edited, null)).rejects.toThrow(
+            "content that differs from calls.jsonl",
+        );
     });
 
     test("agent calls whose model the manifest does not record are refused before judging", async () => {

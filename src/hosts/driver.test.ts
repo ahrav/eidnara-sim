@@ -972,25 +972,25 @@ function captured(armDir: string): Record<string, { patch?: string }> {
     return Object.fromEntries(snap.artefacts.map((a: { id: string }) => [a.id, a]));
 }
 
-test("a recorder rebuilt over a stale index lock waits its bound for the holder, then removes it", async () => {
+test("a recorder rebuilt over an index lock moves the workspace to a fresh index and leaves the lock alone", () => {
     const repo = gitRepo();
     const armDir = tmp();
     const first = new SnapshotRecorder(armDir, "eidnara", () => []);
     first.sessionStart("s-1", "p", repo);
-    const lock = join(armDir, "snapshot.git", `${basename(repo)}.index.lock`);
+    const gitDir = join(armDir, "snapshot.git");
+    const lock = join(gitDir, `${basename(repo)}.index.lock`);
     writeFileSync(lock, "");
-    const holder = Bun.spawn(["sh", "-c", `sleep 0.2; rm -f '${lock}'`]);
     const started = Date.now();
     const resumed = new SnapshotRecorder(armDir, "eidnara", () => [], 5_000);
-    expect(Date.now() - started).toBeLessThan(4_000);
-    await holder.exited;
+    expect(Date.now() - started).toBeLessThan(1_000);
     writeFileSync(join(repo, "new.rs"), "fn x() {}\n");
     expect(resumed.tree(repo)).toMatch(/^[0-9a-f]{40}$/);
-    writeFileSync(lock, "");
-    const bounded = Date.now();
-    new SnapshotRecorder(armDir, "eidnara", () => [], 200);
-    expect(Date.now() - bounded).toBeGreaterThanOrEqual(200);
-    expect(existsSync(lock)).toBe(false);
+    expect(existsSync(lock)).toBe(true);
+    expect(existsSync(join(gitDir, `${basename(repo)}.1.index`))).toBe(true);
+    writeFileSync(join(gitDir, `${basename(repo)}.1.index.lock`), "");
+    const again = new SnapshotRecorder(armDir, "eidnara", () => [], 5_000);
+    expect(again.tree(repo)).toMatch(/^[0-9a-f]{40}$/);
+    expect(existsSync(join(gitDir, `${basename(repo)}.2.index`))).toBe(true);
 });
 
 test("a tool run reported at its start is on record, and its end report replaces it", () => {

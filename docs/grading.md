@@ -58,8 +58,10 @@ workspace is bounded by the turn deadline; a run past it fails the probe turn
 with `snapshot: git ... timed out` and the item has no snapshot; a run past the
 bound at a session boundary leaves that session without a start or end tree,
 so the next session carries no prior-session diff. The recorder removes the
-index lock a killed git leaves, after a timeout and when rebuilt after a
-kill; on rebuild it first waits up to the bound for a still-running holder.
+index lock a killed git leaves after a timeout; a recorder rebuilt after a
+kill that finds a workspace index lock moves that workspace to a fresh,
+numbered index file and leaves the lock and its index to the orphaned git
+child that may still hold them.
 The nested-repository check and the recorder's workspace path check run
 before any walk of the workspace, and the walk itself stops at the bound or
 at 200,000 entries, failing the probe turn. A `git diff` past the 256 MiB
@@ -138,7 +140,9 @@ carry grade-class artefacts only, every journaled row to match its journal
 entry's arm and item and the compiled probe's event and session, every
 agent call's model in `calls.jsonl` to be one
 the manifest records, and every agent call a journaled snapshot holds to be
-recorded in `calls.jsonl` under the snapshot's arm, reads each arm's snapshot log one row at a time and
+recorded in `calls.jsonl` under the snapshot's arm with the same content
+(`calls.jsonl` is read one record at a time, keeping only the records the
+snapshots name), reads each arm's snapshot log one row at a time and
 keeps the artefacts of journaled rows only, computes every grade before it
 appends any (an item whose answer the proxy truncated is skipped as `answer
 refused`; a structural artefact violation aborts with nothing appended),

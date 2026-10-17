@@ -294,6 +294,23 @@ export class CallIndex {
     }
 }
 
+/** The grade-facing view of one call record, without its turn index, which depends on the scenario. */
+export function projectCall(r: CallRecord): Omit<CallView, "turn_index"> {
+    return {
+        seq: r.seq,
+        component: r.component,
+        turn: r.turn,
+        scenario_ms: r.scenario_ms,
+        input_tokens: r.input_tokens,
+        output_tokens: r.output_tokens,
+        ...(r.response_text ? { response_text: r.response_text } : {}),
+        ...(r.response_text_truncated ? { response_text_truncated: true } : {}),
+        ...(r.status >= 400 || r.error !== null || r.finish_reason === "stream_cut"
+            ? { failed: true }
+            : {}),
+    };
+}
+
 export function callsOf(
     index: CallIndex,
     arm: string,
@@ -303,20 +320,8 @@ export function callsOf(
     let turn: number | undefined;
     return index.records(arm, session).map((r) => {
         turn = (r.turn ? turnIndex.get(r.turn) : undefined) ?? turn;
-        return {
-            seq: r.seq,
-            component: r.component,
-            turn: r.turn,
-            ...(turn === undefined ? {} : { turn_index: turn }),
-            scenario_ms: r.scenario_ms,
-            input_tokens: r.input_tokens,
-            output_tokens: r.output_tokens,
-            ...(r.response_text ? { response_text: r.response_text } : {}),
-            ...(r.response_text_truncated ? { response_text_truncated: true } : {}),
-            ...(r.status >= 400 || r.error !== null || r.finish_reason === "stream_cut"
-                ? { failed: true }
-                : {}),
-        };
+        const view = projectCall(r);
+        return turn === undefined ? view : { ...view, turn_index: turn };
     });
 }
 

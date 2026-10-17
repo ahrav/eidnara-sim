@@ -32,6 +32,8 @@ interface RecorderState {
     commands: Command[];
     /** Per project, the paths the source repository tracks although its ignore rules match them. */
     forced?: Record<string, string[]>;
+    /** Per project, the generation of its index file; a lock a killed git left behind moves the project to the next. */
+    indexGenerations?: Record<string, number>;
     /**
      * Per project, the blob ids of the source's `.gitignore` and `.gitattributes` files and the
      * digests of the clone's `.git/info/exclude` and `.git/info/attributes`.
@@ -102,20 +104,36 @@ export class SnapshotRecorder {
     }
 
     /**
-     * The run lease makes this recorder the only writer of its repository. A git child the
-     * killed harness left running may still hold an `<project>.index.lock`; it runs at most
-     * the recorder's bound, so a lock that outlives that bound after construction is stale and
-     * is removed.
+     * A git child the killed harness left running may still hold a workspace index lock, and
+     * from this process nothing proves it has exited. Each index is therefore versioned: a lock
+     * found at construction moves that workspace to a fresh index file, which costs one full
+     * rehash, and the orphan's lock and index stay untouched on their old path.
      */
     private dropIndexLocks(): void {
         if (!existsSync(this.gitDir)) return;
-        const locks = readdirSync(this.gitDir).filter((name) => name.endsWith(".index.lock"));
-        if (locks.length === 0) return;
-        const deadline = Date.now() + (this.gitTimeoutMs ?? 0);
-        while (Date.now() < deadline && locks.some((name) => existsSync(join(this.gitDir, name)))) {
-            Bun.sleepSync(50);
+        const generations = { ...this.state.indexGenerations };
+        let bumped = false;
+        for (const name of readdirSync(this.gitDir)) {
+            const match = /^(.+?)(?:\.(\d+))?\.index\.lock$/.exec(name);
+            if (!match) continue;
+            const project = match[1] as string;
+            const held = Number(match[2] ?? 0);
+            if (held >= (generations[project] ?? 0)) {
+                generations[project] = held + 1;
+                bumped = true;
+            }
         }
-        for (const name of locks) rmSync(join(this.gitDir, name), { force: true });
+        if (bumped) {
+            this.state.indexGenerations = generations;
+            this.save();
+        }
+    }
+
+    private indexFile(work: string): string {
+        const project = basename(work);
+        const generation = this.state.indexGenerations?.[project] ?? 0;
+        const suffix = generation === 0 ? "" : `.${generation}`;
+        return join(this.gitDir, `${project}${suffix}.index`);
     }
 
     /**
@@ -139,7 +157,7 @@ export class SnapshotRecorder {
         const scope: Record<string, string> = { GIT_DIR: this.gitDir, GIT_NO_REPLACE_OBJECTS: "1" };
         if (work) {
             scope.GIT_WORK_TREE = work;
-            scope.GIT_INDEX_FILE = join(this.gitDir, `${basename(work)}.index`);
+            scope.GIT_INDEX_FILE = this.indexFile(work);
         }
         try {
             return git(work ?? this.armDir, args, scope, this.gitTimeoutMs);
