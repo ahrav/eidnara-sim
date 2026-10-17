@@ -24,7 +24,9 @@ share replies whatever the run order.
 Contract versus code: the catalog indexes the divergence record by a run-wide
 `event_idx`; the code records it with the session's turn `index` in
 `<run>/pairing.jsonl`, and a sibling arm's first live call in a session
-follows its `divergedAt` record for that session (`Pairing.owner`).
+follows its `divergedAt` record for that session: the tape key carries the
+session's chained digests (`context_sha256`, built in `UserSim.deliver`), so a
+context that left the reference's has no taped reply to find.
 
 ## Failure scenario
 

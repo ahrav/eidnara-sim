@@ -80,11 +80,30 @@ export class Scheduler {
     constructor(private readonly o: SchedulerOptions) {
         const seen = new Set<string>();
         for (const f of o.faults) {
+            if (typeof f.id !== "string" || f.id === "") {
+                throw new Error(`fault id must be a non-empty string, got ${JSON.stringify(f.id)}`);
+            }
             if (seen.has(f.id)) throw new Error(`fault id ${f.id} is scheduled twice`);
             seen.add(f.id);
-            if (f.type === "laptop_sleep" && !((f.params.duration_ms ?? 0) > 0)) {
+            const duration = f.params.duration_ms;
+            const positive =
+                typeof duration === "number" && Number.isFinite(duration) && duration > 0;
+            if (f.type === "laptop_sleep" && !positive) {
                 throw new Error(`laptop_sleep ${f.id} needs a positive duration_ms`);
             }
+        }
+    }
+
+    /**
+     * Journals the store checks an outcome returned, one `StoreChecked` per fault per arm: a
+     * resumed driver can take a check again for a fault whose entry already landed.
+     */
+    private logStores(stores: TurnOutcome["stores"], event: string | null): void {
+        for (const s of stores ?? []) {
+            const already = this.o.journal.entries.some(
+                (e) => e.kind === "StoreChecked" && e.arm === this.arm && e.fault === s.fault,
+            );
+            if (!already) this.log({ kind: "StoreChecked", event, ...s });
         }
     }
 
@@ -132,8 +151,7 @@ export class Scheduler {
             await this.idle();
             await this.pendingKill;
             const last = await driver.finish?.();
-            for (const s of last?.stores ?? [])
-                this.log({ kind: "StoreChecked", event: null, ...s });
+            this.logStores(last?.stores, null);
             // A kill between the summary and EndArm resumes here; the arm keeps its one summary.
             const summarised = mine.some((e) => e.kind === "UserSimRates");
             const rates = summarised ? undefined : this.o.armSummary?.(arm);
@@ -276,8 +294,7 @@ export class Scheduler {
         if (OUTAGE.has(f.type)) this.outage = f.id;
         const { stores, ...evidence } = await driver.fault(f);
         // Store checks an earlier restart owed, settled before this fault took the daemon down.
-        for (const s of (stores as TurnOutcome["stores"]) ?? [])
-            this.log({ kind: "StoreChecked", event: null, ...s });
+        this.logStores(stores as TurnOutcome["stores"], null);
         this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
     }
 
@@ -311,8 +328,7 @@ export class Scheduler {
             const item = e.probe ? { probe: e.probe, state } : {};
             // The checks and the user record go first: a kill before EndTurn replays the turn
             // with them on record, and a resume reads a turn's EndTurn as the whole turn.
-            for (const s of outcome.stores ?? [])
-                this.log({ kind: "StoreChecked", event: e.id, ...s });
+            this.logStores(outcome.stores, e.id);
             if (outcome.user) this.log({ kind: "UserTurn", event: e.id, ...outcome.user });
             const snapshot = outcome.snapshot ? { snapshot: outcome.snapshot } : {};
             const end = { event: e.id, outcome: outcome.failed ?? "ok", ...item, ...snapshot };
@@ -321,8 +337,7 @@ export class Scheduler {
             await Bun.sleep(this.o.settleMs ?? 1_000);
         } else {
             const outcome = await driver.event(e);
-            for (const s of outcome.stores ?? [])
-                this.log({ kind: "StoreChecked", event: e.id, ...s });
+            this.logStores(outcome.stores, e.id);
         }
         if (e.kind === "session_end") {
             for (const f of this.o.faults) {

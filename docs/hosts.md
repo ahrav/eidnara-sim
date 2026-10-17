@@ -49,14 +49,17 @@ stdout and stderr to the arm's `daemon.log` before each restart and at stop,
 each line once: stderr copied a megabyte at a time from the log file the v1
 stack writes each chunk to and truncates at each host start, stdout from the
 stack's `diagnostics` view, which keeps the last 256 KiB. The copy runs
-after the daemon is dead, so the log holds its last write: a stop terminates
-first, and a restart holds the live log through a hard link while the stack
-replaces it. Each saved file is removed once copied. `daemon.log.source`
-lists the logs still to save (the held link and the live file across a
-restart, the live file otherwise) and the copy in progress with
-`daemon.log`'s length before it, so a `start` after a harness kill saves
-every dead lifetime's stderr first, once, rolling back a copy an earlier kill
-cut short.
+after the daemon is dead, so the log holds its last write and stdout holds
+what the daemon printed while handling SIGTERM: a stop terminates first, and
+a restart holds the live log through a hard link while the stack replaces
+it. Each saved file is removed once copied. `daemon.log.source` lists the
+logs still to save (the held link and the live file across a restart, the
+live file otherwise), the copy in progress with `daemon.log`'s length before
+it, and the pid and start time of the daemon writing the live log, so a
+`start` after a harness kill stops a daemon that outlived the harness, then
+saves every dead lifetime's stderr once, rolling back a copy an earlier kill
+cut short; a stop saves every listed log the same way, the copy in progress
+included, before the live one.
 The run's resource sampler takes a sample when each daemon process is up and
 before a fault takes one down; a final sample that cannot be written fails
 the arm's finish after the arm is shut down, so the run is not complete
@@ -90,7 +93,9 @@ inside it before any directory is created, and a `.git` that is a file or
 symlink, any entry under `.git` that is not a regular file or directory, a
 missing `.git/config`, or an `objects/info/alternates` file stops the run
 before git writes anything; every workspace git run is bounded by the turn
-deadline.
+deadline, the walk of `.git` stops at that deadline or 200,000 entries, a
+target path that exists must be a regular file, and a real-index update
+that times out removes the `index.lock` it left.
 
 Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
 settings, and model list under the arm root, and the Eidnara extension from

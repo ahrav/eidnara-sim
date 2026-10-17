@@ -70,8 +70,9 @@ describe("recovery oracles", () => {
             got.map((r) => [r.fault, [r.turns_to_first_clean, r.recovered]]),
         );
         expect(byFault).toEqual(recorded.expect);
+        // The run predates the final store check, so the full store's recovery is withheld.
         const full = got.find((r) => r.fault === "w-full");
-        expect(full?.reasons).toEqual([]);
+        expect(full?.reasons).toEqual(["store unchecked: final"]);
         const restart = got.find((r) => r.fault === "w-restart");
         expect(restart?.reasons).toEqual(recorded.expect_reasons["w-restart"]);
     });
@@ -90,6 +91,7 @@ describe("recovery oracles", () => {
         const arm0 = lost[0] as ArmLogs;
         for (const e of arm0.journal.filter((x) => x.kind === "StoreChecked")) {
             (e.store as StoreCheck).ranges = [];
+            (e.store as StoreCheck).segments = 0;
         }
         const broken = recoveries(run(lost, sigkills.base_wall_ms));
         expect(broken.map((r) => r.recovered)).toEqual([false, false, false]);
@@ -147,6 +149,40 @@ describe("recovery oracles", () => {
         expect(() => recoveries(run([arm(journal(ok, bogus), [], ok)]))).toThrow("store check");
         const badRange = { ...ok, ranges: [["s", 1, 0]] };
         expect(() => recoveries(run([arm(journal(ok, badRange), [], ok)]))).toThrow("store check");
+        const miscounted = { ...ok, segments: 2 };
+        expect(() => recoveries(run([arm(journal(ok, miscounted), [], ok)]))).toThrow(
+            "store check",
+        );
+        // Derived facts must agree with the ranges: overlaps and inverted bounds are recomputed.
+        const hidden = store("ok", 0, [
+            ["s", 1, 0, 10, "a"],
+            ["s", 2, 5, 20, "b"],
+        ]);
+        expect(() => recoveries(run([arm(journal(ok, hidden), [], ok)]))).toThrow("store check");
+        const inverted = store("ok", 0, [["s", 1, 9, 2, "a"]]);
+        expect(() => recoveries(run([arm(journal(ok, inverted), [], ok)]))).toThrow("store check");
+        const declared = { ...inverted, integrity: "ok; inverted range s/1" };
+        expect(parseStoreCheck(declared, "x")).toEqual(declared);
+        // Ranges listed out of canonical order still derive the overlap they hide.
+        const interleaved = store("ok", 0, [
+            ["s", 1, 0, 10, "a"],
+            ["t", 1, 0, 5, "c"],
+            ["s", 2, 5, 20, "b"],
+        ]);
+        expect(() => recoveries(run([arm(journal(ok, interleaved), [], ok)]))).toThrow(
+            "store check",
+        );
+        // Skip evidence is a reason in words; any other shape is malformed.
+        const skippedBy = (skipped: unknown) => [
+            entry("FaultObserved", 0, {
+                fault: "k",
+                type: "daemon_restart",
+                evidence: { skipped },
+            }),
+        ];
+        expect(() => recoveries(run([arm(skippedBy(false))]))).toThrow("skipped");
+        expect(() => recoveries(run([arm(skippedBy({}))]))).toThrow("skipped");
+        expect(() => recoveries(run([arm(skippedBy(""))]))).toThrow("skipped");
         expect(parseStoreCheck(ok, "x")).toEqual(ok);
         const legacy = { ...ok, ranges: [["s", 1, 0, 9]] };
         expect(parseStoreCheck(legacy, "x").ranges as unknown[]).toEqual([["s", 1, 0, 9]]);
@@ -159,14 +195,57 @@ describe("recovery oracles", () => {
             entry("BeginTurn", 10, { event: "e-1" }),
             entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
         ];
-        const log = [
-            `${stamp(15)} [eidnara][s-1] rust transform failed; serving the input unchanged: x`,
-            `${stamp(15)} [eidnara][s-1] rust pass: decision=error reason=none served_from=raw`,
-        ];
-        const [r] = recoveries(run([arm(journal, log)]));
+        const warning = (ms: number) =>
+            `${stamp(ms)} [eidnara][s-1] rust transform failed; serving the input unchanged: x`;
+        const record = (ms: number) =>
+            `${stamp(ms)} [eidnara][s-1] rust pass: decision=error reason=none served_from=raw`;
+        const [r] = recoveries(run([arm(journal, [warning(15), record(15)])]));
         expect(r?.reasons).toEqual(["e-1: 1 fail-open publications"]);
-        const [warned] = recoveries(run([arm(journal, [log[0] as string])]));
+        const [warned] = recoveries(run([arm(journal, [warning(15)])]));
         expect(warned?.reasons).toEqual(["e-1: 1 fail-open publications"]);
+        // A pass cut off after its warning, then a pass that logged both: two publications.
+        const [mixed] = recoveries(run([arm(journal, [warning(12), warning(15), record(15)])]));
+        expect(mixed?.reasons).toEqual(["e-1: 2 fail-open publications"]);
+    });
+
+    test("a sleep fired without its recorded clock jump is unobserved", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultFired", 0, { fault: "z", type: "laptop_sleep", layer: "clock" }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const [r] = recoveries(run([arm(journal)]));
+        expect([r?.recovered, r?.reasons]).toEqual([
+            false,
+            ["fault not observed: harness interrupted"],
+        ]);
+        const claimed = [
+            journal[0] as Entry,
+            entry("FaultObserved", 0, {
+                fault: "z",
+                type: "laptop_sleep",
+                evidence: { clock_advanced_ms: 5 },
+            }),
+            ...journal.slice(1),
+        ];
+        const [unjumped] = recoveries(run([arm(claimed)]));
+        expect([unjumped?.recovered, unjumped?.reasons]).toEqual([
+            false,
+            ["fault not observed: harness interrupted"],
+        ]);
+        const jumped = [entry("AdvanceClock", 5, { fault: "z", from_ms: 0, busy: [] }), ...journal];
+        const [ok] = recoveries(run([arm(jumped)]));
+        expect([ok?.recovered, ok?.reasons]).toEqual([true, []]);
+        // With the schedule known, the jump must be the scheduled duration.
+        const scheduled = { ...run([arm(jumped)]), sleeps: new Map([["z", 3_600_000]]) };
+        const [short] = recoveries(scheduled);
+        expect([short?.recovered, short?.reasons]).toEqual([
+            false,
+            ["fault not observed: harness interrupted"],
+        ]);
+        const [exact] = recoveries({ ...scheduled, sleeps: new Map([["z", 5]]) });
+        expect([exact?.recovered, exact?.reasons]).toEqual([true, []]);
     });
 
     test("a fail-open publication in every later turn prevents a recovered verdict", () => {
@@ -226,7 +305,13 @@ describe("recovery oracles", () => {
             false,
             ["store integrity, final: error: file is not a database"],
         ]);
-        expect(verdict(ok, store("ok", 1), ok)).toEqual([
+        const overlapping: StoreCheck = {
+            integrity: "ok",
+            segments: 2,
+            overlaps: [{ session: "s", first: 1, second: 2 }],
+            ranges: [SEGMENT, ["s", 2, 5, 12, "d2"]],
+        };
+        expect(verdict(ok, overlapping, ok)).toEqual([
             false,
             ["1 overlapping history segments, post crash pass"],
         ]);
@@ -248,6 +333,7 @@ describe("recovery oracles", () => {
         const skipped = { skipped: "arm runs no daemon" };
         const journal = [
             entry("FaultObserved", 0, { fault: "k", type: "daemon_restart", evidence: skipped }),
+            entry("AdvanceClock", 1, { fault: "z", from_ms: 0, busy: [] }),
             entry("FaultObserved", 1, { fault: "z", type: "laptop_sleep", evidence: {} }),
             entry("BeginTurn", 10, { event: "e-1" }),
             entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
@@ -320,6 +406,74 @@ describe("recovery oracles", () => {
         const junk = join(dirname(path), "junk.db");
         writeFileSync(junk, "not sqlite at all, padded past the header length of a database file");
         expect(checkStore(junk).integrity).toStartWith("error: ");
+    });
+});
+
+describe("evidence presence", () => {
+    test("an arm without infrastructure faults is left alone, whatever its plugin log holds", () => {
+        seq = 0;
+        const journal = [
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const log = ["[eidnara][s-1] rust pass: decision=error reason=none served_from=raw"];
+        expect(recoveries(run([arm(journal, log)], Number.NaN))).toEqual([]);
+    });
+
+    test("an arm with infrastructure faults needs its plugin log on disk", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, { fault: "f", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const absent = { ...arm(journal), pluginLogMissing: true as const };
+        expect(() => recoveries(run([absent]))).toThrow("eidnara.log");
+    });
+});
+
+describe("store_full", () => {
+    test("a full store's evidence must show the store reached ENOSPC", () => {
+        seq = 0;
+        const journal = (evidence: unknown) => [
+            entry("FaultObserved", 0, { fault: "full", type: "store_full", evidence }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        for (const evidence of [{}, { mount: "/s", avail_kb: 12 }, { avail_kb: 0 }]) {
+            expect(() => recoveries(run([arm(journal(evidence), [], store("ok"))]))).toThrow(
+                "store_full",
+            );
+        }
+    });
+
+    test("a full store's recovery needs a readable final store", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, {
+                fault: "full",
+                type: "store_full",
+                evidence: { mount: "/s", avail_kb: 0 },
+            }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const [sound] = recoveries(run([arm(journal, [], store("ok"))]));
+        expect([sound?.recovered, sound?.reasons, sound?.store]).toEqual([
+            true,
+            [],
+            { final: "ok" },
+        ]);
+        const [unchecked] = recoveries(run([arm(journal)]));
+        expect([unchecked?.recovered, unchecked?.reasons]).toEqual([
+            false,
+            ["store unchecked: final"],
+        ]);
+        const [corrupt] = recoveries(run([arm(journal, [], store("*** corrupt"))]));
+        expect([corrupt?.recovered, corrupt?.reasons]).toEqual([
+            false,
+            ["store integrity, final: *** corrupt"],
+        ]);
     });
 });
 
@@ -485,6 +639,75 @@ describe("plugin log attribution", () => {
         );
         const unset = { ...run([arm(journal, log)]), base_wall_ms: undefined as unknown as number };
         expect(() => recoveries(unset)).toThrow("base_wall_ms is not a finite number");
+    });
+
+    test("a legacy crash check and a digest-bearing post-crash check compare by bounds", () => {
+        seq = 0;
+        const legacy = { ...store("ok"), ranges: [["s", 1, 0, 9]] } as unknown as StoreCheck;
+        const journal = [
+            entry("FaultObserved", 0, {
+                fault: "k",
+                type: "daemon_restart",
+                evidence: { store: legacy },
+            }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+            entry("StoreChecked", 20, { event: "e-1", fault: "k", store: store("ok") }),
+        ];
+        const [r] = recoveries(run([arm(journal, [], store("ok"))]));
+        expect(r?.reasons).toEqual(["store ranges lack content digests"]);
+    });
+
+    test("clock offset spans must run forward in wall time", () => {
+        seq = 0;
+        const base = 1_000_000_000;
+        const journal = [
+            entry("ClockOffset", 0, { wall_ms: 5_000, offset_s: (base - 5_000) / 1000 }),
+            entry("FaultObserved", 0, {
+                wall_ms: 5_010,
+                fault: "f",
+                type: "plugin_reload",
+                evidence: {},
+            }),
+            entry("BeginTurn", 0, { wall_ms: 5_100, event: "e-1" }),
+            entry("EndTurn", 900, { wall_ms: 6_000, event: "e-1", outcome: "ok" }),
+            entry("AdvanceClock", 9_000, {
+                wall_ms: 4_000,
+                from_ms: 900,
+                offset_s: (base + 5_000) / 1000,
+            }),
+            entry("BeginTurn", 9_000, { wall_ms: 6_100, event: "e-2" }),
+            entry("EndTurn", 9_900, { wall_ms: 7_000, event: "e-2", outcome: "ok" }),
+        ];
+        expect(() => recoveries(run([arm(journal)], base))).toThrow("wall_ms");
+    });
+
+    test("a fail-open line without a readable stamp refuses the arm", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, { fault: "f", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const log = ["[eidnara][s-1] rust pass: decision=error reason=none served_from=raw"];
+        expect(() => recoveries(run([arm(journal, log)]))).toThrow("fail-open");
+    });
+
+    test("a journal entry without a finite wall time cannot anchor a window", () => {
+        seq = 0;
+        const base = 1_000_000_000;
+        const journal = [
+            entry("ClockOffset", 0, { wall_ms: 600, offset_s: (base - 1_000) / 1000 }),
+            entry("FaultObserved", 0, {
+                wall_ms: 620,
+                fault: "f",
+                type: "plugin_reload",
+                evidence: {},
+            }),
+            entry("BeginTurn", 0, { wall_ms: undefined, event: "e-1" }),
+            entry("EndTurn", 9_000, { wall_ms: 9_650, event: "e-1", outcome: "ok" }),
+        ];
+        expect(() => recoveries(run([arm(journal)], base))).toThrow("wall_ms");
     });
 
     test("a journal whose turns began before its first clock offset is refused", () => {

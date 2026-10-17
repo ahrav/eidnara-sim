@@ -313,6 +313,9 @@ function checkGrading(p: Preregistration, errors: string[]): void {
     if (!(ratio > 0 && Number.isFinite(ratio))) {
         errors.push("oracles.cost_ratio_max: must be positive and finite");
     }
+    if (p.oracles.hang_quiet_ms >= p.liveness_bounds.turn_deadline_ms) {
+        errors.push("oracles.hang_quiet_ms: must be below liveness_bounds.turn_deadline_ms");
+    }
 }
 
 function checkUserSim(p: Preregistration, errors: string[]): void {

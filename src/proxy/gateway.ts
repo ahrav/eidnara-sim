@@ -391,7 +391,7 @@ export class Gateway {
         }
         const whole = text.join("");
         const relayed = whole.slice(0, RESPONSE_TEXT_LIMIT);
-        const recorded = relayed && RELAYED_TEXT.has(done.component);
+        const recorded = RELAYED_TEXT.has(done.component);
         const cut =
             whole.length > relayed.length
                 ? {

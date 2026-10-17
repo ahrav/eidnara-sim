@@ -4,9 +4,12 @@
 is the hidden script: the user-sim delivers its probe, paste, and plain task
 turns verbatim, and writes a short reply in front of the script text for the
 turns the behaviour plan marks. A Haiku 5.5 call through the capture proxy
-(component `user-sim`, asserted by header) writes each reply; the persona
-prompt carries the label's instruction, the agent's last reply, and the
-script text that follows the reply. A conveyance, update, or reversal turn
+(component `user-sim`, asserted by header) writes each reply, bounded by the
+pre-registered turn deadline, which the host prompt then shares; the persona
+and the label's instruction go in the system prompt, and the agent's last
+reply and the script text that follows the reply go in the user message as
+quoted data, with any `>>>` in them spaced so the quote cannot close
+itself. A conveyance, update, or reversal turn
 carries a ledger fact, so its prompt leaves the script text out, and a
 probe turn gets no reply at all. The prompt also forbids the reply to deny,
 withdraw, or restate anything the agent attributes to the user, or to ask
@@ -47,7 +50,9 @@ agent that finished before the delay, or an abort that was refused or lost,
 leaves the turn reported as it ended, and the journal label `task` with
 `scheduled: "interrupt"`, so the journaled labels and the realised interrupt
 rate count only the turns that were aborted. A turn a fault fires at is
-never skipped by an abandon, so the fault meets that turn's agent call.
+never skipped by an abandon and never interrupted, and for a provider fault
+neither is any later turn of its session, so the fault meets that turn's
+agent call and runs to its own outcome.
 
 ## Tape and divergence
 
@@ -61,8 +66,9 @@ whose agent outputs matched through the session so far share a key, so the
 later one replays the earlier one's reply; an output that differed anywhere
 earlier in the session gives another key. `<run>/tape.jsonl`
 records every reply, replayed ones included; `--tapes` adds earlier runs'
-tapes to replay from, and each must exist with its `pairing.jsonl` beside
-it. A reply whose key is on the tape is replayed with no model call. The
+tapes to replay from; each must exist with its `pairing.jsonl` and
+`manifest.json` beside it, come from the run's seed, scenario, and
+pre-registration, and hold whole rows. A reply whose key is on the tape is replayed with no model call. The
 proxy record keeps the first 262,144 characters of a reply; a cut reply is
 keyed by the digest of its whole text as well, so replies that differ only
 past the cut never pair, and its label and persona prompt read the recorded
@@ -79,9 +85,10 @@ same event, a `divergedAt` record with the index and both digests comes
 first; from that turn on the arm's context differs from the reference's, so
 its replies come from an arm or run that shared its outputs, or from a live
 call. In a replay (`--tapes`), the pairing logs beside the replayed tapes
-give each arm's recorded digests; an arm whose digest matches none of them
-gets a `divergedAt` record with `against: "recorded"`, ahead of the
-comparison with its reference arm. A reply that is empty, that stopped for any reason other than `end_turn`
+give each arm's recorded digests; an arm whose session context (its chained digests so far) matches none of
+their recorded turns gets a `divergedAt` record with `against: "recorded"`,
+ahead of the comparison with its reference arm; a skipped turn is compared
+too. A reply that is empty, that stopped for any reason other than `end_turn`
 or `stop_sequence` (`max_tokens`, a guardrail or content filter, a context
 window overflow), or that carries a probe-announcement marker or a ledger
 key is replaced by a fixed line for its label, and the record lists the

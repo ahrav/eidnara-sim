@@ -176,6 +176,7 @@ describe("aa-report", () => {
             session: "s-1",
             event: "e-1",
             index: 0,
+            digest: "d",
             text_sha256,
         });
         const records = [turn("host", "aaaa"), turn("host~aa", "bbbb")];

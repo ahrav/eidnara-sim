@@ -19,7 +19,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import { launch, plainPath, shellQuote } from "../run/launcher";
-import { stopOwnedTree } from "../run/procs";
+import { processStart, running, stopOwnedTree } from "../run/procs";
 import { FAKETIME_LIB, faketimeEnv } from "../run/timeinject";
 import { toolbinDir, toolchainEnv } from "../run/toolchain";
 
@@ -72,10 +72,16 @@ export function toolCommand(tool: string, args: Record<string, unknown> | undefi
     if (typeof args?.command === "string") return args.command;
     const key = TARGET_KEYS.find((k) => typeof args?.[k] === "string");
     if (!key || !args) return `${tool} ${JSON.stringify(args ?? {})}`;
-    const body = Object.entries(args)
-        .filter(([k, v]) => k !== key && (typeof v === "string" || typeof v === "object"))
+    const rest = Object.entries(args).filter(([k, v]) => k !== key && v !== undefined);
+    const scalars = rest
+        .filter(([, v]) => typeof v !== "string" && typeof v !== "object")
+        .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+        .sort();
+    const body = rest
+        .filter(([, v]) => typeof v === "string" || typeof v === "object")
         .map(([, v]) => (typeof v === "string" ? v : JSON.stringify(v)));
-    return [`${tool} ${args[key]}`, ...body].join("\n");
+    const head = [`${tool} ${args[key]}`, ...scalars].join(" ");
+    return [head, ...body].join("\n");
 }
 
 export interface PromptResult {
@@ -140,6 +146,10 @@ function eidnaraUserConfig(connectionFile: string, model: string): Record<string
 interface LogMarker {
     pending: string[];
     copying: { source: string; target_bytes: number } | null;
+    /** A killed lifetime's stdout, held until its log is saved, so a resume saves it too. */
+    stdout?: string;
+    /** The daemon process writing the live log, when one is up; recovery stops it before reading. */
+    owner?: { pid: number; start: string | null } | null;
 }
 
 export interface DaemonContext {
@@ -200,24 +210,40 @@ export class DaemonStack {
         const text = readFileSync(this.logSourceFile, "utf8");
         try {
             const parsed = JSON.parse(text) as Partial<LogMarker>;
-            return { pending: parsed.pending ?? [], copying: parsed.copying ?? null };
+            return {
+                pending: parsed.pending ?? [],
+                copying: parsed.copying ?? null,
+                owner: parsed.owner ?? null,
+                ...(typeof parsed.stdout === "string" ? { stdout: parsed.stdout } : {}),
+            };
         } catch {
             throw new Error(`${this.logSourceFile}: unreadable daemon log recovery marker`);
         }
     }
 
-    /** Records the live stack's stderr log as the one log still to save. */
-    noteLogSource(): void {
-        this.writeMarker({ pending: [String(this.stack?.logPath ?? "")], copying: null });
+    /** The live daemon's identity, so a recovery after a kill can tell it from a reused pid. */
+    private owner(): LogMarker["owner"] {
+        const pid = this.pid();
+        return pid === null ? null : { pid, start: processStart(pid) };
     }
 
-    /** Appends one log to `daemon.log` exactly once, then removes it and takes it off the marker. */
+    /** Records the live stack's stderr log as the one log still to save, and the daemon writing it. */
+    noteLogSource(): void {
+        const live = String(this.stack?.logPath ?? "");
+        this.writeMarker({ pending: [live], copying: null, owner: this.owner() });
+    }
+
+    /**
+     * Appends one log to `daemon.log` exactly once: the marker commits the copy before the
+     * source is removed, so a kill between the two leaves an orphan file, never a lost or
+     * doubled lifetime.
+     */
     private absorb(source: string, rest: string[]): void {
         const start = existsSync(this.ctx.logFile) ? statSync(this.ctx.logFile).size : 0;
         this.writeMarker({ pending: rest, copying: { source, target_bytes: start } });
         appendFileFrom(source, this.ctx.logFile);
-        rmSync(source, { force: true });
         this.writeMarker({ pending: rest, copying: null });
+        rmSync(source, { force: true });
     }
 
     /**
@@ -226,27 +252,55 @@ export class DaemonStack {
      * log is appended once. A clean `stop` or `restart` leaves no log behind, so this finds
      * one only after a kill.
      */
-    recoverLog(): void {
+    async recoverLog(): Promise<void> {
         const marker = this.readMarker();
         if (!marker) return;
-        let pending = [...marker.pending];
-        if (marker.copying) {
+        const { owner } = marker;
+        if (owner && running(owner.pid) && processStart(owner.pid) === owner.start) {
+            if (!(await stopOwnedTree(owner.pid, 10_000))) {
+                throw new Error(`daemon ${owner.pid} from the last lifetime survived SIGKILL`);
+            }
+        }
+        this.drain(marker, []);
+    }
+
+    /**
+     * Saves every log the marker lists that still exists, in order, then the `extra` ones: a
+     * copy an earlier kill cut short is rolled back to the length the marker recorded before
+     * it runs again, so each log is appended once. The marker is removed at the end.
+     */
+    private drain(marker: LogMarker | null, extra: string[]): void {
+        let pending = [...(marker?.pending ?? [])];
+        if (marker?.stdout) {
+            // The held stdout goes first, as `restart` would have written it; then the marker drops it.
+            appendFileSync(this.ctx.logFile, marker.stdout);
+            const { stdout: _saved, ...rest } = marker;
+            this.writeMarker(rest);
+        }
+        if (marker?.copying) {
             if (existsSync(this.ctx.logFile)) {
                 truncateSync(this.ctx.logFile, marker.copying.target_bytes);
             }
             pending = [marker.copying.source, ...pending];
         }
+        pending = [...new Set([...pending, ...extra])].filter((p) => p !== "");
+        // The held log and the live log are one inode until the replacement daemon starts, so a
+        // kill between the kill and the start lists one lifetime under two names; it is saved once.
+        const saved = new Set<number>();
         while (pending.length > 0) {
             const [source, ...rest] = pending as [string, ...string[]];
-            if (source !== "" && existsSync(source)) this.absorb(source, rest);
-            else this.writeMarker({ pending: rest, copying: null });
+            const ino = existsSync(source) ? statSync(source).ino : null;
+            if (ino !== null && !saved.has(ino)) {
+                saved.add(ino);
+                this.absorb(source, rest);
+            } else this.writeMarker({ pending: rest, copying: null });
             pending = rest;
         }
         rmSync(this.logSourceFile, { force: true });
     }
 
     async start(): Promise<void> {
-        this.recoverLog();
+        await this.recoverLog();
         const { config } = this.ctx;
         const hr = await v1(config, "packages/e2e-tests/src/bedrock-peer/harness-runtime.ts");
         const hh = await v1(config, "packages/e2e-tests/src/rust-runner/hermetic-host.ts");
@@ -309,7 +363,12 @@ export class DaemonStack {
         rmSync(this.held, { force: true });
         if (existsSync(live)) linkSync(live, this.held);
         this.heldStdout = stdout;
-        this.writeMarker({ pending: [this.held, live], copying: null });
+        this.writeMarker({
+            pending: [this.held, live],
+            copying: null,
+            owner: this.owner(),
+            stdout,
+        });
     }
 
     /**
@@ -329,19 +388,22 @@ export class DaemonStack {
         appendFileSync(this.ctx.logFile, this.heldStdout ?? "");
         this.heldStdout = null;
         this.absorb(this.held, [live]);
+        this.writeMarker({ pending: [live], copying: null, owner: this.owner() });
     }
 
-    /** Stops the daemon, then saves its stdout and its whole stderr log; nothing is left to recover. */
+    /**
+     * Stops the daemon, then saves its stdout (read after termination, so a line written while
+     * handling SIGTERM is in it) and every log the marker still lists, the live one included;
+     * nothing is left to recover.
+     */
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
-        const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
         await stack.terminateHost();
         this.stack = null;
+        const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
         appendFileSync(this.ctx.logFile, stdout);
-        const live = String(stack.logPath ?? "");
-        if (live !== "" && existsSync(live)) this.absorb(live, []);
-        rmSync(this.logSourceFile, { force: true });
+        this.drain(this.readMarker(), [String(stack.logPath ?? "")]);
     }
 }
 
@@ -724,6 +786,7 @@ export class OpencodeSimHost extends SimHost {
         deadlineMs: number,
     ): Promise<Array<{ info: Untyped; parts: Untyped[] }>> {
         const call = this.client.session.messages({ path: { id: this.sid } });
+        call.catch(() => undefined);
         const listed = await Promise.race([call, Bun.sleep(deadlineMs).then(() => null)]);
         if (listed === null) throw new Error(`session.messages timed out after ${deadlineMs} ms`);
         if (listed.error || !listed.data) {
@@ -750,15 +813,12 @@ export class OpencodeSimHost extends SimHost {
     }
 
     /**
-     * Runs one turn and then logs the tool parts of the messages it added, on every outcome:
-     * the next turn treats those messages as seen, so a turn that errored or hit its deadline
-     * logs its tools here or never. A failed turn whose listing also fails keeps its own
-     * error and names the capture gap.
-     */
-    /**
-     * Runs one turn under `timeoutMs`, which also bounds the message listings before and
-     * after it. A listing that stalls before the turn fails the turn; one that stalls after it
-     * fails the turn as a capture gap, since its tool runs are then unknown.
+     * Runs one turn under `timeoutMs` and then logs the tool parts of the messages it added, on
+     * every outcome: the next turn treats those messages as seen, so a turn that errored or hit
+     * its deadline logs its tools here or never. The deadline also bounds the message listings
+     * before and after the turn: a listing that stalls before the turn fails the turn, and one
+     * that stalls after it fails the turn as a capture gap, since its tool runs are then
+     * unknown. A failed turn whose listing also fails keeps its own error and names the gap.
      */
     async prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
         const started = Date.now();
@@ -783,6 +843,30 @@ export class OpencodeSimHost extends SimHost {
         return outcome;
     }
 
+    /** How long an aborted turn may take to settle before the run is stopped. */
+    private drainWaitMs = 30_000;
+
+    private drained(): Promise<null> {
+        return Bun.sleep(this.drainWaitMs).then(() => null);
+    }
+
+    /** How long an abort request may take to answer before the turn is left to run on. */
+    private abortWaitMs = 5_000;
+
+    /**
+     * Asks OpenCode to abort the session's running prompt. `now` is true once it answered that
+     * it did within the wait; `late` settles with the request's eventual answer, so an abort
+     * that lands after the wait is still read as the interrupt.
+     */
+    private abortSession(): { now: Promise<boolean>; late: Promise<boolean> } {
+        const late: Promise<boolean> = this.client.session
+            .abort({ path: { id: this.sid } })
+            .then((r: Untyped) => r?.data === true && !r?.error)
+            .catch(() => false);
+        const now = Promise.race([late, Bun.sleep(this.abortWaitMs).then(() => false)]);
+        return { now, late };
+    }
+
     private async turn(
         text: string,
         timeoutMs: number,
@@ -799,19 +883,26 @@ export class OpencodeSimHost extends SimHost {
         );
         const wait = Math.min(timeoutMs, interruptMs ?? timeoutMs);
         let first = await Promise.race([settled, Bun.sleep(wait).then(() => null)]);
-        if (first === null) {
+        if (first === null && wait < timeoutMs) {
             // `session.abort` answers true once it stopped a running prompt; a refusal, an error,
-            // or a stall leaves the turn to end as it would have, and it is reported as it ended.
-            const abort = this.client.session
-                .abort({ path: { id: this.sid } })
-                .then((r: Untyped) => r?.data === true && !r?.error)
-                .catch(() => false);
-            const aborted = await Promise.race([abort, Bun.sleep(5_000).then(() => false)]);
-            const drained = await Promise.race([settled, Bun.sleep(30_000).then(() => null)]);
-            if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
-            if (wait >= timeoutMs) return { error: `turn deadline ${timeoutMs} ms` };
-            if (aborted) return { interrupted: true };
-            first = drained;
+            // or a stall leaves the turn to run on under its own deadline, reported as it ends.
+            const abort = this.abortSession();
+            if (await abort.now) {
+                const drained = await Promise.race([settled, this.drained()]);
+                if (drained === null) throw new Error("OpenCode turn still running after abort");
+                return { interrupted: true };
+            }
+            first = await Promise.race([settled, Bun.sleep(timeoutMs - wait).then(() => null)]);
+            // The request outlived its wait; an answer that arrived with the prompt's end
+            // means the abort, not the agent, ended the turn.
+            const landed = await Promise.race([abort.late, Bun.sleep(0).then(() => false)]);
+            if (first !== null && landed) return { interrupted: true };
+        }
+        if (first === null) {
+            await this.abortSession().now;
+            const drained = await Promise.race([settled, this.drained()]);
+            if (drained === null) throw new Error("OpenCode turn still running after abort");
+            return { error: `turn deadline ${timeoutMs} ms` };
         }
         if ("caught" in first) {
             const tail = String(this.oc?.stderr?.() ?? "").slice(-600);

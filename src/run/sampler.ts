@@ -1,6 +1,7 @@
 import { appendFileSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { keepCompleteLines } from "./journal";
+import { processStart } from "./procs";
 
 const TICKS_PER_SECOND = 100;
 const PAGE_BYTES = 4096;
@@ -42,6 +43,8 @@ export interface Sample {
     wall_ms: number;
     scenario_ms: number;
     pid: number | null;
+    /** The daemon's process start time, so two lifetimes sharing a reused pid stay apart. */
+    start: string | null;
     rss: number | null;
     cpu_ms: number | null;
     cpu_fraction: number | null;
@@ -83,6 +86,7 @@ export class ResourceSampler {
             wall_ms: wall,
             scenario_ms: this.o.scenarioMs(),
             pid,
+            start: pid === null ? null : processStart(pid),
             rss: stats?.rss ?? null,
             cpu_ms: stats?.cpuMs ?? null,
             cpu_fraction: fraction === null ? null : Math.round(fraction * 1e4) / 1e4,

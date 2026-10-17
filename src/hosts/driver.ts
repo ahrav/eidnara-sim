@@ -3,7 +3,6 @@ import {
     closeSync,
     copyFileSync,
     existsSync,
-    fstatSync,
     lstatSync,
     mkdirSync,
     openSync,
@@ -19,7 +18,6 @@ import {
 import { dirname, join, relative, resolve } from "node:path";
 import { GitBound, git } from "../git";
 import type { CallView } from "../grade/artefacts";
-import { sha256Hex } from "../prereg/canonical";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import {
     type ArmDriver,
@@ -60,6 +58,8 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm
     callsFor?: (session: string) => CallView[];
     /** Awaited after a probe turn and before its snapshot, so background calls the turn started are on record. */
     settle?: () => Promise<void>;
+    /** Entries a walk of a workspace `.git` visits at most; the default is `GIT_DIR_ENTRY_CAP`. */
+    gitDirEntryCap?: number;
     hostFactory?: (ctx: HostContext) => SimHost;
     onDaemonExit: (detail: Record<string, unknown>) => void;
     /**
@@ -68,6 +68,9 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm
      */
     sampleDaemon?: () => void;
 }
+
+/** Entries a walk of the workspace `.git` visits at most; a wider tree stops the run. */
+export const GIT_DIR_ENTRY_CAP = 200_000;
 
 const IDENTITY = {
     GIT_AUTHOR_NAME: "sim-user",
@@ -92,6 +95,8 @@ export function expandTemplate(template: string, env: Record<string, string>): s
 
 /** A transform pass the daemon answered, as the plugin logs it. */
 const SERVED_PASS = /rust pass: .*served_from=transform/;
+/** How much of the plugin log one pass check reads at a time. */
+const LOG_CHUNK_BYTES = 64 * 1024;
 
 const SUPPORTED = new Set([
     "daemon_sigkill_mid_fold",
@@ -119,6 +124,8 @@ export class HostDriver implements ArmDriver {
      * pass after the crash.
      */
     private storeFaults = new Map<string, number>();
+    /** Checks taken and returned, kept in the recorded state until the next event confirms the journal has them. */
+    private settledFaults = new Map<string, number>();
     /** A daemon restart in progress; the turn it interrupts ends after it and fails with it. */
     private restarting: Promise<unknown> = Promise.resolve();
 
@@ -191,7 +198,7 @@ export class HostDriver implements ArmDriver {
             model: this.model,
             daemon: proc(this.daemonPid()),
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
-            store_faults: Object.fromEntries(this.storeFaults),
+            store_faults: Object.fromEntries([...this.settledFaults, ...this.storeFaults]),
         };
         mkdirSync(this.armDir, { recursive: true });
         // Staged and renamed, so a kill mid-write leaves the previous state, never a torn file.
@@ -253,9 +260,7 @@ export class HostDriver implements ArmDriver {
                 const [meta, path] = row.split("\t") as [string, string];
                 rules[path] = meta.split(" ")[1] as string;
             }
-            const exclude = join(target, ".git", "info", "exclude");
-            const digest = existsSync(exclude) ? sha256Hex(readFileSync(exclude, "utf8")) : null;
-            this.snapshots.trackIgnoreRules(project, rules, digest);
+            this.snapshots.trackIgnoreRules(project, rules, this.snapshots.excludeDigest(target));
         }
         await this.startArm(true);
     }
@@ -295,8 +300,9 @@ export class HostDriver implements ArmDriver {
 
     async event(e: ScenarioEvent): Promise<TurnOutcome> {
         const host = this.requireHost();
-        // The scheduler journals the previous turn's store checks before it sends the next event,
+        // The scheduler journals the previous event's store checks before it sends the next event,
         // so the recorded obligations drop them here, not when the checks are returned.
+        this.settledFaults.clear();
         this.recordState();
         if (e.kind === "session_start") {
             await this.openSession(e, host);
@@ -336,8 +342,13 @@ export class HostDriver implements ArmDriver {
         const owedBefore = this.owedStores();
         if (owedBefore) outcome.stores = owedBefore;
         const interruptMs = typeof e.interrupt_ms === "number" ? e.interrupt_ms : undefined;
+        // A turn that spent part of its deadline before the prompt passes the rest along.
+        const deadline =
+            typeof e.deadline_ms === "number"
+                ? Math.max(100, Math.min(this.o.turnDeadlineMs, e.deadline_ms))
+                : this.o.turnDeadlineMs;
         this.turn = e.id;
-        const result = await host.prompt(String(e.text), this.o.turnDeadlineMs, interruptMs);
+        const result = await host.prompt(String(e.text), deadline, interruptMs);
         let reported = false;
         const checkDaemon = () => {
             if (reported || !this.daemon || this.daemonPid() !== null) return;
@@ -355,12 +366,12 @@ export class HostDriver implements ArmDriver {
         } else if (e.probe && before !== null) {
             await this.o.settle?.();
             try {
-                const nested = this.snapshots.embedded(dir);
+                const { nested, ignoreFiles } = this.snapshots.survey(dir);
                 const after = this.snapshots.tree(dir, nested);
                 const reasons = [
                     nested.length > 0 ? `embedded repository at ${nested.join(", ")}` : null,
                     ...(() => {
-                        const changed = this.snapshots.ignoreChanges(dir, project);
+                        const changed = this.snapshots.ignoreChanges(dir, project, ignoreFiles);
                         return changed.length > 0
                             ? [`ignore rules changed: ${changed.join(", ")}`]
                             : [];
@@ -425,8 +436,12 @@ export class HostDriver implements ArmDriver {
             parent = "";
         }
         const contained = parent === dir || parent.startsWith(`${dir}/`);
-        if (!inside || !contained || lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        const target = lstatSync(path, { throwIfNoEntry: false });
+        if (!inside || !contained || target?.isSymbolicLink()) {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
+        }
+        if (target !== undefined && !target.isFile()) {
+            throw new HarnessFailure(`apply_diff path ${String(e.path)} is not a regular file`);
         }
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, String(e.content));
@@ -441,7 +456,13 @@ export class HostDriver implements ArmDriver {
             this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry], scratch);
             const tree = this.workspaceGit(dir, ["write-tree"], scratch);
             rmSync(scratch.GIT_INDEX_FILE, { force: true });
-            this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry]);
+            try {
+                this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry]);
+            } catch (caught) {
+                if (caught instanceof GitBound)
+                    rmSync(join(dir, ".git", "index.lock"), { force: true });
+                throw caught;
+            }
             if (tree === this.workspaceGit(dir, ["rev-parse", `${head}^{tree}`])) return;
             const message = `Add ${String(e.path)}`;
             const commit = this.workspaceGit(
@@ -478,13 +499,30 @@ export class HostDriver implements ArmDriver {
         if (!lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) {
             throw new HarnessFailure(`${gitDir} is not a directory`);
         }
-        for (const entry of readdirSync(gitDir, { recursive: true, withFileTypes: true })) {
-            if (entry.isFile() || entry.isDirectory()) continue;
-            const at = join(relative(dir, entry.parentPath), entry.name);
-            const kind = entry.isSymbolicLink()
-                ? "a symlink; git would write through it"
-                : "not a regular file";
-            throw new HarnessFailure(`${at} is ${kind}`);
+        const deadline = Date.now() + this.o.turnDeadlineMs;
+        let seen = 0;
+        const pending = [gitDir];
+        for (let at = pending.shift(); at !== undefined; at = pending.shift()) {
+            for (const entry of readdirSync(at, { withFileTypes: true })) {
+                if (
+                    ++seen > (this.o.gitDirEntryCap ?? GIT_DIR_ENTRY_CAP) ||
+                    Date.now() > deadline
+                ) {
+                    throw new HarnessFailure(
+                        `${relative(dir, gitDir)} walk: too many entries or timed out`,
+                    );
+                }
+                const path = join(at, entry.name);
+                if (entry.isDirectory()) {
+                    pending.push(path);
+                    continue;
+                }
+                if (entry.isFile()) continue;
+                const kind = entry.isSymbolicLink()
+                    ? "a symlink; git would write through it"
+                    : "not a regular file";
+                throw new HarnessFailure(`${relative(dir, path)} is ${kind}`);
+            }
         }
         if (existsSync(join(gitDir, "objects", "info", "alternates"))) {
             throw new HarnessFailure(".git/objects/info/alternates names another object store");
@@ -568,7 +606,10 @@ export class HostDriver implements ArmDriver {
         const passed = [...this.storeFaults].filter(([, mark]) => this.passedSince(mark));
         if (passed.length === 0 || !this.daemon) return undefined;
         const store = checkStore(this.storeDb);
-        for (const [fault] of passed) this.storeFaults.delete(fault);
+        for (const [fault, mark] of passed) {
+            this.storeFaults.delete(fault);
+            this.settledFaults.set(fault, mark);
+        }
         return passed.map(([fault]) => ({ fault, store }));
     }
 
@@ -580,21 +621,31 @@ export class HostDriver implements ArmDriver {
         return existsSync(this.pluginLog) ? statSync(this.pluginLog).size : 0;
     }
 
-    /** Whether the plugin log, past `mark`, records a pass the daemon served. */
+    /**
+     * Whether the plugin log, past `mark`, records a pass the daemon served. The suffix is read
+     * in bounded chunks; the unfinished last line of one chunk heads the next, so a record split
+     * across chunks is still read whole, and a line longer than a chunk is dropped unmatched.
+     */
     private passedSince(mark: number): boolean {
         if (!existsSync(this.pluginLog)) return false;
-        // Only the suffix past the mark is read, so a long-lived obligation stays cheap to check.
         const fd = openSync(this.pluginLog, "r");
         try {
-            const length = Math.max(0, fstatSync(fd).size - mark);
-            const suffix = Buffer.alloc(length);
-            let read = 0;
-            while (read < length) {
-                const n = readSync(fd, suffix, read, length - read, mark + read);
-                if (n === 0) break;
-                read += n;
+            const chunk = Buffer.alloc(LOG_CHUNK_BYTES);
+            let carry = "";
+            let position = mark;
+            for (;;) {
+                const n = readSync(fd, chunk, 0, chunk.length, position);
+                if (n === 0) return SERVED_PASS.test(carry);
+                position += n;
+                const text = carry + chunk.subarray(0, n).toString("utf8");
+                const cut = text.lastIndexOf("\n");
+                if (cut < 0) {
+                    carry = text.length > LOG_CHUNK_BYTES ? "" : text;
+                    continue;
+                }
+                if (SERVED_PASS.test(text.slice(0, cut))) return true;
+                carry = text.slice(cut + 1);
             }
-            return SERVED_PASS.test(suffix.subarray(0, read).toString("utf8"));
         } finally {
             closeSync(fd);
         }

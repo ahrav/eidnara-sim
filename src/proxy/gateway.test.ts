@@ -519,6 +519,20 @@ describe("call records", () => {
         expect(short.records[0]?.response_tail).toBeUndefined();
     });
 
+    test("an agent call that relayed no text records an empty response text", async () => {
+        const upstream = {
+            calls: 0,
+            async converse() {
+                const message = { role: "assistant", content: [] };
+                return { json: { output: { message }, stopReason: "end_turn", usage: {} } };
+            },
+        } as unknown as Upstream;
+        const { records, url } = await start(null, upstream);
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        expect(records.records[0]?.response_text).toBe("");
+        expect(records.records[0]?.response_sha256).toBe(sha256Hex(""));
+    });
+
     test("a non-streaming agent call records the response text it relayed", async () => {
         const { records, url } = await start(null);
         await hostCallJson(url, AGENT_BODY, 2_000);

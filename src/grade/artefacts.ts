@@ -56,6 +56,8 @@ export interface CallView {
     response_text?: string;
     /** The proxy cut `response_text` at its cap; the answer is a prefix and is refused as grade input. */
     response_text_truncated?: boolean;
+    /** The call ended in an error status, a recorded error, or a cut stream; it is no completed fold. */
+    failed?: boolean;
     label?: string;
 }
 

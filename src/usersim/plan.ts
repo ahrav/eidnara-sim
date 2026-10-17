@@ -42,8 +42,9 @@ function sample<T>(items: T[], n: number, rng: Rng): T[] {
  * Rounded quotas, capped by the eligible turns, bring the rates over a whole scenario close to
  * the pre-registered targets: abandon and redirect per session, then interrupt and pushback per
  * delivered turn. Probe turns are delivered as compiled and carry `task`; pastes carry `paste`.
- * `pinned` turns, the ones a fault fires at, are always sent: an abandon skips only the trailing
- * fillers after the last of them, so a fault armed for a turn meets that turn's agent call.
+ * `pinned` turns, the ones a fault fires at, are always sent and never interrupted: an abandon
+ * skips only the trailing fillers after the last of them, and the interrupt draw leaves them
+ * out, so a fault armed for a turn meets that turn's agent call and runs to its own outcome.
  */
 export function behaviourPlan(
     turns: PlanTurn[],
@@ -86,7 +87,7 @@ export function behaviourPlan(
         if (turn) labels.set(turn.id, "redirect");
     }
     const delivered = turns.length - skipped.size;
-    const fillers = turns.filter((t) => t.role === "filler" && free(t));
+    const fillers = turns.filter((t) => t.role === "filler" && free(t) && !pinned.has(t.id));
     for (const t of sample(fillers, quota("interrupt_per_turn", delivered), rng)) {
         labels.set(t.id, "interrupt");
         interruptMs.set(t.id, delay.min + Math.floor(rng.next() * (delay.max - delay.min + 1)));
@@ -96,6 +97,34 @@ export function behaviourPlan(
         labels.set(t.id, "pushback");
     }
     return { labels, skipped, interruptMs };
+}
+
+/**
+ * The user turns a fault schedule pins: each `user_turn` trigger, and for a proxy fault the
+ * rest of its session, since a burst, intermittent, or persistent provider fault stays armed
+ * for later agent calls of that session.
+ */
+export function pinnedTurns(
+    events: readonly { id: string; kind: string; session: string; index?: number }[],
+    faults: readonly {
+        trigger: { kind: string; session: string; n?: number };
+        seam: { layer: string };
+    }[],
+): Set<string> {
+    const pinned = new Set<string>();
+    for (const f of faults) {
+        const t = f.trigger;
+        if (t.kind !== "user_turn" || t.n === undefined) continue;
+        const from = t.n - 1;
+        for (const e of events) {
+            if (e.kind !== "user_turn" || e.session !== t.session || e.index === undefined)
+                continue;
+            if (e.index === from || (f.seam.layer === "proxy-sink" && e.index > from)) {
+                pinned.add(e.id);
+            }
+        }
+    }
+    return pinned;
 }
 
 export interface RealisedRates {

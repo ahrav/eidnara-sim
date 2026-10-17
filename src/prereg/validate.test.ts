@@ -85,6 +85,10 @@ describe("pre-registration validator", () => {
         expect(validatePreregistration(prereg)).toContain(
             "oracles.cost_ratio_max: must be positive and finite",
         );
+        prereg.oracles.hang_quiet_ms = prereg.liveness_bounds.turn_deadline_ms;
+        expect(validatePreregistration(prereg)).toContain(
+            "oracles.hang_quiet_ms: must be below liveness_bounds.turn_deadline_ms",
+        );
     });
 
     test("refuses a normalisation rule the user-sim does not know", () => {

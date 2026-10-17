@@ -27,6 +27,11 @@
           "class": "diff",
           "role": "turn",
           "patch": "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,0 +1,1 @@\n+/// Entry point for the mini-redis server.\n"
+        },
+        {
+          "id": "s-P10-a:calls",
+          "class": "proxy-call",
+          "calls": []
         }
       ]
     }

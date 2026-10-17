@@ -18,7 +18,10 @@ test("a structured write or edit keeps the content it wrote under its target pat
         `edit src/x.rs\n${JSON.stringify(edits)}`,
     );
     expect(toolCommand("read", { path: "src/db.rs", offset: 10, limit: 20 })).toBe(
-        "read src/db.rs",
+        "read src/db.rs limit=20 offset=10",
+    );
+    expect(toolCommand("read", { path: "src/db.rs", offset: 200 })).not.toBe(
+        toolCommand("read", { path: "src/db.rs", offset: 10 }),
     );
 });
 
@@ -320,6 +323,30 @@ test("an OpenCode interrupt counts only when the abort landed; a turn that ran t
     });
     expect(await aborted.prompt("go", 5_000, 50)).toEqual({ interrupted: true });
 });
+
+test("an OpenCode turn whose abort was refused runs on under its own deadline", async () => {
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => Bun.sleep(400).then(() => ({ data: { info: {} } })),
+            abort: async () => ({ data: false }),
+        },
+    });
+    Object.assign(host as unknown as Record<string, unknown>, { drainWaitMs: 50 });
+    expect(await host.prompt("go", 5_000, 50)).toEqual({});
+});
+
+test("an OpenCode abort that answers after its wait but stopped the prompt still counts as the interrupt", async () => {
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => Bun.sleep(5_300).then(() => ({ data: { info: {} } })),
+            abort: () => Bun.sleep(5_200).then(() => ({ data: true })),
+        },
+    });
+    Object.assign(host as unknown as Record<string, unknown>, { abortWaitMs: 50 });
+    expect(await host.prompt("go", 20_000, 50)).toEqual({ interrupted: true });
+}, 15_000);
 
 test("an aborted OpenCode turn whose tool listing then fails keeps the interrupt beside the capture error", async () => {
     let listings = 0;
