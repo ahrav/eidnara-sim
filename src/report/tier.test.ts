@@ -94,6 +94,7 @@ const identity = (commit = "abc") => ({
     scenario_provenance: "gen1/1/abc",
     fault_override: null as string | null,
     tapes: [] as string[],
+    toolchain: ["bun 1"],
 });
 
 function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): GradedRun {
@@ -1490,6 +1491,74 @@ describe("tier report", () => {
         expect(report.verdict.pass.incomplete).toContain(
             "run pi/101: eidnara rss soak verdict leak",
         );
+    });
+
+    test("a scripted turn counts as paired only with a delivered UserTurn in the journal", () => {
+        const g = loadPairing(fixture());
+        g.scenario.events = [{ id: "e-0", kind: "user_turn" }] as never;
+        for (const r of g.pairing ?? [])
+            if (r.kind === "turn" && r.arm === "eidnara" && r.event === "t-0-0") r.event = "e-0";
+        const eidnara = arm(g, "eidnara");
+        eidnara.journal = eidnara.journal.filter(
+            (e) => !(e.kind === "UserTurn" && e.event === "e-0"),
+        );
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: delivered UserTurn missing for eidnara: e-0",
+        );
+    });
+
+    test("the reference arm's pairing records are required too", () => {
+        const g = loadPairing(fixture());
+        g.run.arms.unshift(armLogs("eidnara-kl", () => 0));
+        g.scenario.events = [{ id: "t-0-0", kind: "user_turn" }] as never;
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: pairing records missing for eidnara-kl: t-0-0",
+        );
+    });
+
+    test("the host's P7 row is its newest complete default-arm judgment", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
+        const body = { manifest: { seed: 101 }, events: [], probes: [], faults: [] };
+        const scenario_hash = sha256Hex(canonicalJson(body));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({
+                tier: "S",
+                seed: 101,
+                host: "pi",
+                order: [],
+                base_wall_ms: 0,
+                prereg_sha256: preregistrationHash(prereg),
+                scenario_hash,
+            }),
+        );
+        writeFileSync(join(dir, "scenario.json"), canonicalJson({ ...body, scenario_hash }));
+        const rows = [
+            judgment("q-7", "host", false, ["e", "h"]),
+            judgment("q-7", "eidnara", true, ["e", "h"]),
+            { ...judgment("q-7", "host", true, ["e2", "h2"]), version: 2 },
+            { ...judgment("q-7", "eidnara", true, ["e2", "h2"]), version: 2 },
+        ];
+        writeFileSync(
+            join(dir, "grades.jsonl"),
+            `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`,
+        );
+        expect(
+            loadGraded(dir, prereg)
+                .grades.filter((r) => r.arm === "host")
+                .map((r) => r.verdict),
+        ).toEqual(["pass"]);
+    });
+
+    test("the recorded toolchain is part of the compared identity", () => {
+        const a = fixture(undefined, { host: "pi" });
+        const b = fixture(undefined, { host: "opencode" });
+        b.identity.toolchain = ["bun 2"];
+        expect(
+            tierInput(prereg, [a, b]).incomplete?.find((x) =>
+                x.startsWith("runs differ in toolchain"),
+            ),
+        ).toBeDefined();
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {

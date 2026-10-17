@@ -49,6 +49,8 @@ export interface RunIdentity {
     fault_override: string | null;
     /** `manifest.tapes`, each as the digest of its file or `missing:<path>`. */
     tapes: string[];
+    /** `manifest.preflight.toolchain`, one string per probe. */
+    toolchain: string[];
 }
 
 const ALIASES: Record<string, string> = {
@@ -408,8 +410,13 @@ function incomplete(
         const recorded = new Set(
             g.pairing.flatMap((r) => (r.kind === "turn" ? [`${r.arm}/${r.event}`] : [])),
         );
+        const reference = referenceArm(order);
         const analysed = [
-            ...new Set([control, treatment, ...controlArmsOf(g).flatMap((c) => [c, armBase(c)])]),
+            ...new Set(
+                [control, treatment, ...controlArmsOf(g).flatMap((c) => [c, armBase(c)])].flatMap(
+                    (a) => [a, reference(a)],
+                ),
+            ),
         ];
         const gaps = analysed.flatMap((a) => {
             const missing = scripted.filter((id) => !recorded.has(`${a}/${id}`));
@@ -417,6 +424,21 @@ function incomplete(
         });
         const uncovered = gaps.length
             ? [`run ${runKey(g)}: pairing records missing for ${gaps.join("; ")}`]
+            : [];
+        const undelivered = analysed.flatMap((a) => {
+            const journal = g.run.arms.find((x) => x.arm === a)?.journal ?? [];
+            const delivered = new Set(
+                journal
+                    .filter((e) => e.kind === "UserTurn" && e.delivered === true)
+                    .map((e) => String(e.event)),
+            );
+            const missing = scripted.filter(
+                (id) => recorded.has(`${a}/${id}`) && !delivered.has(id),
+            );
+            return missing.length ? [`${a}: ${missing.join(" ")}`] : [];
+        });
+        const unsent = undelivered.length
+            ? [`run ${runKey(g)}: delivered UserTurn missing for ${undelivered.join("; ")}`]
             : [];
         const failures = pairingFailures(g.pairing, g.scenario, referenceArm(order));
         const out = Object.entries(failures).flatMap(([kind, list]) =>
@@ -432,7 +454,7 @@ function incomplete(
                         `run ${runKey(g)}: ${a.arm} user-sim rates outside band: ${(e.outside as string[]).join(", ")}`,
                 ),
         );
-        return [...uncovered, ...out, ...outside];
+        return [...uncovered, ...unsent, ...out, ...outside];
     });
     const sequential = p.load_stress?.arms_concurrent
         ? runs.flatMap((g) => {
@@ -536,6 +558,7 @@ function incomplete(
         "host_versions",
         "scenario_provenance",
         "tapes",
+        "toolchain",
     ];
     const settings = shared.flatMap((field) => {
         const values = [...new Set(runs.map((g) => JSON.stringify(g.identity[field])))];
