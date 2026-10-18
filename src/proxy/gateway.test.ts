@@ -2644,3 +2644,9 @@ describe("downstream diagnostics", () => {
         );
     });
 });
+
+test("a record writer creates its file at once, so a run with no calls still has calls.jsonl", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "sim-records-")), "calls.jsonl");
+    new RecordWriter(path).close();
+    expect(existsSync(path)).toBe(true);
+});

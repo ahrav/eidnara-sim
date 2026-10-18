@@ -26,7 +26,7 @@ import {
     verdictCounts,
 } from "../src/grade/probes";
 import { armBase } from "../src/hosts/arms";
-import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
+import { canonicalJson } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
 import { FaultInjector } from "../src/proxy/inject";
@@ -39,10 +39,11 @@ import {
     readJsonl,
     releaseLease,
     requireAppendable,
+    requireComplete,
     takeLease,
 } from "../src/run/journal";
 import { CallIndex, callsOf } from "../src/run/run";
-import type { Scenario } from "../src/scenario/compile";
+import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
 export interface Summary {
@@ -67,39 +68,6 @@ export async function gradeRun(dir: string, config: SimConfig | null): Promise<S
         return await grade(dir, config);
     } finally {
         releaseLease(dir, lease);
-    }
-}
-
-function requireComplete(entries: Entry[], arms: string[], scheduled: string[]): void {
-    const started = entries.find((e) => e.kind === "StartRun");
-    const journaled = Array.isArray(started?.order) ? started.order : null;
-    const malformed = arms.some((a) => typeof a !== "string") || new Set(arms).size !== arms.length;
-    if (malformed || !journaled || JSON.stringify(journaled) !== JSON.stringify(arms)) {
-        throw new Error(
-            `manifest order ${JSON.stringify(arms)} differs from the journaled order ${JSON.stringify(journaled)}`,
-        );
-    }
-    for (const arm of arms) {
-        const mine = entries.filter((e) => e.arm === arm);
-        const ended = mine.filter((e) => e.kind === "Event").map((e) => String(e.event));
-        const closed = mine.some((e) => e.kind === "EndArm");
-        const once = new Set(ended);
-        const missing = scheduled.filter((id) => !once.has(id));
-        const stray = ended.filter((id, i) => !scheduled.includes(id) || ended.indexOf(id) !== i);
-        const misordered = ended.findIndex((id, i) => id !== scheduled[i]);
-        if (!closed || missing.length > 0 || stray.length > 0 || misordered !== -1) {
-            const marker = closed ? "EndArm present" : "no EndArm";
-            const count = `${scheduled.length - missing.length} of ${scheduled.length} events ended`;
-            const extra = stray.length > 0 ? `, unexpected or repeated: ${stray.join(", ")}` : "";
-            const order =
-                misordered !== -1 && missing.length === 0 && stray.length === 0
-                    ? `, out of order from ${ended[misordered]}`
-                    : "";
-            throw new Error(`arm ${arm} is incomplete: ${count}, ${marker}${extra}${order}`);
-        }
-    }
-    if (!entries.some((e) => e.kind === "EndRun")) {
-        throw new Error("run is incomplete: the journal has no EndRun");
     }
 }
 
@@ -178,10 +146,9 @@ interface RowMeta {
 async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
-    const { scenario_hash: _recorded, ...body } = scenario;
     const digests = {
         prereg_sha256: preregistrationHash(loadPrereg(manifest.tier)),
-        scenario_hash: sha256Hex(canonicalJson(body)),
+        scenario_hash: scenarioHash(scenario),
     };
     const changed = Object.entries(digests).filter(([k, v]) => manifest[k] !== v);
     if (changed.length > 0) {

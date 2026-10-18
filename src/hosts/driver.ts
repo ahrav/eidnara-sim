@@ -1,11 +1,13 @@
 import { spawn, spawnSync } from "node:child_process";
 import {
     chmodSync,
+    closeSync,
     constants,
     copyFileSync,
     existsSync,
     lstatSync,
     mkdirSync,
+    openSync,
     readdirSync,
     readFileSync,
     realpathSync,
@@ -81,6 +83,11 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm
     /** The host's pinned and `config.upgrade` versions, as the run's preflight recorded them. */
     hostVersions?: { from: string; to: string | null };
     onDaemonExit: (detail: Record<string, unknown>) => void;
+    /**
+     * Called when a daemon process is up (at reset, resume, and after a fault's restart) and
+     * before a fault takes one down, so each daemon lifetime has a first and a last sample.
+     */
+    sampleDaemon?: () => void;
 }
 
 const GIT_ENV = {
@@ -167,6 +174,24 @@ const IDENTITY = {
 
 const SECOND_CLIENT_PROMPT = "List the top-level files in this repository and stop.";
 
+/**
+ * Creates `path` as an empty regular file when absent and leaves an existing regular file as it
+ * is. The path lies in the evaluated agent's writable tree, so a symlink there is refused rather
+ * than followed, and nothing is created outside the run directory on the agent's behalf.
+ */
+export function createNoFollow(path: string): void {
+    const flags =
+        constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW;
+    try {
+        closeSync(openSync(path, flags, 0o644));
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ELOOP") {
+            throw new Error(`${path} is a symlink; the plugin log must be a regular file`);
+        }
+        throw err;
+    }
+}
+
 export class HostDriver implements ArmDriver {
     host: SimHost | null = null;
     daemon: DaemonStack | null = null;
@@ -182,6 +207,8 @@ export class HostDriver implements ArmDriver {
     /** True once this process has reset or resumed the arm, so its in-memory state is the arm's. */
     private live = false;
     private sessionProject: string | null = null;
+    /** Host-reported tool runs carry the active user turn id, or null between turns and for runs recovered from an earlier turn. */
+    private turn: string | null = null;
     private transcriptsChecked = false;
     private readonly snapshots: SnapshotRecorder;
     private upgraded = false;
@@ -269,7 +296,8 @@ export class HostDriver implements ArmDriver {
         const up = this.upgraded ? (this.o.config.upgrade ?? {}) : {};
         const config = { ...this.o.config, ...up };
         const onSpawn = () => this.recordState();
-        const onTool = (run: ToolRun) => this.snapshots.addTools([run]);
+        const onTool = (run: ToolRun) =>
+            this.snapshots.addTools([run], run.recovered ? null : this.turn);
         return make({
             ...this.o,
             config,
@@ -462,6 +490,8 @@ export class HostDriver implements ArmDriver {
                 await this.daemon.start();
                 this.noteDaemon();
                 this.recordState();
+                this.o.sampleDaemon?.();
+                createNoFollow(join(this.o.armRoot, "eidnara.log"));
             }
         } finally {
             if (filled) {
@@ -711,7 +741,7 @@ export class HostDriver implements ArmDriver {
         }
         if (e.kind === "session_end") {
             const project = this.project(e);
-            this.snapshots.logTurnTools(host.drainTools(), null);
+            host.drainTools();
             this.snapshots.sessionEnd(e.session, project, this.workspace(project));
             await host.closeSession();
             await this.closeSecond();
@@ -752,16 +782,18 @@ export class HostDriver implements ArmDriver {
             reported = this.checkDaemon(e);
         };
         let result: PromptResult;
+        this.turn = e.id;
         try {
             result = await host.prompt(String(e.text), this.o.turnDeadlineMs, interruptMs);
         } catch (caught) {
+            this.turn = null;
             // A daemon gone during the turn is the cause of a lost connection; it is reported first.
             check();
             throw caught;
         }
         check();
         const tools = host.drainTools();
-        this.snapshots.logTurnTools(tools, e.id);
+        this.turn = null;
         const outcome: TurnOutcome = result.interrupted ? { user: { interrupted: true } } : {};
         if (result.error) outcome.failed = result.error;
         if (this.storeFaults.length > 0 && this.daemon) {
@@ -1004,10 +1036,12 @@ export class HostDriver implements ArmDriver {
             }
             const before = this.daemonPid();
             this.checkDaemonDirs();
+            this.o.sampleDaemon?.();
             await this.daemon.restart();
             this.noteDaemon();
             this.storeFaults.push(f.id);
             this.recordState();
+            this.o.sampleDaemon?.();
             const after = this.daemonPid();
             return {
                 signal: "SIGKILL",

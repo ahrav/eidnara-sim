@@ -113,6 +113,8 @@ export interface ToolRun {
     scenario_ms: number;
     /** The host's id for the run, when it reports a start before the end; a later report with the same id replaces the earlier one. */
     call?: string;
+    /** Set on a run reported after its turn, at recovery time; the recorder attributes it to no turn. */
+    recovered?: true;
 }
 
 const TARGET_KEYS = ["path", "filePath", "pattern", "file_path"];
@@ -642,6 +644,13 @@ export class PiSimHost extends SimHost {
         });
         const waiting = new AbortController();
         const end = this.agentEnd(timeoutMs, waiting.signal);
+        let ended = false;
+        end.then(
+            () => {
+                ended = true;
+            },
+            () => undefined,
+        );
         let settling = false;
         try {
             const response = await this.rpc.sendCommand("prompt", { message: text }, { timeoutMs });
@@ -677,7 +686,13 @@ export class PiSimHost extends SimHost {
                     // A settle that fails here takes the abort-and-drain path below.
                 }
             }
-            const drained = this.agentEnd(this.drainMs);
+            // The drain waiter is armed before one event-loop tick passes, so no agent_end falls
+            // between listeners. An end the turn's own waiter saw (a same-tick end included)
+            // settles the drain at once unless a settle was tried, since a failed settle leaves
+            // Pi possibly still running.
+            const fresh = this.agentEnd(this.drainMs);
+            await Bun.sleep(0);
+            const drained = ended && !settling ? Promise.resolve() : fresh;
             // The abort runs alongside the drain, so an abort that never answers cannot delay it.
             this.rpc.sendCommand("abort", {}, { timeoutMs: this.drainMs }).catch(() => undefined);
             // A turn that outlives the abort would end during the next turn and be taken for it.
@@ -978,7 +993,13 @@ export class OpencodeSimHost extends SimHost {
             for (const part of m.parts.filter((p) => p.type === "tool")) {
                 const command = toolCommand(part.tool, part.state?.input);
                 const exit = EXIT[part.state?.status] ?? null;
-                this.ctx.onTool?.({ command, exit, scenario_ms: now, call: callId(part) });
+                this.ctx.onTool?.({
+                    command,
+                    exit,
+                    scenario_ms: now,
+                    call: callId(part),
+                    recovered: true,
+                });
             }
         }
     }

@@ -735,7 +735,13 @@ export async function compileScenario(input: CompileInput) {
         faults,
         cf_deletions,
     };
-    return { ...body, scenario_hash: sha256Hex(canonicalJson(body)) };
+    return { ...body, scenario_hash: scenarioHash(body) };
+}
+
+/** The digest a manifest records for its scenario: the canonical JSON of every field but `scenario_hash`. */
+export function scenarioHash(scenario: Record<string, unknown>): string {
+    const { scenario_hash: _recorded, ...body } = scenario;
+    return sha256Hex(canonicalJson(body));
 }
 
 export type Scenario = Awaited<ReturnType<typeof compileScenario>>;

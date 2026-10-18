@@ -7,6 +7,7 @@ import {
     truncateSync,
 } from "node:fs";
 import { join } from "node:path";
+import { keepCompleteLines } from "./journal";
 
 /** The kernel reports CPU time in clock ticks; `getconf CLK_TCK` supplies the ticks per second. */
 const CLK_TCK = (() => {
@@ -20,14 +21,30 @@ const CLK_TCK = (() => {
     return ticks;
 })();
 
-export function procStats(pid: number): { rss: number; cpuMs: number } | null {
+let pageSize: number | null = null;
+
+/** The host's memory page size in bytes, the unit `/proc/<pid>/stat` counts RSS in; read once from `getconf`. */
+export function pageBytes(): number {
+    if (pageSize === null) {
+        const got = Number(Bun.spawnSync(["getconf", "PAGESIZE"]).stdout.toString().trim());
+        pageSize = Number.isInteger(got) && got > 0 ? got : 4096;
+    }
+    return pageSize;
+}
+
+/** One `/proc/<pid>/stat` read: RSS in bytes, CPU time, and the process start time that names the lifetime. */
+export function procStats(pid: number): { rss: number; cpuMs: number; start: string } | null {
     try {
         const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
         const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
         const ticks = Number(fields[11]) + Number(fields[12]);
         const rssKb = /^VmRSS:\s+(\d+) kB$/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"));
         if (!rssKb) return null;
-        return { rss: Number(rssKb[1]) * 1024, cpuMs: (ticks * 1000) / CLK_TCK };
+        return {
+            rss: Number(rssKb[1]) * 1024,
+            cpuMs: (ticks * 1000) / CLK_TCK,
+            start: fields[19] ?? "",
+        };
     } catch {
         return null;
     }
@@ -74,6 +91,8 @@ export interface Sample {
     wall_ms: number;
     scenario_ms: number;
     pid: number | null;
+    /** The daemon's process start time, so two lifetimes sharing a reused pid stay apart. */
+    start: string | null;
     rss: number | null;
     heap?: number | null;
     cpu_ms: number | null;
@@ -83,8 +102,12 @@ export interface Sample {
 
 export class ResourceSampler {
     private timer: ReturnType<typeof setInterval> | null = null;
-    /** The previous sample's monotonic time, so a wall-clock step cannot distort the CPU fraction. */
-    private last: { pid: number; mono: number; cpu: number } | null = null;
+    /**
+     * The CPU baseline names the process lifetime it was read from, so a reused pid with a new
+     * start begins afresh, and its monotonic time, so a wall-clock step cannot distort the CPU
+     * fraction.
+     */
+    private last: { pid: number; start: string; mono: number; cpu: number } | null = null;
     private busy = false;
 
     constructor(
@@ -93,6 +116,8 @@ export class ResourceSampler {
             intervalMs: number;
             busyFraction: number;
             pid: () => number | null;
+            /** Reads a process's /proc snapshot; defaults to procStats. */
+            stats?: (pid: number) => ReturnType<typeof procStats>;
             storeDir: string;
             scenarioMs: () => number;
             onBusy: (busy: boolean) => void;
@@ -107,25 +132,28 @@ export class ResourceSampler {
             truncateSync(o.path, Buffer.byteLength(text.slice(0, complete)));
     }
 
-    sample(): Sample {
+    sample(transitions = true): Sample {
         const pid = this.o.pid();
-        const stats = pid === null ? null : procStats(pid);
+        const stats = pid === null ? null : (this.o.stats ?? procStats)(pid);
         const wall = Date.now();
         const mono = performance.now();
         let fraction: number | null = null;
-        if (stats && this.last?.pid === pid && mono > this.last.mono) {
+        const sameLife = this.last?.pid === pid && this.last?.start === stats?.start;
+        if (stats && this.last && sameLife && mono > this.last.mono) {
             fraction = (stats.cpuMs - this.last.cpu) / (mono - this.last.mono);
         }
-        this.last = stats && pid !== null ? { pid, mono, cpu: stats.cpuMs } : null;
+        this.last =
+            stats && pid !== null ? { pid, start: stats.start, mono, cpu: stats.cpuMs } : null;
         const busy = fraction === null ? this.busy : fraction > this.o.busyFraction;
-        if (busy !== this.busy) {
+        if (transitions && busy !== this.busy) {
             this.busy = busy;
             this.o.onBusy(busy);
         }
         const s: Sample = {
             wall_ms: wall,
             scenario_ms: this.o.scenarioMs(),
-            pid,
+            pid: stats ? pid : null,
+            start: stats?.start ?? null,
             rss: stats?.rss ?? null,
             heap: pid === null ? null : anonBytes(pid),
             cpu_ms: stats?.cpuMs ?? null,
@@ -136,9 +164,13 @@ export class ResourceSampler {
         return s;
     }
 
-    /** `start` takes a baseline sample, so the first interval sample yields a CPU fraction. */
+    /**
+     * The first sample is taken at once, so RSS(0) precedes any session's work and the first
+     * interval sample yields a CPU fraction; a line a kill cut goes first.
+     */
     start(): void {
         if (this.timer) return;
+        keepCompleteLines(this.o.path);
         this.sample();
         this.timer = setInterval(() => {
             try {
@@ -155,11 +187,26 @@ export class ResourceSampler {
         }, this.o.intervalMs);
     }
 
+    /** Takes a sample now: the first one when sampling has yet to start, an extra one otherwise. */
+    observe(): void {
+        if (this.timer) this.sample();
+        else this.start();
+    }
+
+    /**
+     * `stop` reports a busy sampler idle, so no job outlives the arm. A running sampler then
+     * takes a final sample before its timer goes, so the last interval's growth is on record;
+     * that sample reports no busy transition. A final sample that cannot be written throws
+     * after the timer and busy state are cleared; the caller shuts the arm down in a `finally`
+     * and the error keeps the run from ending as complete evidence.
+     */
     stop(): void {
+        const running = this.timer !== null;
         if (this.timer) clearInterval(this.timer);
         this.timer = null;
         const wasBusy = this.busy;
         this.busy = false;
         if (wasBusy) this.o.onBusy(false);
+        if (running) this.sample(false);
     }
 }

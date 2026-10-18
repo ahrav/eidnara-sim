@@ -163,7 +163,8 @@ export class RecordWriter {
      * `resume` reopens an existing journal: a line a kill cut mid-append is dropped and the
      * sequence continues after the last complete record. `retain` keeps every record in
      * `records` for callers that read them back in memory; a run-long writer passes false,
-     * since its records live on disk and in the call index.
+     * since its records live on disk and in the call index. The record file exists from
+     * construction, so a run with no calls still has a `calls.jsonl`.
      */
     constructor(path: string | null, options: { resume?: boolean; retain?: boolean } = {}) {
         this.retain = options.retain ?? true;

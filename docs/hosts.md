@@ -75,6 +75,10 @@ the live stream after it keeps the order of arrival; the log opens with `O_NOFOL
 regular file, so a symlink or FIFO left there fails the append without
 blocking, and the first such failure surfaces at stop together with a failed
 SIGKILL fallback.
+The run's resource sampler takes a sample when each daemon process is up and
+before a fault takes one down; a final sample that cannot be written fails
+the arm's finish after the arm is shut down, so the run is not complete
+evidence.
 
 The sandbox has its own mount, pid, and System V IPC namespaces. `closeSession`
 keeps its host handle until the whole teardown succeeds, so a failed close
@@ -116,8 +120,10 @@ Both waits are bounded by the turn's remaining time (the state check gets at
 least 1 s), and a refused `get_state` counts as unsettled, so the turn goes
 through the abort and drain below. A prompt Pi refuses in preflight starts no
 turn, so its error is returned at once. After a Pi turn fails, the host
-aborts it and, alongside the abort, waits up to 30 s for its `agent_end`; a turn still running then
-stops the run, so a late end cannot finish the next turn. OpenCode turns race the deadline,
+aborts it and, alongside the abort, waits up to 30 s for its `agent_end`
+(an end the turn's own waiter saw before the failure counts, and the drain
+waiter is armed before that check so no end falls between); a turn still
+running then stops the run, so a late end cannot finish the next turn. OpenCode turns race the deadline,
 abort the session (waiting at most 30 s for the abort call), and wait 30 s for
 the call to drain; a call still running then stops the run, and so does an
 abort call still pending after 30 s, since it would cancel the next turn,

@@ -285,7 +285,7 @@ test("reattaching to an OpenCode session reports the tool parts its messages alr
     });
     await host.recoverTools(1_000);
     expect(reported).toEqual([
-        { command: "cargo build", exit: 0, scenario_ms: 700, call: "oc:prt-1" },
+        { command: "cargo build", exit: 0, scenario_ms: 700, call: "oc:prt-1", recovered: true },
     ]);
 });
 
@@ -397,7 +397,7 @@ test("tool parts a failed post-turn listing missed are reported before the next 
     expect(reported).toEqual([]);
     await host.prompt("second", 1_000);
     expect(reported).toEqual([
-        { command: "cargo build", exit: 0, scenario_ms: 100, call: "oc:p1" },
+        { command: "cargo build", exit: 0, scenario_ms: 100, call: "oc:p1", recovered: true },
     ]);
 });
 
@@ -463,4 +463,235 @@ test("an OpenCode turn whose last assistant step has not finished is a failed tu
         Object.assign(host as unknown as Record<string, unknown>, { client, sid: "s", oc: {} });
         expect(await host.prompt("go", 5_000)).toEqual(want);
     }
+});
+
+test("a Pi turn whose abort never drains fails as a turn still running, so no later turn takes its events", async () => {
+    const reported: unknown[] = [];
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 1,
+        onTool: (run) => void reported.push(run),
+    });
+    const stopped: number[] = [];
+    const rpc = {
+        child: { pid: 4242, stdin: { end: () => {} } },
+        sendCommand: async (name: string) => {
+            if (name === "prompt") throw new Error("Timed out after 100ms");
+            return {};
+        },
+        waitForEvent: (_match: unknown, o: { timeoutMs: number }) =>
+            new Promise((_resolve, reject) =>
+                setTimeout(() => reject(new Error("agent_end timed out")), o.timeoutMs),
+            ),
+        shutdown: async () => {},
+        onEvent: () => () => {},
+    };
+    Object.assign(host as unknown as Record<string, unknown>, {
+        rpc,
+        stopTree: async (pid: number) => void stopped.push(pid),
+        drainMs: 10,
+    });
+    await expect(host.prompt("go", 100)).rejects.toThrow(/Pi turn still running 10 ms after abort/);
+    expect(stopped).toEqual([]);
+    expect(reported).toEqual([]);
+});
+
+test("a prompt that fails after its agent_end already arrived drains at once and keeps the Pi process", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 1,
+    });
+    const stopped: number[] = [];
+    let waits = 0;
+    const rpc = {
+        child: { pid: 4242, stdin: { end: () => {} } },
+        sendCommand: async (name: string) => {
+            if (name === "prompt") throw new Error("prompt rejected after the turn ended");
+            return {};
+        },
+        waitForEvent: (_match: unknown, o: { timeoutMs: number }) => {
+            waits += 1;
+            if (waits === 1) return Promise.resolve({ type: "agent_end", messages: [] });
+            return new Promise((_resolve, reject) =>
+                setTimeout(() => reject(new Error("agent_end timed out")), o.timeoutMs),
+            );
+        },
+        shutdown: async () => {},
+        onEvent: () => () => {},
+    };
+    Object.assign(host as unknown as Record<string, unknown>, {
+        rpc,
+        stopTree: async (pid: number) => void stopped.push(pid),
+        drainMs: 10,
+    });
+    const result = await host.prompt("go", 100);
+    expect(result.error).toContain("prompt rejected");
+    expect(result.error).not.toContain("killed");
+    expect(stopped).toEqual([]);
+});
+
+test("a timed-out prompt whose abort drains keeps the Pi process even though the first waiter expired", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 1,
+    });
+    const stopped: number[] = [];
+    let waits = 0;
+    const rpc = {
+        child: { pid: 4242, stdin: { end: () => {} } },
+        sendCommand: async (name: string) => {
+            if (name === "prompt") {
+                await Bun.sleep(30);
+                throw new Error("Timed out after 20ms");
+            }
+            return {};
+        },
+        waitForEvent: (_match: unknown, o: { timeoutMs: number }) => {
+            waits += 1;
+            if (waits === 1) {
+                return new Promise((_resolve, reject) =>
+                    setTimeout(() => reject(new Error("agent_end timed out")), o.timeoutMs),
+                );
+            }
+            return new Promise((resolve) => setTimeout(() => resolve({ type: "agent_end" }), 5));
+        },
+        shutdown: async () => {},
+        onEvent: () => () => {},
+    };
+    Object.assign(host as unknown as Record<string, unknown>, {
+        rpc,
+        stopTree: async (pid: number) => void stopped.push(pid),
+        drainMs: 200,
+    });
+    const result = await host.prompt("go", 20);
+    expect(result.error).toContain("Timed out");
+    expect(result.error).not.toContain("killed");
+    expect(stopped).toEqual([]);
+});
+
+test("an agent_end emitted in the same tick as the prompt failure still settles the drain", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 1,
+    });
+    const stopped: number[] = [];
+    let endResolve: ((v: unknown) => void) | null = null;
+    let waits = 0;
+    const rpc = {
+        child: { pid: 4242, stdin: { end: () => {} } },
+        sendCommand: (name: string) => {
+            if (name !== "prompt") return Promise.resolve({});
+            return new Promise((_resolve, reject) => {
+                setTimeout(() => {
+                    reject(new Error("prompt failed"));
+                    endResolve?.({ type: "agent_end" });
+                }, 5);
+            });
+        },
+        waitForEvent: (_match: unknown, o: { timeoutMs: number }) => {
+            waits += 1;
+            if (waits === 1) return new Promise((resolve) => void (endResolve = resolve));
+            return new Promise((_resolve, reject) =>
+                setTimeout(() => reject(new Error("agent_end timed out")), o.timeoutMs),
+            );
+        },
+        shutdown: async () => {},
+        onEvent: () => () => {},
+    };
+    Object.assign(host as unknown as Record<string, unknown>, {
+        rpc,
+        stopTree: async (pid: number) => void stopped.push(pid),
+        drainMs: 50,
+    });
+    const result = await host.prompt("go", 1_000);
+    expect(result.error).toContain("prompt failed");
+    expect(result.error).not.toContain("killed");
+    expect(stopped).toEqual([]);
+});
+
+test("a stalled abort RPC does not delay the drain verdict past the drain wait", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 1,
+    });
+    const stopped: number[] = [];
+    const rpc = {
+        child: { pid: 4242, stdin: { end: () => {} } },
+        sendCommand: (name: string) => {
+            if (name === "prompt") return Promise.reject(new Error("Timed out after 100ms"));
+            return new Promise(() => {});
+        },
+        waitForEvent: (_match: unknown, o: { timeoutMs: number }) =>
+            new Promise((_resolve, reject) =>
+                setTimeout(() => reject(new Error("agent_end timed out")), o.timeoutMs),
+            ),
+        shutdown: async () => {},
+        onEvent: () => () => {},
+    };
+    Object.assign(host as unknown as Record<string, unknown>, {
+        rpc,
+        stopTree: async (pid: number) => void stopped.push(pid),
+        drainMs: 50,
+    });
+    const started = Date.now();
+    await expect(host.prompt("go", 100)).rejects.toThrow(/Pi turn still running 50 ms after abort/);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(stopped).toEqual([]);
+});
+
+test("an agent_end arriving in the tick after the first waiter expired still settles the drain", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 1,
+    });
+    const stopped: number[] = [];
+    const waiters: Array<(v: unknown) => void> = [];
+    const rpc = {
+        child: { pid: 4242, stdin: { end: () => {} } },
+        sendCommand: (name: string) => {
+            if (name !== "prompt") return Promise.resolve({});
+            return new Promise((_resolve, reject) => {
+                setTimeout(() => {
+                    reject(new Error("Timed out after 20ms"));
+                    setTimeout(() => {
+                        for (const w of waiters.splice(0)) w({ type: "agent_end" });
+                    }, 0);
+                }, 20);
+            });
+        },
+        waitForEvent: (_match: unknown, o: { timeoutMs: number }) =>
+            new Promise((resolve, reject) => {
+                waiters.push(resolve);
+                setTimeout(() => reject(new Error("agent_end timed out")), o.timeoutMs);
+            }),
+        shutdown: async () => {},
+        onEvent: () => () => {},
+    };
+    Object.assign(host as unknown as Record<string, unknown>, {
+        rpc,
+        stopTree: async (pid: number) => void stopped.push(pid),
+        drainMs: 200,
+    });
+    const result = await host.prompt("go", 20);
+    expect(result.error).toContain("Timed out");
+    expect(result.error).not.toContain("killed");
+    expect(stopped).toEqual([]);
 });

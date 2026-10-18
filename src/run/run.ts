@@ -1715,6 +1715,7 @@ async function runArms(
             },
             loopStore,
             onDaemonExit: (detail) => scheduler.daemonExited(detail),
+            sampleDaemon: () => sampler.observe(),
             callsFor: (session) => {
                 handlersFailed();
                 const calls = callsOf(callIndex, arm, session, turnIndex).filter(

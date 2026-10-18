@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { GradeLog } from "../grade/probes";
 import { armBase } from "../hosts/arms";
 import { loadRun } from "../oracle/logs";
-import { oracleReport } from "../oracle/oracles";
+import { oracleReport, runOracles } from "../oracle/oracles";
 import { recoveries } from "../oracle/recovery";
 import type { Preregistration } from "../prereg/schema";
 import type { Scenario } from "../scenario/compile";
@@ -86,7 +86,10 @@ export function tierReport(
         arms,
         grades: runs.flatMap((g) => g.grades),
         verdict: evaluateTier(prereg, input),
-        oracles: oracleReport(runs.map((g) => g.run))[prereg.tier] ?? {},
+        oracles:
+            oracleReport(runs.map((g) => ({ tier: g.run.tier, activations: runOracles(g.run) })))[
+                prereg.tier
+            ] ?? {},
         recoveries: runs.flatMap((g) => recoveries(g.run).map((r) => ({ ...r, run: g.run.dir }))),
         soak: perArm
             .filter(({ arm }) => armBase(arm.arm) !== "host")

@@ -1,6 +1,6 @@
 import { armBase } from "../hosts/arms";
 import type { CallRecord } from "../proxy/records";
-import type { ArmLogs, RunLogs } from "./logs";
+import type { ArmLogs, RunLogs, Sample } from "./logs";
 
 export const ORACLES = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9"] as const;
 export type OracleId = (typeof ORACLES)[number];
@@ -27,13 +27,23 @@ const ARRAY_SHAPE = [
 const RAW_PASS = /served_from=raw/;
 const CAPTURE_REFUSED =
     /memory capture output rejected|capture output (does not match the JSON schema|version is unsupported|exceeds (its decision bounds|\d+ bytes)|has no source id|has an unclosed code fence|names an unknown or duplicate source)/;
-const DEADLINE = /deadline|Timed out after \d+ ?ms/;
+/** The harness's own wording for a turn that hit its deadline: OpenCode's `turn deadline <N> ms`, Pi's `Timed out after <N>ms`. */
+const DEADLINE = /turn deadline \d+ ms|Timed out after \d+ ?ms/;
 export const HARNESS = new Set(["user-sim", "judge", "rejected"]);
+/** Calls that count as progress after a completed agent call: model work and persistence (SIM-P39); a title call is neither. */
+const PROGRESS = new Set([
+    "agent",
+    "native_compaction",
+    "history_summarizer",
+    "memory_capture",
+    "memory_classifier",
+    "context_researcher",
+]);
 export const INTERNAL_TEXT = [
     /<\/?history[_-]segments?\b/i,
     /<\/?eidnara[\w-]*>/i,
     /context[_-]researcher[_-]augmentation/i,
-    /\[eidnara\]/i,
+    /^\s*\[eidnara\] /m,
     /\b(row_version|served_from|invocation_bytes|emergency_wait)\b/,
     /\bdecision=(SOFT|HARD)/,
 ];
@@ -47,8 +57,9 @@ const TOKENS = (c: CallRecord) =>
 const errorOf = (c: CallRecord) => `${c.status} ${c.error ?? ""}`;
 const at = (c: CallRecord) => c.turn ?? `call ${c.seq}`;
 
+/** F1 and F2 classify request refusals: HTTP 4xx. A 5xx carrying the same text is an infrastructure failure. */
 function failedCalls(arm: ArmLogs, pattern: (text: string) => boolean): CallRecord[] {
-    return arm.calls.filter((c) => c.status >= 400 && pattern(errorOf(c)));
+    return arm.calls.filter((c) => c.status >= 400 && c.status < 500 && pattern(errorOf(c)));
 }
 
 function f1(arm: ArmLogs): Activation[] {
@@ -59,9 +70,12 @@ function f1(arm: ArmLogs): Activation[] {
         evidence: errorOf(c).slice(0, 200),
         component: c.component,
     }));
+    const agentAt = new Set(
+        arm.calls.filter((c) => c.component === "agent" && OVERFLOW.test(errorOf(c))).map(at),
+    );
     const turns = arm.journal
         .filter((e) => e.kind === "EndTurn" && OVERFLOW.test(String(e.outcome)))
-        .filter((e) => !calls.some((c) => c.at === e.event))
+        .filter((e) => !agentAt.has(String(e.event)))
         .map((e) => ({
             oracle: "F1" as const,
             arm: arm.arm,
@@ -71,33 +85,90 @@ function f1(arm: ArmLogs): Activation[] {
     return [...calls, ...turns];
 }
 
+/** Groups records by the key `by` yields, so each turn's evidence is one lookup rather than a scan. */
+function byKey<T>(items: T[], by: (item: T) => string | null): Map<string, T[]> {
+    const groups = new Map<string, T[]>();
+    for (const item of items) {
+        const key = by(item);
+        if (key === null) continue;
+        const group = groups.get(key);
+        if (group) group.push(item);
+        else groups.set(key, [item]);
+    }
+    return groups;
+}
+
 function f4(arm: ArmLogs, quietMs: number): Activation[] {
     const out: Activation[] = [];
+    const callsByTurn = byKey(arm.calls, (c) => c.turn);
+    const toolsByTurn = byKey(arm.tools, (t) => t.turn);
+    const begins = new Map(
+        arm.journal.filter((b) => b.kind === "BeginTurn").map((b) => [String(b.event), b]),
+    );
     for (const e of arm.journal) {
         if (e.kind !== "EndTurn") continue;
         const turn = String(e.event);
-        const calls = arm.calls.filter((c) => c.turn === turn && c.component === "agent");
+        const turnCalls = callsByTurn.get(turn) ?? [];
+        const calls = turnCalls.filter((c) => c.component === "agent");
+        const tools = (toolsByTurn.get(turn) ?? []).map((t) => t.scenario_ms);
+        const began = begins.get(turn);
         if (DEADLINE.test(String(e.outcome))) {
-            const what =
-                calls.length === 0 ? "with no model call" : `after ${calls.length} model calls`;
-            out.push({ oracle: "F4", arm: arm.arm, at: turn, evidence: `turn deadline ${what}` });
-            continue;
-        }
-        const activity = [
-            ...calls.map((c) => c.scenario_ms),
-            ...arm.tools.filter((t) => t.turn === turn).map((t) => t.scenario_ms),
-            e.scenario_ms,
-        ];
-        for (const c of calls.filter((x) => x.status === 200)) {
-            const done = c.scenario_ms + (c.wall_ms - c.started_wall_ms);
-            const next = Math.min(
-                ...activity.filter((ms) => ms >= done - CLOCK_SLACK_MS),
-                Number.POSITIVE_INFINITY,
-            );
-            if (next - done > quietMs) {
-                const evidence = `call ${c.seq} completed, then ${Math.round((next - done) / 1000)} s with no tool run, call, or turn end`;
+            const end = e.scenario_ms;
+            const spans = [
+                ...(began ? [[began.scenario_ms, began.scenario_ms]] : []),
+                ...turnCalls.map((c) => [
+                    c.scenario_ms,
+                    Math.min(end, c.scenario_ms + (c.wall_ms - c.started_wall_ms)),
+                ]),
+                ...tools.map((ms) => [ms, ms]),
+                [end, end],
+            ]
+                .filter(([from]) => (from as number) <= end)
+                .sort((a, b) => (a[0] as number) - (b[0] as number)) as [number, number][];
+            let covered = spans[0]?.[1] ?? end;
+            let gap = 0;
+            for (const [from, to] of spans) {
+                gap = Math.max(gap, from - covered);
+                covered = Math.max(covered, to);
+            }
+            if (calls.length === 0 || gap > quietMs) {
+                const what =
+                    calls.length === 0 ? "with no model call" : `after ${calls.length} model calls`;
+                const silent = gap > quietMs ? `, ${Math.round(gap / 1000)} s silent` : "";
+                const evidence = `turn deadline ${what}${silent}`;
                 out.push({ oracle: "F4", arm: arm.arm, at: turn, evidence });
             }
+            continue;
+        }
+        const windows: string[] = [];
+        /** Proxy records and the turn end are on the harness clock; only a tool start gets the slack. */
+        const quietAfter = (done: number, recorded: number[]): number => {
+            const next = Math.min(
+                ...recorded.filter((ms) => ms >= done),
+                ...tools.filter((ms) => ms >= done - CLOCK_SLACK_MS),
+                Number.POSITIVE_INFINITY,
+            );
+            return next - done;
+        };
+        const silence = "with no tool run, call, or turn end";
+        if (began) {
+            const starts = calls.map((c) => c.scenario_ms);
+            const next = Math.min(...starts.filter((ms) => ms >= began.scenario_ms), e.scenario_ms);
+            const quiet = next - began.scenario_ms;
+            if (quiet > quietMs) windows.push(`turn began, then ${Math.round(quiet / 1000)} s`);
+        }
+        for (const c of calls) {
+            const done = c.scenario_ms + (c.wall_ms - c.started_wall_ms);
+            const others = turnCalls
+                .filter((x) => x !== c && PROGRESS.has(x.component))
+                .map((x) => x.scenario_ms);
+            const quiet = quietAfter(done, [...others, e.scenario_ms]);
+            if (quiet > quietMs)
+                windows.push(`call ${c.seq} completed, then ${Math.round(quiet / 1000)} s`);
+        }
+        if (windows.length > 0) {
+            const evidence = `${windows.join("; ")} ${silence}`;
+            out.push({ oracle: "F4", arm: arm.arm, at: turn, evidence });
         }
     }
     return out;
@@ -117,28 +188,60 @@ export function rssFit(points: { x: number; y: number }[]): { slope: number; r2:
     return { slope, r2: sst === 0 ? 0 : 1 - ssr / sst };
 }
 
+/** Consecutive samples from one daemon process, by pid and start time; a restart starts a new lifetime with its own RSS(0). */
+function lifetimes(samples: Sample[]): Sample[][] {
+    const out: Sample[][] = [];
+    const same = (a: Sample, b: Sample) => a.pid === b.pid && a.start === b.start;
+    for (const s of samples) {
+        const last = out.at(-1);
+        const head = last?.[0];
+        if (last && head && same(head, s)) last.push(s);
+        else out.push([s]);
+    }
+    return out;
+}
+
 function f5(arm: ArmLogs, run: RunLogs): Activation[] {
     const { c_bytes_per_session: c, r2_threshold } = run.prereg.leak_bound;
     const ends = arm.journal
         .filter((e) => e.kind === "Event" && run.kinds.get(String(e.event)) === "session_end")
-        .map((e) => e.scenario_ms);
+        .map((e) => e.scenario_ms)
+        .sort((a, b) => a - b);
+    const sessionsAt = (ms: number) => {
+        let lo = 0;
+        let hi = ends.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if ((ends[mid] as number) <= ms) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    };
     const samples = arm.resources.filter((s) => typeof s.rss === "number");
-    const first = samples[0]?.rss;
-    if (first == null) return [];
-    const points = samples.map((s) => ({
-        x: ends.filter((ms) => ms <= s.scenario_ms).length,
-        y: s.rss as number,
-    }));
     const out: Activation[] = [];
-    const over = points.find((p) => p.y >= 2 * first + p.x * c);
-    if (over) {
-        const evidence = `RSS ${over.y} after ${over.x} sessions exceeds 2 x ${first} + sessions x ${c}`;
-        out.push({ oracle: "F5", arm: arm.arm, at: `session ${over.x}`, evidence });
-    }
-    const fit = rssFit(points);
-    if (fit && fit.r2 >= Number(r2_threshold) && fit.slope > c) {
-        const evidence = `RSS slope ${Math.round(fit.slope)} B/session (r2 ${fit.r2.toFixed(2)}) exceeds ${c}`;
-        out.push({ oracle: "F5", arm: arm.arm, at: "run", evidence });
+    const lives = lifetimes(samples);
+    for (const life of lives) {
+        const first = life[0] as Sample;
+        const scope = lives.length > 1 ? `daemon ${first.pid}` : "run";
+        const offset = sessionsAt(first.scenario_ms);
+        const points = life.map((s) => ({
+            x: sessionsAt(s.scenario_ms) - offset,
+            y: s.rss as number,
+        }));
+        const base = first.rss as number;
+        const last = points.at(-1) as { x: number; y: number };
+        const over = last.y >= 2 * base + last.x * c ? last : undefined;
+        if (over) {
+            const at = `session ${over.x + offset}`;
+            const evidence = `RSS ${over.y} after ${over.x} sessions exceeds 2 x ${base} + sessions x ${c}`;
+            out.push({ oracle: "F5", arm: arm.arm, at, evidence });
+        }
+        const distinct = new Set(points.map((p) => p.x)).size;
+        const fit = distinct >= 3 ? rssFit(points) : null;
+        if (fit && fit.r2 >= Number(r2_threshold) && fit.slope > c) {
+            const evidence = `RSS slope ${Math.round(fit.slope)} B/session (r2 ${fit.r2.toFixed(2)}) exceeds ${c}`;
+            out.push({ oracle: "F5", arm: arm.arm, at: scope, evidence });
+        }
     }
     return out;
 }
@@ -155,6 +258,9 @@ export function ledger(arm: ArmLogs): Ledger {
         tokens[c.component] = (tokens[c.component] ?? 0) + TOKENS(c);
     }
     const total = Object.values(tokens).reduce((a, b) => a + b, 0);
+    if (!Number.isSafeInteger(total)) {
+        throw new Error(`arm ${arm.arm}: token total exceeds exact integer range`);
+    }
     return { tokens, total, title_calls: arm.calls.filter((c) => c.component === "title").length };
 }
 
@@ -162,17 +268,17 @@ function f6(arm: ArmLogs, run: RunLogs): Activation[] {
     const host = run.arms.find((a) => a.arm === "host");
     if (!host || arm.arm === "host") return [];
     const [mine, base] = [ledger(arm), ledger(host)];
-    const out: Activation[] = [];
+    const evidence: string[] = [];
     const limit = Number(run.prereg.oracles.cost_ratio_max);
     if (base.total > 0 && mine.total / base.total > limit) {
-        const evidence = `${mine.total} tokens vs host ${base.total} (${(mine.total / base.total).toFixed(2)}x > ${limit}x)`;
-        out.push({ oracle: "F6", arm: arm.arm, at: "run", evidence });
+        const ratio = (mine.total / base.total).toFixed(2);
+        evidence.push(`${mine.total} tokens vs host ${base.total} (${ratio}x > ${limit}x)`);
     }
     if (mine.title_calls > base.title_calls) {
-        const evidence = `${mine.title_calls} title calls vs host ${base.title_calls}`;
-        out.push({ oracle: "F6", arm: arm.arm, at: "run", evidence });
+        evidence.push(`${mine.title_calls} title calls vs host ${base.title_calls}`);
     }
-    return out;
+    if (evidence.length === 0) return [];
+    return [{ oracle: "F6", arm: arm.arm, at: "run", evidence: evidence.join("; ") }];
 }
 
 function f7(arm: ArmLogs): Activation[] {
@@ -208,16 +314,17 @@ export function runOracles(run: RunLogs): Activation[] {
     const quiet = run.prereg.oracles.hang_quiet_ms;
     return run.arms.flatMap((arm) => {
         const overflow = f1(arm);
+        const agentOverflow = overflow.filter((a) => (a.component ?? "agent") === "agent");
         const f9 =
             NO_HOST_COMPACTION.has(armBase(arm.arm)) &&
-            overflow.length > 0 &&
+            agentOverflow.length > 0 &&
             !arm.calls.some((c) => c.component === "native_compaction")
                 ? [
                       {
                           oracle: "F9" as const,
                           arm: arm.arm,
                           at: "run",
-                          evidence: `${overflow.length} overflows with no host compaction`,
+                          evidence: `${agentOverflow.length} agent overflows with no host compaction`,
                       },
                   ]
                 : [];
@@ -254,10 +361,13 @@ export interface OracleCount {
     by_component: Record<string, number>;
 }
 
-export function oracleReport(runs: RunLogs[]): Record<string, Record<OracleId, OracleCount>> {
+/** The tier report counts activations already evaluated per run, so a run's evidence is released once its oracles have run. */
+export function oracleReport(
+    runs: Array<{ tier: string; activations: Activation[] }>,
+): Record<string, Record<OracleId, OracleCount>> {
     const tiers = new Map<string, Activation[]>();
     for (const run of runs)
-        tiers.set(run.tier, [...(tiers.get(run.tier) ?? []), ...runOracles(run)]);
+        tiers.set(run.tier, [...(tiers.get(run.tier) ?? []), ...run.activations]);
     const report: Record<string, Record<OracleId, OracleCount>> = {};
     for (const [tier, acts] of tiers) {
         report[tier] = Object.fromEntries(

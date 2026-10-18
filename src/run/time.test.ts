@@ -429,7 +429,7 @@ describe("ResourceSampler", () => {
         expect(events).toEqual([true, false]);
     });
 
-    test("start() takes the baseline sample at once", () => {
+    test("start() takes the baseline sample at once, and stop() a final one", () => {
         const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
         const sampler = new ResourceSampler({
             path,
@@ -441,8 +441,9 @@ describe("ResourceSampler", () => {
             onBusy: () => undefined,
         });
         sampler.start();
-        sampler.stop();
         expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(1);
+        sampler.stop();
+        expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(2);
     });
 
     test("treeBytes counts regular files under the store and does not follow symlinks", () => {
