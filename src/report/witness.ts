@@ -216,12 +216,7 @@ function journalCheck(
     const bad: string[] = [];
     for (const { g, entries } of runs) {
         const events = new Map(g.scenario.events.map((e) => [e.id, e.scenario_ms as number]));
-        const sleeps = new Map(
-            g.scenario.faults
-                .filter((f) => f.type === "laptop_sleep")
-                .map((f) => [f.id, f.params.duration_ms ?? 0]),
-        );
-        const report = checkJournal(entries, { events, sleeps });
+        const report = checkJournal(entries, { events });
         n += count(report);
         bad.push(...pick(report).map((x) => `${g.run.dir} seq ${JSON.stringify(x)}`));
     }

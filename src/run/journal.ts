@@ -25,6 +25,7 @@ import { hostname } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 
 export type EntryKind =
+    | "Preflight"
     | "StartRun"
     | "ResumeRun"
     | "StartArm"

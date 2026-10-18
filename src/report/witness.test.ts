@@ -158,10 +158,15 @@ function second(broken: boolean, busy = false): GradedRun {
     const begin = at("BeginTurn", 10, { event: "e-1" });
     const end = at("EndTurn", 20, { event: "e-1", outcome: "ok" });
     const jump = at("AdvanceClock", broken ? 150 : 100, { from_ms: 20 });
+    const delivered = at("Event", 20, { event: "e-1" });
+    const held = [at("RegisterJob", 20, { job: "j" }), jump, at("EndJob", 100, { job: "j" })];
     const journal = [
         begin,
-        ...(broken || busy ? [jump, end] : [end, jump]),
-        at("Event", 20, { event: "e-1" }),
+        ...(broken
+            ? [jump, end, delivered]
+            : busy
+              ? [end, delivered, ...held]
+              : [end, jump, delivered]),
         at("FaultObserved", 100, { fault: broken ? "f-9" : "f-1" }),
         at("SnapshotArtefacts", 100, { item: "q-1", snapshot: "eidnara:q-1:e-1" }),
     ];

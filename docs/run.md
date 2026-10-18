@@ -123,9 +123,9 @@ last journaled `scenario_ms`.
 list. A scheduler whose scenario holds provider faults requires proxy
 control at construction, so a journaled `FaultFired` always armed the proxy.
 For each arm, it resets the driver (on a fresh arm) and, on every entry
-including a resume, the proxy's fault state (`ProxyControl.reset`: `FaultInjector` clears armed and pending faults, empties
-its witnesses, and returns its generator to its seed, so every arm draws one
-fault mask and `report()` describes the current arm), then walks the events, and
+including a resume, the proxy's fault state (`ProxyControl.reset`: `FaultInjector` clears armed and pending faults,
+keeps its witnesses, which are per arm, and returns its generator to its seed,
+so every arm draws one fault mask and `report(arm)` describes one arm), then walks the events, and
 before `EndArm` waits for a pending kill and for the busy set to empty, then
 closes any outage window and the current session. A turn that rejects fails
 the run and cuts a pending kill through the fatal channel; the cut kill is
@@ -310,7 +310,7 @@ without `EndArm`:
   handled, journals `FaultFired` for a fault-tagged `AdvanceClock` that lacks
   it, arms again a persistent provider fault
   whose session has not ended and a one-shot provider fault whose turn has not
-  begun, and journals `ItemState failed(interrupted)` for a scheduler fault
+  begun (a `session_start` trigger's turn is its session's first), and journals `ItemState failed(interrupted)` for a scheduler fault
   with no `FaultObserved`. A `single`, `burst`, or `intermittent` fault whose
   turn had begun is spent with that interrupted turn: its remaining calls are
   not injected into later turns, and the proxy's call records keep

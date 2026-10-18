@@ -5,7 +5,9 @@ import type { CallRecord, Component } from "./records";
 
 export type ProxyFault = Pick<FaultEpisode, "id" | "type" | "strategy" | "params">;
 
+/** One arm's execution of one episode; the scheduler arms and observes each arm separately. */
 export interface Witness {
+    arm: string;
     fault: string;
     type: FaultType;
     armed: boolean;
@@ -19,6 +21,7 @@ export interface WitnessReport extends Witness {
 }
 
 interface Armed {
+    arm: string;
     fault: ProxyFault;
     calls: number;
     /** The arming on the monotonic clock; a call received before it takes nothing from this fault. */
@@ -45,7 +48,11 @@ export class FaultInjector {
     private readonly armed = new Map<string, Armed>();
     private readonly witnesses = new Map<string, Witness>();
     /** `at` is a monotonic `performance.now()` stamp, so a wall-clock step cannot move the window. */
-    private readonly pending: { fault: string; at: number; call: number }[] = [];
+    private readonly pending: { key: string; arm: string; at: number; call: number }[] = [];
+    /** Injections an earlier invocation's records hold, awaiting the host call that saw them. */
+    private readonly restoring: { key: string; arm: string; wall: number }[] = [];
+    /** Agent calls by arm and arrival ordinal: receipt on the monotonic clock, and seq once recorded. */
+    private readonly candidates = new Map<string, Map<number, { at: number; seq?: number }>>();
     /**
      * One generator per episode, seeded from the injector's generator and the episode id, so an
      * episode's draws depend on nothing another episode did and every arm replays them alike.
@@ -66,36 +73,53 @@ export class FaultInjector {
     }
 
     /**
-     * Returns the injector to its constructed state: nothing armed or pending, witnesses empty,
-     * and every episode's generator back at its seed, so every arm draws the same masks. The
-     * scheduler calls it at each arm's start; `report()` therefore describes the current arm only.
+     * Returns the live state to its constructed form: nothing armed or pending, and every
+     * episode's generator back at its seed, so every arm draws the same masks. The scheduler
+     * calls it at each arm's start. Witnesses are kept per arm, so `report()` describes every arm.
      */
     reset(): void {
         this.resetAt = performance.now();
         this.armed.clear();
         this.pending.length = 0;
+        this.candidates.clear();
         for (const s of this.streams.values()) s.rng.restore(s.seed);
-        for (const f of this.faults) {
-            this.witnesses.set(f.id, {
-                fault: f.id,
-                type: f.type,
-                armed: false,
-                injected_seq: [],
-                host_observed_seq: [],
-                proxy_retried: false,
-            });
-        }
     }
 
-    arm(id: string): void {
+    private witness(arm: string, id: string): Witness {
+        const key = `${arm}/${id}`;
+        let w = this.witnesses.get(key);
+        if (w) return w;
         const fault = this.faults.find((f) => f.id === id);
         if (!fault) throw new Error(`unknown proxy fault ${id}`);
-        this.armed.set(id, { fault, calls: 0, at: performance.now() });
-        (this.witnesses.get(id) as Witness).armed = true;
+        w = {
+            arm,
+            fault: id,
+            type: fault.type,
+            armed: false,
+            injected_seq: [],
+            host_observed_seq: [],
+            proxy_retried: false,
+        };
+        this.witnesses.set(key, w);
+        return w;
     }
 
-    disarm(id: string): void {
-        this.armed.delete(id);
+    /** Arming after `restoreRecord` continues a multi-call episode from the injections already made. */
+    arm(id: string, arm: string): void {
+        const w = this.witness(arm, id);
+        const fault = this.faults.find((f) => f.id === id) as ProxyFault;
+        const calls = w.injected_seq.length;
+        this.armed.set(`${arm}/${id}`, { arm, fault, calls, at: performance.now() });
+        w.armed = true;
+    }
+
+    disarm(id: string, arm: string): void {
+        this.armed.delete(`${arm}/${id}`);
+    }
+
+    /** Records an earlier invocation's arming of the episode for `arm` in the witness state. */
+    armedBefore(id: string, arm: string): void {
+        if (this.faults.some((f) => f.id === id)) this.witness(arm, id).armed = true;
     }
 
     /**
@@ -103,20 +127,30 @@ export class FaultInjector {
      * last reset belongs to the previous arm and takes nothing from this one, and a call
      * received before a fault was armed takes nothing from that fault.
      */
-    take(component: Component, call: number, startedMono = performance.now()): ProxyFault | null {
+    take(
+        component: Component,
+        call: number,
+        startedMono = performance.now(),
+        arm = "",
+    ): ProxyFault | null {
         if (component !== TARGET || startedMono < this.resetAt) return null;
-        for (const [id, a] of this.armed) {
-            if (startedMono < a.at) continue;
+        this.candidate(arm).set(call, { at: startedMono });
+        for (const [key, a] of this.armed) {
+            if (a.arm !== arm || startedMono < a.at) continue;
             const { strategy, params } = a.fault;
-            a.calls++;
             const limit =
                 strategy === "persistent"
                     ? Number.POSITIVE_INFINITY
                     : (params.count ?? params.calls ?? 1);
-            if (a.calls >= limit) this.armed.delete(id);
-            const draw = () => (this.streams.get(id) as { rng: Rng }).rng.next();
+            if (a.calls >= limit) {
+                this.armed.delete(key);
+                continue;
+            }
+            a.calls++;
+            if (a.calls >= limit) this.armed.delete(key);
+            const draw = () => (this.streams.get(a.fault.id) as { rng: Rng }).rng.next();
             if (strategy !== "intermittent" || draw() < (params.probability ?? 1)) {
-                this.pending.push({ fault: id, at: performance.now(), call });
+                this.pending.push({ key, arm, at: startedMono, call });
                 return a.fault;
             }
         }
@@ -130,29 +164,99 @@ export class FaultInjector {
      */
     observe(record: CallRecord, call: number, startedMono: number): void {
         if (startedMono < this.resetAt) return;
-        for (const p of this.pending.filter((x) => call > x.call && startedMono >= x.at)) {
-            if (record.component !== TARGET) continue;
-            const inWindow = startedMono <= p.at + this.windowMs;
-            if (inWindow)
-                (this.witnesses.get(p.fault) as Witness).host_observed_seq.push(record.seq);
-            this.pending.splice(this.pending.indexOf(p), 1);
+        const calls = this.candidate(record.arm);
+        if (record.component === TARGET) {
+            calls.set(call, { at: calls.get(call)?.at ?? startedMono, seq: record.seq });
         }
         if (record.fault_ref === null) {
             const own = this.pending.findIndex((p) => p.call === call);
             if (own >= 0) this.pending.splice(own, 1);
-            return;
         }
-        const w = this.witnesses.get(record.fault_ref) as Witness;
+        this.settle(record.arm, calls);
+        if (!this.pending.some((p) => p.arm === record.arm)) this.candidates.delete(record.arm);
+        if (record.fault_ref === null) return;
+        const w = this.witness(record.arm, record.fault_ref);
         w.injected_seq.push(record.seq);
         if (record.proxy_retries > 0) w.proxy_retried = true;
     }
 
-    report(): WitnessReport[] {
-        return [...this.witnesses.values()].map((w) => {
-            const fired = w.injected_seq.length > 0 && w.host_observed_seq.length > 0;
-            return { ...w, status: fired ? "fired" : "untriggered" };
-        });
+    private candidate(arm: string): Map<number, { at: number; seq?: number }> {
+        let calls = this.candidates.get(arm);
+        if (!calls) {
+            calls = new Map();
+            this.candidates.set(arm, calls);
+        }
+        return calls;
     }
+
+    /**
+     * An injection is witnessed by the first later agent call to arrive, once its record is
+     * written, when that call arrived inside the window. Arrival ordinals and receipt stamps rise
+     * together, so a first later call past the window ends the injection's watch unwitnessed.
+     */
+    private settle(arm: string, calls: Map<number, { at: number; seq?: number }>): void {
+        const ordered = [...calls].sort(([a], [b]) => a - b);
+        for (const p of this.pending.filter((x) => x.arm === arm)) {
+            const first = ordered.find(([c, x]) => c > p.call && x.at >= p.at);
+            if (!first) continue;
+            const [, next] = first;
+            if (next.at <= p.at + this.windowMs) {
+                if (next.seq === undefined) continue;
+                (this.witnesses.get(p.key) as Witness).host_observed_seq.push(next.seq);
+            }
+            this.pending.splice(this.pending.indexOf(p), 1);
+        }
+    }
+
+    /**
+     * Feeds one record an earlier invocation of the same run persisted, in `restoreOrder`, so a
+     * resumed run's witnesses carry the injections and observations made before the restart.
+     * An injection is witnessed by the first later agent call of its arm that started inside
+     * the window, on the wall clock both records carry.
+     */
+    restoreRecord(record: CallRecord): void {
+        const known =
+            record.fault_ref !== null && this.faults.some((f) => f.id === record.fault_ref);
+        if (record.component === TARGET && !known) {
+            for (const p of this.restoring.filter((x) => x.arm === record.arm)) {
+                if (record.started_wall_ms <= p.wall + this.windowMs) {
+                    (this.witnesses.get(p.key) as Witness).host_observed_seq.push(record.seq);
+                }
+                this.restoring.splice(this.restoring.indexOf(p), 1);
+            }
+        }
+        if (!known) return;
+        const w = this.witness(record.arm, record.fault_ref as string);
+        w.armed = true;
+        w.injected_seq.push(record.seq);
+        if (record.proxy_retries > 0) w.proxy_retried = true;
+        const key = `${record.arm}/${w.fault}`;
+        this.restoring.push({ key, arm: record.arm, wall: record.started_wall_ms });
+    }
+
+    /** Every episode's witness for each arm that ran, or for `arm` alone; one never armed is `untriggered`. */
+    report(arm?: string): WitnessReport[] {
+        const arms =
+            arm === undefined
+                ? [...new Set([...this.witnesses.values()].map((w) => w.arm))]
+                : [arm];
+        return arms.flatMap((a) =>
+            this.faults.map((f) => {
+                const w = this.witness(a, f.id);
+                const fired = w.injected_seq.length > 0 && w.host_observed_seq.length > 0;
+                return { ...w, status: fired ? "fired" : "untriggered" };
+            }),
+        );
+    }
+}
+
+/** Arrival order puts a delayed injected call before the retries it caused. */
+export function restoreOrder(
+    a: Pick<CallRecord, "arrival" | "started_wall_ms" | "seq">,
+    b: Pick<CallRecord, "arrival" | "started_wall_ms" | "seq">,
+): number {
+    if (a.arrival !== undefined && b.arrival !== undefined) return a.arrival - b.arrival;
+    return a.started_wall_ms - b.started_wall_ms || a.seq - b.seq;
 }
 
 export function excludedFromFaultMetrics(witnesses: WitnessReport[]): boolean {

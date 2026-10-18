@@ -1,4 +1,11 @@
-import { appendFileSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import {
+    appendFileSync,
+    existsSync,
+    lstatSync,
+    readdirSync,
+    readFileSync,
+    truncateSync,
+} from "node:fs";
 import { join } from "node:path";
 
 /** The kernel reports CPU time in clock ticks; `getconf CLK_TCK` supplies the ticks per second. */
@@ -76,7 +83,8 @@ export interface Sample {
 
 export class ResourceSampler {
     private timer: ReturnType<typeof setInterval> | null = null;
-    private last: { pid: number; wall: number; cpu: number } | null = null;
+    /** The previous sample's monotonic time, so a wall-clock step cannot distort the CPU fraction. */
+    private last: { pid: number; mono: number; cpu: number } | null = null;
     private busy = false;
 
     constructor(
@@ -88,18 +96,27 @@ export class ResourceSampler {
             storeDir: string;
             scenarioMs: () => number;
             onBusy: (busy: boolean) => void;
+            /** Receives a failed interval sample; the timer stops first. Absent, the failure throws. */
+            onError?: (caught: unknown) => void;
         },
-    ) {}
+    ) {
+        if (!existsSync(o.path)) return;
+        const text = readFileSync(o.path, "utf8");
+        const complete = text.lastIndexOf("\n") + 1;
+        if (complete < text.length)
+            truncateSync(o.path, Buffer.byteLength(text.slice(0, complete)));
+    }
 
     sample(): Sample {
         const pid = this.o.pid();
         const stats = pid === null ? null : procStats(pid);
         const wall = Date.now();
+        const mono = performance.now();
         let fraction: number | null = null;
-        if (stats && this.last?.pid === pid && wall > this.last.wall) {
-            fraction = (stats.cpuMs - this.last.cpu) / (wall - this.last.wall);
+        if (stats && this.last?.pid === pid && mono > this.last.mono) {
+            fraction = (stats.cpuMs - this.last.cpu) / (mono - this.last.mono);
         }
-        this.last = stats && pid !== null ? { pid, wall, cpu: stats.cpuMs } : null;
+        this.last = stats && pid !== null ? { pid, mono, cpu: stats.cpuMs } : null;
         const busy = fraction === null ? this.busy : fraction > this.o.busyFraction;
         if (busy !== this.busy) {
             this.busy = busy;
@@ -119,16 +136,30 @@ export class ResourceSampler {
         return s;
     }
 
+    /** `start` takes a baseline sample, so the first interval sample yields a CPU fraction. */
     start(): void {
         if (this.timer) return;
         this.sample();
-        this.timer = setInterval(() => this.sample(), this.o.intervalMs);
+        this.timer = setInterval(() => {
+            try {
+                this.sample();
+            } catch (caught) {
+                if (!this.o.onError) throw caught;
+                try {
+                    this.stop();
+                } catch {
+                    this.busy = false;
+                }
+                this.o.onError(caught);
+            }
+        }, this.o.intervalMs);
     }
 
     stop(): void {
         if (this.timer) clearInterval(this.timer);
         this.timer = null;
-        if (this.busy) this.o.onBusy(false);
+        const wasBusy = this.busy;
         this.busy = false;
+        if (wasBusy) this.o.onBusy(false);
     }
 }

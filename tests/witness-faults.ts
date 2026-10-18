@@ -1,10 +1,14 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
+import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
+import { recordProblems } from "../src/proxy/records";
 import { checkJournal, type Schedule } from "../src/run/journal-check";
-import { pinnedBin } from "../src/run/run";
+import { processStart } from "../src/run/procs";
+import { manifestIdentity, pinnedBin, requireJournalShape, runIdentity } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
 import { type FaultEpisode, type FaultType, SEAMS, type Trigger } from "../src/scenario/faults";
+import { loadPrereg } from "../src/scenario/inputs";
 
 const ROOT = resolve(import.meta.dir, "..");
 const out = resolve(process.argv[2] ?? "runs/witness-faults");
@@ -40,17 +44,26 @@ const FAULTS = [
     ),
 ];
 
-function lines(path: string): Record<string, unknown>[] {
+/**
+ * JSONL rows. While a run is live, only an unterminated final fragment is tolerated; a final
+ * artifact (`strict`) must parse on every complete line, so a corrupt row fails the witness.
+ */
+function lines(path: string, strict = false): Record<string, unknown>[] {
     if (!existsSync(path)) return [];
-    return readFileSync(path, "utf8")
-        .split("\n")
-        .flatMap((l) => {
-            try {
-                return [JSON.parse(l) as Record<string, unknown>];
-            } catch {
-                return [];
-            }
-        });
+    const text = readFileSync(path, "utf8");
+    const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+    if (strict && complete.length !== text.length) {
+        throw new Error(`${path} ends in an unterminated line`);
+    }
+    const rows = complete.split("\n").filter((l) => l !== "");
+    return rows.flatMap((l, i) => {
+        try {
+            return [JSON.parse(l) as Record<string, unknown>];
+        } catch {
+            if (strict) throw new Error(`${path} line ${i + 1} is corrupt`);
+            return [];
+        }
+    });
 }
 
 const RESUME_FAULTS = [
@@ -63,16 +76,40 @@ const FAULT_SETS: Record<string, FaultEpisode[]> = {
     resume: RESUME_FAULTS,
 };
 
+/** Each child's run limit counts from its launch, whatever the witness awaits in between. */
+const launched = new WeakMap<ReturnType<typeof Bun.spawn>, number>();
+
 function launch(dir: string, args: string[]) {
+    mkdirSync(out, { recursive: true });
     const faults = `${dir}.faults.json`;
     writeFileSync(faults, JSON.stringify(FAULT_SETS[dir.split("/").at(-1) ?? ""] ?? []));
     const argv = ["bun", "scripts/run-tier.ts", "--tier", "S", "--seed", "101", "--out", dir];
     argv.push("--faults", faults, "--context-limit", "24000", ...args);
-    return Bun.spawn(argv, { cwd: ROOT, env, stdout: "inherit", stderr: "pipe" });
+    const child = Bun.spawn(argv, { cwd: ROOT, env, stdout: "inherit", stderr: "pipe" });
+    launched.set(child, Date.now());
+    return child;
 }
 
-async function waitFor(test: () => boolean): Promise<void> {
-    while (!test()) await Bun.sleep(500);
+const WAIT_MS = 20 * 60_000;
+
+/** Polls `test` until it holds; a child exit or the deadline ends the wait with a failure. */
+async function waitFor(child: ReturnType<typeof launch>, test: () => boolean): Promise<void> {
+    const deadline = Date.now() + WAIT_MS;
+    let exited = false;
+    void child.exited.then(() => {
+        exited = true;
+    });
+    while (!test()) {
+        if (exited) {
+            const { code, stderr } = await finished(child);
+            throw new Error(`run exited with ${code} before the awaited state:\n${stderr}`);
+        }
+        if (Date.now() > deadline) {
+            child.kill("SIGKILL");
+            throw new Error(`run reached no awaited state within ${WAIT_MS} ms`);
+        }
+        await Bun.sleep(200);
+    }
 }
 const begun = (dir: string, event: string) => () =>
     lines(join(dir, "journal.jsonl")).some((e) => e.kind === "BeginTurn" && e.event === event);
@@ -84,9 +121,23 @@ const callsByTurn = (dir: string) =>
         return acc;
     }, {});
 
+/** A run gets the S wall budget plus the signal grace and teardown; past that it is killed. */
+const RUN_LIMIT_MS = loadPrereg("S").liveness_bounds.tier_wall_budget_ms + 5 * 60_000;
+
 async function finished(child: ReturnType<typeof launch>) {
+    const limit = { hit: false };
+    const deadline = (launched.get(child) ?? Date.now()) + RUN_LIMIT_MS;
+    const timer = setTimeout(
+        () => {
+            limit.hit = true;
+            child.kill("SIGKILL");
+        },
+        Math.max(0, deadline - Date.now()),
+    );
     const code = await child.exited;
-    return { code, stderr: (await new Response(child.stderr).text()).slice(-2000) };
+    clearTimeout(timer);
+    const stderr = (await new Response(child.stderr).text()).slice(-2000);
+    return { code, stderr, timed_out: limit.hit };
 }
 
 const dirs = {
@@ -113,51 +164,193 @@ if (only.includes("scheduled")) {
 }
 if (only.includes("rogue")) {
     const child = launch(dirs.rogue, ["--arms", "eidnara", "--events", "6"]);
-    await waitFor(begun(dirs.rogue, "e-000004"));
+    await waitFor(child, begun(dirs.rogue, "e-000004"));
     const state = JSON.parse(readFileSync(join(dirs.rogue, "eidnara/state.json"), "utf8"));
-    try {
-        process.kill(state.daemon.pid, "SIGKILL");
-    } catch (caught) {
-        outcome.rogue_kill_error = String(caught);
+    const pid: unknown = state?.daemon?.pid;
+    const start: unknown = state?.daemon?.start;
+    const same = typeof pid === "number" && processStart(pid) === start;
+    if (typeof pid === "number" && Number.isInteger(pid) && pid > 1 && same) {
+        try {
+            process.kill(pid, "SIGKILL");
+            outcome.rogue_killed = { pid, start };
+        } catch (caught) {
+            outcome.rogue_kill_error = String(caught);
+        }
+    } else {
+        outcome.rogue_kill_error = same
+            ? `state.json names no daemon pid: ${JSON.stringify(pid)}`
+            : `daemon pid ${JSON.stringify(pid)} no longer has start ${JSON.stringify(start)}`;
     }
     outcome.rogue = await finished(child);
 }
 if (only.includes("resume")) {
     const args = ["--arms", "eidnara", "--events", "13", "--models", models];
     const first = launch(dirs.resume, args);
-    await waitFor(called(dirs.resume, "e-000007"));
+    await waitFor(first, called(dirs.resume, "e-000007"));
     first.kill("SIGKILL");
     const killed = await finished(first);
+    const journal = lines(join(dirs.resume, "journal.jsonl"));
+    const has = (kind: string) => journal.some((e) => e.kind === kind && e.event === "e-000007");
+    const mid_turn = has("BeginTurn") && !has("EndTurn");
     const before = callsByTurn(dirs.resume);
     const second = await finished(launch(dirs.resume, args));
     const after = callsByTurn(dirs.resume);
     const rebilled = Object.keys(before).filter((t) => t !== "null" && after[t] !== before[t]);
-    outcome.resume = { killed, second, calls_before: before, calls_after: after, rebilled };
+    outcome.resume = {
+        killed,
+        mid_turn,
+        second,
+        calls_before: before,
+        calls_after: after,
+        rebilled,
+    };
 }
 writeFileSync(join(out, "outcome.json"), `${JSON.stringify(outcome, null, 2)}\n`);
 
+/** The run's event prefix (`manifest.events`) with each event's scheduled time. */
 function schedule(dir: string): Schedule {
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
-    const events = new Map(scenario.events.map((e) => [String(e.id), Number(e.scenario_ms)]));
-    const sleeps = new Map(FAULTS.map((f) => [f.id, Number(f.params.duration_ms)]));
-    return { events, sleeps };
+    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
+        events: number;
+    };
+    const events = scenario.events.slice(0, manifest.events);
+    return { events: new Map(events.map((e) => [String(e.id), Number(e.scenario_ms)])) };
 }
 
+const IDENTITY_FIELDS = [
+    "prereg_sha256",
+    "eidnara_commit",
+    "eidnara_worktree",
+    "sim_commit",
+    "sim_worktree",
+    "binaries",
+    "corpus",
+    "bedrock",
+    "toolchain",
+] as const;
+
 function summarize(dir: string) {
-    const journal = lines(join(dir, "journal.jsonl"));
-    const calls = lines(join(dir, "calls.jsonl"));
+    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
+        order?: string[];
+        sim_commit?: string;
+        sim_worktree?: string;
+    };
+    const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
+    const { scenario_hash: _hash, ...scenarioBody } = scenario;
+    const manifestEvents = (manifest as { events?: number }).events ?? scenario.events.length;
+    const journal = lines(join(dir, "journal.jsonl"), true);
+    const calls = lines(join(dir, "calls.jsonl"), true);
+    calls.forEach((row, i) => {
+        const problems = recordProblems(row);
+        if (problems.length > 0) {
+            throw new Error(`${dir}/calls.jsonl row ${i} is malformed: ${problems.join(", ")}`);
+        }
+    });
     const perArm = (arm: string, kind: string) =>
         journal.filter((e) => e.arm === arm && e.kind === kind);
+    /** Each scheduled turn's session, from the scenario; an agent call must carry the same. */
+    const turnSession = new Map(
+        scenario.events.map((e) => [String(e.id), String(e.session)] as const),
+    );
     const arms = [
         ...new Set(journal.map((e) => e.arm).filter((a) => typeof a === "string")),
     ] as string[];
     return {
         ended: journal.at(-1)?.kind,
+        session_starts: Object.fromEntries(
+            scenario.events
+                .filter((e) => e.kind === "session_start")
+                .map((e) => [String(e.session), String(e.id)]),
+        ),
+        session_start_ms: Object.fromEntries(
+            scenario.events
+                .filter((e) => e.kind === "session_start")
+                .map((e) => [String(e.session), Number(e.scenario_ms)]),
+        ),
+        bindings: {
+            scenario_hash: sha256Hex(canonicalJson(scenarioBody)) === scenario.scenario_hash,
+            manifest_scenario:
+                (manifest as { scenario_hash?: string }).scenario_hash === scenario.scenario_hash,
+            manifest_bound:
+                journal.some((e) => e.kind === "Preflight") &&
+                journal
+                    .filter((e) => e.kind === "Preflight")
+                    .every((e) => e.manifest_sha256 === manifestIdentity(manifest as never)),
+        },
+        options: {
+            tier: (manifest as { tier?: string }).tier,
+            seed: (manifest as { seed?: number }).seed,
+            order: manifest.order,
+            events: manifestEvents,
+            context_limit: (manifest as { context_limit?: number }).context_limit,
+            models: (manifest as { models?: string[] }).models,
+            fault_override: (manifest as { fault_override?: unknown }).fault_override,
+        },
+        rogue_exit: journal.filter(
+            (e) => e.kind === "ItemState" && e.daemon_exit !== undefined && e.expected === false,
+        ).length,
+        end_arms: Object.fromEntries(
+            (manifest.order ?? []).map((arm) => [arm, perArm(arm, "EndArm").length]),
+        ),
+        identity: Object.fromEntries(
+            IDENTITY_FIELDS.map((k) => [k, (manifest as Record<string, unknown>)[k]]),
+        ),
+        projects: scenario.projects.map((p) => p.id),
+        preflight: {
+            first: journal[0]?.kind === "Preflight",
+            before_start:
+                journal.findIndex((e) => e.kind === "Preflight") <
+                journal.findIndex((e) => e.kind === "StartRun" || e.kind === "ResumeRun"),
+            each_start: journal
+                .map((e, i) => [e, i] as const)
+                .filter(([e]) => e.kind === "StartRun" || e.kind === "ResumeRun")
+                .every(([, i]) => journal[i - 1]?.kind === "Preflight"),
+            intercepted: (
+                (journal[0]?.time_injection as { name: string; intercepted: boolean }[]) ?? []
+            ).map((t) => `${t.name}:${t.intercepted}`),
+            every_intercepted: journal
+                .filter((e) => e.kind === "Preflight")
+                .every(
+                    (e) =>
+                        ((e.time_injection as { name: string; intercepted: boolean }[]) ?? [])
+                            .map((t) => `${t.name}:${t.intercepted}`)
+                            .sort()
+                            .join() === "daemon:true,opencode:true,pi:true",
+                ),
+        },
+        journal_shape: (() => {
+            try {
+                requireJournalShape(
+                    journal as never,
+                    scenario.events.slice(0, manifestEvents).map((e) => ({
+                        id: String(e.id),
+                        kind: String(e.kind),
+                        scenario_ms: Number(e.scenario_ms),
+                    })),
+                    manifest.order,
+                );
+                return journal.every((e, i) => e.seq === i) ? "ok" : "seq gap";
+            } catch (caught) {
+                return (caught as Error).message;
+            }
+        })(),
         arms: Object.fromEntries(
             arms.map((arm) => [
                 arm,
                 {
                     fired: perArm(arm, "FaultFired").map((e) => e.fault),
+                    fired_at: Object.fromEntries(
+                        perArm(arm, "FaultFired").map((e) => [String(e.fault), e.scenario_ms]),
+                    ),
+                    fired_before: Object.fromEntries(
+                        perArm(arm, "FaultFired").map((e) => {
+                            const at = journal.indexOf(e);
+                            const next = journal
+                                .slice(at)
+                                .find((x) => x.arm === arm && x.kind === "Event");
+                            return [String(e.fault), next?.event ?? null];
+                        }),
+                    ),
                     observed: perArm(arm, "FaultObserved").map((e) => ({
                         fault: e.fault,
                         evidence: e.evidence,
@@ -166,6 +359,9 @@ function summarize(dir: string) {
                     interrupted: perArm(arm, "ItemState").filter(
                         (e) => e.state === "failed(interrupted)",
                     ),
+                    interrupted_events: perArm(arm, "Event")
+                        .filter((e) => e.outcome === "failed(interrupted)")
+                        .map((e) => e.event),
                     daemon_exits: perArm(arm, "ItemState").filter(
                         (e) => e.daemon_exit !== undefined,
                     ),
@@ -179,17 +375,30 @@ function summarize(dir: string) {
                                 .map((c) => c.model),
                         ),
                     ],
+                    agent_models_by_session: calls
+                        .filter((c) => c.arm === arm && c.component === "agent")
+                        .reduce<Record<string, string[]>>((acc, c) => {
+                            const scheduled = turnSession.get(String(c.turn));
+                            const key =
+                                scheduled !== undefined && scheduled === c.session
+                                    ? scheduled
+                                    : `unscoped:${String(c.turn)}/${String(c.session)}`;
+                            const seen = acc[key] ?? [];
+                            if (!seen.includes(String(c.model))) seen.push(String(c.model));
+                            acc[key] = seen;
+                            return acc;
+                        }, {}),
                 },
             ]),
         ),
-        call_seq_unique: new Set(calls.map((c) => c.seq)).size === calls.length,
+        call_seq_unique: calls.every((c, i) => c.seq === i),
         agent_calls_by_turn: calls.reduce<Record<string, number>>((acc, c) => {
             if (c.component === "agent")
                 acc[`${c.arm}/${c.turn}`] = (acc[`${c.arm}/${c.turn}`] ?? 0) + 1;
             return acc;
         }, {}),
         invariants: checkJournal(journal as never, schedule(dir)),
-        fail_open_on_full_store: existsSync(join(dir, "eidnara/r/eidnara.log"))
+        full_store_enospc_log_lines: existsSync(join(dir, "eidnara/r/eidnara.log"))
             ? readFileSync(join(dir, "eidnara/r/eidnara.log"), "utf8")
                   .split("\n")
                   .filter((l) => l.includes("disk is full")).length
@@ -205,3 +414,327 @@ const summary = {
 };
 writeFileSync(join(out, "witness.json"), `${JSON.stringify(summary, null, 2)}\n`);
 console.log(JSON.stringify(summary, null, 2));
+
+type Run = { code: number } | undefined;
+const failures: string[] = [];
+const check = (held: boolean, what: string) => {
+    if (!held) failures.push(what);
+};
+const run = (name: string) => outcome[name] as Run;
+const invariantsClean = (name: "scheduled" | "rogue" | "resume") => {
+    const s = summary[name];
+    if (!s) return false;
+    const v = s.invariants;
+    const violations = [
+        v.decreasing_scenario_ms,
+        v.advance_while_busy,
+        v.off_schedule_jumps,
+        v.events_inside_sleep,
+        v.repeated_sleeps,
+        v.missing_events,
+        v.out_of_order_events,
+        v.jump_origin_mismatch,
+    ];
+    const armsEnded = Object.values(s.end_arms).every((n) => n === 1);
+    return (
+        s.ended === "EndRun" &&
+        armsEnded &&
+        s.call_seq_unique &&
+        violations.every((x) => x.length === 0)
+    );
+};
+for (const name of ["scheduled", "rogue"]) {
+    const r = outcome[name] as { timed_out?: boolean } | undefined;
+    if (r) check(!r.timed_out, `${name}: finished within the run limit`);
+}
+type ArmSummary = {
+    fired: unknown[];
+    fired_at: Record<string, unknown>;
+    fired_before: Record<string, unknown>;
+    observed: { fault: unknown; evidence: unknown }[];
+    turns: unknown[];
+    agent_models_by_session: Record<string, string[]>;
+    models: unknown[];
+    duplicate_events: number;
+};
+/** Each listed arm fired every expected fault, observed those with a mechanism, and saw both models. */
+const armEvidence = (
+    name: "scheduled" | "resume",
+    arms: string[],
+    expected: FaultEpisode[],
+    bothModels: boolean,
+) => {
+    const s = summary[name];
+    if (!s) return check(false, `${name}: no summary`);
+    const observable = expected.filter((f) => f.type !== "laptop_sleep").map((f) => f.id);
+    const sleepIds = expected.filter((f) => f.type === "laptop_sleep").map((f) => f.id);
+    const tagged = s.invariants.sleep_jump_faults.map((j) => `${j.arm}/${j.fault}`);
+    const wanted = arms.flatMap((arm) => sleepIds.map((id) => `${arm}/${id}`));
+    check(
+        [...tagged].sort().join() === [...wanted].sort().join(),
+        `${name}: exactly one fault-tagged jump per arm and sleep episode (${wanted.join(", ")})`,
+    );
+    for (const j of s.invariants.sleep_jump_faults) {
+        const f = expected.find((x) => x.id === j.fault);
+        const landing = f ? s.session_start_ms[f.trigger.session] : undefined;
+        check(
+            landing !== undefined && j.to_ms === landing,
+            `${name}/${j.arm}: sleep jump ${j.fault} landed on its session's first event (${landing})`,
+        );
+    }
+    check(
+        s.preflight.each_start && s.preflight.every_intercepted,
+        `${name}: every StartRun or ResumeRun follows its own all-intercepted Preflight entry`,
+    );
+    check(
+        s.journal_shape === "ok",
+        `${name}: journal passes the resume shape check (${s.journal_shape})`,
+    );
+    check(s.invariants.next_event_jumps > 0, `${name}: at least one ordinary event jump checked`);
+    const intercepted = s.preflight.intercepted;
+    check(
+        s.preflight.first && s.preflight.before_start,
+        `${name}: journal opens with a Preflight entry before StartRun or ResumeRun`,
+    );
+    check(
+        [...intercepted].sort().join() === "daemon:true,opencode:true,pi:true",
+        `${name}: pi, opencode, and daemon each probed and intercepted (${intercepted.join(", ")})`,
+    );
+    for (const arm of arms) {
+        const a = s.arms[arm] as ArmSummary | undefined;
+        if (!a) {
+            check(false, `${name}: arm ${arm} has no journal entries`);
+            continue;
+        }
+        const fired = new Set(a.fired);
+        const observed = new Set(a.observed.map((x) => x.fault));
+        check(
+            expected.every((f) => fired.has(f.id)),
+            `${name}/${arm}: fired ${expected.map((f) => f.id).join(", ")}`,
+        );
+        for (const f of expected.filter((x) => x.trigger.kind === "session_start")) {
+            const count = a.fired.filter((id) => id === f.id).length;
+            const boundary = s.session_starts[f.trigger.session];
+            const at = s.session_start_ms[f.trigger.session];
+            check(
+                count === 1 && a.fired_before[f.id] === boundary && a.fired_at[f.id] === at,
+                `${name}/${arm}: ${f.id} fired once, at ${at}, right before ${boundary ?? "its session start"}`,
+            );
+        }
+        check(
+            observable.every((id) => observed.has(id)),
+            `${name}/${arm}: observed ${observable.join(", ")}`,
+        );
+        if (bothModels) {
+            check(
+                models.split(",").every((m) => a.models.includes(m)),
+                `${name}/${arm}: agent calls used both configured models`,
+            );
+        }
+        check(a.duplicate_events === 0, `${name}/${arm}: no duplicate Event entry`);
+        check(
+            a.turns.length > 0 && a.turns.every((t) => String(t).endsWith(":ok")),
+            `${name}/${arm}: every completed turn ended ok, including those after the faults`,
+        );
+        mechanismEvidence(name, arm, a, expected);
+    }
+};
+
+/**
+ * Each arm's model switch happened at its session boundary; on the Eidnara arm the restart and
+ * full-store episodes also carry the evidence their mechanism produces.
+ */
+const mechanismEvidence = (name: string, arm: string, a: ArmSummary, expected: FaultEpisode[]) => {
+    const evidence = new Map(
+        a.observed.map((o) => [o.fault, o.evidence as Record<string, unknown>]),
+    );
+    for (const f of expected) {
+        const e = evidence.get(f.id);
+        if (!e) continue;
+        if (f.type === "daemon_restart" && arm === "host") {
+            check(
+                e.skipped === "arm runs no daemon",
+                `${name}/host: ${f.id} recorded skipped: arm runs no daemon`,
+            );
+        }
+        if (f.type === "store_full" && arm === "host") {
+            check(
+                e.skipped === "arm runs no loop-mounted store",
+                `${name}/host: ${f.id} recorded skipped: arm runs no loop-mounted store`,
+            );
+        }
+        if (f.type === "daemon_restart" && arm === "eidnara") {
+            check(
+                typeof e.pid_before === "number" &&
+                    typeof e.pid_after === "number" &&
+                    e.pid_before !== e.pid_after &&
+                    e.restarted_by === "harness",
+                `${name}/eidnara: ${f.id} restarted the daemon (new pid, restarted_by harness)`,
+            );
+        }
+        if (f.type === "model_switch") {
+            const [first, second] = models.split(",");
+            const switched = f.trigger.session;
+            const sessions = Object.entries(a.agent_models_by_session);
+            const unscoped = sessions.filter(([sid]) => sid.startsWith("unscoped:"));
+            check(
+                unscoped.length === 0,
+                `${name}/${arm}: every agent call carries its scheduled turn's session (unscoped: ${unscoped.map(([k]) => k).join(", ") || "none"})`,
+            );
+            const before = sessions.filter(([sid]) => sid < switched);
+            const after = sessions.filter(([sid]) => sid >= switched);
+            check(
+                before.length > 0 &&
+                    before.every(([, m]) => m.length === 1 && m[0] === first) &&
+                    after.length > 0 &&
+                    after.every(([, m]) => m.length === 1 && m[0] === second),
+                `${name}/${arm}: sessions before ${switched} used ${first}, sessions from it on used ${second}`,
+            );
+        }
+        if (f.type === "store_full" && arm === "eidnara") {
+            check(e.avail_kb === 0, `${name}/eidnara: ${f.id} filled the store (avail_kb 0)`);
+            const s = summary[name as "scheduled" | "resume"];
+            check(
+                (s?.full_store_enospc_log_lines ?? 0) > 0,
+                `${name}/eidnara: the daemon logged the full store (database or disk is full)`,
+            );
+        }
+    }
+};
+const deterministic = FAULTS.filter((f) => f.trigger.kind !== "first_summarizer_call");
+/** The manifest each case must carry, from the arguments `launch` passes to run-tier. */
+const PRESCRIBED = {
+    scheduled: {
+        tier: "S",
+        seed: 101,
+        order: ["host", "eidnara"],
+        events: 23,
+        context_limit: 24000,
+        models: models.split(","),
+        fault_override: FAULT_SETS.scheduled,
+    },
+    rogue: {
+        tier: "S",
+        seed: 101,
+        order: ["eidnara"],
+        events: 6,
+        context_limit: 24000,
+        models: [config.agent_model],
+        fault_override: FAULT_SETS.rogue,
+    },
+    resume: {
+        tier: "S",
+        seed: 101,
+        order: ["eidnara"],
+        events: 13,
+        context_limit: 24000,
+        models: models.split(","),
+        fault_override: FAULT_SETS.resume,
+    },
+} as const;
+for (const name of ["scheduled", "rogue", "resume"] as const) {
+    check(summary[name] !== null, `${name}: run directory present (every case is required)`);
+    const recorded = outcome[name];
+    check(
+        typeof recorded === "object" && recorded !== null && !Array.isArray(recorded),
+        `${name}: launch outcome recorded in outcome.json (every case's exit is required)`,
+    );
+    const b = summary[name]?.bindings;
+    check(b?.scenario_hash === true, `${name}: scenario.json still hashes to its scenario_hash`);
+    check(b?.manifest_scenario === true, `${name}: manifest.json names this scenario's hash`);
+    check(
+        b?.manifest_bound === true,
+        `${name}: manifest.json matches the digest its journal bound`,
+    );
+    const want = PRESCRIBED[name];
+    const got = summary[name]?.options;
+    check(
+        JSON.stringify(got) === JSON.stringify(want),
+        `${name}: manifest options are the witness's prescribed ones (${JSON.stringify(want)})`,
+    );
+}
+for (const name of ["scheduled", "rogue", "resume"] as const) {
+    const s = summary[name];
+    if (!s) continue;
+    const live = runIdentity(config, "S", s.projects) as Record<string, unknown>;
+    const stale = IDENTITY_FIELDS.filter(
+        (k) => JSON.stringify(s.identity[k]) !== JSON.stringify(live[k]),
+    );
+    check(
+        stale.length === 0,
+        `${name}: run directory matches the current runtime identity (stale: ${stale.join(", ") || "none"})`,
+    );
+}
+check(run("scheduled")?.code === 0, "scheduled: exit 0");
+check(
+    !(run("scheduled") as { timed_out?: boolean } | undefined)?.timed_out,
+    "scheduled: within the run limit",
+);
+if (summary.scheduled) {
+    check(invariantsClean("scheduled"), "scheduled: EndRun, unique seq, clean invariants");
+    const real = summary.scheduled.invariants.jobs_held_after_turn.filter(
+        (j) => !j.job.startsWith("settle-cpu-") && !j.job.startsWith("request-"),
+    );
+    check(
+        real.length > 0,
+        "scheduled: a background or daemon-cpu job (not the synthetic settle hold) held the clock with no turn open (SIM-P13)",
+    );
+    armEvidence("scheduled", ["host", "eidnara"], deterministic, true);
+}
+if (summary.rogue) {
+    const rogueArm = summary.rogue.arms.eidnara as ArmSummary | undefined;
+    check(rogueArm?.duplicate_events === 0, "rogue/eidnara: no duplicate Event entry");
+    check(
+        summary.rogue.rogue_exit === 1,
+        "rogue/eidnara: the journal records exactly one unexpected daemon exit (ItemState daemon_exit, expected false)",
+    );
+}
+{
+    const rogue = outcome.rogue as { code?: number; stderr?: string } | undefined;
+    check(typeof rogue?.code === "number" && rogue.code !== 0, "rogue: nonzero exit");
+    check(
+        typeof rogue?.stderr === "string" &&
+            rogue.stderr.includes("outside a scheduled outage window"),
+        "rogue: daemon exit refused",
+    );
+    const killed = outcome.rogue_killed as { pid?: unknown; start?: unknown } | undefined;
+    check(
+        typeof killed?.pid === "number" && outcome.rogue_kill_error === undefined,
+        `rogue: the witness sent SIGKILL to the daemon named by state.json (${String(outcome.rogue_kill_error ?? "sent")})`,
+    );
+}
+{
+    const resume = outcome.resume as
+        | { killed?: Run; mid_turn?: boolean; second?: Run; rebilled?: unknown[] }
+        | undefined;
+    check(resume?.killed?.code === 137, "resume: first run killed with 137");
+    check(resume?.mid_turn === true, "resume: kill landed with e-000007 open");
+    check(resume?.second?.code === 0, "resume: second run exit 0");
+    check(
+        !(resume?.second as { timed_out?: boolean } | undefined)?.timed_out,
+        "resume: second run within the run limit",
+    );
+    check(
+        Array.isArray(resume?.rebilled) && resume.rebilled.length === 0,
+        "resume: no turn rebilled",
+    );
+}
+if (summary.resume) {
+    check(invariantsClean("resume"), "resume: EndRun, unique seq, clean invariants");
+    armEvidence("resume", ["eidnara"], RESUME_FAULTS, true);
+    const arm = summary.resume?.arms.eidnara as
+        | { interrupted: { event?: unknown }[]; interrupted_events: unknown[] }
+        | undefined;
+    check(
+        arm?.interrupted.map((e) => e.event).join() === "e-000007",
+        "resume/eidnara: exactly one ItemState failed(interrupted), for e-000007",
+    );
+    check(
+        arm?.interrupted_events.join() === "e-000007",
+        "resume/eidnara: exactly one Event failed(interrupted), for e-000007",
+    );
+}
+if (failures.length > 0) {
+    console.error(`witness failed:\n  ${failures.join("\n  ")}`);
+    process.exit(1);
+}

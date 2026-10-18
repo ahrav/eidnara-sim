@@ -66,9 +66,10 @@ export interface ArmHandle {
     daemonExited(detail: Record<string, unknown>): void;
 }
 
+/** Proxy faults arm per arm, since each arm executes the schedule on its own. */
 export interface ProxyControl {
-    arm(id: string): void;
-    disarm(id: string): void;
+    arm(id: string, arm: string): void;
+    disarm(id: string, arm: string): void;
     /** Called at each arm's start, after the driver's reset, so every arm sees one fault schedule. */
     reset(): void;
 }
@@ -96,6 +97,12 @@ export interface SchedulerOptions {
     onClock?: (arm: string, scenarioMs: number) => void;
     /** Runs before `EndArm` and `EndRun` are journaled; a throw leaves the arm or run open. */
     beforeEnd?: () => void;
+    /** Runs before `EndArm` and before `EndRun`; a throw leaves the entry unwritten. */
+    verify?: (point: "EndArm" | "EndRun") => void | Promise<void>;
+    /** A reason to stop; the idle wait and each step check it and fail with `HarnessFailure`. */
+    stopped?: () => string | null;
+    /** Runs once an arm's `StartArm` is journaled (or its processes reaped), before its first step. */
+    onArmReady?: (arm: string) => void;
     /** The arm's realised user-sim rates, journaled as `UserSimRates` before `EndArm`. */
     armSummary?: (arm: string) => object | undefined;
 }
@@ -150,6 +157,8 @@ export class Scheduler {
     private current: ArmHandle | null = null;
     /** Counts every job start and end, so a job that begins and ends between two polls still resets the quiet window. */
     private jobActivity = 0;
+    /** Each live job's `RegisterJob` on the monotonic clock, for its own idle deadline. */
+    private readonly jobStarted = new Map<string, number>();
     private fatal: HarnessFailure | null = null;
     private failed: Promise<never> | null = null;
     private fail: ((error: HarnessFailure) => void) | null = null;
@@ -211,7 +220,11 @@ export class Scheduler {
         if (new Set(this.o.order).size !== this.o.order.length) {
             throw new Error(`scheduler: arm order ${JSON.stringify(this.o.order)} repeats an arm`);
         }
-        const entries = this.o.journal.entries;
+        const preflights = this.o.journal.entries.filter((e) => e.kind === "Preflight");
+        const scoped = preflights.find((e) => e.arm !== null || e.scenario_ms !== 0);
+        if (scoped) throw new Error(`journal: Preflight carries an arm scope (seq ${scoped.seq})`);
+        // Lifecycle replay requires `StartRun` as the first lifecycle entry.
+        const entries = this.o.journal.entries.filter((e) => e.kind !== "Preflight");
         const fatal = entries.find((e) => e.kind === "ItemState" && e.fatal === true);
         if (fatal) {
             const cause = fatal.fault
@@ -258,6 +271,7 @@ export class Scheduler {
             const onClock = (ms: number) => this.o.onClock?.(arm, ms);
             const clock = new Clock(startMs, this.o.journal, undefined, onClock);
             this.clock = clock;
+            this.jobStarted.clear();
             const driver = this.o.drivers[arm] as ArmDriver;
             let ended = false;
             let finishing = false;
@@ -293,6 +307,7 @@ export class Scheduler {
                     const handle = this.handle(++this.generation, driver);
                     this.current = handle;
                     driver.bind?.(handle);
+                    this.o.onArmReady?.(arm);
                     // A resume reopens the session the next pending event belongs to; a pending
                     // `session_end` closes nothing the killed harness still had open, and an
                     // arm with no event left is finished without one.
@@ -355,6 +370,8 @@ export class Scheduler {
                     await this.pendingKill?.catch(() => undefined);
                 }
                 this.o.beforeEnd?.();
+                await this.o.verify?.("EndArm");
+                this.checkStop();
                 const rates = this.o.armSummary?.(arm);
                 if (rates) this.log({ kind: "UserSimRates", ...rates });
                 this.log({ kind: "EndArm" });
@@ -370,13 +387,15 @@ export class Scheduler {
                 this.clock = null;
                 if (!ended) {
                     for (const f of this.o.faults) {
-                        if (f.seam.layer === PROXY_LAYER) this.o.proxy?.disarm(f.id);
+                        if (f.seam.layer === PROXY_LAYER) this.o.proxy?.disarm(f.id, arm);
                     }
                 }
             }
         }
         if (this.fatal) throw this.fatal;
         this.o.beforeEnd?.();
+        await this.o.verify?.("EndRun");
+        this.checkStop();
         this.log({ kind: "EndRun" });
     }
 
@@ -919,11 +938,12 @@ export class Scheduler {
             );
             if (end && done.has(end.id)) continue;
             const t = f.trigger;
+            const index = t.kind === "user_turn" ? t.n - 1 : 0;
             const target = this.o.events.find(
-                (e) => t.kind === "user_turn" && e.session === t.session && e.index === t.n - 1,
+                (e) => e.kind === "user_turn" && e.session === t.session && e.index === index,
             );
             if (f.strategy === "persistent" || (target && !begun.has(target.id))) {
-                this.o.proxy?.arm(f.id);
+                this.o.proxy?.arm(f.id, this.arm as string);
             } else if (!marked.has(f.id)) {
                 this.log({ kind: "ItemState", fault: f.id, state: "failed(interrupted)" });
             }
@@ -966,9 +986,27 @@ export class Scheduler {
         }
     }
 
+    /**
+     * Each live job may hold the clock for `idleLimitMs` of wall time from its own `RegisterJob`,
+     * on the monotonic clock; other busy ids count from the start of the wait.
+     */
     private async idle(): Promise<void> {
-        const limit = Date.now() + (this.o.idleLimitMs ?? Number.POSITIVE_INFINITY);
-        await this.waitFor(() => this.clock?.busyIds() ?? [], limit);
+        const limitMs = this.o.idleLimitMs ?? Number.POSITIVE_INFINITY;
+        const entered = performance.now();
+        const busy = () => this.clock?.busyIds() ?? [];
+        while (busy().length > 0) {
+            if (this.fatal) throw this.fatal;
+            this.checkStop();
+            const live = busy().map((id) =>
+                id.startsWith("job:") ? (this.jobStarted.get(id.slice(4)) ?? entered) : entered,
+            );
+            if (performance.now() > Math.min(...live) + limitMs) {
+                throw new HarnessFailure(
+                    `busy set held the clock past ${this.o.idleLimitMs} ms: ${busy().join(", ")}`,
+                );
+            }
+            await Bun.sleep(this.o.jobPollMs ?? 50);
+        }
     }
 
     /**
@@ -1011,6 +1049,7 @@ export class Scheduler {
     private async waitFor(pending: () => string[], limit: number): Promise<void> {
         while (pending().length > 0) {
             if (this.fatal) throw this.fatal;
+            this.checkStop();
             if (Date.now() > limit) {
                 throw new HarnessFailure(
                     `busy set held the clock past ${this.o.idleLimitMs} ms: ${pending().join(", ")}`,
@@ -1030,11 +1069,11 @@ export class Scheduler {
     }
 
     private async fire(driver: ArmDriver, f: FaultEpisode, at?: ScenarioEvent): Promise<void> {
-        if (f.seam.layer === PROXY_LAYER) this.o.proxy?.arm(f.id);
+        if (f.seam.layer === PROXY_LAYER) this.o.proxy?.arm(f.id, this.arm as string);
         try {
             this.log({ kind: "FaultFired", fault: f.id, type: f.type, layer: f.seam.layer });
         } catch (caught) {
-            if (f.seam.layer === PROXY_LAYER) this.o.proxy?.disarm(f.id);
+            if (f.seam.layer === PROXY_LAYER) this.o.proxy?.disarm(f.id, this.arm as string);
             throw caught;
         }
         this.fired.add(`${this.arm}/${f.id}`);
@@ -1091,8 +1130,14 @@ export class Scheduler {
         );
     }
 
+    private checkStop(): void {
+        const reason = this.o.stopped?.();
+        if (reason) throw new HarnessFailure(`run stopping: ${reason}`);
+    }
+
     private async step(driver: ArmDriver, e: ScenarioEvent): Promise<void> {
         await this.quiesce();
+        this.checkStop();
         this.outage = null;
         const clock = this.clock as Clock;
         const sleep = this.sleepBefore(e);
@@ -1193,7 +1238,7 @@ export class Scheduler {
         if (e.kind === "session_end") {
             for (const f of this.o.faults) {
                 if (f.trigger.session === e.session && f.seam.layer === PROXY_LAYER)
-                    this.o.proxy?.disarm(f.id);
+                    this.o.proxy?.disarm(f.id, this.arm as string);
             }
             await this.pendingKill;
             for (const f of this.o.faults) {
@@ -1241,6 +1286,7 @@ export class Scheduler {
                     throw caught;
                 }
                 clock.begin(`job:${id}`);
+                this.jobStarted.set(id, performance.now());
                 this.jobActivity++;
             },
             jobEnd: (id) => {
@@ -1256,8 +1302,11 @@ export class Scheduler {
                     ended = this.log({ kind: "EndJob", job: id });
                 } catch (caught) {
                     this.poison(`job ${id} could not be ended`, caught);
+                    this.jobStarted.delete(id);
+                    clock.end(`job:${id}`);
                     throw caught;
                 }
+                this.jobStarted.delete(id);
                 clock.end(`job:${id}`, ended.scenario_ms);
                 this.jobActivity++;
             },

@@ -53,6 +53,8 @@ export interface CallRecord {
     response_text?: string;
     /** Set when the relayed text ran past that cap, so `response_text` is a prefix. */
     response_text_truncated?: true;
+    /** The request's arrival ordinal within its proxy process, so restores can order same-ms calls. */
+    arrival?: number;
 }
 
 const NUMBERS = [
@@ -69,7 +71,8 @@ const NUMBERS = [
 ] as const;
 const NULLABLE = ["session", "turn", "finish_reason", "fault_ref", "error"] as const;
 
-export function recordProblems(value: Record<string, unknown>): string[] {
+export function recordProblems(input: Partial<CallRecord> | Record<string, unknown>): string[] {
+    const value: Record<string, unknown> = { ...input };
     const problems: string[] = [];
     for (const k of NUMBERS) if (!Number.isFinite(value[k])) problems.push(`${k} missing`);
     for (const k of NULLABLE) {
@@ -86,6 +89,10 @@ export function recordProblems(value: Record<string, unknown>): string[] {
     }
     if (value.first_byte_ms !== null && !Number.isFinite(value.first_byte_ms)) {
         problems.push("first_byte_ms missing");
+    }
+    const arrival = value.arrival;
+    if (arrival !== undefined && (!Number.isInteger(arrival) || (arrival as number) < 0)) {
+        problems.push("arrival invalid");
     }
     return problems;
 }
@@ -167,7 +174,22 @@ export class RecordWriter {
         if (this.bytes === 0) return;
         const last = lastLine(path, this.bytes);
         if (last === null) return;
-        const record = JSON.parse(last) as CallRecord;
+        const corrupt = (why: string) => {
+            this.close();
+            return new Error(`${path} last record is corrupt: ${why}`);
+        };
+        let value: unknown;
+        try {
+            value = JSON.parse(last);
+        } catch {
+            throw corrupt("not JSON");
+        }
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            throw corrupt("not an object");
+        }
+        const problems = recordProblems(value as Record<string, unknown>);
+        if (problems.length > 0) throw corrupt(problems.join(", "));
+        const record = value as CallRecord;
         this.seq = record.seq + 1;
         this.lastWall = record.wall_ms;
     }

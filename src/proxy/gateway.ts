@@ -9,7 +9,7 @@ import {
     type Http2Server,
     type ServerHttp2Session,
 } from "node:http2";
-import type { AddressInfo } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import type { Readable } from "node:stream";
 import {
     BedrockRuntimeClient,
@@ -114,11 +114,26 @@ export interface GatewayOptions {
     injector: FaultInjector;
     rng: Rng;
     clock: { scenarioMs(): number };
+    /** Read when a request's first byte arrives; the call keeps that scope through its upload. */
     scope: () => Scope;
-    observe?: (event: CallStarted) => void;
+    /**
+     * Sees every request as its first byte arrives, before the body is complete. A returned
+     * function runs once the call is classified and `observe` has seen it, or once the request is
+     * rejected, so the hold it represents hands over to the classified call without a gap.
+     */
+    arrival?: () => unknown;
+    /**
+     * A returned function runs once the call's record is written, or once the write failed. A
+     * hook that throws is recorded in `failures`; the call itself is still served.
+     */
+    observe?: (event: CallStarted) => unknown;
     requestDeadlineMs?: number;
     /** HTTP/2 session errors, GOAWAY frames, and stream resets on the host side of the proxy. */
     downstream?: (event: Record<string, unknown>) => void;
+    /** How long `stop` waits for in-flight handlers and uploads to write their records. */
+    drainMs?: number;
+    /** The first arrival ordinal to assign; a resume passes one past the persisted maximum. */
+    firstArrival?: number;
 }
 
 const ROUTE = /^\/model\/([^/]+)\/(converse-stream|converse)$/;
@@ -193,6 +208,12 @@ interface Request {
     receivedWall: number;
     /** The retry seed, drawn from the root stream at receipt so the draw order is the receipt order. */
     seed: number;
+    /** The arrival ordinal, assigned at receipt; the record carries it as `arrival`. */
+    call: number;
+    /** Ends the arrival hold; runs once, after classification or when the request is rejected. */
+    release: () => void;
+    /** Aborts the request's upstream work; `stop` aborts every request still in flight. */
+    gone: AbortController;
     /**
      * The arm, session, turn, and scenario time that owned the request at receipt, or the
      * error reading them raised with whatever was read first; `handle()` records that error
@@ -204,12 +225,41 @@ interface Request {
 export class Gateway {
     private servers: (Server | Http2Server)[] = [];
     private readonly sessions = new Set<ServerHttp2Session>();
+    /** Open HTTP/1 sockets, destroyed on stop so a client mid-upload cannot hold the close. */
+    private readonly sockets = new Set<Socket>();
+    /** The abort controller of every request received and not yet recorded. */
+    private readonly aborts = new Set<AbortController>();
     inFlight = 0;
     readonly failures: Error[] = [];
-    private calls = 0;
+    /** Arrival ordinals continue after the highest one the persisted records carry. */
+    private calls: number;
+    /** Set once `stop` returns; a handler that settles afterwards persists nothing. */
+    private closed = false;
     readonly urls: string[] = [];
 
-    constructor(private readonly options: GatewayOptions) {}
+    constructor(private readonly options: GatewayOptions) {
+        this.calls = (options.firstArrival ?? 0) | 0;
+    }
+
+    /** Calls the arrival hook; a hook that throws is recorded as a failure and the request still runs. */
+    private arrive(): () => void {
+        let release: unknown;
+        try {
+            release = this.options.arrival?.();
+        } catch (caught) {
+            this.failures.push(caught as Error);
+        }
+        const once = { done: false };
+        return () => {
+            if (once.done || typeof release !== "function") return;
+            once.done = true;
+            try {
+                (release as () => void)();
+            } catch (caught) {
+                this.failures.push(caught as Error);
+            }
+        };
+    }
 
     async start(): Promise<void> {
         const onRequest = (req: IncomingMessage, res: ServerResponse) => {
@@ -217,8 +267,11 @@ export class Gateway {
             const receivedMono = performance.now();
             const receivedWall = Date.now();
             const seed = this.options.rng.nextU32();
+            const call = this.calls++;
             const owner = this.received();
+            const release = this.arrive();
             const gone = new AbortController();
+            this.aborts.add(gone);
             res.on("close", () => !res.writableFinished && gone.abort());
             collectBody(req, (body) => {
                 const request: Request = {
@@ -230,6 +283,9 @@ export class Gateway {
                     receivedMono,
                     receivedWall,
                     seed,
+                    call,
+                    release,
+                    gone,
                     owner,
                 };
                 this.handle(request, {
@@ -251,6 +307,10 @@ export class Gateway {
         };
         const h1 = createHttp1Server(onRequest);
         h1.on("checkExpectation", onRequest);
+        h1.on("connection", (socket: Socket) => {
+            this.sockets.add(socket);
+            socket.on("close", () => this.sockets.delete(socket));
+        });
         const h2 = createHttp2Server();
         const log = (kind: string, detail: Record<string, unknown>) =>
             this.options.downstream?.({ kind, wall_ms: Date.now(), ...detail });
@@ -273,8 +333,11 @@ export class Gateway {
             const receivedMono = performance.now();
             const receivedWall = Date.now();
             const seed = this.options.rng.nextU32();
+            const call = this.calls++;
             const owner = this.received();
+            const release = this.arrive();
             const gone = new AbortController();
+            this.aborts.add(gone);
             const opened = { ...this.options.scope(), h2_session: ids.get(stream.session ?? {}) };
             stream.on("close", () => {
                 if (stream.rstCode)
@@ -296,6 +359,9 @@ export class Gateway {
                     receivedMono,
                     receivedWall,
                     seed,
+                    call,
+                    release,
+                    gone,
                     owner,
                 };
                 this.handle(request, {
@@ -334,16 +400,33 @@ export class Gateway {
         }
     }
 
-    /** Connections are destroyed before `close()`: under Bun, `closeAllConnections()` after `close()` leaves them open. The close wait shares the grace bound. */
-    async stop(graceMs = 5_000): Promise<void> {
+    /**
+     * Connections are destroyed before `close()`: under Bun, `closeAllConnections()` after
+     * `close()` leaves them open. Every in-flight request is aborted, so a partial upload yields
+     * its rejected record and a handler writes what it saw. The close wait and the drain share
+     * `graceMs`; a request still in flight after it is a failure, and its record is dropped.
+     * Idempotent: a second call after the gateway closed returns at once.
+     */
+    async stop(graceMs = this.options.drainMs ?? 10_000): Promise<void> {
+        if (this.closed) return;
         const deadline = Date.now() + graceMs;
         (this.servers[0] as Server | undefined)?.closeAllConnections();
+        for (const socket of this.sockets) socket.destroy();
         for (const session of this.sessions) session.destroy();
+        for (const gone of this.aborts) gone.abort();
         const closed = Promise.all(
             this.servers.map((s) => new Promise<void>((done) => s.close(() => done()))),
         );
         await Promise.race([closed, Bun.sleep(Math.max(0, deadline - Date.now()))]);
         while (this.inFlight > 0 && Date.now() < deadline) await Bun.sleep(10);
+        if (this.inFlight > 0) {
+            this.failures.push(
+                new Error(
+                    `${this.inFlight} proxy handler(s) still active ${graceMs} ms after stop`,
+                ),
+            );
+        }
+        this.closed = true;
     }
 
     /** The owning scope and scenario time, read when a request's first bytes arrive. */
@@ -369,7 +452,7 @@ export class Gateway {
             },
             sent: () => sent,
         };
-        const call = this.calls++;
+        const call = request.call;
         const startedWall = request.receivedWall;
         const startedMono = request.receivedMono;
         let done: Done = {
@@ -380,12 +463,22 @@ export class Gateway {
         };
         let scope: Scope = request.owner.scope ?? { arm: "", session: null, turn: null };
         let scenario_ms = 0;
+        const after: { ended: (() => void) | null } = { ended: null };
         try {
             if ("error" in request.owner) throw request.owner.error;
             ({ scope, scenario_ms } = request.owner);
-            done = await this.serve(request, sink, call, startedMono, (d) => {
-                done = d;
-            });
+            done = await this.serve(
+                request,
+                sink,
+                call,
+                startedMono,
+                (d) => {
+                    done = d;
+                },
+                (end) => {
+                    after.ended = end;
+                },
+            );
         } catch (caught) {
             done = { ...done, error: `${(caught as Error).name}: ${(caught as Error).message}` };
             sink.status(500, { "content-type": "application/json" });
@@ -393,6 +486,7 @@ export class Gateway {
         sink.end();
         const base = {
             ...scope,
+            arrival: call,
             started_wall_ms: startedWall,
             scenario_ms,
             input_tokens: 0,
@@ -406,10 +500,25 @@ export class Gateway {
             error: null,
         };
         try {
+            if (this.closed) {
+                this.failures.push(
+                    new Error("a proxy handler settled after stop; its record was dropped"),
+                );
+                return;
+            }
             const record = this.options.records.write({ ...base, ...done, status: sent });
             this.options.injector.observe(record, call, startedMono);
         } finally {
             this.inFlight--;
+            this.aborts.delete(request.gone);
+            request.release();
+            if (!this.closed) {
+                try {
+                    after.ended?.();
+                } catch (caught) {
+                    this.failures.push(caught as Error);
+                }
+            }
         }
     }
 
@@ -419,6 +528,7 @@ export class Gateway {
         call: number,
         startedMono: number,
         progress: (d: Done) => void,
+        onEnd: (end: () => void) => void,
     ): Promise<Done> {
         const { path, method, header, expect, body: upload } = request;
         const received = upload.received;
@@ -471,11 +581,14 @@ export class Gateway {
         progress(done);
         const event = { kind: "call_started", component: tag.component, wall_ms: Date.now() };
         try {
-            this.options.observe?.(event as CallStarted);
+            const ended = this.options.observe?.(event as CallStarted);
+            if (typeof ended === "function") onEnd(ended as () => void);
         } catch (caught) {
             this.failures.push(caught as Error);
         }
-        const fault = this.options.injector.take(tag.component, call, startedMono);
+        request.release();
+        const arm = request.owner.scope?.arm ?? "";
+        const fault = this.options.injector.take(tag.component, call, startedMono, arm);
         const rng = new Rng(request.seed);
         const firstByte = () => {
             if (done.first_byte_ms != null) return;

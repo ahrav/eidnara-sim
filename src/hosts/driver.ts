@@ -150,6 +150,11 @@ const SUPPORTED = new Set([
     "two_hosts_one_daemon",
 ]);
 
+export function driverSupports(f: Pick<FaultEpisode, "seam" | "type">): boolean {
+    if (f.seam.layer !== "scheduler") return true;
+    return SUPPORTED.has(f.type);
+}
+
 /** Entries a walk of the workspace `.git` visits at most; a wider tree stops the run. */
 export const GIT_DIR_ENTRY_CAP = 200_000;
 
@@ -345,8 +350,7 @@ export class HostDriver implements ArmDriver {
 
     /** Provider faults belong to the proxy and the sleep to the clock; the rest need a mechanism here. */
     supports(f: FaultEpisode): boolean {
-        if (f.seam.layer !== "scheduler") return true;
-        return SUPPORTED.has(f.type);
+        return driverSupports(f);
     }
 
     /** The daemon's directories are host-writable, so every daemon start and restart rechecks them. */
