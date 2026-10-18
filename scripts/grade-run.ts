@@ -424,16 +424,19 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         const row = readRow(meta);
         const calls = row.artefacts.find((a) => a.class === "proxy-call");
         if (calls?.class !== "proxy-call") continue;
-        const recorded = callsOf(callIndex, meta.arm, String(meta.session), turnIndex);
+        const recorded = callsOf(callIndex, meta.arm, String(meta.session), turnIndex).filter(
+            (c) => c.component !== "user-sim",
+        );
+        const proxied = calls.calls.filter((c) => c.component !== "user-sim");
         const probeTurn = turnIndex.get(meta.turn);
         let boundary = recorded.length - 1;
         while (boundary >= 0 && recorded[boundary]?.turn_index !== probeTurn) boundary--;
-        if (boundary >= calls.calls.length) {
+        if (boundary >= proxied.length) {
             throw new Error(
-                `snapshot ${meta.id} holds ${calls.calls.length} calls, but calls.jsonl records call ${String(recorded[boundary]?.seq)} within its turn ${meta.turn}`,
+                `snapshot ${meta.id} holds ${proxied.length} calls, but calls.jsonl records call ${String(recorded[boundary]?.seq)} within its turn ${meta.turn}`,
             );
         }
-        calls.calls.forEach((held, i) => {
+        proxied.forEach((held, i) => {
             const record = recorded[i];
             if (record === undefined) {
                 throw new Error(

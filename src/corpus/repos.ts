@@ -53,8 +53,7 @@ function httpsHost(url: string): boolean {
     }
 }
 
-export function loadRepos(): RepoSpec[] {
-    const text = readFileSync(join(CORPUS_DIR, "repos.json"), "utf8");
+export function loadRepos(text = readFileSync(join(CORPUS_DIR, "repos.json"), "utf8")): RepoSpec[] {
     let raw: { schema?: string; repos?: RepoSpec[] };
     try {
         raw = JSON.parse(text);

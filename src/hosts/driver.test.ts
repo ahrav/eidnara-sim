@@ -2094,6 +2094,12 @@ describe("probe snapshots", () => {
             await Bun.sleep(20);
             calls.push({
                 seq: 0,
+                arm: "host",
+                session: "s-0",
+                status: 200,
+                error: null,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 component: "history_summarizer",
                 turn: "e-1",
                 scenario_ms: 5,
@@ -2159,6 +2165,12 @@ describe("probe snapshots", () => {
         const calls = [
             {
                 seq: 0,
+                arm: "host",
+                session: "s-1",
+                status: 200,
+                error: null,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 component: "agent",
                 turn: "e-9",
                 scenario_ms: 0,

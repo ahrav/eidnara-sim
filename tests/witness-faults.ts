@@ -656,7 +656,7 @@ for (const name of ["scheduled", "rogue", "resume"] as const) {
 for (const name of ["scheduled", "rogue", "resume"] as const) {
     const s = summary[name];
     if (!s) continue;
-    const live = runIdentity(config, "S", s.projects) as Record<string, unknown>;
+    const live = runIdentity(config, loadPrereg("S"), s.projects) as Record<string, unknown>;
     const stale = IDENTITY_FIELDS.filter(
         (k) => JSON.stringify(s.identity[k]) !== JSON.stringify(live[k]),
     );

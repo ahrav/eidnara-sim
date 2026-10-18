@@ -14,9 +14,6 @@ v2 harness before any harness code existed.
 `SnapshotArtefacts` appears exactly once per item and arm, at the first
 `EndTurn` of the probe task, and grades reference that snapshot id.
 
-No harness code, test, or run exists yet. The surface lands in M5
-(#1029).
-
 M5 (#1029) grades only an item's first snapshot and counts later ones in `later_attempts_logged`; a test shows the grade follows the first snapshot when the order is reversed. The arm driver captures a snapshot at each probe turn, and the scheduler journals `SnapshotArtefacts` once per item and arm after the first `EndTurn`, from the snapshot id that `EndTurn` carries, which a resume replays when a kill fell between the two entries; a test kills a run there and checks the resumed journal.
 
 ## Failure scenario

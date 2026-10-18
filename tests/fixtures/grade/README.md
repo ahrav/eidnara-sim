@@ -2,7 +2,8 @@
 
 Each file is one probe item, its snapshots, and the grade it must receive:
 `probe` is a compiled `ProbeItem`, `snapshots` the artefacts captured at the
-probe turn, and `expect` the verdict, reason, and metrics. `provenance` says
+probe turn (each naming its item, arm, session, and turn), and `expect` the exact verdict, reason, metrics, and input
+artefact ids. `provenance` says
 where the artefacts came from.
 
 The P1 and P1-control files carry artefacts recorded in the 2026-10-16 live

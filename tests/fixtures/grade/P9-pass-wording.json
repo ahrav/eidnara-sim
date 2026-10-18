@@ -17,6 +17,7 @@
       "id": "s-P9-d",
       "item": "P9-d",
       "arm": "eidnara",
+      "session": "s-1",
       "turn": "e-1",
       "turn_outcome": "ok",
       "artefacts": [
@@ -25,13 +26,19 @@
           "class": "proxy-call",
           "calls": [
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 1,
+              "arm": "eidnara",
+              "session": "s-1",
               "component": "agent",
               "turn": "e-1",
               "scenario_ms": 0,
               "input_tokens": 1000,
               "output_tokens": 100,
-              "response_text": "We never settled how long to keep that history, so there is no figure to give."
+              "response_text": "We never settled how long to keep that history, so there is no figure to give.",
+              "status": 200,
+              "error": null
             }
           ]
         }
@@ -41,7 +48,11 @@
   "expect": {
     "verdict": "pass",
     "metrics": {
-      "P9.pass": true
-    }
+      "P9.pass": true,
+      "P9.cross_session_pass_rate": true
+    },
+    "inputs": [
+      "p1"
+    ]
   }
 }

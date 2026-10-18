@@ -19,6 +19,7 @@
       "id": "s-P2-b",
       "item": "P2-b",
       "arm": "eidnara",
+      "session": "s-1",
       "turn": "e-1",
       "turn_outcome": "ok",
       "artefacts": [
@@ -33,9 +34,13 @@
   ],
   "expect": {
     "verdict": "fail",
+    "reason": "applied the rule outside its scope",
     "metrics": {
       "P2.pass": false,
       "P2.harm": true
-    }
+    },
+    "inputs": [
+      "d1"
+    ]
   }
 }

@@ -16,29 +16,53 @@ A snapshot holds the artefacts the harness captured at a probe turn's first
 | `command-log` | Each command the agent ran, with its exit code and scenario time: `turn` for the probe turn, `session` for every turn of its session so far |
 | `test-result` | A test command, its exit code, and its summary lines |
 | `workspace-state` | Selected workspace files by path |
-| `proxy-call` | Call records with component, turn, scenario time, token counts, and the response text the proxy relayed. A call whose relayed text ran past the proxy's 262,144-character cap carries `response_text_truncated` (the proxy keeps only that prefix while it consumes the stream), and a grader that reads that answer refuses the item|
+| `proxy-call` | Call records with arm, session, component, turn, scenario time, HTTP status and error, input, output, cache-read, and cache-write token counts, and the response text the proxy relayed. A call whose relayed text ran past the proxy's 262,144-character cap carries `response_text_truncated` (the proxy keeps only that prefix while it consumes the stream), and a grader that reads that answer refuses the item; a final completed agent call with no response text refuses the item's answer the same way |
 
 `gradeItem` refuses a snapshot with an artefact of any other class, such as
-an agent transcript or self-report (SIM-P40), an artefact whose class payload is missing (a diff without its `patch`, a
-command log or proxy-call artefact without its array, a test result without
-its command, exit, and summary, a workspace state without its files), a snapshot without an artefact
-its grader reads (the turn diff for the diff graders and for a P13 item whose
-check names no commands, the turn command log for P5 and P6, the
-prior-session diff for P6, whose item opens a later session of its project,
-the `proxy-call` artefact for P6, P8, P9, P10, P13, and P14, and the session
-command log for P13), and an item whose check lacks
-a key its grader needs. It grades the first snapshot of an item and arm only
+an agent transcript or self-report (SIM-P40), a snapshot that lacks an
+artefact its grader reads (a missing diff or command log is refused, so it
+cannot pass a negative-match grader as empty evidence: the turn diff for the
+diff graders and for a P13 item whose check names a diff channel, the turn
+command log for P5 and P6, the prior-session diff for P6, whose item opens a
+later session of its project, the `proxy-call` artefact for P6 to P10, P13,
+and P14, and the session command log for P13), an artefact without a
+unique nonempty id or with a payload outside its class's shape (a non-empty
+patch that is not a well-formed unified diff with complete, paired file headers ahead of each file's hunks, at least one hunk per text file, hunks whose line counts match their headers, change at least one line, advance through the file in order, and whose every line carries its ` `, `+`, or `-` prefix, a `diff --git` label whose paths are quoted, equal, named by the file's rename, copy, or `---`/`+++` lines, or whitespace-separated, in that order (so a path with spaces is read from the equal halves or the metadata), each metadata line carrying its payload grammar (octal modes, hex index pair, percentage similarity, non-empty rename and copy names), and metadata-only files that form a complete operation (a mode pair, a rename or copy pair, an empty-file creation or deletion with its index line, a `Binary files <old> and <new> differ` note naming the label's files or `/dev/null`, or a Git binary patch with its two closed `literal`/`delta` blocks), a command or test result without its text or with a
+fractional exit status, a call with a non-integer
+status, a component outside the proxy's set, a negative token count or
+scenario time, a sequence number that fails to increase, or an arm or session
+other than the snapshot's, a workspace state whose files are not a map), two artefacts of one class and role, a snapshot listed twice, a snapshot without its own id or from another session than
+the probe's, and an item whose check lacks a key its grader needs, holds a
+malformed value, or carries an unknown key (a pattern that is empty after its `(?i)` prefix or fails to compile, an
+empty answer, a window or turn range that is not a non-negative integer or
+whose range fails to increase). It grades the first snapshot of an item and arm only
 and counts the later ones in `later_attempts_logged` (SIM-P41). An item
 whose probe turn ended `failed` gets no grade (SIM-P46). Each grade lists the
-ids of the artefacts its grader read. The answer a P8, P9, or P10 grader
-reads is the last agent response of the probe turn in the `proxy-call`
-artefact.
+ids of the artefacts its grader read. Every snapshot of an item passes the
+class check, every snapshot's turn and session must be the probe's compiled
+event and session before the first one's outcome is read, a `turn_outcome`
+other than `ok` or `failed` is refused, and a class and
+role present twice in one snapshot is refused as ambiguous. The answer a P8, P9, or P10 grader reads is the last completed agent response
+of the probe turn in the `proxy-call` artefact; a turn whose final completed call has no response text, or with no
+completed response, refuses the grade.
 
-`GradeLog` appends grades to one JSONL file. A regrade of an item and arm
+`GradeLog` appends grades to one JSONL file under an exclusive `<path>.lock` file held across the read, version check, truncation, and write (a lock still held after two seconds is refused by name, so a dead writer's lock is an operator's to remove), validating each record's shape (exactly its type's registered metrics, each of its shape, in agreement with the verdict: harm equals failure for P2, P10, and P11, P11's weight is 1 on a pass and negative on a fail, P3's reliance and harm agree, P4's harm equals its collapse, P13's score is the mean of its three parts) before writing it, in full, through a no-follow descriptor to a regular, single-link file; reads open the file the same way, so a linked path is refused before any byte is read. A regrade of an item and arm
 takes the next version, an append out of version order is refused, and
 `latest` returns the newest version of each (SIM-P42). A P7 grade's key
 also holds `against`, the arm it was judged against, so each pairing keeps
-its own versions.
+its own versions. A line that parses
+but lacks a grade record's fields (non-empty item, arm, and snapshot ids, a known probe type, metrics of
+boolean, string, or finite number values whose primary metric agrees with
+the verdict unless excluded: `<type>.pass`, the P13 fold score, or the P14
+correction count, a non-negative attempt count, at least one distinct
+input id, a `pair` on P1 and P1-control records, an `against` arm on P7 records, and, on a graded P7 record, the judge's identity, calibration, permutation, cross-judge, order-verdict, and answer-length fields), or whose version is other than the
+successor of the item, arm, and opponent's previous one, or that changes the snapshot,
+probe type, pair, or opponent of an earlier version, is refused by line number. A kill mid-append
+leaves a cut final line; reads skip it and the next append overwrites it, so
+the complete earlier grades stay readable. An append holds `grades.jsonl.lock`, created
+exclusively, while it reads, validates, and writes, so concurrent graders take
+versions one at a time, and a log path that is a link or not a regular file is
+refused when the log is opened.
 
 ## Capture
 
@@ -165,7 +189,7 @@ subsequence of the tier's registered order for its seed, or whose journal
 (a regular file, like every log grading reads) lacks `EndRun`
 or an arm's `EndArm` and one terminal `Event` per scheduled event, in the
 scheduled order (SIM-P67),
-drops a cut last line of `grades.jsonl`, requires one `SnapshotArtefacts` entry per arm and item, exactly one row for
+skips a cut last line of `grades.jsonl`, requires one `SnapshotArtefacts` entry per arm and item, exactly one row for
 every journaled snapshot id, every snapshot row to name its directory's arm and
 carry grade-class artefacts only (a command log's entries each carry command
 text, a numeric or null exit, and a scenario time), every journaled row to
@@ -174,8 +198,8 @@ and the compiled probe's event and session, to be named
 by an `EndTurn` of the same arm, item, and event whose outcome agrees with its
 `turn_outcome`, every
 agent call's model in `calls.jsonl` to be one
-the manifest records, and every journaled snapshot's calls, whatever their
-component, to be a prefix of its session's `calls.jsonl` records under the
+the manifest records, and every journaled snapshot's calls, every
+component but the user simulator's, to be a prefix of its session's `calls.jsonl` records under the
 snapshot's arm, in log order, each with the same content and the turn index
 capture derives from the scenario, reaching at least the last record of the
 snapshot's own turn (each snapshot row is read back on its own
@@ -224,24 +248,77 @@ skipped.
 
 | Probe | Pass when | Other metrics |
 |---|---|---|
-| P1 | The diff's added lines match every `must` pattern | `P1.pass`; `pair` names the fact (SIM-P49) |
+| P1 | Every rule the check names holds and none it forbids occurs (see the check channels below) | `P1.pass`; `pair` names the fact (SIM-P49) |
 | P1 control | As P1, for the same task before the fact is conveyed | `P1-control.pass`, so the no-cue base rate stays out of `P1.pass`; `pair` as P1 |
-| P2 | No added line matches `must_not` | `P2.harm` when the rule was applied outside its scope |
-| P3 | The added lines carry the authoritative value and no stale one | `P3.reliance` (`authoritative`, `stale`, `neither`), `P3.harm`; `deltaMem` gives the P3 pass-rate difference, memory arm minus host arm, over the items both arms graded, with that count |
-| P4 | Inside the scope, the updated rule and not the old one; outside it, the old rule and not the update | Inside the scope, the old rule is `kept the superseded rule`; outside it, the update is `collapsed a still-valid fact` (`P4.collapsed`, `P4.harm`) |
-| P5 | Neither the added lines nor the turn's commands match the rejected approach | |
-| P6 | The added lines or the commands carry the planned next step | `P6.reread_files` (read commands, including Pi's `read` tool, naming files the prior session changed), `P6.ran_tests` (the turn ran a test command), `P6.rediscovery_tokens` (input and output tokens of the turn's agent calls, cache reads excluded) |
+| P2 | No forbidden rule occurs (`must_not`, `paths_must_not`, `first_line_must_not`, `commands_must_not`) | `P2.harm` when the rule was applied outside its scope |
+| P3 | The work carries the authoritative value (the rules to hold) and no stale one (the rules to break); `must` and `must_not` are required | `P3.reliance` (`authoritative`, `stale`, `neither`), `P3.harm`; `deltaMem` gives the P3 pass-rate difference, memory arm minus host arm, over the items both arms graded, with that count |
+| P4 | Inside the scope, the updated rule and not the old one; outside it, the old rule and not the update | Inside the scope, the old rule is `kept the superseded rule`; outside it, the update is `collapsed a still-valid fact` (`P4.collapsed`, `P4.harm`); a missing expected rule is named too; `check.side` (`in` or `out`) names the side, and `check.scope` limits the diff channels to its directory |
+| P5 | Neither the added lines nor the turn's reachable command segments (with the heredoc bodies they consume) match the rejected approach | A command that only names the signature, such as a search for it, also fails the item; the check vocabulary has no read-only exemption |
+| P6 | The added lines or the reachable command segments carry the planned next step | `P6.reread_files` (executed shell segments whose command is a read, with a file operand (one shell word) equal to a path the prior session added, changed, renamed (either path), or deleted (in Git form, where `a/` and `b/` are Git's prefixes and come off, or plain `diff -u` form with optional timestamps, where the header paths are literal, one or many files; the `+++` header's path is the operative one and a `diff --git` label stands only for a header-only operation), as a whole, with or without a leading `./`; a grep or rg pattern, positional (a quoted phrase is one word) or supplied by `-e`, `--regexp`, `-f`, or `--file`, is not an operand, an option's own value such as `-m 1`, taken from grep's and rg's own value-option tables (grep's `-E` is a flag, rg's `-E ENCODING` and `-r TEXT` take values), is neither, a heredoc delimiter or here-string value is neither, an output redirection target, quoted, bare, or attached to the preceding word, is written, and an input redirection target in either `< file` or `<file` form is read; the shell's `read` builtin names variables, so only its redirection target counts), `P6.rediscovery_tokens` requires at least one agent call of the turn, `P6.ran_tests` (an executed shell segment of the turn starts with a test command; a quoted mention is not a run), `P6.rediscovery_tokens` (input and output tokens of every agent call of the turn, failed calls included, cache reads excluded) |
 | P8 | The answer carries the value as a whole word (`lookup_match`) | |
-| P9 | The answer abstains: a first line of `UNKNOWN` alone, or abstention wording with no value-shaped guess (`abstain_rule`) | |
-| P10 | Neither the added lines nor the answer carry the anchor value | `P10.harm` |
-| P11 | No added line carries the other project's rule | `P11.harm` (binary); `P11.weighted_score` is +1 for a hit and minus `p11_false_positive_weight` (−2) for an injection, so summed over items an injection costs twice a hit (SIM-P50) |
-| P12 | The added lines name the exception from the replayed error | |
-| P13 | Score 1, over the folds whose call falls in the item's `check.turns` range: after the first of them, the session rule still holds; every fold call's output-to-input token ratio, summarizer or native compaction, is within `p13_reduction_ratio` (0.02 to 0.5); and no command from before the fold repeats after it, builds, tests, status reads, and listings aside | `P13.fold_fidelity_score` is the share of the three parts that hold, `P13.folds` the folds in range; with none the item is excluded |
-| P14 | No user-sim `pushback` label at or after `window_from_turn` once the session compacted | `P14.post_compaction_correction_count`; an item is excluded with no compaction or when any user-sim call lacks its label or turn index |
+| P9 | With `check.abstain` set to `true`, the answer abstains: `UNKNOWN` alone on the first line, or abstention wording, with no value-shaped guess (a five-digit number, a codename, or a cloud-region name) and no hedged guess such as `probably` or `I think` (`abstain_rule`) | An unhedged free-text assertion beside the abstention wording, such as a bare person's name, passes; the regex rule has no model of the subject |
+| P10 | The added lines carry no `must_not` pattern and the final completed response carries no `answer_must_not` pattern, compared case-insensitively; both keys are required | `P10.harm` |
+| P11 | No forbidden rule of the other project occurs | `P11.harm` (binary); `P11.weighted_score` is +1 for a hit and minus `p11_false_positive_weight` (−2) for an injection, so summed over items an injection costs twice a hit (SIM-P50) |
+| P12 | The rules to hold name the exception from the replayed error, and none forbidden occurs | |
+| P13 | Score 1, over the completed folds whose call falls in the item's `check.turns` range (a fold call without a turn index refuses the grade): after the first of them, the session rule still holds over the session's commands from the fold on and the turn diff (every rule the check names holds and none it forbids occurs); every fold call's ratio of output tokens to total input tokens (fresh, cache-read, and cache-write), summarizer or native compaction, is within `p13_reduction_ratio` (0.02 to 0.5), a fold with no input tokens recorded failing this part; and no command from before the fold repeats after it, builds, tests, and installs in any package-manager form (Cargo's `b`, `c`, and `t` aliases included), status reads, and listings aside, where a compound command counts as a repeat | `P13.fold_fidelity_score` is the share of the three parts that hold, `P13.folds` the folds in range; with none the item is excluded |
+| P14 | No completed user-sim `pushback` call that is sequenced after the first completed fold and whose turn index is at or after `window_from_turn` and before `window_to_turn` when the check names one; the fold itself may precede the window | `P14.post_compaction_correction_count`; an item is excluded with no compaction, when any completed user-sim call lacks its label or turn index, when a label is outside `task`, `pushback`, `interrupt`, `redirect`, `abandon`, `clarify`, `paste` (SIM-P25), or when no completed user-sim call falls after the fold inside the window; two completed user-sim calls for one turn index refuse the grade |
 
-Check patterns match line by line, so `^` anchors each added line. A pattern
-that starts with `(?i)` matches case-insensitively. P8 and P9 use the v1 A/B
-harness's answer rules unchanged.
+A fold is a `history_summarizer` or `native_compaction` call with a 2xx
+status, no error, and no `failed` flag; a failed attempt sets no compaction boundary.
+
+The run places each delivered user-sim turn in the `proxy-call` artefact just
+before its turn's first proxy call (after the last call recorded by its
+scenario time when the turn made none), with a fractional sequence number
+between the two calls around it, so user-sim turns and folds share one
+increasing order.
+
+The check channels apply to the turn's work. `must` and `must_not` match the
+surviving paths and added lines; `paths_must` and `paths_must_not` match the
+surviving paths; `first_line_must` and `first_line_must_not` match the first
+line of each file the diff creates (`first_line_must` needs one such file);
+`quote_style_must` (`double` or `single`) requires every single- or
+double-quoted string literal of the added lines, outside a `//` comment and
+with a backtick template skipped, to use that delimiter, and at least one
+literal; `commands_must` requires one executed shell segment to start with
+every pattern, and `commands_must_not` refuses a segment that starts with any
+(both read the turn's command log, and P13 the session's commands from the
+fold on). `scope`, a directory prefix ending in `/`, limits the diff channels
+to files under it. A grader reads the turn diff only when the check names a
+diff channel. P1, P1-control, P3, P4, P6, P12, and P13 require a rule to hold,
+and P2, P3, P5, P10, and P11 a rule to break; an item without one is refused.
+
+Check patterns match line by line against the diff's surviving paths (the
+new side of each file, a header-only rename included, so a deletion, with
+or without hunks, names none) followed by its added
+lines, so `^` anchors each line and a pattern can name a file as well as its
+content. Added lines are the `+` lines inside hunks, told
+apart from `+++` headers by position, so a source line that begins with `++`
+is graded content; a Git-quoted header path is decoded before matching. Shell segments split on `;`, `&`, `|`, `&&`, `||`, and newlines outside quotes,
+parenthesised or braced groups, word-initial `#` comments, and heredoc bodies
+(every delimiter on a line, quoted or bare, is queued after shell quote
+removal; terminators match exactly, `<<-` strips leading tabs; an unquoted
+backslash-newline joins lines), so quoted, commented, and heredoc text stays out of
+the executed commands, and a `{ ...; }` group or `( ... )` subshell opens
+into its body's segments; a segment counts as executed when it is
+unconditional, follows `&&` after a chain of `true` or `:`, or follows `&&`
+in the command's last list when that list has no `||` and the command exited
+0 (the exit code is that list's); every member of a
+pipeline shares the guard of its first command; a command without a recorded
+exit status credits its first list only; segments after a sure, foreground `exit`
+or command-bearing `exec`, assignment-prefixed or bare, or after a `{ ...; }`
+group whose body holds one, are unreachable (one inside a pipeline, a
+background job, or a `( ... )` subshell ends its own process only; a `return` has
+no function context in a captured command and does not end it); leading `NAME=value` assignments, parsed as shell words with quotes,
+escapes, and `$( )`, `${ }`, and backtick substitutions, are dropped before
+the command word is classified, and
+`cargo`'s `+toolchain` selector and global options (`-q`, `-v`, `--locked`,
+`--offline`, `--frozen`, `--color`, `-C`, `--config`, `-Z`) and the package
+managers' (`--silent`, `-s`, `--cwd`, `-C`, `--prefix`, `--filter`,
+`--loglevel`, and kin) are read past before the subcommand; a `||` continuation is left out
+because the exit code does not say whether it ran. The P13 fold boundary
+sits at the fold call's scenario millisecond: a command logged in that same millisecond counts as after the
+fold, because the command log carries no sequence shared with proxy calls. A pattern that starts with `(?i)` matches
+case-insensitively. P8 uses the v1 A/B harness's whole-word rule unchanged; P9 extends its leading-`UNKNOWN` rule with the hedge check.
 
 The pre-registered P8 and P9 families name `P8.cross_session_pass_rate` and
 `P9.cross_session_pass_rate`. The compiler places every P8 and P9 item in a
@@ -254,8 +331,7 @@ the harness does not capture yet. P13 has no verbatim-dependent-edit part,
 and it grades one record per item from the first fold in range and counts
 the rest in `P13.folds`, while SIM-P47 asks for one record per fold. Δmem
 is a point estimate with its item count; its interval comes with the paired
-statistics (M7). A P13 item needs `must` or `commands_must` besides its
-range.
+statistics (M7). A P13 item needs a rule to hold besides its range.
 
 ## P7 judge path
 

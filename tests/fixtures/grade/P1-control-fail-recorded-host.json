@@ -19,6 +19,7 @@
       "id": "host:q-0012",
       "item": "q-0012",
       "arm": "host",
+      "session": "s-0003",
       "turn": "e-000011",
       "turn_outcome": "ok",
       "artefacts": [
@@ -77,54 +78,90 @@
           "class": "proxy-call",
           "calls": [
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 14,
+              "arm": "host",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000010",
               "scenario_ms": 4703926,
               "input_tokens": 3799,
-              "output_tokens": 117
+              "output_tokens": 117,
+              "status": 200,
+              "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 15,
+              "arm": "host",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000010",
               "scenario_ms": 4707014,
               "input_tokens": 4014,
-              "output_tokens": 142
+              "output_tokens": 142,
+              "status": 200,
+              "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 16,
+              "arm": "host",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000010",
               "scenario_ms": 4709945,
               "input_tokens": 4117,
               "output_tokens": 814,
-              "response_text": "I can't reproduce this here, and the output you pasted doesn't include the actual error. Your working directory is `mini-redis`, which is a Rust project, and I couldn't find a `wemake_python_styleguide` checkout anywhere on this machine.\n\nWhat the output does show:\n\n1. **The coverage failure isn't the real problem.** Pytest stopped during collection (\"Interrupted: 6 errors during collection\"), so almost no tests ran. That's why coverage is 38.51% instead of 100%. Fix the collection errors and the coverage number should sort itself out.\n2. **The errors are in the conftests and helper modules** (`tests/conftest.py`, `tests/test_options/conftest.py`, `tests/test_visitors/conftest.py`, `test_hypothesis.py`, the snapshot file). Errors in all of those at once usually mean something fails at import time. Common causes are:\n   - Dev dependencies aren't installed in the active environment (for example `hypothesis`, `snapshottest`/`syrupy`, `hypothesmith`, `pytest-randomly`). Run `poetry install` (or `pip install -e . -r` your dev requirements) and run pytest through `poetry run pytest`.\n   - The Python version doesn't match what the project supports (check `python --version` against `pyproject.toml`).\n   - The `flake8` version is incompatible.\n3. **\"32530 deselected\"** means you ran with `-k`, `-m`, or a similar filter. Pytest still imports every conftest and test module while collecting, so the errors happen even for tests your filter excludes.\n\nTo dig in, I need the part of the output above what you pasted, the `ERRORS` section with the tracebacks. You can get just that with:\n\n```\npytest tests/conftest.py -p no:cacheprovider --no-cov 2>&1 | head -80\n```\n\nOr tell me where the project lives and I'll run it myself."
+              "response_text": "I can't reproduce this here, and the output you pasted doesn't include the actual error. Your working directory is `mini-redis`, which is a Rust project, and I couldn't find a `wemake_python_styleguide` checkout anywhere on this machine.\n\nWhat the output does show:\n\n1. **The coverage failure isn't the real problem.** Pytest stopped during collection (\"Interrupted: 6 errors during collection\"), so almost no tests ran. That's why coverage is 38.51% instead of 100%. Fix the collection errors and the coverage number should sort itself out.\n2. **The errors are in the conftests and helper modules** (`tests/conftest.py`, `tests/test_options/conftest.py`, `tests/test_visitors/conftest.py`, `test_hypothesis.py`, the snapshot file). Errors in all of those at once usually mean something fails at import time. Common causes are:\n   - Dev dependencies aren't installed in the active environment (for example `hypothesis`, `snapshottest`/`syrupy`, `hypothesmith`, `pytest-randomly`). Run `poetry install` (or `pip install -e . -r` your dev requirements) and run pytest through `poetry run pytest`.\n   - The Python version doesn't match what the project supports (check `python --version` against `pyproject.toml`).\n   - The `flake8` version is incompatible.\n3. **\"32530 deselected\"** means you ran with `-k`, `-m`, or a similar filter. Pytest still imports every conftest and test module while collecting, so the errors happen even for tests your filter excludes.\n\nTo dig in, I need the part of the output above what you pasted, the `ERRORS` section with the tracebacks. You can get just that with:\n\n```\npytest tests/conftest.py -p no:cacheprovider --no-cov 2>&1 | head -80\n```\n\nOr tell me where the project lives and I'll run it myself.",
+              "status": 200,
+              "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 17,
+              "arm": "host",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000011",
               "scenario_ms": 4718803,
               "input_tokens": 4777,
-              "output_tokens": 195
+              "output_tokens": 195,
+              "status": 200,
+              "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 18,
+              "arm": "host",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000011",
               "scenario_ms": 4721960,
               "input_tokens": 6933,
-              "output_tokens": 244
+              "output_tokens": 244,
+              "status": 200,
+              "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 19,
+              "arm": "host",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000011",
               "scenario_ms": 4725708,
               "input_tokens": 11787,
               "output_tokens": 933,
-              "response_text": "I haven't changed anything, because the request assumes something this codebase doesn't have: there's no multi-key GET-style command to put a cap on.\n\n- **`GET` takes exactly one key.** `Get::parse_frames` in `src/cmd/get.rs` reads a single string.\n- **Extra keys are already rejected.** `Command::from_frame` calls `parse.finish()`, so `GET a b c` fails with \"protocol error; expected end of frame\". In effect the cap is already 1.\n- **There's no `MGET`** or any other read command that takes several keys. The only commands that accept a list are `SUBSCRIBE`/`UNSUBSCRIBE`, and they take channels, not keys.\n- **Rejection drops the connection.** When parsing fails, the error comes back out of `handler.run()` and the server closes the connection without sending the client an error reply. A new cap would behave the same way unless I change that.\n\nHere are the options I see:\n\n1. **Add `MGET key [key ...]` with a cap.** This would be a constant like `MAX_KEYS_PER_REQUEST`, checked during parsing so oversized requests are rejected before any lookups run. It would reply with an `Array` of `Bulk`/`Null` values, plus client support and tests in `tests/server.rs`.\n2. **Cap channels on `SUBSCRIBE`/`UNSUBSCRIBE`** instead, if that's the multi-name request you had in mind.\n3. **Either of the above, plus a proper error reply.** The server would send something like `-ERR too many keys (max N)` and keep the connection open, rather than dropping it.\n\nWhich do you want, and what limit? If you don't have a number in mind, I'd go with option 1 plus the error reply, with a cap of 1024."
+              "response_text": "I haven't changed anything, because the request assumes something this codebase doesn't have: there's no multi-key GET-style command to put a cap on.\n\n- **`GET` takes exactly one key.** `Get::parse_frames` in `src/cmd/get.rs` reads a single string.\n- **Extra keys are already rejected.** `Command::from_frame` calls `parse.finish()`, so `GET a b c` fails with \"protocol error; expected end of frame\". In effect the cap is already 1.\n- **There's no `MGET`** or any other read command that takes several keys. The only commands that accept a list are `SUBSCRIBE`/`UNSUBSCRIBE`, and they take channels, not keys.\n- **Rejection drops the connection.** When parsing fails, the error comes back out of `handler.run()` and the server closes the connection without sending the client an error reply. A new cap would behave the same way unless I change that.\n\nHere are the options I see:\n\n1. **Add `MGET key [key ...]` with a cap.** This would be a constant like `MAX_KEYS_PER_REQUEST`, checked during parsing so oversized requests are rejected before any lookups run. It would reply with an `Array` of `Bulk`/`Null` values, plus client support and tests in `tests/server.rs`.\n2. **Cap channels on `SUBSCRIBE`/`UNSUBSCRIBE`** instead, if that's the multi-name request you had in mind.\n3. **Either of the above, plus a proper error reply.** The server would send something like `-ERR too many keys (max N)` and keep the connection open, rather than dropping it.\n\nWhich do you want, and what limit? If you don't have a number in mind, I'd go with option 1 plus the error reply, with a cap of 1024.",
+              "status": 200,
+              "error": null
             }
           ]
         },
@@ -142,6 +179,9 @@
     "reason": "rule not applied",
     "metrics": {
       "P1-control.pass": false
-    }
+    },
+    "inputs": [
+      "host:q-0012:diff"
+    ]
   }
 }

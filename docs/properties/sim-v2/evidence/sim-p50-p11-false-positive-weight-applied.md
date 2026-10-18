@@ -16,10 +16,13 @@ the pre-registration record.
 
 Every tier file carries `grading.p11_false_positive_weight: "2"`, and
 `src/prereg/validate.test.ts` shows the validator refuses its removal or a
-non-positive value by name, so the pre-registration hash binds the weight. The P11
-score formula lands in M5 (#1029); no run exists yet.
+non-positive or non-finite value by name, so the pre-registration hash binds
+the weight.
 
-Pre-registration revision 4 records `grading.p11_false_positive_weight` as 2, and M5 (#1029) scores each P11 item +1 for a hit and minus that weight for an injection in `P11.weighted_score`; a test checks both values and a changed weight.
+Pre-registration revision 4 records `grading.p11_false_positive_weight` as 2,
+and M5 (#1029) scores each P11 item +1 for a hit and minus that weight for an
+injection in `P11.weighted_score`; a test checks both values and a changed
+weight.
 
 ## Failure scenario
 

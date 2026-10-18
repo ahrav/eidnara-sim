@@ -23,6 +23,7 @@
       "id": "s-P13-b",
       "item": "P13-b",
       "arm": "eidnara",
+      "session": "s-1",
       "turn": "e-1",
       "turn_outcome": "ok",
       "artefacts": [
@@ -53,13 +54,19 @@
           "class": "proxy-call",
           "calls": [
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 5,
+              "arm": "eidnara",
+              "session": "s-1",
               "component": "history_summarizer",
               "turn": "e-0",
               "scenario_ms": 500,
               "input_tokens": 20000,
               "output_tokens": 15000,
-              "turn_index": 5
+              "turn_index": 5,
+              "status": 200,
+              "error": null
             }
           ]
         }
@@ -72,7 +79,12 @@
       "P13.fold_fidelity_score": 0,
       "P13.rule_kept": false,
       "P13.ratio_in_bounds": false,
-      "P13.repeated_action": true
-    }
+      "P13.repeated_action": true,
+      "P13.folds": 1
+    },
+    "inputs": [
+      "c1",
+      "p1"
+    ]
   }
 }

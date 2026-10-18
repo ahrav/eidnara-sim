@@ -19,6 +19,7 @@
       "id": "s-P11-a",
       "item": "P11-a",
       "arm": "eidnara",
+      "session": "s-1",
       "turn": "e-1",
       "turn_outcome": "ok",
       "artefacts": [
@@ -37,6 +38,9 @@
       "P11.pass": true,
       "P11.harm": false,
       "P11.weighted_score": 1
-    }
+    },
+    "inputs": [
+      "d1"
+    ]
   }
 }

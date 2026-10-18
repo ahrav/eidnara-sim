@@ -13,9 +13,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
+import { preregistrationHash } from "../prereg/validate";
 import { Rng } from "../rng";
-import type { Scenario } from "../scenario/compile";
+import { GENERATOR_VERSION, type Scenario } from "../scenario/compile";
 import { type FaultEpisode, SEAMS, scheduleFaults } from "../scenario/faults";
+import { corpusInputsSha256, loadPrereg } from "../scenario/inputs";
 import type { Entry } from "./journal";
 import type { Preflight } from "./preflight";
 import {
@@ -36,6 +38,7 @@ import {
     requirePlainArtifacts,
     runSteps,
     treeIdentity,
+    withUserTurns,
 } from "./run";
 
 const ROOT = join(import.meta.dir, "..", "..");
@@ -65,8 +68,14 @@ const config = {
 
 function scenarioBody(seed = 101, tier = "S") {
     return {
-        schema: "test",
-        manifest: { seed, tier },
+        schema: GENERATOR_VERSION,
+        manifest: {
+            seed,
+            tier,
+            generator_version: GENERATOR_VERSION,
+            preregistration_sha256: preregistrationHash(loadPrereg("S")),
+            corpus_inputs_sha256: corpusInputsSha256(),
+        },
         projects: [],
         sessions: [
             { id: "s-0000", requests: 2 },
@@ -515,6 +524,32 @@ describe("run inputs", () => {
         await expect(loadScenario(o)).rejects.toThrow(/does not hash to its scenario_hash/);
     });
 
+    test("scenario.json from another generator is refused for reuse", async () => {
+        const out = dir();
+        const body = scenarioBody();
+        writeScenario(out, {
+            ...body,
+            manifest: { ...body.manifest, generator_version: "sim-scenario/v1" },
+        });
+        const o = { config, out, seed: 101, tier: "S" as const };
+        await expect(loadScenario(o)).rejects.toThrow(/from generator sim-scenario\/v1/);
+    });
+
+    test("scenario.json compiled from other inputs than the pre-registration names is refused", async () => {
+        for (const manifest of [
+            { preregistration_sha256: "0".repeat(64) },
+            { corpus_inputs_sha256: "0".repeat(64) },
+        ]) {
+            const out = dir();
+            const body = scenarioBody();
+            writeScenario(out, { ...body, manifest: { ...body.manifest, ...manifest } });
+            const o = { config, out, seed: 101, tier: "S" as const };
+            await expect(loadScenario(o)).rejects.toThrow(
+                /scenario\.json was compiled (with|from)/,
+            );
+        }
+    });
+
     test("a fault override must be an array of episodes valid against the compiled scenario", () => {
         const scenario = writeScenario(dir(), scenarioBody());
         const episode: FaultEpisode = {
@@ -884,4 +919,45 @@ describe("run inputs", () => {
         writeFileSync(path, `${line(record(0))}{"seq":1,\n`);
         expect(() => new CallIndex(path)).toThrow(/line 2 is corrupt: not JSON/);
     });
+});
+
+test("a delivered user turn sits just before its turn's first proxy call, in one increasing order", () => {
+    const call = (seq: number, turn: string, scenario_ms: number) => ({
+        seq,
+        arm: "a",
+        session: "s-1",
+        component: "agent",
+        turn,
+        scenario_ms,
+        status: 200,
+        error: null,
+        input_tokens: 1,
+        output_tokens: 1,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+    });
+    const calls = [call(3, "e-1", 10), call(4, "e-1", 10), call(9, "e-2", 20)];
+    const merged = withUserTurns(
+        calls,
+        [
+            { event: "e-2", scenario_ms: 20, label: "pushback", turn_index: 1 },
+            { event: "e-3", scenario_ms: 25, label: "task", turn_index: 2 },
+            { event: "e-4", scenario_ms: 25, label: "task", turn_index: 3 },
+        ],
+        "a",
+        "s-1",
+    );
+    expect(merged.map((c) => `${c.component}:${c.turn}`)).toEqual([
+        "agent:e-1",
+        "agent:e-1",
+        "user-sim:e-2",
+        "agent:e-2",
+        "user-sim:e-3",
+        "user-sim:e-4",
+    ]);
+    const seqs = merged.map((c) => c.seq);
+    expect(seqs).toEqual([...seqs].sort((x, y) => x - y));
+    expect(new Set(seqs).size).toBe(seqs.length);
+    expect(merged[2]?.seq).toBeGreaterThan(4);
+    expect(merged[2]?.seq).toBeLessThan(9);
 });

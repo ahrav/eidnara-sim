@@ -23,6 +23,7 @@
       "id": "s-P4-a",
       "item": "P4-a",
       "arm": "eidnara",
+      "session": "s-1",
       "turn": "e-1",
       "turn_outcome": "ok",
       "artefacts": [
@@ -39,7 +40,11 @@
     "verdict": "pass",
     "metrics": {
       "P4.pass": true,
+      "P4.harm": false,
       "P4.collapsed": false
-    }
+    },
+    "inputs": [
+      "d1"
+    ]
   }
 }

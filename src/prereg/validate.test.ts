@@ -81,6 +81,45 @@ describe("pre-registration validator", () => {
         ]);
     });
 
+    test("refuses judge settings outside the consumed eval-core bounds", () => {
+        const prereg = load("S") as any;
+        prereg.grading.judge.calibration_min_pairs = 1;
+        prereg.grading.judge.human_sample_percent = 1;
+        prereg.grading.judge.arm_identification_ceiling_percent = 100;
+        expect(validatePreregistration(prereg)).toEqual([
+            "grading.judge.calibration_min_pairs: at least 20",
+            "grading.judge.human_sample_percent: at least 10",
+            "grading.judge.arm_identification_ceiling_percent: at most 60",
+        ]);
+    });
+
+    test("refuses judge thresholds the campaign cannot satisfy", () => {
+        const prereg = load("S") as any;
+        prereg.grading.judge.calibration_min_pairs =
+            prereg.stopping_rule.paired_items_per_probe_type + 1;
+        prereg.grading.judge.arm_identification_ceiling_percent = 49;
+        expect(validatePreregistration(prereg)).toEqual([
+            "grading.judge.calibration_min_pairs: at most stopping_rule.paired_items_per_probe_type (24)",
+            "grading.judge.arm_identification_ceiling_percent: at least 50",
+        ]);
+    });
+
+    test("refuses a cross-judge that is the primary judge", () => {
+        const prereg = load("S") as any;
+        prereg.grading.judge.cross_judge = prereg.grading.judge.model;
+        expect(validatePreregistration(prereg)).toEqual([
+            "grading.judge.cross_judge: must differ from grading.judge.model",
+        ]);
+    });
+
+    test("refuses a P11 weight that Number cannot represent", () => {
+        const prereg = load("S") as any;
+        prereg.grading.p11_false_positive_weight = `1${"0".repeat(400)}`;
+        expect(validatePreregistration(prereg)).toEqual([
+            "grading.p11_false_positive_weight: must be a finite number",
+        ]);
+    });
+
     test("refuses a missing family by name", () => {
         const errors = validatePreregistration(without(load("M"), "families[harm]"));
         expect(errors).toContain("families[harm]: missing");

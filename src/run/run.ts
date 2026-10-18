@@ -22,15 +22,15 @@ import type { CallView } from "../grade/artefacts";
 import { armBase } from "../hosts/arms";
 import { driverSupports, HostDriver } from "../hosts/driver";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
-import type { Tier } from "../prereg/schema";
+import type { Preregistration, Tier } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import { bedrockUpstream, Gateway } from "../proxy/gateway";
 import { FaultInjector, restoreOrder } from "../proxy/inject";
 import { type CallRecord, RecordWriter, recordProblems } from "../proxy/records";
 import { Rng } from "../rng";
-import { compileScenario, type Scenario } from "../scenario/compile";
+import { compileScenario, type Scenario, scenarioInputMismatch } from "../scenario/compile";
 import { type FaultEpisode, type FaultType, SEAMS, validateFault } from "../scenario/faults";
-import { loadCompileInput, loadPrereg } from "../scenario/inputs";
+import { corpusInputsSha256, loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
 import { behaviourPlan, type Label, realisedRates } from "../usersim/plan";
 import { normaliser, Pairing, proxyUserSim, Tape, UserSim } from "../usersim/usersim";
@@ -557,6 +557,16 @@ export function requirePlainCache(cache: string, checkout: string): void {
 }
 
 /** `scenario.json` is accepted only when its body still hashes to its `scenario_hash`. */
+/** One parsed pre-registration per run options object, so every startup step reads the same revision. */
+const preregs = new WeakMap<object, Preregistration>();
+function preregOf(o: Pick<RunOptions, "tier">): Preregistration {
+    const cached = preregs.get(o);
+    if (cached) return cached;
+    const loaded = loadPrereg(o.tier);
+    preregs.set(o, loaded);
+    return loaded;
+}
+
 export async function loadScenario(
     o: Pick<RunOptions, "config" | "out" | "seed" | "tier">,
     items?: number,
@@ -580,6 +590,13 @@ export async function loadScenario(
             `scenario.json does not hash to its scenario_hash ${scenario_hash}`,
         );
     }
+    const expected = structuredClone(preregOf(o));
+    if (items !== undefined) expected.stopping_rule.paired_items_per_probe_type = items;
+    const stale = scenarioInputMismatch(scenario, {
+        preregistration_sha256: preregistrationHash(expected),
+        corpus_inputs_sha256: corpusInputsSha256(),
+    });
+    if (stale) throw new HarnessFailure(stale);
     const { seed, tier } = scenario.manifest as { seed: number; tier: string };
     if (seed !== o.seed || tier !== o.tier) {
         throw new HarnessFailure(
@@ -773,7 +790,7 @@ function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): v
 
 /** An A/A control label `<arm>~<tag>` runs right after its arm when the tier pre-registers the `[arm, arm]` pair. */
 export function armOrder(o: Pick<RunOptions, "tier" | "seed" | "arms">): string[] {
-    const prereg = loadPrereg(o.tier);
+    const prereg = preregOf(o);
     const index = prereg.seeds.indexOf(o.seed);
     if (index < 0) throw new HarnessFailure(`seed ${o.seed} is not pre-registered for ${o.tier}`);
     const order: string[] = prereg.arms.order_by_seed[index] ?? prereg.arms.run;
@@ -866,9 +883,9 @@ function linkTarget(link: string, root: string, seen: Set<string>): string {
 const OPENCODE_SDK = "packages/e2e-tests/node_modules/@opencode-ai/sdk";
 
 /** Every input the manifest pins besides the scenario hash, recomputed from the live environment. */
-export function runIdentity(config: SimConfig, tier: Tier, projects: string[]) {
+export function runIdentity(config: SimConfig, prereg: Preregistration, projects: string[]) {
     return {
-        prereg_sha256: preregistrationHash(loadPrereg(tier)),
+        prereg_sha256: preregistrationHash(prereg),
         ...eidnaraIdentity(config.eidnara_checkout),
         ...simIdentity(),
         binaries: binaryDigests(config),
@@ -989,14 +1006,14 @@ export async function loadManifest(
         fault_override: o.faults === undefined ? null : faultOverride(o.faults, scenario),
         tapes: o.tapes ?? [],
         side_model: o.sideModel ?? null,
-        user_sim_model: o.userSimModel ?? loadPrereg(o.tier).user_sim.model,
+        user_sim_model: o.userSimModel ?? preregOf(o).user_sim.model,
     };
     /** Computed once the inputs it hashes exist: before the probe on a resume, after it on a first run. */
     const digests = () => ({
         scenario_hash: scenario.scenario_hash,
         ...runIdentity(
             o.config,
-            o.tier,
+            preregOf(o),
             scenario.projects.map((p) => p.id),
         ),
     });
@@ -1128,7 +1145,7 @@ export async function runTier(o: RunOptions): Promise<void> {
     requireOutsideIdentity(o.out);
     requirePinnedPath(o.config);
     mkdirSync(o.out, { recursive: true });
-    requirePlainArtifacts(o.out, [...loadPrereg(o.tier).arms.run, ...(o.arms ?? [])]);
+    requirePlainArtifacts(o.out, [...preregOf(o).arms.run, ...(o.arms ?? [])]);
     const lease = takeLease(o.out);
     const cleanup: Array<() => Promise<void> | void> = [() => releaseLease(o.out, lease)];
     let done: Promise<void> | null = null;
@@ -1269,17 +1286,64 @@ export class CallIndex {
 export function projectCall(r: CallRecord): Omit<CallView, "turn_index"> {
     return {
         seq: r.seq,
+        arm: r.arm,
+        session: r.session ?? "",
         component: r.component,
         turn: r.turn,
         scenario_ms: r.scenario_ms,
+        status: r.status,
+        error: r.error,
         input_tokens: r.input_tokens,
         output_tokens: r.output_tokens,
-        ...(r.response_text ? { response_text: r.response_text } : {}),
+        cache_read_tokens: r.cache_read_tokens,
+        cache_write_tokens: r.cache_write_tokens,
+        ...(r.response_text !== undefined ? { response_text: r.response_text } : {}),
         ...(r.response_text_truncated ? { response_text_truncated: true } : {}),
         ...(r.status >= 400 || r.error !== null || r.finish_reason === "stream_cut"
             ? { failed: true }
             : {}),
     };
+}
+
+/**
+ * A session's proxy calls with its delivered user turns placed among them. A user turn's message
+ * opens its turn, so it sits just before the turn's first call, or after the last call recorded
+ * by its scenario time when the turn made none. Its `seq` is fractional between the two proxy
+ * sequence numbers around it, so the list stays in one increasing order the graders compare.
+ */
+export function withUserTurns(
+    calls: CallView[],
+    turns: { event: string; scenario_ms: number; label: string; turn_index?: number }[],
+    arm: string,
+    session: string,
+): CallView[] {
+    const placed = turns.map((t) => {
+        const first = calls.find((c) => c.turn === t.event);
+        const before = calls.filter((c) => c.scenario_ms <= t.scenario_ms).at(-1);
+        const after = first ? first.seq - 1 : (before?.seq ?? 0);
+        return { t, after };
+    });
+    const views = placed.map(({ t, after }, i) => {
+        const peers = placed.filter((p) => p.after === after);
+        const rank = peers.findIndex((p) => p === placed[i]);
+        return {
+            seq: after + (rank + 1) / (peers.length + 1),
+            arm,
+            session,
+            component: "user-sim",
+            turn: t.event,
+            ...(t.turn_index === undefined ? {} : { turn_index: t.turn_index }),
+            scenario_ms: t.scenario_ms,
+            status: 200,
+            error: null,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            label: t.label,
+        } satisfies CallView;
+    });
+    return [...calls, ...views].sort((a, b) => a.seq - b.seq);
 }
 
 export function callsOf(
@@ -1363,7 +1427,7 @@ async function runArms(
         holds.set(timer, end);
     };
     const { config, seed } = o;
-    const prereg = loadPrereg(o.tier);
+    const prereg = preregOf(o);
     const wallBudgetMs = prereg.liveness_bounds.tier_wall_budget_ms;
     const budget = setTimeout(() => {
         stop.reason ??= `tier wall budget of ${wallBudgetMs} ms exhausted`;
@@ -1379,7 +1443,7 @@ async function runArms(
                 `${journalPath} holds no complete entry; refusing to truncate it`,
             );
         }
-        requireFreshArmRoots(o.out, [...loadPrereg(o.tier).arms.run, ...(o.arms ?? [])]);
+        requireFreshArmRoots(o.out, [...preregOf(o).arms.run, ...(o.arms ?? [])]);
         writeAtomic(
             join(o.out, ATTEMPT),
             `${JSON.stringify({ pid: process.pid, started_wall_ms: Date.now() })}\n`,
@@ -1653,21 +1717,19 @@ async function runArms(
             onDaemonExit: (detail) => scheduler.daemonExited(detail),
             callsFor: (session) => {
                 handlersFailed();
-                return [
-                    ...callsOf(callIndex, arm, session, turnIndex).filter(
-                        (c) => c.component !== "user-sim",
-                    ),
-                    ...userTurns(arm, session).map((e) => ({
-                        seq: e.seq,
-                        component: "user-sim",
-                        turn: String(e.event),
-                        turn_index: turnIndex.get(String(e.event)),
+                const calls = callsOf(callIndex, arm, session, turnIndex).filter(
+                    (c) => c.component !== "user-sim",
+                );
+                const turns = userTurns(arm, session).map((e) => {
+                    const index = turnIndex.get(String(e.event));
+                    return {
+                        event: String(e.event),
                         scenario_ms: e.scenario_ms,
-                        input_tokens: 0,
-                        output_tokens: 0,
                         label: String(e.label),
-                    })),
-                ];
+                        ...(index === undefined ? {} : { turn_index: index }),
+                    };
+                });
+                return withUserTurns(calls, turns, arm, session);
             },
             settle: () => scheduler.quiesceJobs(),
             now,

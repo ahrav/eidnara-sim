@@ -19,6 +19,7 @@
       "id": "s-P2-a",
       "item": "P2-a",
       "arm": "eidnara",
+      "session": "s-1",
       "turn": "e-1",
       "turn_outcome": "ok",
       "artefacts": [
@@ -36,6 +37,9 @@
     "metrics": {
       "P2.pass": true,
       "P2.harm": false
-    }
+    },
+    "inputs": [
+      "d1"
+    ]
   }
 }

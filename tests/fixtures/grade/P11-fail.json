@@ -19,6 +19,7 @@
       "id": "s-P11-b",
       "item": "P11-b",
       "arm": "eidnara",
+      "session": "s-1",
       "turn": "e-1",
       "turn_outcome": "ok",
       "artefacts": [
@@ -33,10 +34,14 @@
   ],
   "expect": {
     "verdict": "fail",
+    "reason": "injected the other project's rule",
     "metrics": {
       "P11.pass": false,
       "P11.harm": true,
       "P11.weighted_score": -2
-    }
+    },
+    "inputs": [
+      "d1"
+    ]
   }
 }

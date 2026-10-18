@@ -1,3 +1,5 @@
+import { COMPONENTS } from "../proxy/records";
+import { unifiedDiff } from "./text";
 export const ARTEFACT_CLASSES = [
     "diff",
     "command-log",
@@ -13,7 +15,7 @@ export interface DiffArtefact {
     /** `turn`: the probe turn's changes; `prior-session`: the project's previous session. */
     role: "turn" | "prior-session";
     patch: string;
-    /** Why the recorder could not take this diff; a grader reading it refuses the item. */
+    /** The recorder's reason for refusing the diff; reading a diff with this reason raises EvidenceRefused. */
     refused?: string;
 }
 
@@ -21,7 +23,7 @@ export interface Command {
     command: string;
     exit: number | null;
     scenario_ms: number;
-    /** The host's id for the run, when it reported a start before the end. */
+    /** The host's id for this tool run. */
     call?: string;
 }
 
@@ -49,16 +51,22 @@ export interface WorkspaceState {
 
 export interface CallView {
     seq: number;
+    arm: string;
+    session: string;
     component: string;
     turn: string | null;
     turn_index?: number;
     scenario_ms: number;
+    /** The HTTP status and error the proxy recorded for the call. */
+    status: number;
+    error: string | null;
     input_tokens: number;
     output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
     response_text?: string;
     /** The proxy cut `response_text` at its cap; the answer is a prefix and is refused as grade input. */
     response_text_truncated?: boolean;
-    /** The call ended in an error status, a recorded error, or a cut stream; it is no completed fold. */
     failed?: boolean;
     label?: string;
 }
@@ -75,8 +83,7 @@ export interface Snapshot {
     id: string;
     item: string;
     arm: string;
-    /** The scenario session the probe turn belongs to. */
-    session?: string;
+    session: string;
     turn: string;
     turn_outcome: "ok" | "failed";
     artefacts: Artefact[];
@@ -84,67 +91,178 @@ export interface Snapshot {
 
 export class GradeRefused extends Error {}
 
-/** A refusal that concerns one item's evidence as recorded; the grader excludes the item. */
 export class EvidenceRefused extends GradeRefused {}
 
-/** A refusal that concerns one item's answer evidence; the grader excludes the item. */
 export class AnswerRefused extends EvidenceRefused {}
 
-const ROLES: Record<string, readonly string[]> = {
-    diff: ["turn", "prior-session"],
-    "command-log": ["turn", "session"],
+export const completed = (c: CallView) =>
+    c.status >= 200 && c.status < 300 && c.error === null && c.failed !== true;
+
+export type Field = (v: unknown) => boolean;
+export const str: Field = (v) => typeof v === "string";
+export const text: Field = (v) => typeof v === "string" && v.length > 0;
+export const num: Field = (v) => typeof v === "number" && Number.isFinite(v);
+const count: Field = (v) => Number.isSafeInteger(v) && (v as number) >= 0;
+const nonNegative: Field = (v) => num(v) && (v as number) >= 0;
+export const optional =
+    (f: Field): Field =>
+    (v) =>
+        v === undefined || f(v);
+const nullable =
+    (f: Field): Field =>
+    (v) =>
+        v === null || f(v);
+export const oneOf =
+    (values: readonly string[]): Field =>
+    (v) =>
+        values.includes(v as string);
+const listOf = (shape: Record<string, Field>, path: string, v: unknown): string | null => {
+    if (!Array.isArray(v)) return path;
+    for (const [i, item] of v.entries()) {
+        const bad = badField(shape, item, `${path}[${i}]`);
+        if (bad) return bad;
+    }
+    return null;
+};
+const mapOf =
+    (f: Field): Field =>
+    (v) =>
+        typeof v === "object" && v !== null && !Array.isArray(v) && Object.values(v).every(f);
+
+/** The first field of `value` that fails `shape`, as a dotted path, or null when every field holds. */
+export function badField(
+    shape: Record<string, Field>,
+    value: unknown,
+    path: string,
+): string | null {
+    if (typeof value !== "object" || value === null) return path;
+    const record = value as Record<string, unknown>;
+    for (const [key, f] of Object.entries(shape)) {
+        if (!f(record[key])) return `${path}.${key}`;
+    }
+    return null;
+}
+
+const CALL: Record<string, Field> = {
+    seq: num,
+    arm: text,
+    session: text,
+    component: oneOf(COMPONENTS),
+    turn: nullable(str),
+    turn_index: optional(count),
+    scenario_ms: nonNegative,
+    status: (v) => Number.isInteger(v),
+    error: nullable(str),
+    input_tokens: count,
+    output_tokens: count,
+    cache_read_tokens: count,
+    cache_write_tokens: count,
+    response_text: optional(str),
+    response_text_truncated: optional((v) => typeof v === "boolean"),
+    failed: optional((v) => typeof v === "boolean"),
+    label: optional(str),
+};
+const COMMAND: Record<string, Field> = {
+    command: str,
+    exit: nullable(Number.isInteger),
+    scenario_ms: nonNegative,
+    call: optional(str),
 };
 
-const isString = (v: unknown) => typeof v === "string";
-const isRecord = (v: unknown) => typeof v === "object" && v !== null && !Array.isArray(v);
-const isNumber = (v: unknown) => typeof v === "number" && Number.isFinite(v);
-/** A command-log entry: command text, a 0/1/null exit, a scenario time, and an optional call id. */
-const isCommandRun = (v: unknown) =>
-    isRecord(v) &&
-    isString((v as { command: unknown }).command) &&
-    ((v as { exit: unknown }).exit === null || isNumber((v as { exit: unknown }).exit)) &&
-    isNumber((v as { scenario_ms: unknown }).scenario_ms) &&
-    ((v as { call?: unknown }).call === undefined || isString((v as { call?: unknown }).call));
-const isCommandLog = (v: unknown) => Array.isArray(v) && v.every(isCommandRun);
-/** The fields each artefact class carries, and the check each must pass. */
-const PAYLOADS: Record<ArtefactClass, Array<[string, (v: unknown) => boolean]>> = {
-    diff: [["patch", isString]],
-    "command-log": [["commands", isCommandLog]],
-    "test-result": [
-        ["command", isString],
-        ["exit", (v) => typeof v === "number"],
-        ["summary", Array.isArray],
-    ],
-    "workspace-state": [["files", isRecord]],
-    "proxy-call": [["calls", Array.isArray]],
+/** The first call whose `seq` fails to exceed its predecessor's, as a path, or null. */
+const unordered = (calls: unknown, path: string): string | null => {
+    const seqs = (calls as { seq: number }[]).map((c) => c.seq);
+    const i = seqs.findIndex((s, k) => k > 0 && s <= (seqs[k - 1] as number));
+    return i < 0 ? null : `${path}[${i}].seq`;
 };
 
-/**
- * Every artefact must be a grade input of a known class with its class's payload in place: a
- * diff carries a string `patch`, a command log an array of commands, a proxy-call artefact an
- * array of calls. A reader would otherwise default a missing payload to empty evidence.
- */
+/** The payload check for each artefact class, run after id and class are known. */
+const PAYLOADS: Record<ArtefactClass, (a: Record<string, unknown>, path: string) => string | null> =
+    {
+        diff: (a, p) =>
+            badField(
+                {
+                    role: oneOf(["turn", "prior-session"]),
+                    patch: unifiedDiff,
+                    refused: optional(text),
+                },
+                a,
+                p,
+            ),
+        "command-log": (a, p) =>
+            badField({ role: oneOf(["turn", "session"]) }, a, p) ??
+            listOf(COMMAND, `${p}.commands`, a.commands),
+        "test-result": (a, p) =>
+            badField(
+                {
+                    command: str,
+                    exit: Number.isInteger,
+                    summary: (v) => Array.isArray(v) && v.every(str),
+                },
+                a,
+                p,
+            ),
+        "workspace-state": (a, p) => badField({ files: mapOf(str) }, a, p),
+        "proxy-call": (a, p) =>
+            listOf(CALL, `${p}.calls`, a.calls) ?? unordered(a.calls, `${p}.calls`),
+    };
+
+/** The first call from another arm or session than the snapshot's, as a path, or null. */
+const foreignCall = (snapshot: Snapshot, calls: CallView[], path: string): string | null => {
+    for (const [i, c] of calls.entries()) {
+        if (c.arm !== snapshot.arm) return `${path}[${i}].arm`;
+        if (c.session !== snapshot.session) return `${path}[${i}].session`;
+    }
+    return null;
+};
+
+const SNAPSHOT: Record<string, Field> = {
+    id: text,
+    item: text,
+    arm: text,
+    session: text,
+    turn: text,
+    turn_outcome: oneOf(["ok", "failed"]),
+    artefacts: Array.isArray,
+};
+
+/** Refuses a snapshot whose shape or artefacts fall outside the grade-input contract, or that carries two artefacts of one class and role. */
 export function assertArtefactsOnly(snapshot: Snapshot): void {
-    for (const raw of snapshot.artefacts) {
-        const a = raw as unknown as Record<string, unknown>;
-        const id = typeof a.id === "string" ? a.id : "?";
-        if (
-            typeof a.id !== "string" ||
-            !(ARTEFACT_CLASSES as readonly string[]).includes(a.class as string)
-        ) {
+    const top = badField(SNAPSHOT, snapshot, "snapshot");
+    if (top) throw new GradeRefused(`${top} is missing or malformed`);
+    const ids = new Set<string>();
+    for (const [i, raw] of snapshot.artefacts.entries()) {
+        if (typeof raw !== "object" || raw === null) {
             throw new GradeRefused(
-                `artefact ${id} of class ${String(a.class)} is not a grade input`,
+                `snapshot ${snapshot.id}: artefacts[${i}] is missing or malformed`,
             );
         }
-        const roles = ROLES[a.class as string];
-        if (roles && !roles.includes(a.role as string)) {
-            throw new GradeRefused(`artefact ${id} has no ${a.class} role`);
+        // SAFETY: the field checks below establish whether each artefact satisfies the Artefact contract.
+        const a = raw as unknown as Record<string, unknown>;
+        if (!text(a.id)) {
+            throw new GradeRefused(`snapshot ${snapshot.id} has an artefact without an id`);
         }
-        for (const [field, ok] of PAYLOADS[a.class as ArtefactClass]) {
-            if (!ok(a[field])) {
-                throw new GradeRefused(`artefact ${id} of class ${a.class} has no ${field}`);
-            }
+        const id = a.id as string;
+        if (ids.has(id))
+            throw new GradeRefused(`snapshot ${snapshot.id} has artefact id ${id} twice`);
+        ids.add(id);
+        if (!(ARTEFACT_CLASSES as readonly string[]).includes(a.class as string)) {
+            throw new GradeRefused(`artefact ${id} of class ${a.class} is not a grade input`);
         }
+        const bad =
+            PAYLOADS[a.class as ArtefactClass](a, `artefacts[${i}]`) ??
+            (a.class === "proxy-call"
+                ? foreignCall(snapshot, a.calls as CallView[], `artefacts[${i}].calls`)
+                : null);
+        if (bad) throw new GradeRefused(`snapshot ${snapshot.id}: ${bad} is missing or malformed`);
+    }
+    const seen = new Set<string>();
+    for (const a of snapshot.artefacts) {
+        const key = "role" in a && typeof a.role === "string" ? `${a.role} ${a.class}` : a.class;
+        if (seen.has(key)) {
+            throw new GradeRefused(`snapshot ${snapshot.id} has two ${key} artefacts`);
+        }
+        seen.add(key);
     }
 }
 
@@ -153,29 +271,39 @@ export class ArtefactReader {
 
     constructor(private readonly snapshot: Snapshot) {}
 
-    private find<T extends Artefact>(test: (a: Artefact) => a is T): T | undefined {
-        const found = this.snapshot.artefacts.find(test);
-        if (found) this.read.add(found.id);
+    private find<T extends Artefact>(label: string, test: (a: Artefact) => a is T): T {
+        const matches = this.snapshot.artefacts.filter(test);
+        const found = matches[0];
+        if (!found) throw new GradeRefused(`snapshot ${this.snapshot.id} has no ${label} artefact`);
+        if (matches.length > 1) {
+            throw new GradeRefused(`snapshot ${this.snapshot.id} has two ${label} artefacts`);
+        }
+        this.read.add(found.id);
         return found;
     }
 
     diff(role: DiffArtefact["role"] = "turn"): string {
-        const d = this.find((a): a is DiffArtefact => a.class === "diff" && a.role === role);
-        if (d?.refused) {
+        const d = this.find(
+            `${role} diff`,
+            (a): a is DiffArtefact => a.class === "diff" && a.role === role,
+        );
+        if (d.refused) {
             throw new EvidenceRefused(
                 `snapshot ${this.snapshot.id}: ${role} diff unrecorded: ${d.refused}`,
             );
         }
-        return d?.patch ?? "";
+        return d.patch;
     }
 
     commands(role: CommandLog["role"] = "turn"): Command[] {
-        const log = this.find((a): a is CommandLog => a.class === "command-log" && a.role === role);
-        return log?.commands ?? [];
+        return this.find(
+            `${role} command-log`,
+            (a): a is CommandLog => a.class === "command-log" && a.role === role,
+        ).commands;
     }
 
     calls(): CallView[] {
-        return this.find((a): a is ProxyCalls => a.class === "proxy-call")?.calls ?? [];
+        return this.find("proxy-call", (a): a is ProxyCalls => a.class === "proxy-call").calls;
     }
 
     turnCalls(): CallView[] {
@@ -183,17 +311,21 @@ export class ArtefactReader {
         return this.calls().filter((c) => c.component === "agent" && c.turn === turn);
     }
 
-    /** The turn's answer: the text of its last agent call. A turn with no agent call has no answer to grade. */
     answer(): string {
-        const last = this.turnCalls().at(-1);
+        const last = this.turnCalls().filter(completed).at(-1);
         if (!last) {
             throw new GradeRefused(
-                `snapshot ${this.snapshot.id} holds no agent call for turn ${String(this.snapshot.turn)}`,
+                `snapshot ${this.snapshot.id} has no completed agent response for turn ${this.snapshot.turn}`,
             );
         }
         if (last.response_text_truncated) {
             throw new AnswerRefused(`call ${last.seq}: the proxy truncated the answer at its cap`);
         }
-        return last.response_text ?? "";
+        if (last.response_text === undefined) {
+            throw new AnswerRefused(
+                `snapshot ${this.snapshot.id}: the final completed agent call (seq ${last.seq}) has no response text`,
+            );
+        }
+        return last.response_text;
     }
 }

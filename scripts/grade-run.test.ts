@@ -135,10 +135,22 @@ function withTurnIndices(s: Snapshot): Snapshot {
 }
 
 function snapshot(dir: string, arm: string, given: Snapshot, journaled = true): void {
-    const s = withTurnIndices(given);
+    const indexed = withTurnIndices(given);
+    const session = indexed.session ?? "s-1";
+    const s = {
+        ...indexed,
+        artefacts: indexed.artefacts.map((a) =>
+            a.class === "proxy-call"
+                ? {
+                      ...a,
+                      calls: a.calls.map((c) => ({ ...c, arm, session })),
+                  }
+                : a,
+        ),
+    } as Snapshot;
     const row = {
         ...s,
-        session: s.session ?? "s-1",
+        session,
         arm,
         id: `${arm}:${s.item}:${s.turn}:${seq++}`,
     };
@@ -173,12 +185,14 @@ function snapshot(dir: string, arm: string, given: Snapshot, journaled = true): 
                 turn: c.turn,
                 component: c.component,
                 model: "global.anthropic.claude-opus-5-5",
-                status: 200,
-                error: null,
+                status: c.status,
+                error: c.error,
                 finish_reason: "end_turn",
                 input_tokens: c.input_tokens,
                 output_tokens: c.output_tokens,
-                ...(c.response_text ? { response_text: c.response_text } : {}),
+                cache_read_tokens: c.cache_read_tokens,
+                cache_write_tokens: c.cache_write_tokens,
+                ...(c.response_text !== undefined ? { response_text: c.response_text } : {}),
                 ...(c.response_text_truncated ? { response_text_truncated: true } : {}),
             };
             appendFileSync(join(dir, "calls.jsonl"), `${JSON.stringify(record)}\n`);
@@ -214,6 +228,12 @@ const p7snapshot = (item: string, turn = "e-1"): Snapshot => ({
             calls: [
                 {
                     seq: 1,
+                    arm: "x",
+                    session: "s-1",
+                    status: 200,
+                    error: null,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
                     component: "agent",
                     turn,
                     scenario_ms: 0,
@@ -248,8 +268,8 @@ describe("grade-run", () => {
         const dir = run({ probes: [p5.probe], unended: { host: ["e-1"] } });
         snapshot(dir, "eidnara", { ...failing, turn: "e-1-interrupted" }, false);
         snapshot(dir, "eidnara", snap);
-        snapshot(dir, "eidnara", { ...failing, turn: "e-1-retry" }, false);
-        snapshot(dir, "eidnara", { ...failing, turn: "e-1-retry-2" }, false);
+        snapshot(dir, "eidnara", { ...failing, turn: "e-1" }, false);
+        snapshot(dir, "eidnara", { ...failing, turn: "e-1" }, false);
         const summary = await gradeRun(dir, null);
         expect(summary.verdicts).toEqual({ "eidnara/P5": { pass: 1 } });
         const [grade] = readFileSync(join(dir, "grades.jsonl"), "utf8").trim().split("\n");
@@ -408,7 +428,7 @@ describe("grade-run", () => {
         const row = JSON.parse(readFileSync(log, "utf8").trim());
         for (const a of row.artefacts) if (a.class === "proxy-call") a.calls.reverse();
         writeFileSync(log, `${JSON.stringify(row)}\n`);
-        await expect(gradeRun(dir, null)).rejects.toThrow("content that differs from calls.jsonl");
+        await expect(gradeRun(dir, null)).rejects.toThrow("calls[1].seq is missing or malformed");
 
         const shifted = run({ probes: [p8.probe] });
         snapshot(shifted, "eidnara", base);
@@ -609,7 +629,9 @@ describe("grade-run", () => {
                 a.class === "proxy-call" ? { ...a, calls: [] } : a,
             ) as Snapshot["artefacts"],
         });
-        await expect(gradeRun(dir, null)).rejects.toThrow("holds no agent call for turn e-1");
+        await expect(gradeRun(dir, null)).rejects.toThrow(
+            "has no completed agent response for turn e-1",
+        );
     });
 
     test("an interrupted run is refused, naming the arm and its event counts", async () => {
@@ -787,11 +809,15 @@ describe("grade-run", () => {
         const row = JSON.parse(readFileSync(path, "utf8").trim());
         const { session: _s, ...unbound } = row;
         writeFileSync(path, `${JSON.stringify(unbound)}\n`);
-        await expect(gradeRun(dir, null)).rejects.toThrow("in session undefined");
+        await expect(gradeRun(dir, null)).rejects.toThrow(
+            "snapshot.session is missing or malformed",
+        );
         writeFileSync(path, `${JSON.stringify({ ...row, turn_outcome: "failed" })}\n`);
         await expect(gradeRun(dir, null)).rejects.toThrow("but its EndTurn ended ok");
         writeFileSync(path, `${JSON.stringify({ ...row, turn_outcome: "fine" })}\n`);
-        await expect(gradeRun(dir, null)).rejects.toThrow("records turn_outcome fine");
+        await expect(gradeRun(dir, null)).rejects.toThrow(
+            "snapshot.turn_outcome is missing or malformed",
+        );
     });
 
     test("a journaled row whose turn differs from the probe's event is refused", async () => {
