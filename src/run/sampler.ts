@@ -1,40 +1,66 @@
-import { appendFileSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const TICKS_PER_SECOND = 100;
-const PAGE_BYTES = 4096;
+/** The kernel reports CPU time in clock ticks; `getconf CLK_TCK` supplies the ticks per second. */
+const CLK_TCK = (() => {
+    const out = Bun.spawnSync(["getconf", "CLK_TCK"], { stdout: "pipe", stderr: "pipe" });
+    const ticks = Number(out.stdout.toString().trim());
+    if (out.exitCode !== 0 || !Number.isInteger(ticks) || ticks <= 0) {
+        throw new Error(
+            `getconf CLK_TCK: ${out.stderr.toString().trim() || out.stdout.toString()}`,
+        );
+    }
+    return ticks;
+})();
 
 export function procStats(pid: number): { rss: number; cpuMs: number } | null {
     try {
         const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
         const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
         const ticks = Number(fields[11]) + Number(fields[12]);
-        return { rss: Number(fields[21]) * PAGE_BYTES, cpuMs: (ticks * 1000) / TICKS_PER_SECOND };
+        const rssKb = /^VmRSS:\s+(\d+) kB$/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"));
+        if (!rssKb) return null;
+        return { rss: Number(rssKb[1]) * 1024, cpuMs: (ticks * 1000) / CLK_TCK };
     } catch {
         return null;
     }
 }
 
-export function treeBytes(dir: string): number {
+/** Anonymous resident memory (`RssAnon`), which holds the heap, in bytes. */
+export function anonBytes(pid: number): number | null {
+    try {
+        const kb = /^RssAnon:\s+(\d+) kB$/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"))?.[1];
+        return kb === undefined ? null : Number(kb) * 1024;
+    } catch {
+        return null;
+    }
+}
+
+/** `treeBytes` sums regular-file sizes under `dir` and returns `null` if reading `dir` fails. */
+export function treeBytes(dir: string): number | null {
     let total = 0;
+    let readable = true;
     const walk = (d: string) => {
         let names: string[] = [];
         try {
             names = readdirSync(d);
         } catch {
+            if (d === dir) readable = false;
             return;
         }
         for (const name of names) {
             const p = join(d, name);
             try {
-                const st = statSync(p);
+                const st = lstatSync(p);
                 if (st.isDirectory()) walk(p);
                 else if (st.isFile()) total += st.size;
-            } catch {}
+            } catch {
+                // The scan skips entries removed between readdir and lstat.
+            }
         }
     };
     walk(dir);
-    return total;
+    return readable ? total : null;
 }
 
 export interface Sample {
@@ -42,9 +68,10 @@ export interface Sample {
     scenario_ms: number;
     pid: number | null;
     rss: number | null;
+    heap?: number | null;
     cpu_ms: number | null;
     cpu_fraction: number | null;
-    store_bytes: number;
+    store_bytes: number | null;
 }
 
 export class ResourceSampler {
@@ -73,7 +100,7 @@ export class ResourceSampler {
             fraction = (stats.cpuMs - this.last.cpu) / (wall - this.last.wall);
         }
         this.last = stats && pid !== null ? { pid, wall, cpu: stats.cpuMs } : null;
-        const busy = fraction !== null && fraction > this.o.busyFraction;
+        const busy = fraction === null ? this.busy : fraction > this.o.busyFraction;
         if (busy !== this.busy) {
             this.busy = busy;
             this.o.onBusy(busy);
@@ -83,6 +110,7 @@ export class ResourceSampler {
             scenario_ms: this.o.scenarioMs(),
             pid,
             rss: stats?.rss ?? null,
+            heap: pid === null ? null : anonBytes(pid),
             cpu_ms: stats?.cpuMs ?? null,
             cpu_fraction: fraction === null ? null : Math.round(fraction * 1e4) / 1e4,
             store_bytes: treeBytes(this.o.storeDir),
@@ -92,7 +120,9 @@ export class ResourceSampler {
     }
 
     start(): void {
-        this.timer ??= setInterval(() => this.sample(), this.o.intervalMs);
+        if (this.timer) return;
+        this.sample();
+        this.timer = setInterval(() => this.sample(), this.o.intervalMs);
     }
 
     stop(): void {

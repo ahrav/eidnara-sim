@@ -5,13 +5,22 @@ export interface TranscriptStore {
 }
 
 export const TRANSCRIPT_STORES: TranscriptStore[] = [
-    { host: "pi", versions: /^0\.80\./, paths: ["$PI_CODING_AGENT_DIR/sessions"] },
+    { host: "pi", versions: /^0\.8[07]\./, paths: ["$PI_CODING_AGENT_DIR/sessions"] },
     {
         host: "opencode",
         versions: /^1\.1[89]\./,
         paths: ["$XDG_DATA_HOME/opencode/opencode.db"],
     },
 ];
+
+/** The entries that are single files; every other store is a directory. */
+const TRANSCRIPT_FILES = new Set(["$XDG_DATA_HOME/opencode/opencode.db"]);
+
+export type TranscriptKind = "file" | "directory";
+
+export function transcriptKind(template: string): TranscriptKind {
+    return TRANSCRIPT_FILES.has(template) ? "file" : "directory";
+}
 
 export function transcriptPaths(host: "pi" | "opencode", version: string): string[] {
     const row = TRANSCRIPT_STORES.find((t) => t.host === host && t.versions.test(version));

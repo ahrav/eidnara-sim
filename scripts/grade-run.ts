@@ -25,6 +25,7 @@ import {
     requireEvidence,
     verdictCounts,
 } from "../src/grade/probes";
+import { armBase } from "../src/hosts/arms";
 import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
@@ -35,7 +36,7 @@ import { Rng } from "../src/rng";
 import {
     type Entry,
     keepCompleteLines,
-    readJournal,
+    readJsonl,
     releaseLease,
     requireAppendable,
     takeLease,
@@ -61,11 +62,11 @@ export interface Summary {
  * the digests recorded in the manifest.
  */
 export async function gradeRun(dir: string, config: SimConfig | null): Promise<Summary> {
-    takeLease(dir);
+    const lease = takeLease(dir);
     try {
         return await grade(dir, config);
     } finally {
-        releaseLease(dir);
+        releaseLease(dir, lease);
     }
 }
 
@@ -225,7 +226,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     ) {
         throw new Error("manifest records no model list");
     }
-    const entries = readJournal(join(dir, "journal.jsonl"));
+    const entries = readJsonl<Entry>(join(dir, "journal.jsonl"));
     const events = manifest.events as unknown;
     if (
         !Number.isSafeInteger(events) ||
@@ -480,7 +481,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     const outside = `probe turn outside the run's ${manifest.events} events`;
     let judgeErrors = 0;
     const p7 = scenario.probes.filter((p) => p.type === "P7");
-    const memoryArms = arms.filter((a) => a !== "host");
+    const memoryArms = arms.filter((a) => armBase(a) !== "host");
     const pairs = p7.flatMap((probe) =>
         memoryArms.flatMap((arm) => {
             if (!ran.has(probe.id)) {
@@ -546,7 +547,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     if (pairs.length > 0 && config) {
         for (const name of ["judge-calls.jsonl", "judgments.jsonl"])
             requireAppendable(join(dir, name));
-        const records = new RecordWriter(join(dir, "judge-calls.jsonl"));
+        const records = new RecordWriter(join(dir, "judge-calls.jsonl"), { resume: true });
         const gateway = new Gateway({
             upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
             records,

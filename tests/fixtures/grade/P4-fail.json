@@ -14,7 +14,7 @@
       "must_not": [
         "trace!"
       ],
-      "scope": "out"
+      "side": "out"
     },
     "event": "e-1"
   },

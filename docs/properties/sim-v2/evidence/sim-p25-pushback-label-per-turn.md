@@ -17,6 +17,8 @@ abandon, clarify, or paste, and P14 derives from labels only.
 No harness code, test, or run exists yet. The surface lands in M6
 (#1031).
 
+M6 (#1031) journals one `UserTurn` per sent or skipped turn with a label from task, pushback, interrupt, redirect, abandon, clarify, or paste; the run feeds those labels to the P14 grader.
+
 ## Failure scenario
 
 P14 reads transcript text and grades by self-report.

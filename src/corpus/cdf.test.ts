@@ -1,6 +1,61 @@
 import { describe, expect, test } from "bun:test";
 import { Rng } from "../rng";
-import { fitCdf, GRID, quantile, sample } from "./cdf";
+import { cdfProblems, countProblems, fitCdf, GRID, quantile, sample, tailShare } from "./cdf";
+
+describe("cdfProblems", () => {
+    test("fitted tables pass", () => {
+        expect(cdfProblems(fitCdf([1, 2, 2, 3], "discrete"))).toEqual([]);
+        expect(cdfProblems(fitCdf([5, 1, 3], "continuous"))).toEqual([]);
+    });
+    test("names decreasing, out-of-range, non-finite, and unequal tables", () => {
+        const bad = { kind: "continuous" as const, p: [0.5, 0.4], x: [100, -1] };
+        expect(cdfProblems(bad)).toEqual([
+            "p must increase strictly within [0, 1]",
+            "p must end at 1",
+            "x must not decrease",
+        ]);
+        expect(cdfProblems({ kind: "discrete", p: [1], x: [Number.NaN] })).toEqual([
+            "entries must be finite",
+        ]);
+        expect(cdfProblems({ kind: "discrete", p: [], x: [] })).toContain(
+            "p and x need equal nonzero length",
+        );
+        expect(cdfProblems({ kind: "discrete", p: [0.5, 1.5], x: [1, 2] })).toContain(
+            "p must increase strictly within [0, 1]",
+        );
+    });
+});
+
+describe("countProblems", () => {
+    test("a fitted discrete table passes against its sample size", () => {
+        expect(countProblems(fitCdf([1, 2, 2, 3], "discrete"), 4)).toEqual([]);
+        expect(countProblems(fitCdf([3, 1, 1, 2, 1, 50], "discrete"), 6)).toEqual([]);
+    });
+    test("weights that are not cumulative counts over n fail", () => {
+        const t = { kind: "discrete" as const, p: [0.3, 1], x: [1, 2] };
+        expect(countProblems(t, 4)).toEqual(["p must be cumulative counts over n"]);
+        expect(countProblems(t, 0)).toEqual(["n must be a positive integer"]);
+        expect(countProblems({ kind: "discrete", p: [0.5], x: [1] }, 4)).toEqual([
+            "p must end at n / n",
+        ]);
+    });
+});
+
+describe("tailShare", () => {
+    test("a continuous table interpolates the CDF at the threshold", () => {
+        const t = { kind: "continuous" as const, p: [0, 0.5, 1], x: [0, 10, 20] };
+        expect(tailShare(t, 5)).toBeCloseTo(0.75, 9);
+        expect(tailShare(t, 10)).toBeCloseTo(0.5, 9);
+        expect(tailShare(t, 0)).toBe(1);
+        expect(tailShare(t, 25)).toBe(0);
+    });
+    test("a discrete table counts mass at the threshold", () => {
+        const t = fitCdf([1, 2, 2, 3], "discrete");
+        expect(tailShare(t, 2)).toBeCloseTo(0.75, 9);
+        expect(tailShare(t, 3)).toBeCloseTo(0.25, 9);
+        expect(tailShare(t, 4)).toBe(0);
+    });
+});
 
 describe("fitCdf and quantile", () => {
     const values = Array.from({ length: 1000 }, (_, i) => i + 1);

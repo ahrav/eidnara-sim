@@ -6,8 +6,11 @@ Eidnara, specified by
 
 - This tree lives outside the eidnara repository. It reads the eidnara
   checkout, its plugin builds, and its daemon binary only through paths named
-  in `sim.config.json`. Never create, modify, or commit a file under the
-  eidnara checkout from this tree; an Eidnara fix a run motivates is separate
+  in `sim.config.json`. `scripts/eidnara-build.sh` clones the eidnara source
+  checkout into a harness-owned build clone and is that clone's one writer;
+  `sim.config.json` names the clone as `eidnara_checkout`, and the runtime
+  only reads it. Never create, modify, or commit a file under the eidnara
+  source checkout from this tree; an Eidnara fix a run motivates is separate
   work under that repository's own gates.
 - The eidnara repository's `docs/host-wire-protocol.md` is the normative host
   wire contract. Wire names and literals this harness depends on follow that
@@ -19,7 +22,7 @@ Eidnara, specified by
   with the protocol version it would need.
 - Use `.github/workflows/ci.yml` as the source of truth for required checks.
   `bun run check` runs typecheck, lint, tests, the pre-registration
-  validator, and the catalog checker, in that order.
+  validator, the catalog checker, and the corpus checker, in that order.
 - Never append a comment-lint `allow(...)` override marker to a comment.
   `scripts/forbid-comment-markers.sh` rejects it in CI and in the tracked
   `.githooks/pre-commit` hook (installed by `bun install` through the

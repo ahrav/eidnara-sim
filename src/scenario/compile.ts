@@ -4,7 +4,7 @@ import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
 import { Rng } from "../rng";
 import { scheduleFaults, validateFault } from "./faults";
-import { bm25Ratio, cosine, type Embedder } from "./similarity";
+import { bm25Ratio, cosine, type Embedder, round4 } from "./similarity";
 import { Tokens } from "./tokens";
 
 export const GENERATOR_VERSION = "sim-scenario/v1";
@@ -25,7 +25,7 @@ export interface Template {
     probe: string;
     out_probe?: string;
     update?: string;
-    example?: string;
+    example?: { path: string; content: string };
     authority?: { path: string; content: string };
     check: Record<string, unknown>;
     out_check?: Record<string, unknown>;
@@ -101,7 +101,7 @@ export function markerHits(text: string, keys: readonly string[]): string[] {
     return [...hits, ...keys.filter((k) => text.includes(k))];
 }
 
-function streams(seed: number) {
+export function streams(seed: number) {
     return (domain: string) => {
         let h = 0x811c9dc5;
         for (const c of domain) h = Math.imul(h ^ c.charCodeAt(0), 0x01000193) >>> 0;
@@ -109,7 +109,7 @@ function streams(seed: number) {
     };
 }
 
-function shuffle<T>(items: T[], rng: Rng): T[] {
+export function shuffle<T>(items: T[], rng: Rng): T[] {
     for (let i = items.length - 1; i > 0; i--) {
         const j = Math.floor(rng.next() * (i + 1));
         [items[i], items[j]] = [items[j] as T, items[i] as T];
@@ -170,6 +170,9 @@ const range = (lo: number, hi: number) =>
 
 export async function compileScenario(input: CompileInput) {
     const { seed, prereg, dist, bank } = input;
+    if (!Number.isInteger(seed) || seed < 0 || seed > 0xffff_ffff) {
+        throw new Error(`seed ${seed} is outside the unsigned 32-bit range of the random streams`);
+    }
     const s = prereg.scenario;
     const thresholds = s.cue_probe_similarity;
     if (input.embedder.model !== thresholds.embedding_model) {
@@ -184,15 +187,28 @@ export async function compileScenario(input: CompileInput) {
     const sessRng = rngFor("sessions");
     const count = (p: Project) =>
         p.twin_of ? Math.ceil(s.sessions_per_project / 4) : s.sessions_per_project;
+    const bases = input.projects.filter((p) => !p.twin_of);
     const plan = shuffle(
         input.projects.flatMap((p) => Array<Project>(count(p)).fill(p)),
         sessRng,
     );
-    const baseIdx = plan.flatMap((p, i) => (p.twin_of ? [] : [i]));
+    const extra = new Set(
+        shuffle([...bases], sessRng)
+            .slice(0, s.forced_p90_sessions % bases.length)
+            .map((p) => p.id),
+    );
     const forced = new Set(
-        range(0, s.forced_p90_sessions).map(
-            (k) => baseIdx[Math.floor(((k + 0.5) * baseIdx.length) / s.forced_p90_sessions)],
-        ),
+        bases.flatMap((p) => {
+            const own = plan.flatMap((q, i) => (q.id === p.id ? [i] : []));
+            const quota =
+                Math.floor(s.forced_p90_sessions / bases.length) + (extra.has(p.id) ? 1 : 0);
+            if (quota > own.length) {
+                throw new Error(
+                    `forced_p90_sessions ${s.forced_p90_sessions} exceeds the ${own.length} sessions of ${p.id}`,
+                );
+            }
+            return range(0, quota).map((k) => own[Math.floor(((k + 0.5) * own.length) / quota)]);
+        }),
     );
     const [reqTable, idleTable, betweenTable] = [
         table(dist, "requests_per_session"),
@@ -215,21 +231,14 @@ export async function compileScenario(input: CompileInput) {
         };
     });
     const between = sessions.slice(1).map(() => sample(betweenTable, sessRng) * 1000);
-    const inSession = sessions.reduce((sum, x) => sum + lastTurn(x), 0);
+    const inSession = () => sessions.reduce((sum, x) => sum + lastTurn(x), 0);
     const betweenSum = Math.max(
         1,
         between.reduce((a, b) => a + b, 0),
     );
     const span = s.simulated_days * 86_400_000;
-    const withinScale = Math.min(1, (0.8 * span) / Math.max(1, inSession));
+    const withinScale = Math.min(1, (0.8 * span) / Math.max(1, inSession()));
     for (const x of sessions) x.turn_ms = x.turn_ms.map((t) => Math.round(t * withinScale));
-    const gapScale = (span - inSession * withinScale) / betweenSum;
-    let clock = 0;
-    sessions.forEach((x, i) => {
-        if (i > 0) clock += Math.round((between[i - 1] ?? 0) * gapScale);
-        x.start_ms = clock;
-        clock += lastTurn(x);
-    });
 
     const perType = Math.ceil(
         prereg.stopping_rule.paired_items_per_probe_type /
@@ -240,6 +249,17 @@ export async function compileScenario(input: CompileInput) {
         while (x.turn_ms.length < P13_SPAN * Math.ceil(perType / p90.length))
             x.turn_ms.push(lastTurn(x) + 60_000);
     }
+    const gapScale = Math.max(0, span - inSession()) / betweenSum;
+    const gaps = between.map((g) => Math.max(1, Math.round(g * gapScale)));
+    const schedule = () => {
+        let clock = 0;
+        sessions.forEach((x, i) => {
+            if (i > 0) clock += Math.max(gaps[i - 1] ?? 1, x.min_gap_ms);
+            x.start_ms = clock;
+            clock += lastTurn(x);
+        });
+    };
+    schedule();
 
     const turns = new Map<string, Turn>();
     const key = (session: string, index: number) => `${session}#${index}`;
@@ -270,7 +290,6 @@ export async function compileScenario(input: CompileInput) {
         return t;
     };
 
-    const bases = input.projects.filter((p) => !p.twin_of);
     const twinOf = (p: string) => input.projects.find((x) => x.twin_of === p)?.id ?? p;
     const facts: Fact[] = [];
     const probes: ProbeItem[] = [];
@@ -356,26 +375,27 @@ export async function compileScenario(input: CompileInput) {
         const after = (t: Turn) => (x: Session) =>
             all(x).filter((i) => x.id !== t.session || i > t.index);
 
+        const decoy = manner === "stated_then_reversed" ? tokens.word() : undefined;
+        const swap = decoy
+            ? {
+                  token: decoy,
+                  TOKEN: decoy.toUpperCase(),
+                  value: tokens.number(),
+                  codename: tokens.codename(),
+              }
+            : undefined;
         let conveyed: Turn;
         if (manner === "hand_applied_diff") {
             const content = tpl.example
-                ? `${render(tpl.example, vars)}\n`
+                ? `${render(tpl.example.content, vars)}\n`
                 : `# Note\n\n${statement.charAt(0).toUpperCase()}${statement.slice(1)}.\n`;
-            const ext = project.lang === "rust" ? `_example.rs` : `-example.ts`;
-            const path = tpl.example ? `src/${word}${ext}` : `notes/${word}.md`;
+            const path = tpl.example ? render(tpl.example.path, vars) : `notes/${word}.md`;
             conveyed = cue(
                 "I pushed a small change to the repo. Look over the latest commit before we continue.",
                 content,
             );
             diffs.push({ session: conveyed.session, path, content, fact: id });
         } else if (manner === "stated_then_reversed") {
-            const decoy = tokens.word();
-            const swap = {
-                token: decoy,
-                TOKEN: decoy.toUpperCase(),
-                value: tokens.number(),
-                codename: tokens.codename(),
-            };
             const first = cue(
                 `For the record, ${render(tpl.statement, { ...vars, ...swap })}.`,
                 undefined,
@@ -442,8 +462,35 @@ export async function compileScenario(input: CompileInput) {
             });
             return t;
         };
-        const check = renderDeep(tpl.check, vars);
-        const mustNot = { must_not: (check as { must?: string[] }).must ?? [] };
+        type Check = Record<string, unknown>;
+        const lists = (c: Check, suffix: string) =>
+            Object.entries(c).flatMap(([k, v]) =>
+                k.endsWith(suffix) && Array.isArray(v) ? [[k, v as string[]] as const] : [],
+            );
+        const append = (a: Check, b: Check): Check => {
+            const merged = { ...a };
+            for (const [k, v] of lists(b, "must_not")) {
+                merged[k] = [...((merged[k] as string[] | undefined) ?? []), ...v];
+            }
+            return merged;
+        };
+        const negate = (c: Check): Check =>
+            Object.fromEntries(lists(c, "must").map(([k, v]) => [`${k}_not`, v]));
+        const superseded = swap ? renderDeep<Check>(tpl.check, { ...vars, ...swap }) : {};
+        const swappedOnly = (pattern: string) => {
+            const keys = [...pattern.matchAll(/\{(\w+)\}/g)].map(([, k]) => k ?? "");
+            return swap !== undefined && keys.length > 0 && keys.every((k) => k in swap);
+        };
+        const obsolete: Check = Object.fromEntries(
+            lists(tpl.check as Check, "must").flatMap(([k, patterns]) =>
+                patterns.every(swappedOnly)
+                    ? [[k, patterns.map((x) => render(x, { ...vars, ...swap }))]]
+                    : [],
+            ),
+        );
+        const base = renderDeep<Check>(tpl.check, vars);
+        const check = append(append(base, superseded), negate(obsolete));
+        const mustNot = append(negate(base), negate(superseded));
         const probeText = render(tpl.probe, vars);
         const outText = render(tpl.out_probe ?? tpl.probe, vars);
         const fromConveyed = later(project.id);
@@ -459,9 +506,9 @@ export async function compileScenario(input: CompileInput) {
                 range(turnHi - third, turnHi),
             );
         } else if (f.type === "P4") {
-            const out = slot % 2 === 1;
+            const out = (slot + (f.i % owners.length) + (seed % 2)) % 2 === 1;
             const scoped = out ? renderDeep(tpl.out_check ?? tpl.check, vars) : check;
-            const c = { ...(scoped as Record<string, unknown>), scope: out ? "out" : "in" };
+            const c = { ...(scoped as Record<string, unknown>), side: out ? "out" : "in" };
             addProbe("P4", project.id, out ? outText : probeText, c, fromConveyed);
         } else if (f.type === "P6") {
             const opening = fromConveyed.filter((x) => !turns.has(key(x.id, 0)));
@@ -476,10 +523,17 @@ export async function compileScenario(input: CompileInput) {
     }
     for (const i of range(0, perType)) {
         const session = p90[i % p90.length] as Session;
-        const check = { window_from_turn: Math.floor((2 * session.turn_ms.length) / 3) };
+        const slot = Math.floor(i / p90.length);
+        const slots = Math.ceil((perType - (i % p90.length)) / p90.length);
+        const turns = session.turn_ms.length;
+        const lastThird = Math.floor((2 * turns) / 3);
+        const edge = (k: number) => lastThird + Math.floor((k * (turns - lastThird)) / slots);
+        const check = { window_from_turn: edge(slot), window_to_turn: edge(slot + 1) };
         const { project, id } = session;
+        const pid = pad("q", probes.length);
+        keys.push(pid);
         probes.push({
-            id: pad("q", probes.length),
+            id: pid,
             type: "P14",
             fact: null,
             project,
@@ -511,30 +565,58 @@ export async function compileScenario(input: CompileInput) {
         }
     }
 
-    const allCues = facts.flatMap((f) => f.cues);
+    const authorities = diffs.filter(
+        (d) => !facts.find((f) => f.id === d.fact)?.cues.includes(d.content),
+    );
+    const allCues = [...facts.flatMap((f) => f.cues), ...authorities.map((d) => d.content)];
     const pairs = probes.flatMap((p) => {
         const fact = facts.find((f) => f.id === p.fact);
         const text = p.text;
-        return fact && text
-            ? fact.cues.map((cue) => ({ probe: p.id, fact: fact.id, cue, text }))
-            : [];
+        if (!fact || !text) return [];
+        const authority = diffs
+            .filter((d) => d.fact === fact.id && !fact.cues.includes(d.content))
+            .map((d) => d.content);
+        return [...fact.cues, ...authority].map((cue) => ({
+            probe: p.id,
+            fact: fact.id,
+            cue,
+            text,
+        }));
     });
     const texts = [...new Set(pairs.flatMap((x) => [x.cue, x.text]))];
     const vectors = await input.embedder.embed(texts);
+    const dims = vectors[0]?.length ?? 0;
+    const norm = (v: number[]) => Math.sqrt(v.reduce((sum, x) => sum + x * x, 0));
+    const wellFormed = (v: number[]) =>
+        v.length === dims && v.every(Number.isFinite) && norm(v) > 0 && Number.isFinite(norm(v));
+    if (vectors.length !== texts.length || dims === 0 || !vectors.every(wellFormed)) {
+        throw new Error(
+            `embedder ${input.embedder.model} returned ${vectors.length} vectors for ${texts.length} texts; each must hold the same positive count of finite numbers with a finite positive norm`,
+        );
+    }
     const vec = new Map(texts.map((t, i) => [t, vectors[i] ?? []]));
-    const similarity = pairs.map(({ probe, fact, cue, text }) => ({
+    const scored = pairs.map(({ probe, fact, cue, text }) => ({
         probe,
         fact,
+        cue_sha256: sha256Hex(cue),
         bm25: bm25Ratio(text, cue, allCues),
         cosine: cosine(vec.get(text) ?? [], vec.get(cue) ?? []),
     }));
-    for (const x of similarity) {
+    for (const x of scored) {
+        if (!Number.isFinite(x.bm25) || !Number.isFinite(x.cosine)) {
+            throw new Error(`${x.probe}: cue/probe similarity is not a finite number`);
+        }
         if (x.bm25 > Number(thresholds.bm25_max) || x.cosine > Number(thresholds.cosine_max)) {
             throw new Error(
-                `${x.probe}: cue/probe similarity bm25 ${x.bm25}, cosine ${x.cosine} exceeds the pre-registered threshold`,
+                `${x.probe}: cue/probe similarity bm25 ${round4(x.bm25)}, cosine ${round4(x.cosine)} exceeds the pre-registered threshold`,
             );
         }
     }
+    const similarity = scored.map((x) => ({
+        ...x,
+        bm25: round4(x.bm25),
+        cosine: round4(x.cosine),
+    }));
     const delivered = [...turns.values()].map((t) => [`${t.session}#${t.index}`, t.text]);
     for (const d of diffs)
         delivered.push([`${d.session} diff ${d.path}`, `${d.path}\n${d.content}`]);
@@ -543,10 +625,7 @@ export async function compileScenario(input: CompileInput) {
         if (hits) throw new Error(`${where}: delivered text carries markers ${hits}`);
     }
 
-    sessions.forEach((x, i) => {
-        const prev = sessions[i - 1];
-        if (prev) x.start_ms = Math.max(x.start_ms, prev.start_ms + lastTurn(prev) + x.min_gap_ms);
-    });
+    schedule();
     const raw: { at: number; order: number; event: Record<string, unknown> }[] = [];
     for (const session of sessions) {
         const { id, project } = session;
@@ -585,22 +664,37 @@ export async function compileScenario(input: CompileInput) {
         ),
     );
     for (const p of probes) if (p.text) p.event = probeEvent.get(p.id);
+    const firstCue = new Map<unknown, number>();
     const lastCue = new Map<unknown, number>();
     events.forEach((e, i) => {
-        if (e.fact && e.role !== "probe") lastCue.set(e.fact, i);
+        if (!e.fact || e.role === "probe") return;
+        if (!firstCue.has(e.fact)) firstCue.set(e.fact, i);
+        lastCue.set(e.fact, i);
     });
     events.forEach((e, i) => {
         if (e.role === "probe" && e.fact && i < (lastCue.get(e.fact) ?? 0)) {
             throw new Error(`${e.id}: probe precedes a conveyance of ${e.fact}`);
         }
     });
+    const order = new Map(events.map((e, i) => [e.id, i]));
+    for (const p of probes) {
+        const control = order.get(p.event ?? "") ?? Number.POSITIVE_INFINITY;
+        if (p.type === "P1-control" && control > (firstCue.get(p.fact) ?? -1)) {
+            throw new Error(`${p.id}: P1 control follows a conveyance of ${p.fact}`);
+        }
+    }
 
     const summary = sessions.map(({ turn_ms, ...x }, i) => {
         const prev = sessions[i - 1];
         const gap_before_ms = prev ? x.start_ms - prev.start_ms - lastTurn(prev) : 0;
         return { ...x, requests: turn_ms.length, gap_before_ms };
     });
-    const faults = scheduleFaults(prereg.tier, summary, rngFor("faults"));
+    const diffSessions = new Set(diffs.map((d) => d.session));
+    const faults = scheduleFaults(
+        prereg.tier,
+        summary.map((x) => ({ ...x, has_diff: diffSessions.has(x.id) })),
+        rngFor("faults"),
+    );
     const turnCounts = new Map(summary.map((x) => [x.id, x.requests]));
     for (const f of faults) validateFault(f, turnCounts);
     const eligible = probes.filter((p) => ["P1", "P3", "P5"].includes(p.type));

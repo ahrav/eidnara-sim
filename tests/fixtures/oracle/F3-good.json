@@ -1,0 +1,30 @@
+{
+  "provenance": "recorded: grade-2 eidnara plugin log, transform passes served from the transform",
+  "tier": "S",
+  "kinds": {},
+  "arms": [
+    {
+      "arm": "eidnara",
+      "calls": [],
+      "journal": [],
+      "pluginLog": [
+        "[2026-10-16T08:11:07.788Z] [eidnara][sim-s-0000] rust pass: decision=HARD reason=first_render served_from=transform in=1 out=1 applied=true row_version=1 emergency_wait=0.0 rediscovered=false admission=fits invocation_bytes=520 invocation_charged=187 history_budget=18701 elapsed=62.4 ms module=44.2 ms stages=prefix_guard:1.5 prepare:0.6 wire_build:0.4 wire_messages:1 serialize:0.2 transport:45.5 transport_pages:1 transport_bytes:1594 apply:1.6 other:12.7 work=scanned:0 charged:5553 retained:3730",
+        "[2026-10-16T08:11:10.383Z] [eidnara][sim-s-0000] rust pass: decision=SOFT+ reason=none served_from=transform in=3 out=3 applied=true row_version=3 emergency_wait=0.0 rediscovered=false admission=fits invocation_bytes=2699 invocation_charged=965 history_budget=18701 elapsed=22.6 ms module=17.5 ms stages=prefix_guard:0.9 prepare:0.3 wire_build:0.6 wire_messages:3 serialize:0.0 transport:19.0 transport_pages:1 transport_bytes:4018 apply:0.7 other:1.1 work=scanned:0 charged:31802 retained:12476",
+        "[2026-10-16T08:11:13.317Z] [eidnara][sim-s-0000] rust pass: decision=SOFT+ reason=none served_from=transform in=6 out=6 applied=true row_version=5 emergency_wait=0.0 rediscovered=false admission=fits invocation_bytes=17533 invocation_charged=6263 history_budget=18701 elapsed=17.9 ms module=13.0 ms stages=prefix_guard:1.2 prepare:0.1 wire_build:0.4 wire_messages:6 serialize:0.1 transport:14.6 transport_pages:1 transport_bytes:18843 apply:0.7 other:0.8 work=scanned:0 charged:179133 retained:58976",
+        "[2026-10-16T08:11:17.414Z] [eidnara][sim-s-0000] rust pass: decision=SOFT+ reason=none served_from=transform in=8 out=8 applied=true row_version=6 emergency_wait=0.0 rediscovered=false admission=fits invocation_bytes=23031 invocation_charged=8227 history_budget=18701 elapsed=24.1 ms module=20.2 ms stages=prefix_guard:0.8 prepare:0.1 wire_build:0.3 wire_messages:8 serialize:0.1 transport:21.7 transport_pages:1 transport_bytes:24338 apply:0.5 other:0.6 work=scanned:0 charged:217328 retained:77595",
+        "[2026-10-16T09:25:50.283Z] [eidnara][sim-s-0001] rust pass: decision=HARD reason=first_render served_from=transform in=1 out=1 applied=true row_version=1 emergency_wait=0.0 rediscovered=false admission=fits invocation_bytes=1174 invocation_charged=420 history_budget=18701 elapsed=36.5 ms module=18.3 ms stages=prefix_guard:1.7 prepare:0.6 wire_build:0.5 wire_messages:1 serialize:0.3 transport:19.6 transport_pages:1 transport_bytes:2248 apply:1.6 other:12.1 work=scanned:0 charged:12033 retained:5662",
+        "[2026-10-16T09:25:54.725Z] [eidnara][sim-s-0001] rust pass: decision=SOFT+ reason=none served_from=transform in=3 out=3 applied=true row_version=3 emergency_wait=0.0 rediscovered=false admission=fits invocation_bytes=3202 invocation_charged=1144 history_budget=18701 elapsed=20.6 ms module=15.6 ms stages=prefix_guard:0.9 prepare:0.3 wire_build:0.7 wire_messages:3 serialize:0.0 transport:17.0 transport_pages:1 transport_bytes:4521 apply:0.6 other:1.0 work=scanned:0 charged:37074 retained:14031",
+        "[2026-10-16T09:25:57.661Z] [eidnara][sim-s-0001] rust pass: decision=SOFT+ reason=none served_from=transform in=5 out=5 applied=true row_version=5 emergency_wait=0.0 rediscovered=false admission=fits invocation_bytes=5164 invocation_charged=1845 history_budget=18701 elapsed=16.7 ms module=13.3 ms stages=prefix_guard:0.7 prepare:0.2 wire_build:0.3 wire_messages:5 serialize:0.0 transport:14.2 transport_pages:1 transport_bytes:6479 apply:0.6 other:0.6 work=scanned:0 charged:54714 retained:22196",
+        "[2026-10-16T09:26:10.773Z] [eidnara][sim-s-0002] rust pass: decision=HARD reason=first_render served_from=transform in=1 out=1 applied=true row_version=1 emergency_wait=0.0 rediscovered=false admission=fits invocation_bytes=519 invocation_charged=187 history_budget=18701 elapsed=37.2 ms module=19.0 ms stages=prefix_guard:1.5 prepare:0.6 wire_build:0.6 wire_messages:1 serialize:0.3 transport:20.1 transport_pages:1 transport_bytes:1593 apply:1.5 other:12.6 work=scanned:0 charged:5543 retained:3727",
+        "[2026-10-16T09:26:14.562Z] [eidnara][sim-s-0002] rust pass: decision=SOFT+ reason=none served_from=transform in=3 out=3 applied=true row_version=3 emergency_wait=0.0 rediscovered=false admission=fits invocation_bytes=6657 invocation_charged=2378 history_budget=18701 elapsed=26.9 ms module=21.9 ms stages=prefix_guard:1.1 prepare:0.2 wire_build:0.6 wire_messages:3 serialize:0.0 transport:23.3 transport_pages:1 transport_bytes:7976 apply:0.7 other:1.1 work=scanned:0 charged:70659 retained:23897",
+        "[2026-10-16T09:26:26.563Z] [eidnara][sim-s-0002] rust pass: decision=SOFT+ reason=none served_from=transform in=5 out=5 applied=true row_version=5 emergency_wait=0.0 rediscovered=false admission=fits invocation_bytes=12343 invocation_charged=4409 history_budget=18701 elapsed=19.9 ms module=15.2 ms stages=prefix_guard:1.0 prepare:0.2 wire_build:0.4 wire_messages:5 serialize:0.1 transport:16.8 transport_pages:1 transport_bytes:13652 apply:0.7 other:0.8 work=scanned:0 charged:128655 retained:43211"
+      ],
+      "daemonLog": [],
+      "resources": [],
+      "tools": []
+    }
+  ],
+  "expect": {
+    "F3": 0
+  }
+}

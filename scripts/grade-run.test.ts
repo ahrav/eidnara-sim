@@ -828,11 +828,11 @@ describe("grade-run", () => {
 
     test("a run directory leased by a live process is refused", async () => {
         const dir = run({ probes: [p5.probe] });
-        takeLease(dir);
+        const lease = takeLease(dir);
         try {
             await expect(gradeRun(dir, null)).rejects.toThrow(/is leased by pid/);
         } finally {
-            releaseLease(dir);
+            releaseLease(dir, lease);
         }
     });
 

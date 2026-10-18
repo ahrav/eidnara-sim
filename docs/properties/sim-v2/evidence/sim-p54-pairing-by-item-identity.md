@@ -17,6 +17,8 @@ position.
 No harness code, test, or run exists yet. The surface lands in M7
 (#1032).
 
+M7 (#1032) `pairByItem` joins two arms by item id; a test feeds each arm in a different order and gets the pairs by id.
+
 ## Failure scenario
 
 Discordance is computed on mismatched items.

@@ -5,6 +5,9 @@
 
 export const PREREG_SCHEMA = "sim-prereg/v1";
 
+/** Embedding models the scenario compiler can construct for the cue/probe similarity gate. */
+export const EMBEDDING_MODELS = ["amazon.titan-embed-text-v2:0"] as const;
+
 export const TIERS = ["S", "M", "L", "XL"] as const;
 export type Tier = (typeof TIERS)[number];
 
@@ -159,6 +162,27 @@ export interface Preregistration {
             arm_identification_ceiling_percent: number;
         };
     };
+    /**
+     * Failure-class oracle thresholds (M5), added in revision 5 after the `grade-2` smoke run had
+     * shown the eidnara arm at 1.53 times the host arm's tokens, and before any tier run.
+     */
+    oracles: {
+        /** F4: quiet time after a completed model call with no tool run, call, or turn end. */
+        hang_quiet_ms: number;
+        /** F6: an arm's tokens per host-arm token above this activates the cost oracle. */
+        cost_ratio_max: string;
+    };
+    /** The simulated user (M6), added in revision 6 before any tier run. */
+    user_sim: {
+        model: string;
+        max_tokens: number;
+        /** Targets the behaviour schedule samples to, from the SWE-chat rates. */
+        rates: Record<UserSimRate, string>;
+        /** A run whose realised rate falls outside its band is flagged. */
+        bands: Record<UserSimRate, { min: string; max: string }>;
+        /** A hard interrupt aborts the turn this long after the prompt is sent. */
+        interrupt_after_ms: { min: number; max: number };
+    };
     families: Family[];
     /** S and M only: same-arm pairs under different labels, each run `repeats` times. */
     aa_controls?: { pairs: string[][]; repeats: number };
@@ -171,6 +195,14 @@ export interface Preregistration {
         margins_family: "dependability";
     };
 }
+
+export const USER_SIM_RATES = [
+    "pushback_per_turn",
+    "interrupt_per_turn",
+    "redirect_per_session",
+    "abandon_per_session",
+] as const;
+export type UserSimRate = (typeof USER_SIM_RATES)[number];
 
 /** A run-level gate with a paired claim needs six paired runs (SIM-P56); a bound gate needs none. */
 export const MIN_PAIRED_RUNS_FOR_RUN_GATE = 6;

@@ -3,7 +3,9 @@ import type { Component } from "./records";
 export interface ConverseBody {
     system?: Array<Record<string, unknown>>;
     messages?: Array<{ role: string; content: Array<Record<string, unknown>> }>;
-    toolConfig?: { tools?: Array<{ toolSpec?: { name: string } }> };
+    toolConfig?: {
+        tools?: Array<{ toolSpec?: { name: string; inputSchema?: { json?: unknown } } }>;
+    };
     [field: string]: unknown;
 }
 
@@ -24,6 +26,7 @@ function infer(body: ConverseBody): Component {
     const lastUser = blockText([...messages].reverse().find((m) => m?.role === "user")?.content);
     const listed = body.toolConfig?.tools;
     const tools = Array.isArray(listed) ? listed : [];
+    if (tools.some((tool) => tool?.toolSpec?.name === "bash")) return "agent";
     if (system.includes("title generator")) return "title";
     if (
         system.includes("Extract durable project memory") &&
@@ -39,7 +42,6 @@ function infer(body: ConverseBody): Component {
     const summarizes = /summar/i.test(system) && tools.length === 0;
     if (system.includes("context summarization assistant") || summarizes)
         return "native_compaction";
-    if (tools.some((tool) => tool?.toolSpec?.name === "bash")) return "agent";
     return "other";
 }
 

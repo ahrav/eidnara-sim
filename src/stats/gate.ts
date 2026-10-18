@@ -1,0 +1,492 @@
+import {
+    type Family,
+    MIN_PAIRED_RUNS_FOR_RUN_GATE,
+    needsPairedRuns,
+    type Preregistration,
+} from "../prereg/schema";
+import { preregistrationHash } from "../prereg/validate";
+import { betaQuantile, binomialCdf, normalQuantile, normalSf } from "./dist";
+import {
+    bootstrap,
+    cusum,
+    holm,
+    mcnemarExact,
+    negativeBinomial,
+    newcombe,
+    signTest,
+} from "./tests";
+
+export interface ItemPair {
+    item: string;
+    cluster: string;
+    control: number;
+    treatment: number;
+    order: number;
+}
+
+export interface RunPair {
+    run: string;
+    control: number;
+    treatment: number;
+}
+
+export interface Observation {
+    metric: string;
+    unit: "item" | "run";
+    cluster_key: "ledger_fact_id" | "run";
+    items?: ItemPair[];
+    runs?: RunPair[];
+}
+
+export interface TierInput {
+    observations: Observation[];
+    excluded: { id: string; arm: string; reason: string }[];
+    asymmetric: string[];
+    cusum_sd?: Partial<Record<"harm" | "futility", number>>;
+    journal_seq_at_eval?: number;
+}
+
+export class StatsRefusal extends Error {}
+
+export interface MetricResult {
+    metric: string;
+    n: number;
+    difference: number;
+    interval: [number, number] | null;
+    p: number | null;
+    p_adjusted?: number;
+    method: string;
+    detectable: number | null;
+    resolution_ratio: number | null;
+    resolution_note?: string;
+    rate_ratio_upper?: number;
+    verdict: string;
+    passed: boolean | null;
+    asymmetric_pairs: number;
+}
+
+export interface FamilyResult {
+    family: string;
+    claim: "gate" | "descriptive";
+    direction: string;
+    alpha: number;
+    mde: Family["mde"];
+    margin: Family["margin"];
+    metrics: MetricResult[];
+    passed: boolean | null;
+}
+
+export interface CusumStop {
+    kind: "harm" | "futility";
+    metric: string;
+    signal_index: number;
+    window: string[];
+}
+
+export interface TierVerdict {
+    prereg_sha256: string;
+    journal_seq_at_eval: number | null;
+    families: FamilyResult[];
+    memory_made_it_worse: { metric: string; interval: [number, number] | null }[];
+    pass: {
+        passed: boolean;
+        components: string[];
+        per_component_alpha: Record<string, number>;
+        rule: string;
+    };
+    stops: CusumStop[];
+    cusum_unavailable: string[];
+    excluded_per_arm: Record<string, number>;
+    excluded: TierInput["excluded"];
+    asymmetric_stratum: string[];
+}
+
+type Stats = Omit<MetricResult, "metric" | "verdict" | "passed" | "asymmetric_pairs"> & {
+    shift: number;
+};
+
+const num = (s: string) => Number(s);
+const mean = (xs: number[]) => xs.reduce((s, v) => s + v, 0) / xs.length;
+const scaled = (x: number | null, f: Family) => {
+    const unit =
+        num(f.mde.value) === 0 && f.direction === "noninferiority" ? f.margin.value : f.mde.value;
+    return x === null || num(unit) === 0 ? null : x / num(unit);
+};
+const zSum = (f: Family) => normalQuantile(1 - num(f.alpha) / 2) + normalQuantile(num(f.power));
+const higherIsBetter = (metric: string) => /\.pass$|pass_rate$|fidelity_score$/.test(metric);
+const empty = (method: string): Stats => ({
+    n: 0,
+    difference: 0,
+    interval: null,
+    p: null,
+    method,
+    detectable: null,
+    resolution_ratio: null,
+    shift: 0,
+});
+
+function binary(f: Family, items: ItemPair[], p: Preregistration): Stats {
+    const n = items.length;
+    const method =
+        "exact McNemar; interval is the wider of Newcombe method 10 and the ledger-fact cluster bootstrap";
+    if (n === 0) return empty(method);
+    const count = (t: number, c: number) =>
+        items.filter((x) => x.treatment === t && x.control === c).length;
+    const [a, b, c, d] = [count(1, 1), count(1, 0), count(0, 1), count(0, 0)];
+    const [nl, nh] = newcombe(a, b, c, d, num(f.alpha));
+    const clusters = [...new Set(items.map((x) => x.cluster))].map((k) =>
+        items.filter((x) => x.cluster === k).map((x) => x.treatment - x.control),
+    );
+    const boot = bootstrap(clusters, (cs) => mean(cs.flat()), {
+        ...p.bootstrap,
+        alpha: num(f.alpha),
+    });
+    const interval: [number, number] = [100 * Math.min(nl, boot.lo), 100 * Math.max(nh, boot.hi)];
+    const exact = mcnemarExact(b, c).p;
+    const detectable = 100 * zSum(f) * Math.sqrt(Math.max(b + c, 1) / n / n);
+    const sig = exact <= num(f.alpha) && (interval[0] > 0 || interval[1] < 0);
+    return {
+        n,
+        difference: (100 * (b - c)) / n,
+        interval,
+        p: exact,
+        method,
+        detectable,
+        resolution_ratio: scaled(detectable, f),
+        shift: sig ? Math.sign(b - c) : 0,
+    };
+}
+
+function glm(f: Family, runs: RunPair[]): Stats | null {
+    const live = runs.filter((r) => r.control + r.treatment > 0);
+    const totals = [0, 1].map((arm) =>
+        live.reduce((s, r) => s + (arm === 0 ? r.control : r.treatment), 0),
+    );
+    if (live.length < 2 || totals.some((total) => total === 0)) return null;
+    const x = live.flatMap((_, i) =>
+        [0, 1].map((arm) => [1, arm, ...live.slice(1).map((__, j) => Number(j + 1 === i))]),
+    );
+    const fit = negativeBinomial(
+        x,
+        live.flatMap((r) => [r.control, r.treatment]),
+    );
+    const [b, se] = [fit.coefficients[1] as number, fit.se[1] as number];
+    if (!fit.converged || !Number.isFinite(b) || !Number.isFinite(se)) return null;
+    const z = normalQuantile(1 - num(f.alpha) / 2);
+    const interval: [number, number] = [Math.exp(b - z * se), Math.exp(b + z * se)];
+    const detectable = Math.exp(zSum(f) * se);
+    return {
+        n: runs.length,
+        difference: Math.exp(b),
+        interval,
+        p: 2 * normalSf(Math.abs(b / se)),
+        method: "negative-binomial GLM with run as unit, runs with no events in either arm left out; the difference is the rate ratio",
+        detectable,
+        resolution_ratio: scaled(detectable, f),
+        shift: interval[0] > 1 ? 1 : interval[1] < 1 ? -1 : 0,
+    };
+}
+
+function counts(f: Family, runs: RunPair[]): Stats {
+    const n = runs.length;
+    if (n === 0) return empty(f.interval_method);
+    if (f.interval_method === "negative-binomial-glm" || n > 8) {
+        const fitted = glm(f, runs);
+        if (fitted) return fitted;
+    }
+    const diffs = runs.map((r) => r.treatment - r.control);
+    const [up, down] = [diffs.filter((v) => v > 0).length, diffs.filter((v) => v < 0).length];
+    const oneSided = f.direction === "at-most";
+    const test = (k: number, m: number) => (oneSided ? binomialCdf(m - k, m, 0.5) : signTest(k, m));
+    const p = test(up, up + down);
+    const from = oneSided ? 0 : Math.ceil(n / 2);
+    const least = Array.from({ length: n + 1 - from }, (_, k) => k + from).find(
+        (k) => test(k, n) <= num(f.alpha),
+    );
+    const t = runs.reduce((s, r) => s + r.treatment, 0);
+    const c = runs.reduce((s, r) => s + r.control, 0);
+    const share = c === 0 ? 1 : betaQuantile(1 - num(f.alpha) / 2, t + 1, c);
+    return {
+        n,
+        difference: mean(diffs),
+        interval: null,
+        p,
+        method: oneSided
+            ? "one-sided paired sign test with run as unit"
+            : "paired sign test with run as unit",
+        detectable: least === undefined ? null : (100 * least) / n,
+        resolution_ratio: null,
+        resolution_note: `the sign test's detectable size is a share of runs, which the ${f.mde.scale}-scale MDE does not measure`,
+        rate_ratio_upper: t === 0 ? 0 : share >= 1 ? Number.POSITIVE_INFINITY : share / (1 - share),
+        shift: p <= num(f.alpha) ? Math.sign(up - down) : 0,
+    };
+}
+
+function graded(f: Family, runs: RunPair[], p: Preregistration): Stats {
+    const n = runs.length;
+    const bca = f.interval_method === "paired-bca-bootstrap" || n < 10;
+    const method = bca ? "paired BCa bootstrap over runs" : "paired percentile bootstrap over runs";
+    if (n < 2) return { ...empty(method), n };
+    const diffs = runs.map((r) => r.treatment - r.control);
+    const m = mean(diffs);
+    const sd = Math.sqrt(diffs.reduce((s, v) => s + (v - m) ** 2, 0) / (n - 1));
+    const b = bootstrap(diffs, mean, { ...p.bootstrap, alpha: num(f.alpha), bca });
+    const detectable = (zSum(f) * sd) / Math.sqrt(n);
+    return {
+        n,
+        difference: m,
+        interval: [b.lo, b.hi],
+        p: null,
+        method,
+        detectable,
+        resolution_ratio: scaled(detectable, f),
+        shift: b.lo > 0 ? 1 : b.hi < 0 ? -1 : 0,
+    };
+}
+
+function bound(f: Family, metric: string, s: Stats, obs: Observation): [string, boolean] {
+    const margin = num(f.margin.value);
+    if (s.n === 0) return ["inconclusive", false];
+    const bad =
+        obs.unit === "item"
+            ? mean((obs.items ?? []).map((x) => x.treatment)) < margin
+                ? ["all"]
+                : []
+            : (obs.runs ?? [])
+                  .filter((r) =>
+                      f.direction === "zero-tolerance" ? r.treatment !== 0 : r.treatment > margin,
+                  )
+                  .map((r) => r.run);
+    return bad.length === 0
+        ? ["within-bound", true]
+        : [`failed-gate(${metric}, ${bad.join(" ")})`, false];
+}
+
+function judge(f: Family, metric: string, s: Stats, obs: Observation): [string, boolean | null] {
+    if (f.direction === "threshold" || f.direction === "zero-tolerance") {
+        return bound(f, metric, s, obs);
+    }
+    if (s.n === 0) return ["inconclusive", f.claim === "gate" ? false : null];
+    if (needsPairedRuns(f) && s.n < MIN_PAIRED_RUNS_FOR_RUN_GATE) {
+        return [`insufficient-runs(${s.n})`, false];
+    }
+    const adjusted = s.p_adjusted ?? s.p;
+    const shift = adjusted !== null && adjusted > num(f.alpha) ? 0 : s.shift;
+    const scale = f.outcome === "binary" ? "pp" : s.interval === null ? "pp-of-runs" : f.mde.scale;
+    const none =
+        s.detectable === null || !Number.isFinite(s.detectable)
+            ? "inconclusive"
+            : `no-difference-above-${Math.round(s.detectable * 100) / 100}${scale}-detectable-at-${s.n}`;
+    const text = shift === 0 ? none : shift > 0 === higherIsBetter(metric) ? "better" : "worse";
+    if (f.claim !== "gate") return [text, null];
+    const margin = num(f.margin.value);
+    const hi = s.interval?.[1];
+    if (f.direction === "superiority-two-sided") return [text, text === "better"];
+    if (f.direction === "noninferiority") return [text, hi !== undefined && hi < margin];
+    if (hi !== undefined) return [text, hi <= margin];
+    const upper = s.rate_ratio_upper;
+    const within = f.margin.scale !== "ratio" || upper === undefined || upper <= margin;
+    return [text, text !== "worse" && within];
+}
+
+function statsOf(f: Family, o: Observation, p: Preregistration): Stats {
+    if (f.direction === "threshold" || f.direction === "zero-tolerance") {
+        return {
+            ...empty("bound on each run's treatment value"),
+            n: (o.items ?? o.runs ?? []).length,
+        };
+    }
+    if (o.unit === "item") return binary(f, o.items ?? [], p);
+    return f.outcome === "count" ? counts(f, o.runs ?? []) : graded(f, o.runs ?? [], p);
+}
+
+function check(p: Preregistration, input: TierInput): void {
+    const byMetric = new Map(p.families.flatMap((f) => f.metrics.map((m) => [m, f] as const)));
+    const seen = new Set<string>();
+    for (const o of input.observations) {
+        if (seen.has(o.metric)) throw new StatsRefusal(`metric ${o.metric} is observed twice`);
+        seen.add(o.metric);
+        const f = byMetric.get(o.metric);
+        if (!f) throw new StatsRefusal(`metric ${o.metric} has no pre-registration entry`);
+        if (o.unit !== f.analysis_unit) {
+            throw new StatsRefusal(
+                `${o.metric}: unit ${o.unit}, pre-registered ${f.analysis_unit}`,
+            );
+        }
+        if (o.cluster_key !== f.cluster_key) {
+            throw new StatsRefusal(
+                `${o.metric}: cluster ${o.cluster_key}, pre-registered ${f.cluster_key}`,
+            );
+        }
+    }
+}
+
+function stops(p: Preregistration, input: TierInput, kept: Observation[]): [CusumStop[], string[]] {
+    const out: CusumStop[] = [];
+    const unavailable: string[] = [];
+    for (const rule of p.stopping_rule.cusum) {
+        const sd = input.cusum_sd?.[rule.kind];
+        if (!sd) {
+            unavailable.push(`${rule.kind}: no A/A standard deviation`);
+            continue;
+        }
+        const family = p.families.find((f) => f.id === rule.metric);
+        const sign = rule.kind === "harm" ? 1 : -1;
+        const byItem = new Map<string, { item: string; order: number; value: number }>();
+        for (const x of kept
+            .filter((o) => family?.metrics.includes(o.metric))
+            .flatMap((o) => o.items ?? [])) {
+            const value = sign * (x.treatment - x.control);
+            const prior = byItem.get(x.item);
+            if (!prior || value > prior.value)
+                byItem.set(x.item, { item: x.item, order: x.order, value });
+        }
+        const items = [...byItem.values()].sort((x, y) => x.order - y.order);
+        const c = cusum(
+            items.map((x) => x.value / sd),
+            0,
+            num(rule.k),
+            num(rule.h),
+        );
+        if (c.signal_upper === null) continue;
+        const signal = c.signal_upper;
+        const start = c.upper.slice(0, signal).lastIndexOf(0) + 1;
+        out.push({
+            kind: rule.kind,
+            metric: rule.metric,
+            signal_index: signal,
+            window: items.slice(start, signal + 1).map((x) => x.item),
+        });
+    }
+    return [out, unavailable];
+}
+
+export function evaluateTier(p: Preregistration, input: TierInput): TierVerdict {
+    check(p, input);
+    const dropped = new Set(input.excluded.map((e) => e.id));
+    const asym = new Set(input.asymmetric);
+    const keep = (id: string) => !dropped.has(id) && !asym.has(id);
+    const kept = input.observations.map((o) => ({
+        ...o,
+        items: o.items?.filter((x) => keep(x.item)),
+        runs: o.runs?.filter((r) => keep(r.run)),
+    }));
+    const families = p.families.map((f): FamilyResult => {
+        const mine = f.metrics.map(
+            (metric): Observation =>
+                kept.find((o) => o.metric === metric) ?? {
+                    metric,
+                    unit: f.analysis_unit,
+                    cluster_key: f.cluster_key,
+                    items: [],
+                    runs: [],
+                },
+        );
+        const stats = mine.map((o) => statsOf(f, o, p));
+        if (f.multiplicity === "holm") {
+            const adjusted = holm(stats.map((s) => s.p ?? 1));
+            stats.forEach((s, i) => {
+                s.p_adjusted = adjusted[i] as number;
+            });
+        }
+        const metrics = mine.map((o, i): MetricResult => {
+            const full = stats[i] as Stats;
+            const { shift: _, ...s } = full;
+            const [verdict, passed] = judge(f, o.metric, full, o);
+            const raw = input.observations.find((x) => x.metric === o.metric);
+            const ids = [
+                ...(raw?.items ?? []).map((x) => x.item),
+                ...(raw?.runs ?? []).map((r) => r.run),
+            ];
+            const asymmetric_pairs = ids.filter((id) => asym.has(id)).length;
+            return { metric: o.metric, ...s, verdict, passed, asymmetric_pairs };
+        });
+        const passed = f.claim !== "gate" ? null : metrics.every((m) => m.passed === true);
+        const { id: family, claim, direction, mde, margin } = f;
+        return { family, claim, direction, alpha: num(f.alpha), mde, margin, metrics, passed };
+    });
+    const [halts, unavailable] = stops(p, input, kept);
+    const gates = families.filter((f) => f.claim === "gate");
+    const excluded: Record<string, number> = {};
+    for (const e of input.excluded) excluded[e.arm] = (excluded[e.arm] ?? 0) + 1;
+    const worse = families
+        .find((f) => f.family === "harm")
+        ?.metrics.filter((m) => m.verdict === "worse")
+        .map((m) => ({ metric: m.metric, interval: m.interval }));
+    const verdict: TierVerdict = {
+        prereg_sha256: preregistrationHash(p),
+        journal_seq_at_eval: input.journal_seq_at_eval ?? null,
+        families,
+        memory_made_it_worse: worse ?? [],
+        pass: {
+            passed: halts.length === 0 && gates.length > 0 && gates.every((f) => f.passed === true),
+            components: gates.map((f) => f.family),
+            per_component_alpha: Object.fromEntries(gates.map((f) => [f.family, f.alpha])),
+            rule: "intersection-union: the tier passes when every gate component passes at its own alpha and no CUSUM rule stopped it; a noninferiority or at-most component decides on the upper end of its two-sided interval, a one-sided test at half its alpha",
+        },
+        stops: halts,
+        cusum_unavailable: unavailable,
+        excluded_per_arm: excluded,
+        excluded: input.excluded,
+        asymmetric_stratum: input.asymmetric,
+    };
+    if (JSON.stringify(verdict).toLowerCase().includes("parity")) {
+        throw new StatsRefusal("a verdict may not use the word parity");
+    }
+    return verdict;
+}
+
+export function pairByItem(
+    control: ReadonlyMap<string, number>,
+    treatment: ReadonlyMap<string, number>,
+    clusterOf: (item: string) => string,
+    issueOrder: (item: string) => number,
+): ItemPair[] {
+    const both = [...control.keys()].filter((item) => treatment.has(item));
+    return both
+        .map((item) => ({
+            item,
+            cluster: clusterOf(item),
+            control: control.get(item) as number,
+            treatment: treatment.get(item) as number,
+            order: issueOrder(item),
+        }))
+        .sort((x, y) => x.order - y.order);
+}
+
+export const FALSIFICATION = [
+    "in_session_repo_readable_fact_pass",
+    "gateway_4xx_rate_without_faults",
+    "pre_divergence_pushback_rate",
+    "wall_ms_per_scripted_idle_gap",
+] as const;
+
+export interface ZeroEffect {
+    check: string;
+    n: number;
+    difference: number;
+    interval: [number, number] | null;
+    zero_effect: boolean | null;
+}
+
+export function falsificationSet(
+    p: Preregistration,
+    pairs: Partial<Record<string, { control: number; treatment: number }[]>>,
+): ZeroEffect[] {
+    for (const name of Object.keys(pairs)) {
+        if (!(FALSIFICATION as readonly string[]).includes(name)) {
+            throw new StatsRefusal(`${name} is not in the falsification set`);
+        }
+    }
+    return FALSIFICATION.map((check) => {
+        const diffs = (pairs[check] ?? []).map((x) => x.treatment - x.control);
+        if (diffs.length < 2) {
+            const difference = diffs.length ? mean(diffs) : 0;
+            return { check, n: diffs.length, difference, interval: null, zero_effect: null };
+        }
+        const b = bootstrap(diffs, mean, { ...p.bootstrap, bca: diffs.length < 10 });
+        const interval: [number, number] = [b.lo, b.hi];
+        const zero_effect = b.lo <= 0 && b.hi >= 0;
+        return { check, n: diffs.length, difference: mean(diffs), interval, zero_effect };
+    });
+}

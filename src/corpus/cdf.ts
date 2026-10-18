@@ -45,6 +45,32 @@ export function fitCdf(values: readonly number[], kind: CdfTable["kind"]): CdfTa
     return { kind, p: [...GRID], x };
 }
 
+export function cdfProblems(table: CdfTable): string[] {
+    const { p, x } = table;
+    const problems: string[] = [];
+    if (p.length === 0 || p.length !== x.length) problems.push("p and x need equal nonzero length");
+    if (![...p, ...x].every(Number.isFinite)) problems.push("entries must be finite");
+    if (!p.every((v, i) => v >= 0 && v <= 1 && (i === 0 || v > (p[i - 1] ?? 0)))) {
+        problems.push("p must increase strictly within [0, 1]");
+    }
+    if (p[p.length - 1] !== 1) problems.push("p must end at 1");
+    if (!x.every((v, i) => i === 0 || v >= (x[i - 1] ?? 0))) problems.push("x must not decrease");
+    return problems;
+}
+
+/** A discrete table over `n` observations carries cumulative counts, so each p is round(k / n, 9) for an increasing integer k. */
+export function countProblems(table: CdfTable, n: number): string[] {
+    if (!Number.isSafeInteger(n) || n <= 0) return ["n must be a positive integer"];
+    let last = 0;
+    for (const p of table.p) {
+        const k = Math.round(p * n);
+        if (k <= last || Math.round((k / n) * 1e9) / 1e9 !== p)
+            return ["p must be cumulative counts over n"];
+        last = k;
+    }
+    return last === n ? [] : ["p must end at n / n"];
+}
+
 /** Inverse CDF at probability `q` in [0, 1]. */
 export function quantile(table: CdfTable, q: number): number {
     const { p, x } = table;
@@ -61,6 +87,17 @@ export function quantile(table: CdfTable, q: number): number {
 /** Draws from the table, or from its tail above probability `floor`. */
 export function sample(table: CdfTable, rng: Rng, floor = 0): number {
     return quantile(table, floor + (1 - floor) * rng.next());
+}
+
+/** Probability mass at or above `v`; a continuous table interpolates its CDF at `v`. */
+export function tailShare(table: CdfTable, v: number): number {
+    const { p, x } = table;
+    const hi = x.findIndex((xi) => xi >= v);
+    if (hi < 0) return 0;
+    if (hi === 0) return 1;
+    const [pLo, pHi, xLo, xHi] = [p[hi - 1] ?? 0, p[hi] ?? 1, x[hi - 1] ?? 0, x[hi] ?? 0];
+    if (table.kind === "discrete") return 1 - pLo;
+    return 1 - (pLo + ((v - xLo) / (xHi - xLo)) * (pHi - pLo));
 }
 
 function round3(v: number): number {

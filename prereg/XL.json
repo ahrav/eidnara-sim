@@ -1,7 +1,7 @@
 {
     "schema": "sim-prereg/v1",
     "tier": "XL",
-    "revision": 4,
+    "revision": 6,
     "frozen": true,
     "arms": {
         "default": "eidnara",
@@ -86,6 +86,42 @@
             "calibration_min_pairs": 20,
             "human_sample_percent": 10,
             "arm_identification_ceiling_percent": 60
+        }
+    },
+    "oracles": {
+        "hang_quiet_ms": 300000,
+        "cost_ratio_max": "1.5"
+    },
+    "user_sim": {
+        "model": "global.anthropic.claude-haiku-5-5",
+        "max_tokens": 1000,
+        "rates": {
+            "pushback_per_turn": "0.457",
+            "interrupt_per_turn": "0.045",
+            "redirect_per_session": "0.065",
+            "abandon_per_session": "0.06"
+        },
+        "bands": {
+            "pushback_per_turn": {
+                "min": "0.36",
+                "max": "0.56"
+            },
+            "interrupt_per_turn": {
+                "min": "0.02",
+                "max": "0.08"
+            },
+            "redirect_per_session": {
+                "min": "0.03",
+                "max": "0.12"
+            },
+            "abandon_per_session": {
+                "min": "0.03",
+                "max": "0.12"
+            }
+        },
+        "interrupt_after_ms": {
+            "min": 5000,
+            "max": 30000
         }
     },
     "families": [

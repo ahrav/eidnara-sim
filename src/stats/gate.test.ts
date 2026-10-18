@@ -1,0 +1,369 @@
+import { describe, expect, test } from "bun:test";
+import { loadPrereg } from "../scenario/inputs";
+import {
+    evaluateTier,
+    falsificationSet,
+    type ItemPair,
+    type Observation,
+    pairByItem,
+    type RunPair,
+    StatsRefusal,
+} from "./gate";
+import { holm } from "./tests";
+
+const M = loadPrereg("M");
+const S = loadPrereg("S");
+let order = 0;
+const items = (pairs: [number, number][], fact = (i: number) => `f-${i % 12}`): ItemPair[] =>
+    pairs.map(([control, treatment], i) => ({
+        item: `q-${order}`,
+        cluster: fact(i),
+        control,
+        treatment,
+        order: order++,
+    }));
+const binary = (metric: string, pairs: [number, number][]): Observation => ({
+    metric,
+    unit: "item",
+    cluster_key: "ledger_fact_id",
+    items: items(pairs),
+});
+const runs = (metric: string, values: [number, number][]): Observation => ({
+    metric,
+    unit: "run",
+    cluster_key: "run",
+    runs: values.map(([control, treatment], i): RunPair => ({ run: `r-${i}`, control, treatment })),
+});
+const evaluate = (observations: Observation[], extra = {}) =>
+    evaluateTier(M, { observations, excluded: [], asymmetric: [], ...extra });
+const metric = (v: ReturnType<typeof evaluate>, family: string, name: string) =>
+    v.families.find((f) => f.family === family)?.metrics.find((m) => m.metric === name);
+const repeat = <T>(n: number, x: T) => Array.from({ length: n }, () => x);
+
+describe("tier gates", () => {
+    test("a planted cross-session effect of 0 versus 99 percent is better, with p and interval", () => {
+        const pairs: [number, number][] = [...repeat(99, [0, 1] as [number, number]), [0, 0]];
+        const m = metric(evaluate([binary("P1.pass", pairs)]), "probe-P1", "P1.pass");
+        expect(m?.verdict).toBe("better");
+        expect(m?.passed).toBe(true);
+        expect(m?.p).toBeLessThan(1e-20);
+        expect(m?.difference).toBe(99);
+        expect((m?.interval?.[0] ?? 0) > 90 && (m?.interval?.[1] ?? 0) <= 100).toBe(true);
+    });
+
+    test("tens of probes with no effect name the detectable difference and its resolution ratio", () => {
+        const pairs: [number, number][] = Array.from({ length: 30 }, (_, i) =>
+            i % 5 === 0 ? [1, 0] : i % 5 === 1 ? [0, 1] : [i % 2, i % 2],
+        );
+        const m = metric(evaluate([binary("P1.pass", pairs)]), "probe-P1", "P1.pass");
+        expect(m?.verdict).toMatch(/^no-difference-above-\d+(\.\d+)?pp-detectable-at-30$/);
+        expect(m?.passed).toBe(false);
+        expect(m?.detectable).toBeCloseTo(100 * 2.8015852 * Math.sqrt(12 / 30 / 30), 3);
+        expect(m?.resolution_ratio).toBeCloseTo((m?.detectable ?? 0) / 13, 6);
+    });
+
+    test("a metric without an entry, a wrong unit, or a wrong cluster is refused by name", () => {
+        expect(() => evaluate([binary("P99.pass", [[0, 1]])])).toThrow(
+            new StatsRefusal("metric P99.pass has no pre-registration entry"),
+        );
+        expect(() => evaluate([{ ...binary("P1.pass", [[0, 1]]), unit: "run" }])).toThrow(
+            "P1.pass: unit run, pre-registered item",
+        );
+        expect(() => evaluate([{ ...binary("P1.pass", [[0, 1]]), cluster_key: "run" }])).toThrow(
+            "P1.pass: cluster run, pre-registered ledger_fact_id",
+        );
+    });
+
+    test("the harm family adjusts its five metrics by Holm, and the pass states each component's alpha", () => {
+        const harms = ["P2.harm", "P3.harm", "P4.harm", "P10.harm", "P11.harm"];
+        const shapes: [number, number][][] = [
+            [...repeat(12, [0, 1] as [number, number]), ...repeat(28, [0, 0] as [number, number])],
+            [...repeat(3, [0, 1] as [number, number]), ...repeat(37, [0, 0] as [number, number])],
+            repeat(40, [0, 0] as [number, number]),
+            [...repeat(2, [1, 0] as [number, number]), ...repeat(38, [0, 0] as [number, number])],
+            repeat(40, [0, 0] as [number, number]),
+        ];
+        const v = evaluate(harms.map((h, i) => binary(h, shapes[i] ?? [])));
+        const harm = v.families.find((f) => f.family === "harm");
+        const ps = harm?.metrics.map((m) => m.p ?? 1) ?? [];
+        expect(harm?.metrics.map((m) => m.p_adjusted)).toEqual(holm(ps));
+        expect(harm?.metrics.length).toBe(5);
+        expect(metric(v, "harm", "P2.harm")?.verdict).toBe("worse");
+        expect(metric(v, "harm", "P3.harm")?.verdict).toStartWith("no-difference-above-");
+        expect(harm?.passed).toBe(false);
+        expect(v.memory_made_it_worse.map((w) => w.metric)).toEqual(["P2.harm"]);
+        expect(harm?.mde).toEqual({ value: "0", scale: "pp" });
+        expect(v.prereg_sha256).toMatch(/^[0-9a-f]{64}$/);
+        expect(v.pass.per_component_alpha.harm).toBe(0.05);
+        expect(v.pass.per_component_alpha["probe-P14"]).toBe(0.03);
+        expect(v.pass.rule).toContain("at its own alpha");
+        expect(v.pass.passed).toBe(false);
+    });
+
+    test("CUSUM stops the tier for harm or futility and the stop withholds any pass", () => {
+        const harmful: [number, number][] = [
+            ...repeat(10, [0, 0] as [number, number]),
+            ...repeat(8, [0, 1] as [number, number]),
+        ];
+        const v = evaluate([binary("P2.harm", harmful)], {
+            cusum_sd: { harm: 0.5, futility: 0.5 },
+        });
+        expect(v.stops.map((s) => s.kind)).toEqual(["harm"]);
+        const ids = v.families.find((x) => x.family === "harm")?.metrics[0];
+        expect(ids?.n).toBe(18);
+        const harmItems = (v.stops[0]?.window ?? []).length;
+        expect(harmItems).toBe(3);
+        expect(v.stops[0]?.signal_index).toBe(12);
+        expect(v.pass.passed).toBe(false);
+        const planted: [number, number][] = repeat(40, [0, 1] as [number, number]);
+        const good = evaluate(
+            [binary("P1.pass", planted), binary("P2.harm", repeat(40, [1, 0] as [number, number]))],
+            {
+                cusum_sd: { harm: 0.5, futility: 0.5 },
+            },
+        );
+        expect(good.stops).toEqual([]);
+        const futile: [number, number][] = repeat(12, [1, 0] as [number, number]);
+        const f = evaluate([binary("P1.pass", futile)], { cusum_sd: { harm: 0.5, futility: 0.5 } });
+        expect(f.stops.map((s) => s.kind)).toEqual(["futility"]);
+        expect(f.pass.passed).toBe(false);
+        expect(evaluate([binary("P1.pass", futile)]).cusum_unavailable).toEqual([
+            "harm: no A/A standard deviation",
+            "futility: no A/A standard deviation",
+        ]);
+    });
+
+    test("a gate family missing a metric fails it, Holm runs over all five, and a metric observed twice is refused", () => {
+        const v = evaluate([binary("P2.harm", repeat(40, [0, 0] as [number, number]))]);
+        const harm = v.families.find((f) => f.family === "harm");
+        expect(harm?.metrics.map((m) => [m.metric, m.verdict])).toEqual([
+            ["P2.harm", expect.stringMatching(/^no-difference-above-/)],
+            ["P3.harm", "inconclusive"],
+            ["P4.harm", "inconclusive"],
+            ["P10.harm", "inconclusive"],
+            ["P11.harm", "inconclusive"],
+        ]);
+        expect(harm?.passed).toBe(false);
+        expect(harm?.metrics[0]?.resolution_ratio).toBeCloseTo(
+            (harm?.metrics[0]?.detectable ?? 0) / 10,
+            9,
+        );
+        const twice = binary("P1.pass", [[0, 1]]);
+        expect(() => evaluate([twice, twice])).toThrow("metric P1.pass is observed twice");
+    });
+
+    test("excluded and fault-asymmetric pairs leave the analysis and are counted", () => {
+        const obs = binary("P1.pass", repeat(10, [0, 1] as [number, number]));
+        const ids = obs.items?.map((x) => x.item) ?? [];
+        const v = evaluate([obs], {
+            excluded: [{ id: ids[0], arm: "eidnara", reason: "failed(interrupted)" }],
+            asymmetric: [ids[1], ids[2]] as string[],
+        });
+        const m = metric(v, "probe-P1", "P1.pass");
+        expect([m?.n, m?.asymmetric_pairs]).toEqual([7, 2]);
+        expect(v.excluded_per_arm).toEqual({ eidnara: 1 });
+        expect(v.excluded.map((e) => e.id)).toEqual([ids[0]] as string[]);
+        expect(v.asymmetric_stratum).toEqual([ids[1], ids[2]] as string[]);
+    });
+
+    test("run-level gates need six paired runs, counts use the sign test up to eight and the GLM above", () => {
+        const few = metric(
+            evaluate([runs("failed_turns", repeat(4, [0, 3] as [number, number]))]),
+            "dependability",
+            "failed_turns",
+        );
+        expect([few?.verdict, few?.passed]).toEqual(["insufficient-runs(4)", false]);
+        const six = metric(
+            evaluate([runs("failed_turns", repeat(6, [0, 3] as [number, number]))]),
+            "dependability",
+            "failed_turns",
+        );
+        expect([six?.verdict, six?.method]).toEqual([
+            "worse",
+            "one-sided paired sign test with run as unit",
+        ]);
+        expect(six?.p).toBeCloseTo(1 / 64, 12);
+        const split: [number, number][] = [
+            [0, 1],
+            [1, 0],
+            [0, 1],
+            [1, 0],
+            [0, 0],
+            [2, 1],
+        ];
+        const mixed = metric(
+            evaluate([runs("failed_turns", split)]),
+            "dependability",
+            "failed_turns",
+        );
+        expect(mixed?.verdict).toBe("no-difference-above-100pp-of-runs-detectable-at-6");
+        const many: [number, number][] = Array.from({ length: 12 }, (_, i) => [
+            2 + (i % 3),
+            2 + ((i + 1) % 3),
+        ]);
+        const zeros = metric(
+            evaluate([runs("hangs", repeat(10, [0, 0] as [number, number]))]),
+            "dependability",
+            "hangs",
+        );
+        expect([zeros?.method, zeros?.verdict, zeros?.passed]).toEqual([
+            "one-sided paired sign test with run as unit",
+            "no-difference-above-90pp-of-runs-detectable-at-10",
+            true,
+        ]);
+        const worseFive = metric(
+            evaluate([
+                runs("failed_turns", [
+                    [0, 2],
+                    [0, 3],
+                    [0, 1],
+                    [0, 2],
+                    [0, 2],
+                    [1, 0],
+                ]),
+            ]),
+            "dependability",
+            "failed_turns",
+        );
+        expect([worseFive?.verdict.startsWith("no-difference"), worseFive?.passed]).toEqual([
+            true,
+            false,
+        ]);
+        expect(worseFive?.rate_ratio_upper).toBeGreaterThan(1.5);
+        const glm = metric(evaluate([runs("hangs", many)]), "dependability", "hangs");
+        expect(glm?.method).toStartWith("negative-binomial GLM");
+        expect(glm?.difference).toBeCloseTo(1, 4);
+        expect((glm?.interval ?? []).every(Number.isFinite)).toBe(true);
+        expect(glm?.verdict).toMatch(/^no-difference-above-[\d.]+ratio-detectable-at-12$/);
+        const cleared = metric(
+            evaluate([runs("hangs", repeat(9, [2, 0] as [number, number]))]),
+            "dependability",
+            "hangs",
+        );
+        expect([cleared?.method, cleared?.verdict, cleared?.passed]).toEqual([
+            "one-sided paired sign test with run as unit",
+            "no-difference-above-88.89pp-of-runs-detectable-at-9",
+            true,
+        ]);
+        const oneHost = metric(
+            evaluate([runs("failed_turns", [[1, 0], ...repeat(5, [0, 0] as [number, number])])]),
+            "dependability",
+            "failed_turns",
+        );
+        expect([oneHost?.rate_ratio_upper, oneHost?.passed]).toEqual([0, true]);
+        const ties = metric(
+            evaluate([runs("usd_per_component", repeat(7, [1, 1] as [number, number]))]),
+            "cost",
+            "usd_per_component",
+        );
+        expect(ties?.verdict).toBe("no-difference-above-100pp-of-runs-detectable-at-7");
+        const tripled = metric(
+            evaluate([runs("hangs", repeat(9, [2, 6] as [number, number]))]),
+            "dependability",
+            "hangs",
+        );
+        expect(tripled?.difference).toBeCloseTo(3, 3);
+        expect([tripled?.verdict, tripled?.passed]).toEqual(["worse", false]);
+        const latency = metric(
+            evaluate([
+                runs("turn_latency_p95_delta_ms", repeat(6, [100, 140] as [number, number])),
+            ]),
+            "latency",
+            "turn_latency_p95_delta_ms",
+        );
+        expect([latency?.verdict, latency?.passed]).toEqual(["worse", true]);
+    });
+
+    test("bounds pass or fail per run, and no output carries the word parity", () => {
+        const s = (observations: Observation[]) =>
+            evaluateTier(S, { observations, excluded: [], asymmetric: [] });
+        const ok = s([runs("internal_string_hits", repeat(2, [0, 0] as [number, number]))]);
+        const intr = ok.families.find((f) => f.family === "intrusiveness")?.metrics[0];
+        expect([intr?.verdict, intr?.passed]).toEqual(["within-bound", true]);
+        const bad = s([
+            runs("internal_string_hits", [
+                [0, 0],
+                [0, 2],
+            ]),
+        ]);
+        expect(bad.families.find((f) => f.family === "intrusiveness")?.metrics[0]?.verdict).toBe(
+            "failed-gate(internal_string_hits, r-1)",
+        );
+        const p8 = s([
+            binary("P8.cross_session_pass_rate", [
+                ...repeat(9, [0, 1] as [number, number]),
+                [0, 0],
+            ]),
+        ]);
+        expect(p8.families.find((f) => f.family === "probe-P8")?.passed).toBe(true);
+        for (const v of [ok, bad, p8])
+            expect(JSON.stringify(v).toLowerCase()).not.toContain("parity");
+    });
+
+    test("the falsification set reports a zero effect only where the paired interval covers zero", () => {
+        const noise = [0.1, -0.2, 0, 0.15, -0.1, 0.05, -0.05, 0.2, -0.15, 0];
+        const out = falsificationSet(S, {
+            pre_divergence_pushback_rate: noise.map((d) => ({
+                control: 0.45,
+                treatment: 0.45 + d,
+            })),
+            gateway_4xx_rate_without_faults: noise.map((d) => ({ control: 0, treatment: 1 + d })),
+        });
+        const by = Object.fromEntries(out.map((z) => [z.check, z.zero_effect]));
+        expect(by).toEqual({
+            in_session_repo_readable_fact_pass: null,
+            gateway_4xx_rate_without_faults: false,
+            pre_divergence_pushback_rate: true,
+            wall_ms_per_scripted_idle_gap: null,
+        });
+        expect(() => falsificationSet(S, { tokens: [] })).toThrow(
+            "tokens is not in the falsification set",
+        );
+    });
+
+    test("pairs join by item id across arms in issue order, whatever order each arm graded them in", () => {
+        const host = new Map([
+            ["q-10", 0],
+            ["q-2", 1],
+            ["q-3", 0],
+        ]);
+        const mem = new Map([
+            ["q-3", 1],
+            ["q-2", 1],
+            ["q-10", 1],
+            ["q-4", 1],
+        ]);
+        const issued = ["q-2", "q-3", "q-10"];
+        const pairs = pairByItem(
+            host,
+            mem,
+            (q) => `f-${q}`,
+            (q) => issued.indexOf(q),
+        );
+        expect(pairs.map((x) => [x.item, x.control, x.treatment, x.order])).toEqual([
+            ["q-2", 1, 1, 0],
+            ["q-3", 0, 1, 1],
+            ["q-10", 0, 1, 2],
+        ]);
+    });
+
+    test("items of one ledger fact resample together, so shared facts widen the binary interval", () => {
+        const pairs: [number, number][] = Array.from({ length: 24 }, (_, i) =>
+            i % 3 === 0 ? [0, 1] : [0, 0],
+        );
+        const own = binary("P1.pass", pairs);
+        const shared = {
+            ...own,
+            items: own.items?.map((x, i) => ({
+                ...x,
+                item: `${x.item}s`,
+                cluster: i % 3 === 0 ? "f-a" : `f-${i}`,
+            })),
+        };
+        const width = (o: Observation) => {
+            const m = metric(evaluate([o]), "probe-P1", "P1.pass");
+            return (m?.interval?.[1] ?? 0) - (m?.interval?.[0] ?? 0);
+        };
+        expect(width(shared)).toBeGreaterThan(width(own));
+    });
+});

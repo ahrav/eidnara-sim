@@ -86,6 +86,54 @@ describe("pre-registration validator", () => {
         expect(errors).toContain("families[harm]: missing");
     });
 
+    test("refuses a seed outside the unsigned 32-bit range of the random streams", () => {
+        const prereg = load("S") as any;
+        prereg.seeds[0] = 2 ** 32;
+        prereg.arms.order_by_seed.length = prereg.seeds.length;
+        expect(validatePreregistration(prereg)).toContain(
+            "seeds: expected an integer in [0, 4294967295]",
+        );
+    });
+
+    test("refuses a pooled item count the seed-host runs cannot split evenly", () => {
+        const prereg = load("S") as any;
+        prereg.stopping_rule.paired_items_per_probe_type = 25;
+        expect(validatePreregistration(prereg)).toContain(
+            "stopping_rule.paired_items_per_probe_type: 25 is not a multiple of the 4 seed-host runs",
+        );
+    });
+
+    test("refuses an embedding model the compiler cannot construct", () => {
+        const prereg = load("S") as any;
+        prereg.scenario.cue_probe_similarity.embedding_model = "amazon.titan-embed-text-v1";
+        expect(validatePreregistration(prereg)).toContain(
+            "scenario.cue_probe_similarity.embedding_model: expected one of amazon.titan-embed-text-v2:0",
+        );
+    });
+
+    test("refuses fewer than three forced p90 sessions", () => {
+        const prereg = load("S") as any;
+        prereg.scenario.forced_p90_sessions = 2;
+        expect(validatePreregistration(prereg)).toContain(
+            "scenario.forced_p90_sessions: expected an integer of at least 3",
+        );
+    });
+
+    test("refuses a similarity ceiling whose decimal exceeds 1 by less than double precision", () => {
+        const prereg = load("S") as any;
+        prereg.scenario.cue_probe_similarity.cosine_max = "1.0000000000000000001";
+        expect(validatePreregistration(prereg)).toContain(
+            "scenario.cue_probe_similarity.cosine_max: expected a canonical decimal in [0, 1]",
+        );
+    });
+
+    test("accepts the boundary similarity ceilings 0 and 1", () => {
+        const prereg = load("S") as any;
+        prereg.scenario.cue_probe_similarity.bm25_max = "0";
+        prereg.scenario.cue_probe_similarity.cosine_max = "1";
+        expect(validatePreregistration(prereg)).toEqual([]);
+    });
+
     test("refuses a run-level statistical gate below six paired runs", () => {
         const prereg = load("M") as any;
         prereg.families.find((f: any) => f.id === "dependability").min_paired_runs = 5;
@@ -174,7 +222,7 @@ describe("pre-registration validator", () => {
         prereg.scenario.forced_p90_sessions = 2;
         expect(validatePreregistration(prereg).sort()).toEqual([
             "hosts: expected pi and opencode",
-            "scenario.forced_p90_sessions: at least 3",
+            "scenario.forced_p90_sessions: expected an integer of at least 3",
         ]);
         const m = load("M") as any;
         m.families.find((f: any) => f.id === "harm").metrics[4] = "P12.harm";

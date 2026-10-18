@@ -18,6 +18,8 @@ RSS(0) + N_sessions * c` with `c` from the pre-registration, and samples every
 No harness code, test, or run exists yet. The surface lands in M7
 (#1032).
 
+M7 (#1033) `soak` reports the steady-window slope per session, R squared, the bound `value(T) < 2 * value(0) + sessions(T) * c` at its worst sample, and the return to baseline; the sampler records RSS, anonymous memory, and store bytes every pre-registered interval with scenario and wall time. A planted linear-growth fixture is a leak and a flat one is not.
+
 ## Failure scenario
 
 The observed linear RSS growth is missed or misreported.

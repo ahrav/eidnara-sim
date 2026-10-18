@@ -1,5 +1,5 @@
 {
-    "schema": "sim-config/v1",
+    "schema": "sim-config/v2",
     "eidnara_checkout": "/local/home/ahrav/scratch/eidnara-build",
     "daemon_binary": "/local/home/ahrav/scratch/eidnara-build/target/release/examples/direct_host_fixture",
     "pi_install": "/tmp/eidnara-e2e-pi-install-0.80.2",
@@ -24,11 +24,16 @@
         ],
         "env": {
             "CARGO_HOME": "/local/home/ahrav/.cargo",
-            "RUSTUP_HOME": "/local/home/ahrav/.rustup"
+            "RUSTUP_HOME": "/local/home/ahrav/.rustup",
+            "BUN_INSTALL_CACHE_DIR": "/local/home/ahrav/.bun/install/cache"
         },
         "wall_clock_tools": [
             "rustc",
             "rustdoc"
         ]
+    },
+    "upgrade": {
+        "pi_install": "/local/home/ahrav/scratch/sim-hosts/pi-0.87.1",
+        "opencode_binary": "/local/home/ahrav/scratch/sim-hosts/oc-1.18.23/node_modules/opencode-ai/bin/opencode.exe"
     }
 }

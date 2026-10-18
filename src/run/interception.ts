@@ -1,15 +1,17 @@
 import { mkdirSync, realpathSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { launch } from "./launcher";
 import { FAKETIME_LIB, faketimeEnv, writeOffset } from "./timeinject";
 
 export interface BinaryProbe {
-    name: "pi" | "opencode" | "daemon";
+    name: "pi" | "opencode" | "opencode-upgrade" | "daemon";
     path: string;
     keep: string[];
     argv: string[];
     env?: Record<string, string>;
     mode: "prints-time" | "binds-clock";
+    /** The normal exit for this invocation; exit 0 when absent. */
+    expect?: { exit: number; stderr?: RegExp };
 }
 
 export interface Interception {
@@ -41,31 +43,44 @@ const JUMP_MS = 8 * 3_600_000;
 const PRINT_TIME =
     "const t=performance.now();setTimeout(()=>console.log(JSON.stringify({now:Date.now(),timer:performance.now()-t})),100)";
 
+export function nodeInstall(which: string): { exe: string; bin: string; root: string } {
+    const exe = realpathSync(which);
+    const bin = dirname(exe);
+    return { exe, bin, root: basename(bin) === "bin" ? dirname(bin) : bin };
+}
+
 export function probes(paths: { node: string; opencode: string; daemon: string }): BinaryProbe[] {
-    const nodeRoot = resolve(paths.node, "../..");
+    // The kept directory and the path the loader reports in its binding lines are the
+    // binary's canonical location, so a symlinked configured path resolves before use.
+    const node = nodeInstall(paths.node);
+    const opencode = realpathSync(paths.opencode);
+    const daemon = realpathSync(paths.daemon);
     return [
         {
             name: "pi",
-            path: paths.node,
-            keep: [nodeRoot],
-            argv: [paths.node, "-e", PRINT_TIME],
+            path: node.exe,
+            keep: [node.root],
+            argv: [node.exe, "-e", PRINT_TIME],
             mode: "prints-time",
         },
         {
             name: "opencode",
-            path: paths.opencode,
-            keep: [dirname(paths.opencode)],
-            argv: [paths.opencode, "-e", PRINT_TIME],
+            path: opencode,
+            keep: [dirname(opencode)],
+            argv: [opencode, "-e", PRINT_TIME],
             env: { BUN_BE_BUN: "1" },
             mode: "prints-time",
         },
         {
             name: "daemon",
-            path: paths.daemon,
-            keep: [dirname(paths.daemon)],
-            argv: [paths.daemon, "--help"],
+            path: daemon,
+            keep: [dirname(daemon)],
+            argv: [daemon, "--help"],
             env: { LD_DEBUG: "bindings" },
             mode: "binds-clock",
+            // The fixture has no successful no-op invocation; its usage error runs main and
+            // returns normally, which shows the binary loaded and ran under the interposer.
+            expect: { exit: 1, stderr: /usage: direct_host_fixture/ },
         },
     ];
 }
@@ -74,6 +89,7 @@ export function interceptionTest(
     launcher: string,
     workDir: string,
     binaries: BinaryProbe[],
+    timeoutSeconds = 30,
 ): Interception[] {
     const clockDir = join(workDir, "interception");
     mkdirSync(clockDir, { recursive: true });
@@ -83,13 +99,24 @@ export function interceptionTest(
         const keep = [dirname(dirname(FAKETIME_LIB)), clockDir, ...b.keep];
         const env = { ...faketimeEnv(offset), ...b.env };
         const wallBefore = Date.now();
-        const r = Bun.spawnSync(launch(launcher, keep, env, b.argv), {
-            stdout: "pipe",
-            stderr: "pipe",
-            timeout: 30_000,
-        });
+        // GNU timeout signals its own process group, so a KILL on expiry reaches sudo, the
+        // unshare parent (which ignores TERM while it waits), namespace PID 1, and the probe.
+        const r = Bun.spawnSync(
+            [
+                "timeout",
+                "-s",
+                "KILL",
+                String(timeoutSeconds),
+                ...launch(launcher, keep, env, b.argv),
+            ],
+            { stdout: "pipe", stderr: "pipe" },
+        );
         const wall = Date.now() - wallBefore;
-        let evidence: Record<string, unknown> = { exit: r.exitCode, wall_ms: wall };
+        let evidence: Record<string, unknown> = {
+            exit: r.exitCode,
+            signal: r.signalCode ?? null,
+            wall_ms: wall,
+        };
         let intercepted = false;
         if (b.mode === "prints-time") {
             try {
@@ -113,6 +140,14 @@ export function interceptionTest(
             evidence = { ...evidence, binding: line?.trim() ?? null };
             intercepted = line !== undefined;
         }
+        // Interception requires the probe's normal exit under the interposer as well as a read clock.
+        intercepted &&= exitedAsExpected(b, r.exitCode, r.stderr.toString());
         return { name: b.name, path: b.path, intercepted, wall_clock_only: !intercepted, evidence };
     });
+}
+
+/** A probe passes only when its binary ran to a normal exit under the interposer. */
+export function exitedAsExpected(b: BinaryProbe, code: number | null, stderr: string): boolean {
+    const want = b.expect ?? { exit: 0 };
+    return code === want.exit && (want.stderr === undefined || want.stderr.test(stderr));
 }

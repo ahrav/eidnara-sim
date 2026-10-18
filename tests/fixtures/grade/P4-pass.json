@@ -14,7 +14,7 @@
       "must_not": [
         "debug!"
       ],
-      "scope": "in"
+      "side": "in"
     },
     "event": "e-1"
   },

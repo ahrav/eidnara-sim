@@ -10,8 +10,11 @@ import {
     failedChecks,
     loadCited,
     loadDistributions,
+    loadRates,
     table,
+    waived,
 } from "./distributions";
+import { bankProblems } from "./fact-bank";
 import { type SampledSession, sampleSession } from "./sampler";
 import { CORPUS_DIR } from "./sources";
 
@@ -53,12 +56,18 @@ function ksDistance(t: CdfTable, draws: number[]): number {
             d = Math.max(d, Math.abs(below / n - (t.p[i] ?? 1)));
         }
     }
+    let first = 0;
     for (let i = 0; i < n; i++) {
         const v = sorted[i] ?? 0;
         if (sorted[i + 1] === v) continue;
         const f = cdfAt(t, v);
         d = Math.max(d, Math.abs((i + 1) / n - f));
-        if (t.kind === "continuous") d = Math.max(d, Math.abs(f - i / n));
+        if (t.kind === "continuous") {
+            const atom = t.x.indexOf(v);
+            const below = atom < 0 ? f : (t.p[atom] ?? 0);
+            d = Math.max(d, Math.abs(below - first / n));
+        }
+        first = i + 1;
     }
     return d;
 }
@@ -73,6 +82,87 @@ describe("committed corpus", () => {
         expect(checkCorpus().problems).toEqual([]);
     });
 
+    test("the fact bank gate names a template without a probe and an unknown check key", () => {
+        const bank = JSON.parse(readFileSync(join(CORPUS_DIR, "fact-bank.json"), "utf8"));
+        expect(bankProblems(bank)).toEqual([]);
+        const broken = structuredClone(bank);
+        delete broken.rust.plan[0].probe;
+        broken.any.lookup[0].check.musts = ["x"];
+        broken.typescript.filler = "not a list";
+        broken.rust.filler = [];
+        broken.schema = "sim-fact-bank/v0";
+        broken.python = {};
+        broken.rust.rationale = [];
+        broken.typescript.scoped_update[0].check.quote_style_must = "backtick";
+        broken.any.anchor[0].check.must_not = ["[unclosed"];
+        broken.any.anchor[1].id = "lookup-port";
+        delete broken.any.never_settled;
+        expect(bankProblems(broken)).toEqual([
+            "fact-bank schema: sim-fact-bank/v0 is not sim-fact-bank/v1",
+            "fact-bank rust/plan[0] rs-plan-field: probe missing",
+            "fact-bank rust/rationale: expected at least one template",
+            "fact-bank rust/filler: expected a non-empty list of non-blank strings",
+            "fact-bank typescript/scoped_update[0] ts-scope-quotes: check key quote_style_must is not double or single",
+            "fact-bank typescript/filler: expected a non-empty list of non-blank strings",
+            "fact-bank any/never_settled: kind missing",
+            "fact-bank any/lookup[0] lookup-staging-alias: check key musts is not a check kind",
+            "fact-bank any/anchor[0] anchor-ticket: check key must_not pattern [unclosed is not a regular expression",
+            "fact-bank any/anchor[1] lookup-port: duplicate template id",
+            "fact-bank python: unknown language",
+        ]);
+    });
+
+    test("the fact bank gate names kind-specific omissions and unusable patterns", () => {
+        const bank = JSON.parse(readFileSync(join(CORPUS_DIR, "fact-bank.json"), "utf8"));
+        const broken = structuredClone(bank);
+        delete broken.rust.scoped_update[0].update;
+        delete broken.rust.decision[0].authority;
+        broken.rust.plan[0].check.must = ["{tokne}"];
+        broken.rust.rationale[0].check.judge = "  ";
+        broken.any.lookup[0].check.answer = "";
+        broken.any.anchor[0].check.must_not = [""];
+        delete broken.typescript.scoped_update[0].out_probe;
+        delete broken.typescript.scoped_update[0].out_check;
+        delete broken.any;
+        broken.rust.constraint[0].statement = "   ";
+        delete broken.rust.constraint[1].out_probe;
+        broken.rust.plan[1].check = { must: ["{code}"] };
+        broken.rust.rejected[0].check = { answer: "x" };
+        broken.typescript.rationale[0].check = { judge: "{codenam}" };
+        broken.rust.constraint[2].statement = "helpers use {tokne}";
+        broken.rust.constraint[3].check = { must_not: ["DO_NOT"] };
+        broken.rust.decision[1].authority.content = "// unrelated authority\n";
+        broken.typescript.decision[0].check = { must_not: ["{value}"] };
+        broken.typescript.scoped_update[0].update = "   ";
+        broken.typescript.constraint[0].check = { first_line_must: ["^x"] };
+        broken.typescript.decision[1].authority.path = "  ";
+        broken.rust.constraint[1].example.path = "../../outside.rs";
+        broken.rust.constraint[0].example.content = "pub const WRONG = 1;";
+        expect(bankProblems(broken)).toEqual([
+            "fact-bank any: language missing",
+            "fact-bank rust/constraint[0] rs-cmd-const-prefix: statement missing",
+            "fact-bank rust/constraint[0] rs-cmd-const-prefix: example content does not satisfy the check",
+            "fact-bank rust/constraint[1] rs-cmd-error-tag: example path escapes the project",
+            "fact-bank rust/constraint[1] rs-cmd-error-tag: out_probe missing",
+            "fact-bank rust/constraint[2] rs-db-helper-prefix: statement names an unknown placeholder",
+            "fact-bank rust/constraint[3] rs-test-suffix: check needs must or paths_must",
+            "fact-bank rust/decision[0] rs-scan-page: authority missing",
+            "fact-bank rust/decision[1] rs-conn-buffer: authority content does not satisfy the check",
+            "fact-bank rust/plan[0] rs-plan-field: check key must pattern {tokne} names an unknown placeholder",
+            "fact-bank rust/plan[1] rs-plan-cmd: check key must pattern {code} names an unknown placeholder",
+            "fact-bank rust/rationale[0] rs-why-noalloc: check key judge is blank",
+            "fact-bank rust/rejected[0] rs-no-global-mutex: check key answer is not graded for rejected facts",
+            "fact-bank rust/scoped_update[0] rs-scope-log-level: update missing",
+            "fact-bank typescript/constraint[0] ts-const-prefix: check needs must or paths_must",
+            "fact-bank typescript/decision[0] ts-body-limit: check needs must",
+            "fact-bank typescript/decision[1] ts-cookie-age: authority path is blank",
+            "fact-bank typescript/rationale[0] ts-why-aot: check key judge names an unknown placeholder",
+            "fact-bank typescript/scoped_update[0] ts-scope-quotes: update missing",
+            "fact-bank typescript/scoped_update[0] ts-scope-quotes: out_probe missing",
+            "fact-bank typescript/scoped_update[0] ts-scope-quotes: out_check missing",
+        ]);
+    });
+
     test("every quantity names its source and sample size", () => {
         for (const q of Object.values(dist.quantities)) {
             expect(q.source).toContain("@");
@@ -81,7 +171,7 @@ describe("committed corpus", () => {
     });
 
     test("only append p90 carries a recorded deviation", () => {
-        const deviations = cited.checks.filter((c) => c.deviation !== undefined);
+        const deviations = cited.checks.filter(waived);
         expect(deviations.map((c) => [c.quantity, c.q])).toEqual([["append_tokens_per_step", 0.9]]);
     });
 
@@ -129,6 +219,11 @@ describe("sampler over 10,000 sessions", () => {
         expect(Math.max(...idle)).toBeGreaterThan(11 * 3600);
     });
 
+    test("append token counts are whole numbers", () => {
+        const append = pooled.append_tokens_per_step ?? [];
+        expect(append.filter((a) => !Number.isInteger(a))).toEqual([]);
+    });
+
     test("the append tail reaches 10k tokens per step", () => {
         const append = pooled.append_tokens_per_step ?? [];
         const share = append.filter((a) => a >= 10_000).length / append.length;
@@ -160,7 +255,16 @@ describe("SIM-P09: forced p90 sessions", () => {
 });
 
 describe("SIM-P10: user-behaviour rates", () => {
-    const published = JSON.parse(readFileSync(join(CORPUS_DIR, "published-rates.json"), "utf8"));
+    const published = loadRates();
+
+    test("the four behaviour rates are present", () => {
+        expect(Object.keys(published.rates).sort()).toEqual([
+            "abandon_per_session",
+            "interrupt_per_turn",
+            "pushback_per_turn",
+            "redirect_per_session",
+        ]);
+    });
 
     test("distributions.json carries the published rates unchanged", () => {
         expect(dist.rates).toEqual({
@@ -170,7 +274,7 @@ describe("SIM-P10: user-behaviour rates", () => {
         });
     });
 
-    test("each rate's numbers appear as percentages in its quote and stay ordered", () => {
+    test("each rate's numbers lie in [0, 1], appear as percentages in its quote, and stay ordered", () => {
         for (const [name, raw] of Object.entries(published.rates)) {
             const rate = raw as Rate;
             const numbers = [
@@ -182,6 +286,8 @@ describe("SIM-P10: user-behaviour rates", () => {
             expect({ name, any: numbers.length > 0 }).toEqual({ name, any: true });
             const quoted = [...rate.quote.matchAll(/(\d+(?:\.\d+)?)%/g)].map((m) => Number(m[1]));
             for (const v of numbers) {
+                expect(v).toBeGreaterThanOrEqual(0);
+                expect(v).toBeLessThanOrEqual(1);
                 const found = quoted.some((q) => Math.abs(q / 100 - v) < 1e-9);
                 expect({ name, v, found }).toEqual({ name, v, found: true });
             }
@@ -206,5 +312,11 @@ describe("failedChecks", () => {
     });
     test("an in-band check that still carries a deviation fails", () => {
         expect(failedChecks([{ ...base, within: true, deviation: "stale" }])).toHaveLength(1);
+    });
+    test("a blank or non-string deviation waives nothing", () => {
+        for (const deviation of ["", "  ", null, 0] as unknown[]) {
+            const check = { ...base, within: false, deviation } as CheckResult;
+            expect(failedChecks([check])).toHaveLength(1);
+        }
     });
 });

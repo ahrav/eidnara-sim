@@ -22,7 +22,7 @@ export function sampleSession(dist: Distributions, rng: Rng, tailFloor = 0): Sam
         const n = Math.max(1, sample(steps, rng));
         session.steps.push(n);
         for (let s = 0; s < n; s++) {
-            session.append_tokens.push(sample(append, rng));
+            session.append_tokens.push(Math.round(sample(append, rng)));
         }
     }
     return session;

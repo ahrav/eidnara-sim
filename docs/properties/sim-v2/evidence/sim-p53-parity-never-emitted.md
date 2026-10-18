@@ -20,6 +20,8 @@ inconclusive, insufficient-runs, passed-gate, and descriptive, and the string
 which `checkReport` (`src/prereg/report.ts`) refuses. The report emitter lands
 in M7 (#1032); no run exists yet.
 
+M7 (#1032) emits better, worse, no-difference-above-X-detectable-at-n, inconclusive, insufficient-runs(k), within-bound, or failed-gate(metric, ids), and refuses any evaluation whose output contains the word parity; a test scans its fixture verdicts.
+
 ## Failure scenario
 
 A null at small n is read as equivalence.

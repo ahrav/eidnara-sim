@@ -69,7 +69,10 @@ export const SEAMS = {
     model_switch: scheduler(BETWEEN, "host uses the new model", "call record model id"),
     laptop_sleep: {
         layer: "clock",
-        legal_outcomes: ["one event-free clock jump of the scheduled duration (SIM-P18)"],
+        legal_outcomes: [
+            "one event-free clock jump spanning the idle gap before the session (SIM-P18)",
+            "missed: a job carried the clock past the session's start, so no jump and no firing",
+        ],
         in_flight_fate: "none: fires while idle",
         surviving_state: "all processes kept",
         oracle: "AdvanceClock entry with busy_set empty",
@@ -93,7 +96,7 @@ const PROVIDER_FAULTS: FaultType[] = [
     "schema_wrong_tool_call",
     "slow_stream",
 ];
-const INFRA_FAULTS: FaultType[] = [
+export const INFRA_FAULTS: FaultType[] = [
     "daemon_sigkill_mid_fold",
     "daemon_restart",
     "store_full",
@@ -123,7 +126,8 @@ export function validateFault(episode: FaultEpisode, sessions: Map<string, numbe
     if (trigger.kind === "user_turn" && !(Number.isInteger(n) && n >= 1 && n <= requests)) {
         throw new Error(`${episode.id}: user turn ${n} outside the session's ${requests} turns`);
     }
-    if (canonicalJson(SEAMS[episode.type]) !== canonicalJson(episode.seam)) {
+    const seam = Object.hasOwn(SEAMS, episode.type) ? SEAMS[episode.type] : undefined;
+    if (!seam || canonicalJson(seam) !== canonicalJson(episode.seam)) {
         throw new Error(`${episode.id}: seam entry missing or altered`);
     }
 }
@@ -132,11 +136,19 @@ export interface FaultSession {
     id: string;
     requests: number;
     forced_p90: boolean;
+    has_diff: boolean;
     gap_before_ms: number;
 }
 
 export function scheduleFaults(tier: string, sessions: FaultSession[], rng: Rng): FaultEpisode[] {
+    const types = TIER_FAULTS[tier] ?? [];
     const providerSessions = sessions.filter((x) => x.requests >= 2);
+    const providerCount = types.filter((t) => SEAMS[t].layer === "proxy-sink").length;
+    if (providerSessions.length < providerCount) {
+        throw new Error(
+            `tier ${tier}: ${providerCount} provider faults need ${providerCount} sessions with two or more turns; ${providerSessions.length} available`,
+        );
+    }
     for (let i = providerSessions.length - 1; i > 0; i--) {
         const j = Math.floor(rng.next() * (i + 1));
         [providerSessions[i], providerSessions[j]] = [
@@ -145,19 +157,29 @@ export function scheduleFaults(tier: string, sessions: FaultSession[], rng: Rng)
         ];
     }
     const later = sessions.slice(1);
-    const widest = later.reduce(
-        (a, b) => (b.gap_before_ms > a.gap_before_ms ? b : a),
-        later[0] as FaultSession,
+    const pick = (candidates: FaultSession[], what: string): FaultSession => {
+        if (candidates.length === 0) throw new Error(`tier ${tier}: no ${what}`);
+        return rng.pick(candidates);
+    };
+    const quiet = later.filter((x) => !x.has_diff);
+    const widest = quiet.reduce<FaultSession | undefined>(
+        (a, b) => (a && a.gap_before_ms >= b.gap_before_ms ? a : b),
+        undefined,
     );
-    return (TIER_FAULTS[tier] ?? []).map((type, i): FaultEpisode => {
+    return types.map((type, i): FaultEpisode => {
         const id = `fault-${String(i).padStart(3, "0")}`;
         const seam = SEAMS[type];
         if (type === "daemon_sigkill_mid_fold") {
-            const s = rng.pick(sessions.filter((x) => x.forced_p90));
+            const s = pick(
+                sessions.filter((x) => x.forced_p90),
+                "forced p90 session",
+            );
             const trigger = { kind: "first_summarizer_call", session: s.id } as const;
             return { id, type, strategy: "single", trigger, params: {}, seam };
         }
         if (type === "laptop_sleep") {
+            if (!widest)
+                throw new Error(`tier ${tier}: no session starts without a hand-applied diff`);
             const trigger = { kind: "session_start", session: widest.id } as const;
             return {
                 id,
@@ -169,7 +191,8 @@ export function scheduleFaults(tier: string, sessions: FaultSession[], rng: Rng)
             };
         }
         if (seam.layer !== "proxy-sink") {
-            const trigger = { kind: "session_start", session: rng.pick(later).id } as const;
+            const s = pick(later, "session after the first");
+            const trigger = { kind: "session_start", session: s.id } as const;
             const store = type === "store_full";
             const params: Record<string, number> = store ? { sessions: 1 } : {};
             return { id, type, strategy: store ? "persistent" : "single", trigger, params, seam };

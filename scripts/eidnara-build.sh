@@ -5,16 +5,99 @@
 set -euo pipefail
 src=$1
 dst=$2
-if [ ! -d "$dst/.git" ]; then
-    git clone --quiet --no-hardlinks "$src" "$dst"
+src_real=$(realpath -m "$src")
+dst_real=$(realpath -m "$dst")
+case "$dst_real/" in
+    "$src_real/"*)
+        echo "eidnara-build: <clone> must be a separate directory outside <checkout> $src" >&2
+        exit 64
+        ;;
+esac
+case "$src_real/" in
+    "$dst_real/"* | "$dst_real.partial/"* | "$dst_real.partial."*)
+        echo "eidnara-build: <checkout> must be a separate directory outside <clone> $dst and its partial clone" >&2
+        exit 64
+        ;;
+esac
+dst=$dst_real
+src=$src_real
+# One build per clone at a time, held from the record's removal to its publication.
+# The lock's directory is outside every sandbox view (the home is masked and the clone is
+# read-only), so the check-then-open below races only with the operator.
+lock="$dst_real.lock"
+if [ -L "$lock" ]; then
+    echo "eidnara-build: $lock is a symlink" >&2
+    exit 65
 fi
+if [ -e "$lock" ] && [ ! -f "$lock" ]; then
+    echo "eidnara-build: $lock is not a regular file" >&2
+    exit 65
+fi
+exec 9>>"$lock"
+if ! flock -n 9; then
+    echo "eidnara-build: another build holds $dst_real.lock" >&2
+    exit 75
+fi
+# The two records are the script's own files; a source that tracks either path could
+# make them symlinks, so such a source is refused and each record is unlinked before
+# it is written.
+refuse_reserved() {
+    if [ -n "$(git -C "$1" ls-files -- .sim-build-source .sim-build-commit)" ]; then
+        echo "eidnara-build: $src tracks the reserved .sim-build-source or .sim-build-commit" >&2
+        exit 65
+    fi
+}
+# .sim-build-source names the checkout this clone was made from, so the forced
+# checkout and clean below only ever touch a clone this script created.
+if [ -e "$dst/.git" ] || [ -L "$dst/.git" ]; then
+    # A linked Git directory would let the fetch and checkout below write into another repository.
+    if [ -L "$dst/.git" ] || [ ! -d "$dst/.git" ] ||
+        [ "$(realpath -m "$dst/.git")" != "$dst_real/.git" ]; then
+        echo "eidnara-build: $dst/.git is not a real directory inside the clone" >&2
+        exit 65
+    fi
+    if [ -L "$dst/.sim-build-source" ] || [ ! -f "$dst/.sim-build-source" ] ||
+        [ "$(cat "$dst/.sim-build-source")" != "$src_real" ]; then
+        echo "eidnara-build: $dst was not cloned by this script from $src" >&2
+        exit 65
+    fi
+else
+    # The clone is made in a fresh directory beside the destination and renamed into place
+    # once it carries its source record. Each such directory holds an owner record, and only
+    # a directory whose record names this source is removed as an interrupted clone.
+    for left in "$dst".partial.*; do
+        if [ -d "$left" ] && [ ! -L "$left" ] && [ ! -L "$left/.sim-build-owner" ] &&
+            [ -f "$left/.sim-build-owner" ] &&
+            [ "$(cat "$left/.sim-build-owner")" = "$src_real" ]; then
+            rm -rf "$left"
+        fi
+    done
+    partial=$(mktemp -d "$dst.partial.XXXXXX")
+    printf '%s\n' "$src_real" > "$partial/.sim-build-owner"
+    git clone --quiet --no-hardlinks "$src" "$partial/clone"
+    refuse_reserved "$partial/clone"
+    rm -f "$partial/clone/.sim-build-source"
+    printf '%s\n' "$src_real" > "$partial/clone/.sim-build-source"
+    mv -T "$partial/clone" "$dst"
+    rm -rf "$partial"
+fi
+# .sim-build-commit exists only between a completed build and the next start,
+# so a clone without it holds a mixed or partial tree.
+rm -f "$dst/.sim-build-commit"
 git -C "$dst" fetch --quiet "$src" HEAD
-git -C "$dst" checkout --quiet --detach FETCH_HEAD
+# The clone is the harness's own build tree: edits and stray files from an earlier build go,
+# while ignored outputs (node_modules, target, dist) stay for the incremental build.
+git -C "$dst" checkout --quiet --force --detach FETCH_HEAD
+refuse_reserved "$dst"
+git -C "$dst" clean --quiet --force -d --exclude=.sim-build-source
 cd "$dst"
 bun install --frozen-lockfile
 (cd packages/shm-native && bun run build)
 (cd packages/pi-plugin && bun run build)
 (cd packages/opencode-plugin && bun run build)
-cargo build --locked --release -p daemon --example direct_host_fixture --bin eidnara-host \
-    --features direct-host-fixture
-git -C "$dst" rev-parse HEAD
+# The daemon the config points at is <clone>/target/..., so Cargo's outputs go there whatever
+# CARGO_TARGET_DIR or a Cargo configuration specifies.
+cargo build --locked --release --target-dir "$dst/target" -p daemon \
+    --example direct_host_fixture --bin eidnara-host --features direct-host-fixture
+rm -f "$dst/.sim-build-commit"
+git -C "$dst" rev-parse HEAD | tee "$dst/.sim-build-commit"

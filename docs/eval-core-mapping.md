@@ -77,7 +77,7 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `liveness_bounds.turn_deadline_ms` | none | extension | 15 minutes; SIM-L01. |
 | `liveness_bounds.job_deadline_ms` | none | extension | 20 minutes; SIM-L02. |
 | `liveness_bounds.tier_wall_budget_ms` | none | extension | S 2 h, M 10 h, L 30 h, XL 96 h; SIM-L03. |
-| `liveness_bounds.daemon_busy_cpu_fraction` | none | extension | Daemon CPU time per wall second above which the M4 sampler holds the scenario clock (OQ-2), added in revision 3 before any run. |
+| `liveness_bounds.daemon_busy_cpu_fraction` | none | extension | Daemon CPU time per wall second above which the M4 sampler holds the scenario clock (OQ-2), added in revision 3 before any run. `eval-analysis-family/v3`, beside the wall-clock liveness bounds of the parent row. |
 | `grading` | none | extension | The M5 probe grading rules, added in revision 4 before any run. eval-core grades with deterministic oracles and has no probe rules; `eval-manifest/v10` would add them. |
 | `grading.first_attempt_only` | none | extension | A grade reads the first probe turn's artefacts only (SIM-P41). |
 | `grading.lookup_match` | none | extension | P8 matches the value as a whole word, the v1 A/B rule. |
@@ -92,6 +92,33 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `grading.judge.calibration_min_pairs` | `HUMAN_SAMPLE_MIN_PAIRS` | mapped | The calibration floor of 20 pairs. |
 | `grading.judge.human_sample_percent` | `HUMAN_SAMPLE_FLOOR_PERCENT` | mapped | The 10% human sample. |
 | `grading.judge.arm_identification_ceiling_percent` | `ARM_IDENTIFICATION_CEILING_PERCENT` | mapped | The 60% arm-identification ceiling, correct or inverted. |
+| `oracles` | none | extension | Failure-class oracle thresholds, added in revision 5 before any tier run, after the `grade-2` smoke run had shown the eidnara arm at 1.53 times the host arm's tokens; eval-core's oracles run over deterministic traces, and `eval-manifest/v10` would add live-log thresholds. |
+| `oracles.hang_quiet_ms` | none | extension | F4: five minutes of quiet after a completed model call, with no tool run, model call, or turn end, is a hang (SIM-P39). |
+| `oracles.cost_ratio_max` | none | extension | F6: an arm whose tokens exceed 1.5 times the host arm's activates the cost oracle. |
+| `user_sim` | none | extension | The simulated user (M6), added in revision 6 before any tier run; eval-core replays recorded traces and has no live user. |
+| `user_sim.model` | none | extension | The user simulator's model, Haiku 5.5 (spec section 3.3). |
+| `user_sim.max_tokens` | none | extension | The output bound on one user-sim reply. |
+| `user_sim.rates` | none | extension | Targets for pushback and interrupt per user turn and redirect and abandon per session; pushback and interrupt are the SWE-chat paper's 45.7% and 4.5%, and redirect and abandon sit inside the ticket's 5 to 8% and 5 to 7%. |
+| `user_sim.bands` | none | extension | Tolerance bands a realised rate must fall inside (SIM-P10); a run outside one is flagged. |
+| `user_sim.rates.pushback_per_turn` | none | extension | Target for pushback per user turn, SWE-chat's 45.7%. |
+| `user_sim.rates.interrupt_per_turn` | none | extension | Target for hard interrupts per user turn, SWE-chat's 4.5%. |
+| `user_sim.rates.redirect_per_session` | none | extension | Target for sessions with one redirect, inside the ticket's 5 to 8%. |
+| `user_sim.rates.abandon_per_session` | none | extension | Target for sessions the user abandons, inside the ticket's 5 to 7%. |
+| `user_sim.bands.pushback_per_turn` | none | extension | The tolerance band for `pushback_per_turn`. |
+| `user_sim.bands.pushback_per_turn.min` | none | extension | Its lower bound. |
+| `user_sim.bands.pushback_per_turn.max` | none | extension | Its upper bound. |
+| `user_sim.bands.interrupt_per_turn` | none | extension | The tolerance band for `interrupt_per_turn`. |
+| `user_sim.bands.interrupt_per_turn.min` | none | extension | Its lower bound. |
+| `user_sim.bands.interrupt_per_turn.max` | none | extension | Its upper bound. |
+| `user_sim.bands.redirect_per_session` | none | extension | The tolerance band for `redirect_per_session`. |
+| `user_sim.bands.redirect_per_session.min` | none | extension | Its lower bound. |
+| `user_sim.bands.redirect_per_session.max` | none | extension | Its upper bound. |
+| `user_sim.bands.abandon_per_session` | none | extension | The tolerance band for `abandon_per_session`. |
+| `user_sim.bands.abandon_per_session.min` | none | extension | Its lower bound. |
+| `user_sim.bands.abandon_per_session.max` | none | extension | Its upper bound. |
+| `user_sim.interrupt_after_ms` | none | extension | The range a hard interrupt's delay after the prompt is drawn from. |
+| `user_sim.interrupt_after_ms.min` | none | extension | The shortest interrupt delay. |
+| `user_sim.interrupt_after_ms.max` | none | extension | The longest interrupt delay. |
 | `bootstrap` | `AnalysisFamily.bootstrap_*` | mapped | |
 | `bootstrap.replicates` | `bootstrap_replicates` | mapped | 2,000 lies inside 40 to 10,000. |
 | `bootstrap.seed` | `bootstrap_seed` | mapped | |
@@ -165,3 +192,22 @@ The live-slice report (`eval-live-slice/v1`) and the residual report
 (`eval-residual-report/v1`) are consumed unchanged by the P7 judge path in M5;
 their settings need the host and divergence additions noted above in
 `eval-live-settings/v2`.
+
+## Scenario fault schedule
+
+The scenario file's `faults` list (`src/scenario/faults.ts`, `FaultEpisode`)
+is a scenario-local schedule: fault type, strategy, compiler-chosen trigger,
+parameters, and the seam-table entry for the proxy sink, scheduler, or clock
+layer the harness injects through. eval-core's `FaultEpisode` is the Suite C
+record `(trigger, scope, action, heal)` over the daemon's own store seams,
+whose `FaultAction` is a closed set of in-process hooks. The two share the
+type name and a `trigger` field name; the scenario trigger is a compiler-owned
+event (session start, Nth user turn, first summarizer call of a session) and
+eval-core's is a drive step, so a conversion translates or rejects the shape,
+and the remaining fields have no counterpart. The harness seams have no
+eval-core counterpart; the
+runner (M4) journals each scenario episode with its trigger event, both
+times, and fired and observed evidence (SIM-P31), and the report (M7) reads
+that journal. An eval-core counterpart would need a `FaultAction` family for
+harness seams and a scope outside `StoreFamily` in the Suite C fault contract
+(`eval-suite-c-fault-report/v3`); no extension is made here.
