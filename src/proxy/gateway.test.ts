@@ -555,6 +555,28 @@ describe("fault composition at the proxy sink", () => {
 });
 
 describe("witnesses", () => {
+    test("each arm starts an intermittent fault from the same seeded draws and keeps its own witness", () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_5xx",
+            strategy: "intermittent",
+            params: { count: 40, probability: 0.5 },
+        };
+        const draws = (injector: FaultInjector, arm: string) => {
+            injector.reset();
+            injector.arm("f", arm);
+            return Array.from(
+                { length: 20 },
+                (_, i) => injector.take("agent", i, performance.now(), arm) !== null,
+            );
+        };
+        const injector = new FaultInjector([fault], new Rng(7), 1_000);
+        const first = draws(injector, "host");
+        const second = draws(injector, "host~aa");
+        expect(second).toEqual(first);
+        expect(injector.report().map((w) => w.arm)).toEqual(["host", "host~aa"]);
+    });
+
     test("stop waits for an aborted in-flight handler to write its record", async () => {
         const blocking: Upstream = {
             async converse(_m, _b, _s, signal) {

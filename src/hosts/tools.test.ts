@@ -791,6 +791,29 @@ test("an OpenCode turn whose deadline is spent before the prompt sends nothing",
     expect(prompted).toBe(0);
 });
 
+test("an OpenCode turn gets what the pre-prompt listing left of the deadline, less the post-turn reserve", async () => {
+    const host = opencodeHost({
+        session: {
+            messages: () => Bun.sleep(300).then(() => ({ data: [] })),
+            prompt: async () => ({ data: { info: {} } }),
+            abort: async () => ({ data: true }),
+        },
+    });
+    const budgets: number[] = [];
+    Object.assign(host as unknown as Record<string, unknown>, {
+        turn: async (_text: string, timeoutMs: number) => {
+            budgets.push(timeoutMs);
+            return { ok: true, text: "", interrupted: false };
+        },
+        logTurnTools: async () => [],
+    });
+    await host.prompt("go", 1_200);
+    // 1 200 ms deadline, a 300 ms listing, and a 300 ms reserve leave the turn at most 600 ms.
+    expect(budgets).toHaveLength(1);
+    expect(budgets[0] as number).toBeGreaterThan(400);
+    expect(budgets[0] as number).toBeLessThanOrEqual(600);
+});
+
 test("an OpenCode prompt the server rejected is undelivered", async () => {
     const host = opencodeHost({
         session: {

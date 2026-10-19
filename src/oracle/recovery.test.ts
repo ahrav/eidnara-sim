@@ -395,6 +395,10 @@ describe("recovery oracles", () => {
             ["k", null, ["skipped: arm runs no daemon"]],
             ["z", true, []],
         ]);
+        // The host's A/A control runs no daemon either.
+        const control = arm(journal.map((e) => ({ ...e, arm: "host~aa" }) as Entry));
+        control.arm = "host~aa";
+        expect(recoveries(run([control])).map((r) => r.recovered)).toEqual([null, true]);
     });
 
     test("the store check reports integrity and overlapping history segments", () => {

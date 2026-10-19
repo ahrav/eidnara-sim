@@ -5,7 +5,7 @@ import { requireOrder } from "../src/hosts/arms";
 import { sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { readJournal, requireComplete } from "../src/run/journal";
-import { CallIndex, referenceArm } from "../src/run/run";
+import { CallIndex, referenceArm, requireAdmittedOrder } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
 import { scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -84,6 +84,17 @@ requireOrder(
     loadPrereg(manifest.tier).arms.run,
     loadPrereg(manifest.tier).aa_controls?.pairs ?? [],
 );
+// The order is one the runner schedules for the tier and seed, so the reference arm is the
+// seed's.
+try {
+    requireAdmittedOrder(
+        { tier: manifest.tier, seed: manifest.seed as number },
+        manifest.order as string[],
+    );
+} catch (caught) {
+    console.error(String(caught instanceof Error ? caught.message : caught));
+    process.exit(2);
+}
 const reference = referenceArm(manifest.order);
 const turns = records.filter((r): r is TurnRecord => r.kind === "turn");
 const script = new Map(
@@ -332,6 +343,37 @@ const missingDivergences = (manifest.order as string[])
             return valid ? [] : [`${arm} ${first.event}`];
         });
     });
+// With replay sources, a session's first turn whose context no source recorded for its event
+// has a recorded divergence row ahead of it, whatever its digest; without that row a control
+// that reused the base's fresh tape reply would pass as replayed.
+const missingRecordedDivergences = (manifest.order as string[]).flatMap((arm) => {
+    const sessions = new Map<string, TurnRecord[]>();
+    for (const t of turns.filter((r) => r.arm === arm)) {
+        sessions.set(t.session, [...(sessions.get(t.session) ?? []), t]);
+    }
+    return [...sessions.values()].flatMap((rows) => {
+        const first = rows
+            .sort((x, y) => x.index - y.index)
+            .find((t) => {
+                const held = sourceTurns.get(`${arm}/${t.event}`) ?? [];
+                return held.length > 0 && !held.some((x) => x.context_sha256 === t.context_sha256);
+            });
+        if (!first) return [];
+        const row = records.find(
+            (r) =>
+                r.kind === "divergedAt" &&
+                r.arm === arm &&
+                r.session === first.session &&
+                r.against === "recorded",
+        );
+        const valid =
+            row !== undefined &&
+            row.index <= first.index &&
+            !invalidDivergences.includes(`${arm} ${row.event}`);
+        return valid ? [] : [`${arm} ${first.event}`];
+    });
+});
+const allMissingDivergences = [...new Set([...missingDivergences, ...missingRecordedDivergences])];
 // Every label is the one the seeded plan assigned; the plan's `task` may read `clarify` at a
 // filler the agent ended with a question.
 const scriptedTurns = scenario.events
@@ -456,7 +498,7 @@ const report = {
     source_label_mismatch: sourceLabelMismatch,
     live_before_divergence: liveBeforeDivergence,
     tape_missing: tapeMissing,
-    missing_divergences: missingDivergences,
+    missing_divergences: allMissingDivergences,
     plan_label_mismatch: planLabelMismatch,
     unwitnessed_clarify: unwitnessedClarify,
     unknown_arms: unknownArms,
@@ -500,7 +542,7 @@ const failed =
     sourceLabelMismatch.length +
     liveBeforeDivergence.length +
     tapeMissing.length +
-    missingDivergences.length +
+    allMissingDivergences.length +
     planLabelMismatch.length +
     unwitnessedClarify.length +
     unknownArms.length +
