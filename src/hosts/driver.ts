@@ -10,6 +10,7 @@ import {
     openSync,
     readdirSync,
     readFileSync,
+    readSync,
     realpathSync,
     renameSync,
     rmSync,
@@ -60,6 +61,8 @@ interface ArmState {
     failed: string | null;
     /** The latest model switch: its fault and the index it left, so an unobserved one rolls back. */
     switched?: { fault: string; from: number } | null;
+    /** Daemon restarts whose store check the journal may still lack, each with its plugin-log mark. */
+    store_faults: Record<string, number>;
 }
 
 export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm"> {
@@ -146,6 +149,10 @@ const BETWEEN_SESSIONS = new Set([
     "host_upgrade",
     "two_hosts_one_daemon",
 ]);
+/** A transform pass the daemon answered, as the plugin logs it. */
+const SERVED_PASS = /rust pass: .*served_from=transform/;
+/** How much of the plugin log one pass check reads at a time. */
+const LOG_CHUNK_BYTES = 64 * 1024;
 
 const SUPPORTED = new Set([
     "daemon_sigkill_mid_fold",
@@ -213,8 +220,17 @@ export class HostDriver implements ArmDriver {
     private readonly snapshots: SnapshotRecorder;
     private upgraded = false;
     private second: SimHost | null = null;
-    /** Daemon restarts that the end of the current or next turn owes a store check. */
-    private storeFaults: string[] = [];
+    /**
+     * Daemon restarts owed a store check, each with the plugin log's length between the kill and
+     * the replacement's start. The check runs at the end of the first turn whose log, past that
+     * mark, shows a pass the daemon served (`served_from=transform`): the wire contract's first
+     * pass after the crash.
+     */
+    private storeFaults = new Map<string, number>();
+    /** Checks taken and returned, kept in the recorded state until the next event confirms the journal has them. */
+    private settledFaults = new Map<string, number>();
+    /** A daemon restart in progress; the turn it interrupts ends after it and fails with it. */
+    private restarting: Promise<unknown> = Promise.resolve();
 
     constructor(private readonly o: DriverOptions) {
         this.snapshots = new SnapshotRecorder(
@@ -434,6 +450,7 @@ export class HostDriver implements ArmDriver {
             refilling: this.refilling,
             git: this.gitRun,
             failed: this.failed,
+            store_faults: Object.fromEntries([...this.settledFaults, ...this.storeFaults]),
         };
         mkdirSync(this.armDir, { recursive: true });
         writeWhole(this.stateFile, JSON.stringify(state));
@@ -591,6 +608,7 @@ export class HostDriver implements ArmDriver {
         this.upgraded = state.upgraded ?? false;
         this.switched = undone ? null : (state.switched ?? null);
         this.live = true;
+        this.storeFaults = new Map(Object.entries(state.store_faults ?? {}));
         const checked = join(this.armDir, "transcripts.json");
         if (existsSync(checked)) {
             const { missing } = this.readRecord<{ missing: string[] }>(checked);
@@ -729,6 +747,10 @@ export class HostDriver implements ArmDriver {
 
     async event(e: ScenarioEvent): Promise<TurnOutcome> {
         const host = this.requireHost();
+        // The scheduler journals the previous event's store checks before it sends the next event,
+        // so the recorded obligations drop them here, not when the checks are returned.
+        this.settledFaults.clear();
+        this.recordState();
         if (e.kind === "session_start") {
             try {
                 await this.openSession(e, host);
@@ -750,7 +772,10 @@ export class HostDriver implements ArmDriver {
             this.recordState();
             this.checkDaemon(e);
             if (!this.transcriptsChecked) this.checkTranscripts(host);
-            return {};
+            // The session's background passes have settled by now, so a check they earned runs
+            // here, after the state write, so the recorded obligation outlives the journal append.
+            const stores = this.owedStores();
+            return stores ? { stores } : {};
         }
         if (e.kind === "apply_diff") {
             if (this.sessionProject !== null) {
@@ -775,6 +800,8 @@ export class HostDriver implements ArmDriver {
             }
         }
         const interruptMs = typeof e.interrupt_ms === "number" ? e.interrupt_ms : undefined;
+        // A pass served between turns earned its check before this turn's own passes.
+        const owedBefore = this.owedStores();
         // One turn reports a gone daemon once, however many checks find it gone.
         let reported = false;
         const check = () => {
@@ -795,12 +822,8 @@ export class HostDriver implements ArmDriver {
         const tools = host.drainTools();
         this.turn = null;
         const outcome: TurnOutcome = result.interrupted ? { user: { interrupted: true } } : {};
+        if (owedBefore) outcome.stores = owedBefore;
         if (result.error) outcome.failed = result.error;
-        if (this.storeFaults.length > 0 && this.daemon) {
-            const store = checkStore(this.storeDb);
-            outcome.stores = this.storeFaults.map((fault) => ({ fault, store }));
-            this.storeFaults = [];
-        }
         if (e.probe && before === null) {
             const reason = `snapshot before the turn: ${beforeFailed}`;
             outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
@@ -834,6 +857,10 @@ export class HostDriver implements ArmDriver {
             }
             check();
         }
+        // After the turn and, for a probe, its settled background jobs: the check this turn earned.
+        await this.restarting;
+        const owedAfter = this.owedStores();
+        if (owedAfter) outcome.stores = [...(outcome.stores ?? []), ...owedAfter];
         return outcome;
     }
 
@@ -1034,22 +1061,11 @@ export class HostDriver implements ArmDriver {
             if (!this.daemonAlive()) {
                 throw new HarnessFailure(`${f.type} ${f.id}: daemon already gone before the fault`);
             }
-            const before = this.daemonPid();
             this.checkDaemonDirs();
-            this.o.sampleDaemon?.();
-            await this.daemon.restart();
-            this.noteDaemon();
-            this.storeFaults.push(f.id);
-            this.recordState();
-            this.o.sampleDaemon?.();
-            const after = this.daemonPid();
-            return {
-                signal: "SIGKILL",
-                pid_before: before,
-                pid_after: after,
-                restarted_by: "harness",
-                store: checkStore(this.storeDb),
-            };
+            const restart = this.restartDaemon(this.daemon, f.id);
+            restart.catch(() => undefined);
+            this.restarting = restart;
+            return restart;
         }
         if (f.type === "store_full") {
             const evidence = this.fillStore();
@@ -1152,6 +1168,83 @@ export class HostDriver implements ArmDriver {
         return join(this.dataDir, "eidnara", "context", "store.db");
     }
 
+    private async restartDaemon(
+        daemon: DaemonStack,
+        fault: string,
+    ): Promise<Record<string, unknown>> {
+        const before = this.daemonPid();
+        // An earlier restart's check that a served pass has earned is taken from this daemon.
+        const stores = this.owedStores();
+        this.o.sampleDaemon?.();
+        await daemon.crash();
+        const store = checkStore(this.storeDb);
+        // Marked before the start, so a pass the replacement serves while its start settles counts.
+        const mark = this.pluginLogLength();
+        await daemon.restart();
+        this.noteDaemon();
+        this.storeFaults.set(fault, mark);
+        this.recordState();
+        this.o.sampleDaemon?.();
+        return {
+            signal: "SIGKILL",
+            pid_before: before,
+            pid_after: this.daemonPid(),
+            restarted_by: "harness",
+            store,
+            ...(stores ? { stores } : {}),
+        };
+    }
+
+    /** The store checks whose restart the plugin log now shows a served pass after, if any. */
+    private owedStores(): TurnOutcome["stores"] {
+        const passed = [...this.storeFaults].filter(([, mark]) => this.passedSince(mark));
+        if (passed.length === 0 || !this.daemon) return undefined;
+        const store = checkStore(this.storeDb);
+        for (const [fault, mark] of passed) {
+            this.storeFaults.delete(fault);
+            this.settledFaults.set(fault, mark);
+        }
+        return passed.map(([fault]) => ({ fault, store }));
+    }
+
+    private get pluginLog(): string {
+        return join(this.o.armRoot, "eidnara.log");
+    }
+
+    private pluginLogLength(): number {
+        return existsSync(this.pluginLog) ? statSync(this.pluginLog).size : 0;
+    }
+
+    /**
+     * Whether the plugin log, past `mark`, records a pass the daemon served. The suffix is read
+     * in bounded chunks; the unfinished last line of one chunk heads the next, so a record split
+     * across chunks is still read whole, and a line longer than a chunk is dropped unmatched.
+     */
+    private passedSince(mark: number): boolean {
+        if (!existsSync(this.pluginLog)) return false;
+        const fd = openSync(this.pluginLog, "r");
+        try {
+            const chunk = Buffer.alloc(LOG_CHUNK_BYTES);
+            let carry = "";
+            let position = mark;
+            for (;;) {
+                const n = readSync(fd, chunk, 0, chunk.length, position);
+                if (n === 0) return SERVED_PASS.test(carry);
+                position += n;
+                const text = carry + chunk.subarray(0, n).toString("utf8");
+                const cut = text.lastIndexOf("\n");
+                if (cut < 0) {
+                    carry = text.length > LOG_CHUNK_BYTES ? "" : text;
+                    continue;
+                }
+                if (SERVED_PASS.test(text.slice(0, cut))) return true;
+                carry = text.slice(cut + 1);
+            }
+        } finally {
+            closeSync(fd);
+        }
+    }
+
     private mountStore(fresh: boolean): void {
         mkdirSync(this.storeRoot, { recursive: true, mode: 0o700 });
         if (!fresh && !existsSync(this.image)) {
@@ -1225,10 +1318,15 @@ export class HostDriver implements ArmDriver {
         this.removeBallast();
     }
 
-    /** A failed finish is recorded, so a resume of an otherwise exhausted arm cannot heal it. */
-    async finish(): Promise<void> {
+    /**
+     * Settles the store checks the arm still owes, then stops everything it runs. A failed finish
+     * is recorded, so a resume of an otherwise exhausted arm cannot heal it.
+     */
+    async finish(): Promise<TurnOutcome> {
         try {
+            const stores = this.owedStores();
             await this.stop(true);
+            return stores ? { stores } : {};
         } catch (caught) {
             this.failed = String(caught);
             try {
@@ -1286,6 +1384,15 @@ export class HostDriver implements ArmDriver {
             this.unmount(this.dataDir);
         } catch (caught) {
             failure ??= caught;
+        }
+        // At the run's end a fill a session_end never cleared comes off, whole, before the mount
+        // does; an aborting stop keeps the recorded ballast so a resume refills it.
+        if (checkFinalStore) {
+            try {
+                this.clearStoreFill();
+            } catch (caught) {
+                failure ??= caught;
+            }
         }
         if (this.storeMount) {
             try {

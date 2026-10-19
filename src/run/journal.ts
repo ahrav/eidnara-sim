@@ -34,6 +34,7 @@ export type EntryKind =
     | "RegisterJob"
     | "EndJob"
     | "AdvanceClock"
+    | "ClockOffset"
     | "Event"
     | "FaultFired"
     | "FaultObserved"
@@ -67,6 +68,7 @@ const KINDS: ReadonlySet<string> = new Set<EntryKind>([
     "RegisterJob",
     "EndJob",
     "AdvanceClock",
+    "ClockOffset",
     "Event",
     "FaultFired",
     "FaultObserved",

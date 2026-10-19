@@ -89,6 +89,16 @@ test("oracleRun writes each run's activations, ledgers, and digest, and reports 
     expect(report.recoveries).toEqual([]);
 });
 
+test("the recovery rows the command prints come from the leased pass, tagged with their run", () => {
+    const root = mkdtempSync(join(tmpdir(), "sim-oracle-run-"));
+    const digest = preregistrationHash(loadPrereg("S"));
+    const dir = completeRun(root, "S", digest);
+    const { oracles, recoveries } = oracleRun([dir]);
+    const written = JSON.parse(readFileSync(join(dir, "oracles.json"), "utf8"));
+    expect(oracles.S?.F1.activations).toBe(1);
+    expect(recoveries).toEqual(written.recoveries.map((r: object) => ({ run: dir, ...r })));
+});
+
 test("oracleRun refuses a run whose manifest names an unknown tier", () => {
     const root = mkdtempSync(join(tmpdir(), "sim-oracle-run-"));
     const dir = completeRun(root, "XXL", "x");

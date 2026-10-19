@@ -13,7 +13,8 @@ export interface Activation {
     component?: string;
 }
 
-const OVERFLOW =
+/** A model call the context limit refused, in every wording the gateways use. */
+export const OVERFLOW =
     /prompt is too long|ContextOverflow|input is too long|too many total text bytes|exceeds? the (model's )?(maximum )?context (window|length)/i;
 const ARRAY_SHAPE = [
     /must alternate between user and assistant/i,
@@ -46,6 +47,7 @@ export const INTERNAL_TEXT = [
     /^\s*\[eidnara\] /m,
     /\b(row_version|served_from|invocation_bytes|emergency_wait)\b/,
     /\bdecision=(SOFT|HARD)/,
+    /§\d+§/,
 ];
 const NO_HOST_COMPACTION = new Set(["eidnara", "eidnara-cf"]);
 /** A proxy record lands after the host's own tool event can, so a tool start this close counts. */

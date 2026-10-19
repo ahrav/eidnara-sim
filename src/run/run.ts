@@ -1836,14 +1836,19 @@ async function runArms(
             reap: () => tracked(() => driver.reap()),
             finish: () =>
                 tracked(async () => {
+                    // The sampler's stop can fail the run; the arm still finishes and its checks land.
+                    let stopped: unknown = null;
                     try {
                         if (driver.daemon && driver.daemonPid() === null) {
                             scheduler.daemonExited({ after: "last event" });
                         }
                         sampler.stop();
-                    } finally {
-                        await driver.finish();
+                    } catch (caught) {
+                        stopped = caught;
                     }
+                    const last = await driver.finish();
+                    if (stopped) throw stopped;
+                    return last;
                 }),
         };
     }

@@ -97,12 +97,14 @@ entries of different arms are not ordered by scenario time.
 | `StartRun`, `ResumeRun`, `EndRun` | The run starts (with the arm order and the canonical-JSON SHA-256 of the events and faults), a restarted harness takes it up (with the same), and it ends; these carry `arm` null and `scenario_ms` 0 |
 | `StartArm`, `EndArm` | An arm starts, after its driver's reset, and finishes |
 | `AdvanceClock` | The clock jumps; carries `from_ms`, an empty `busy` list, and the next event id or the laptop-sleep fault |
+| `ClockOffset` | The arm starts or resumes, or a jump was published, after its `AdvanceClock`; carries `offset_s`, the whole-second offset the arm's processes read from then on, and `offset_wall_ms` and `offset_settled_ms`, the wall instants before and after the rename that put it in effect (`docs/time.md`) |
 | `BeginTurn` | A user turn is delivered |
 | `EndTurn` | The turn is answered; a probe turn carries `probe` and `state` (`completed`, or `failed` whenever the driver returned `failed`, even empty) |
 | `RegisterJob`, `EndJob` | A background job starts and ends; on resume, a job in flight at the kill gets an `EndJob` with outcome `failed(interrupted)` |
 | `FaultFired`, `FaultObserved` | A scheduled fault fires, and the driver returns its evidence |
 | `ItemState` | On resume, an in-flight turn or a scheduler fault without evidence is `failed(interrupted)`, as is a kill the fatal channel cut; the daemon exits; a scheduler fault the driver could not carry out, or an event whose delivery failed, is `failed` with `fatal: true`, as is a daemon exit outside an outage window; a sleep or summarizer fault that never fired is `missed` |
 | `Event` | A scheduled event is complete, with its outcome |
+| `StoreChecked` | A store check a daemon restart owed is settled, once per restart; carries the fault id, the check, and the turn or session end that settled it, or `event: null` at a later fault or the finish (`docs/oracles.md`) |
 
 ## Clock
 
@@ -279,7 +281,10 @@ user-turn trigger fires while its event is next due, a summarizer-call
 trigger while its session is open), a sleep's `FaultFired` without its tagged
 jump, a missed sleep after its jump, a missed record for anything but a
 laptop sleep at its place or a summarizer-call fault at its session's end, a
-fault-tagged jump for anything but a laptop sleep at its place, an `Event`
+fault-tagged jump for anything but a laptop sleep at its place, a
+`StoreChecked` repeated or for anything but a fired daemon restart, or placed
+anywhere but inside or after the turn it names, at the non-turn event being
+delivered, or unattached (`event: null`), an `Event`
 that passes a trigger (a session's end, for a summarizer-call fault) whose
 fault neither fired nor was missed, or a daemon exit marked expected
 outside a replayed outage window, is refused as corrupt, complete or not,
@@ -308,7 +313,8 @@ without `EndArm`:
   beyond its id's `EndJob` count;
 - marks every fired fault, and every laptop sleep journaled `missed`, as
   handled, journals `FaultFired` for a fault-tagged `AdvanceClock` that lacks
-  it, arms again a persistent provider fault
+  it and `FaultObserved` (the jump's `clock_advanced_ms`) for a sleep with a
+  jump and no observation, arms again a persistent provider fault
   whose session has not ended and a one-shot provider fault whose turn has not
   begun (a `session_start` trigger's turn is its session's first), and journals `ItemState failed(interrupted)` for a scheduler fault
   with no `FaultObserved`. A `single`, `burst`, or `intermittent` fault whose

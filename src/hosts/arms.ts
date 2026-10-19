@@ -183,8 +183,8 @@ export class DaemonStack {
 
     constructor(private readonly ctx: DaemonContext) {}
 
-    pid(): number | null {
-        return this.stack?.child?.pid ?? null;
+    pid(stack: Untyped = this.stack): number | null {
+        return stack?.child?.pid ?? null;
     }
 
     /** The harness runtime the daemon executes lives beside the arm, outside every path the host can write. */
@@ -282,9 +282,22 @@ export class DaemonStack {
         child?.stderr?.on("data", sink);
     }
 
-    /** The old generation's last bytes stream while it is crashed; the new one is attached once started. */
-    async restart(): Promise<void> {
+    /** Set between `crash` and the `restart` that starts the replacement. */
+    private crashed = false;
+
+    /**
+     * Kills the daemon by SIGKILL; the store stays as the kill left it until `restart` starts
+     * the replacement. The dead generation's last bytes stream to the log while it dies.
+     */
+    async crash(): Promise<void> {
         await this.stack.crashHost();
+        this.crashed = true;
+    }
+
+    /** Starts the replacement daemon, killing the current one first unless `crash` already did. */
+    async restart(): Promise<void> {
+        if (!this.crashed) await this.stack.crashHost();
+        this.crashed = false;
         // A start that fails still captured the new generation's output; it reaches the log too.
         try {
             await this.stack.startHost();

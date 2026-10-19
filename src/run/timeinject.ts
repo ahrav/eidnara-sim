@@ -9,7 +9,7 @@ import {
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { writeAtomic } from "./atomic";
+import { writeExclusive } from "./atomic";
 
 export const FAKETIME_VERSION = "0.9.10";
 export const FAKETIME_SHA256 = "729ad33b9c750a50d9c68e97b90499680a74afd1568d859c574c0fe56fe7947f";
@@ -67,11 +67,36 @@ export function faketimeEnv(file: string): Record<string, string> {
     };
 }
 
-/** The offset targets `baseMs + scenarioMs` at wall time `wallMs`, with up to 500 ms of rounding error. */
-export function writeOffset(file: string, baseMs: number, scenarioMs: number, wallMs = Date.now()) {
+/**
+ * What an offset write left for the journal: the whole seconds and the wall bounds of the rename
+ * that put them in effect. A process reads the new offset from no earlier than `offset_wall_ms`
+ * and the old one from no later than `offset_settled_ms`.
+ */
+export interface OffsetWrite {
+    offset_s: number;
+    offset_wall_ms: number;
+    offset_settled_ms: number;
+}
+
+/**
+ * The offset targets `baseMs + scenarioMs` at wall time `wallMs`, with up to 500 ms of rounding
+ * error. The returned record names the whole seconds the processes read from the rename on and
+ * the wall instants around that rename, so the journal can place log stamps by the offset in
+ * effect, placing a stamp from inside the rename through both offsets.
+ */
+export function writeOffset(
+    file: string,
+    baseMs: number,
+    scenarioMs: number,
+    wallMs = Date.now(),
+): OffsetWrite {
     const seconds = Math.round((baseMs + scenarioMs - wallMs) / 1000);
     mkdirSync(dirname(file), { recursive: true });
-    writeAtomic(file, `${seconds >= 0 ? "+" : ""}${seconds}\n`);
+    const staged = `${file}.${process.pid}`;
+    writeExclusive(staged, `${seconds >= 0 ? "+" : ""}${seconds}\n`);
+    const before = Date.now();
+    renameSync(staged, file);
+    return { offset_s: seconds, offset_wall_ms: before, offset_settled_ms: Date.now() };
 }
 
 export function readOffsetSeconds(file: string): number {

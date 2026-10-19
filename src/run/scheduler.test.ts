@@ -1308,7 +1308,11 @@ describe("Scheduler", () => {
         expect(about).toEqual([
             ["AdvanceClock", undefined],
             ["FaultFired", undefined],
+            ["FaultObserved", undefined],
         ]);
+        // The sleep's evidence is the jump on disk.
+        const observed = resumed.entries.find((e) => e.kind === "FaultObserved");
+        expect(observed?.evidence).toEqual({ clock_advanced_ms: 500 });
     });
 
     test("an arm with EndArm before its events completed is refused on resume", async () => {
@@ -4985,6 +4989,234 @@ describe("fault delivery", () => {
     });
 });
 
+describe("fault schedule validity", () => {
+    test("duplicate fault ids and non-positive sleep durations are refused before the run starts", () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const base = {
+            events: fixtureEvents(1),
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        };
+        const twice = episode("dup", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        expect(() => new Scheduler({ ...base, faults: [twice, { ...twice }] })).toThrow(
+            "fault id dup is scheduled twice",
+        );
+        const still = {
+            ...episode("f-sleep", "laptop_sleep", { kind: "session_start", session: "s-0000" }),
+            params: { duration_ms: 0 },
+        };
+        expect(() => new Scheduler({ ...base, faults: [still] })).toThrow(
+            "laptop_sleep f-sleep needs a positive duration_ms",
+        );
+        const text = { ...still, params: { duration_ms: "1000" as unknown as number } };
+        expect(() => new Scheduler({ ...base, faults: [text] })).toThrow(
+            "laptop_sleep f-sleep needs a positive duration_ms",
+        );
+        for (const duration of [1.5, Number.MAX_SAFE_INTEGER + 2]) {
+            const odd = { ...still, params: { duration_ms: duration } };
+            expect(() => new Scheduler({ ...base, faults: [odd] })).toThrow(
+                "laptop_sleep f-sleep needs a positive duration_ms",
+            );
+        }
+        const numbered = { ...twice, id: 1 as unknown as string };
+        expect(() => new Scheduler({ ...base, faults: [numbered] })).toThrow(
+            "fault id must be a non-empty string",
+        );
+        expect(() => new Scheduler({ ...base, faults: [{ ...twice, id: "" }] })).toThrow(
+            "fault id must be a non-empty string",
+        );
+    });
+});
+
+describe("two sleeps on one session", () => {
+    test("a session's idle gap carries one sleep, so a second sleep on it is refused", () => {
+        const sleeps = [3_600_000, 7_200_000].map((duration_ms, i) => ({
+            ...episode(`f-sleep-${i}`, "laptop_sleep", {
+                kind: "session_start",
+                session: "s-0000",
+            }),
+            params: { duration_ms },
+        }));
+        expect(
+            () =>
+                new Scheduler({
+                    events: fixtureEvents(1),
+                    faults: sleeps,
+                    journal: new Journal(join(dir(), "j.jsonl")),
+                    settleMs: 0,
+                    order: ["a"],
+                    drivers: { a: fakeDriver([]) },
+                }),
+        ).toThrow(
+            "laptop_sleep f-sleep-1 targets session s-0000, which f-sleep-0 already sleeps before",
+        );
+    });
+});
+
+describe("store checks already journaled", () => {
+    test("a resumed arm's repeated check for a fault already on record is not journaled again", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const store = { integrity: "ok", segments: 0, overlaps: [], ranges: [] };
+        const events = fixtureEvents(1);
+        const at = { kind: "session_start", session: "s-0000" } as const;
+        const faults = [episode("r-1", "daemon_restart", at), episode("r-2", "daemon_restart", at)];
+        j.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(events, faults),
+        });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        const layer = SEAMS.daemon_restart.layer;
+        j.append({
+            kind: "FaultFired",
+            arm: "a",
+            scenario_ms: 0,
+            fault: "r-1",
+            type: "daemon_restart",
+            layer,
+        });
+        j.append({
+            kind: "FaultObserved",
+            arm: "a",
+            scenario_ms: 0,
+            fault: "r-1",
+            type: "daemon_restart",
+            evidence: {},
+        });
+        j.append({
+            kind: "StoreChecked",
+            arm: "a",
+            scenario_ms: 0,
+            event: null,
+            fault: "r-1",
+            store,
+        });
+        j.close();
+        const resumed = new Journal(path);
+        const driver: ArmDriver = {
+            reset: async () => undefined,
+            event: async (e) =>
+                e.kind === "user_turn"
+                    ? {
+                          stores: [
+                              { fault: "r-1", store },
+                              { fault: "r-2", store },
+                          ],
+                      }
+                    : {},
+            fault: async () => ({}),
+        };
+        await new Scheduler({
+            events,
+            faults,
+            journal: resumed,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        const checks = resumed.entries.filter((e) => e.kind === "StoreChecked");
+        expect(checks.map((e) => e.fault)).toEqual(["r-1", "r-2"]);
+    });
+
+    test("a journal with a repeated or unfired store check is refused on resume", async () => {
+        const store = { integrity: "ok", segments: 0, overlaps: [], ranges: [] };
+        const events = fixtureEvents(1);
+        const at = { kind: "session_start", session: "s-0000" } as const;
+        const faults = [episode("r-1", "daemon_restart", at)];
+        const layer = SEAMS.daemon_restart.layer;
+        const check = { kind: "StoreChecked", arm: "a", scenario_ms: 0, event: null, store };
+        const cases: [Record<string, unknown>[], string][] = [
+            [[{ ...check, fault: "r-1" }], "StoreChecked for r-1 follows no daemon restart"],
+            [
+                [
+                    { kind: "FaultFired", fault: "r-1", type: "daemon_restart", layer },
+                    { ...check, fault: "r-1" },
+                    { ...check, fault: "r-1" },
+                ],
+                "StoreChecked for r-1 repeats",
+            ],
+        ];
+        for (const [body, message] of cases) {
+            const path = join(dir(), "j.jsonl");
+            const j = new Journal(path);
+            j.append({
+                kind: "StartRun",
+                arm: null,
+                scenario_ms: 0,
+                order: ["a"],
+                scenario: scenarioId(events, faults),
+            });
+            j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+            for (const e of body) j.append({ arm: "a", scenario_ms: 0, ...e } as never);
+            j.close();
+            const resumed = new Journal(path);
+            await expect(
+                new Scheduler({
+                    events,
+                    faults,
+                    journal: resumed,
+                    settleMs: 0,
+                    order: ["a"],
+                    drivers: { a: fakeDriver([]) },
+                }).run(),
+            ).rejects.toThrow(message);
+        }
+    });
+});
+
+describe("store checks outside turns", () => {
+    test("store checks a session end or finish settles are journaled with their event", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const store = { integrity: "ok", segments: 0, overlaps: [], ranges: [] };
+        const driver: ArmDriver = {
+            reset: async () => undefined,
+            event: async (e) => {
+                if (e.kind === "session_end") return { stores: [{ fault: "r-1", store }] };
+                if (e.kind === "user_turn") return { stores: [{ fault: "r-0", store }] };
+                return {};
+            },
+            fault: async () => ({ pid_after: 2, stores: [{ fault: "r-9", store }] }),
+            finish: async () => ({ stores: [{ fault: "r-2", store }] }),
+        };
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: [
+                episode("restart", "daemon_restart", { kind: "session_start", session: "s-0000" }),
+            ],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        const checks = j.entries.filter((e) => e.kind === "StoreChecked");
+        expect(checks.map((e) => [e.fault, e.event])).toEqual([
+            ["r-9", null],
+            ["r-0", "e-000001"],
+            ["r-1", "e-999999"],
+            ["r-2", null],
+        ]);
+        // A check a fault settles precedes its FaultObserved, whose evidence carries no stores.
+        const observed = j.entries.find((e) => e.kind === "FaultObserved");
+        expect(observed?.evidence).toEqual({ pid_after: 2 });
+        expect(j.entries.indexOf(checks[0] as Entry)).toBeLessThan(
+            j.entries.indexOf(observed as Entry),
+        );
+        const kinds = j.entries.map((e) => e.kind);
+        // A turn's check precedes its EndTurn, so a kill between the two replays the turn with
+        // the check already on record, and the arm's last check precedes EndArm.
+        expect(kinds.indexOf("StoreChecked")).toBeLessThan(kinds.indexOf("EndTurn"));
+        expect(kinds.lastIndexOf("StoreChecked")).toBeLessThan(kinds.indexOf("EndArm"));
+    });
+});
+
 describe("driver lifecycle hooks", () => {
     test("a resumed arm gets the open session, its open jobs end, and finish precedes EndArm", async () => {
         const path = join(dir(), "j.jsonl");
@@ -5028,6 +5260,7 @@ describe("driver lifecycle hooks", () => {
             finish: async () => {
                 calls.push("finish");
                 finishedAt = second.entries.length;
+                return undefined;
             },
         };
         await new Scheduler({
