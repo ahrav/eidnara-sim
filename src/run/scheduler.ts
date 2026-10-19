@@ -99,6 +99,13 @@ export interface SchedulerOptions {
     jobPollMs?: number;
     /** The longest the busy set may hold the clock before the run stops. */
     idleLimitMs?: number;
+    /**
+     * When true, every event waits for the busy set to empty, so each user turn starts after
+     * all background work. When false (the default), a user turn within an open session starts
+     * at its scheduled scenario time whether or not background work is still running, as a real
+     * user replies at their own pace; session boundaries and other events still wait.
+     */
+    turnsAwaitJobs?: boolean;
     /** The longest a failed arm waits for a fault its driver still runs before finishing. */
     faultDrainMs?: number;
     settleMs?: number;
@@ -532,6 +539,7 @@ export class Scheduler {
         let done = 0;
         let outage: string | null = null;
         let clockMs = 0;
+        let session: string | null = null;
         const scheduled = this.o.faults.filter((f) => f.trigger.kind !== "first_summarizer_call");
         entries.forEach((e, i) => {
             if (e.kind === "StartRun" || e.kind === "ResumeRun" || e.kind === "EndRun") {
@@ -579,6 +587,7 @@ export class Scheduler {
                 done = 0;
                 outage = null;
                 clockMs = 0;
+                session = null;
                 return;
             }
             if (open === null || e.arm !== open) {
@@ -644,6 +653,8 @@ export class Scheduler {
                         );
                     }
                     done++;
+                    if (due.kind === "session_end") session = null;
+                    else if (due.kind !== "apply_diff") session = due.session;
                     for (const f of this.o.faults) {
                         if (done > this.triggerCursor(f)[1] && !fired.has(f.id)) {
                             throw fail(`fault ${f.id} passed its trigger unhandled`, e);
@@ -664,7 +675,8 @@ export class Scheduler {
                         throw fail(`BeginTurn for ${e.event} precedes its schedule`, e);
                     }
                     const working = [...jobs].find(([, n]) => n > 0);
-                    if (working !== undefined) {
+                    const openSession = due.session === session;
+                    if (working !== undefined && (this.o.turnsAwaitJobs || !openSession)) {
                         throw fail(`BeginTurn for ${e.event} while job ${working[0]} is open`, e);
                     }
                     for (const f of scheduled) {
@@ -1300,8 +1312,43 @@ export class Scheduler {
         if (reason) throw new HarnessFailure(`run stopping: ${reason}`);
     }
 
+    /**
+     * A user turn in the session already open waits only for the clock, which runs at wall
+     * speed while background work holds it, to reach the turn's scheduled time, and for a
+     * pending mid-fold kill; background work keeps running into the turn. Every other event
+     * waits for the busy set to empty.
+     */
+    private async awaitDue(e: ScenarioEvent): Promise<void> {
+        const concurrent =
+            !this.o.turnsAwaitJobs && e.kind === "user_turn" && this.session === e.session;
+        if (!concurrent) return this.quiesce();
+        const limitMs = this.o.idleLimitMs ?? Number.POSITIVE_INFINITY;
+        const entered = performance.now();
+        for (;;) {
+            await this.pendingKill;
+            if (this.fatal) throw this.fatal;
+            this.checkStop();
+            const clock = this.clock as Clock;
+            const busy = clock.busyIds();
+            if (busy.length === 0 || clock.now() >= e.scenario_ms) return;
+            if (performance.now() > entered + limitMs) {
+                throw new HarnessFailure(
+                    `busy set held the clock past ${this.o.idleLimitMs} ms: ${busy.join(", ")}`,
+                );
+            }
+            await Bun.sleep(this.o.jobPollMs ?? 50);
+        }
+    }
+
     private async step(driver: ArmDriver, e: ScenarioEvent): Promise<void> {
-        await this.quiesce();
+        await this.awaitDue(e);
+        // A job that registered after the wait leaves the clock busy short of the schedule, so
+        // the wait runs again before the clock may jump.
+        for (;;) {
+            const clock = this.clock as Clock;
+            if (clock.busyIds().length === 0 || clock.now() >= e.scenario_ms) break;
+            await this.awaitDue(e);
+        }
         this.checkStop();
         this.outage = null;
         const clock = this.clock as Clock;
@@ -1309,7 +1356,9 @@ export class Scheduler {
         const arm = this.arm ?? "";
         const fromMs = clock.now();
         const jumped = fromMs < e.scenario_ms;
-        clock.advanceTo(e.scenario_ms, arm, sleep ? { fault: sleep.id } : { next_event: e.id });
+        if (jumped) {
+            clock.advanceTo(e.scenario_ms, arm, sleep ? { fault: sleep.id } : { next_event: e.id });
+        }
         if (e.kind !== "apply_diff") this.session = e.session;
         if (sleep && !jumped) {
             this.log({ kind: "ItemState", fault: sleep.id, state: "missed" });

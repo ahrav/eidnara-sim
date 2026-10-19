@@ -138,10 +138,17 @@ call through it is refused:
 
 1. Wait one settle interval after each answered turn (`settleMs`, 1 s by
    default), so a background job the host starts after its answer registers
-   before the clock moves; then wait until no mid-fold kill is pending and the
-   busy set is empty at the same time, so a kill a job fires during the wait,
-   or a job that registers during a kill, holds the clock and the outage
-   window until it is observed. The driver's `settle` hook (`quiesceJobs`)
+   before the clock moves. A user turn in the session already open then waits
+   only until no mid-fold kill is pending and the scenario clock, which runs at
+   wall speed while background work holds it, reaches the turn's scheduled
+   time; background work still running keeps running into the turn, as a real
+   user replies at their own pace while the host summarizes or captures in the
+   background. Every other event, and every user turn under
+   `turnsAwaitJobs` (`--turns-await-jobs true`, recorded in the manifest),
+   waits until no mid-fold kill is pending and the busy set is empty at the
+   same time, so a kill a job fires during the wait, or a job that registers
+   during a kill, holds the clock and the outage window until it is observed.
+   The clock never jumps while the busy set holds it. The driver's `settle` hook (`quiesceJobs`)
    also waits until no job has started or ended for a further settle interval
    (every job start and end resets the window, so a job that begins and ends
    between two polls counts), so a job that starts another after it ends is
@@ -265,7 +272,8 @@ non-array evidence object, a daemon exit without an object detail, a
 `RegisterJob` or `EndJob` without a non-empty string job, an `Event` that passes a
 session-start or user-turn trigger whose fault neither fired nor was missed,
 a `BeginTurn` for a turn other than the one due, repeated for one turn,
-timestamped before its schedule, while a job is open, before a fault keyed to
+timestamped before its schedule, while a job is open when the turn opens no
+running session or the run sets `turnsAwaitJobs`, before a fault keyed to
 that turn fired, or while such a scheduler fault is unresolved, a second
 `EndTurn` for a turn, an `Event` while a fired scheduler fault is still unobserved and
 unmarked, an interruption marker that closes no open turn
