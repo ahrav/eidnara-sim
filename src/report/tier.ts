@@ -19,19 +19,39 @@ import { costPanel, judgeCost } from "./cost";
 import { falsificationPairs } from "./falsify";
 import { intrusiveness } from "./intrusive";
 import {
+    asymmetric,
     controlArmsOf,
     type GradedRun,
     judgmentKey,
     ordered,
     type RunIdentity,
+    runKey,
     tierInput,
 } from "./observe";
 import type { TierReport } from "./render";
 import { soak, soakByMonth } from "./soak";
 import { propertyWitness } from "./witness";
 
+type VersionRow = { host: string; version: string; path?: string };
+
+/**
+ * `<host>@<version> <path>` for each current host, then `upgrade:<host>@<version> <path>` for
+ * each next one; the path is the probed install, so two artifacts of one version stay apart.
+ */
+export function identityVersions(preflight: {
+    hosts?: VersionRow[];
+    upgrade?: VersionRow[];
+}): string[] {
+    const name = (h: VersionRow) => `${h.host}@${h.version}${h.path ? ` ${h.path}` : ""}`;
+    return [
+        ...(preflight.hosts ?? []).map(name),
+        ...(preflight.upgrade ?? []).map((h) => `upgrade:${name(h)}`),
+    ];
+}
+
 export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
-    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
+    const read = (name: string) => JSON.parse(readFileSync(join(dir, name), "utf8"));
+    const manifest = read("manifest.json") as {
         host: string;
         prereg_sha256: string;
         scenario_hash: string;
@@ -51,14 +71,16 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         | "fault_override"
         | "tapes"
         | "toolchain"
-    >;
+        | "side_model"
+        | "user_sim_model"
+    > & { side_model?: string | null; user_sim_model?: string };
     const current = preregistrationHash(prereg);
     if (manifest.prereg_sha256 !== current) {
         throw new Error(
             `${dir}: ran under pre-registration ${manifest.prereg_sha256}; the report uses ${current}`,
         );
     }
-    const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
+    const scenario = read("scenario.json") as Scenario;
     const { scenario_hash: _, ...body } = scenario;
     const actual = sha256Hex(canonicalJson(body));
     if (actual !== manifest.scenario_hash) {
@@ -73,7 +95,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         const key = `${g.item}/${g.arm}/${g.inputs.join("\n")}`;
         if ((judged.get(key)?.version ?? 0) < g.version) judged.set(key, g);
     }
-    const { eidnara_commit, models, context_limit, events } = manifest;
+    const { eidnara_commit, models, context_limit, events, side_model, user_sim_model } = manifest;
     const witnesses = new Map<string, WitnessReport>();
     const faults = join(dir, "faults.jsonl");
     const lines = readJsonl<WitnessReport[]>(faults);
@@ -115,7 +137,9 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             context_limit,
             events,
             distortions: manifest.preflight?.distortions ?? [],
-            host_versions: (manifest.preflight?.hosts ?? []).map((h) => `${h.host}@${h.version}`),
+            host_versions: identityVersions(manifest.preflight ?? {}),
+            side_model: side_model ?? null,
+            user_sim_model: user_sim_model ?? prereg.user_sim.model,
             scenario_provenance: `${sm.generator_version}/${sm.random_schema_version}/${sm.corpus_inputs_sha256}/${sm.embedding_model}`,
             fault_override:
                 manifest.fault_override == null
@@ -152,12 +176,14 @@ const controlArms = (runs: GradedRun[]) => [...new Set(runs.flatMap(controlArmsO
 export function cusumScale(
     prereg: Preregistration,
     scales: ReadonlyMap<string, { scale: CusumScale | undefined; complete: boolean }>,
+    recorded?: CusumScale,
 ): CusumScale {
     const scale: CusumScale = {};
     for (const rule of prereg.stopping_rule.cusum) {
         const named = /^the (\w+) tier's/.exec(rule.sd_source)?.[1] ?? prereg.tier;
         const source = scales.get(named);
-        if (source?.complete) scale[rule.kind] = source.scale?.[rule.kind];
+        scale[rule.kind] =
+            recorded?.[rule.kind] ?? (source?.complete ? source.scale?.[rule.kind] : undefined);
     }
     return scale;
 }
@@ -200,11 +226,13 @@ export function tierReport(
         reference?: { source: string; continuity: Continuity[] };
         /** The CUSUM scale; the runs' own A/A scale when absent. */
         scale?: CusumScale;
+        /** The paired items per probe type the tier's resizing recorded. */
+        items?: number;
     } = {},
 ): TierReport {
     const runs = ordered(prereg, given);
     const arms = [...new Set(runs.flatMap((g) => g.run.arms.map((a) => a.arm)))];
-    const input = tierInput(prereg, runs);
+    const input = tierInput(prereg, runs, undefined, undefined, o.items);
     input.cusum_sd = o.scale ?? aaScale(prereg, given);
     const falsify: Record<string, { control: number; treatment: number }[]> = {};
     const pairs = new Map<string, [string, string]>();
@@ -284,12 +312,21 @@ export function tierReport(
         witness: propertyWitness(o.catalog ?? "", runs),
         conditions: runs.map(runConditions),
         continuity: continuity(runs),
-        drift: o.reference ? recallDrift(continuity(runs), o.reference.continuity) : null,
+        drift:
+            o.reference && prereg.tier === "XL"
+                ? recallDrift(
+                      continuity(runs),
+                      o.reference.continuity,
+                      runs.flatMap((g) => g.run.arms.map((a) => `${g.host}/${a.arm}`)),
+                  )
+                : null,
         drift_source: o.reference?.source ?? null,
         soak_by_month: perArm
             .filter(({ arm }) => prereg.tier === "XL" && armBase(arm.arm) !== "host")
-            .flatMap(({ g, arm }) => soakByMonth(g.run, arm, "rss")),
-        counterfactual: counterfactual(runs),
+            .flatMap(({ g, arm }) =>
+                soakByMonth(g.run, arm, "rss").map((s) => ({ run: g.run.dir, ...s })),
+            ),
+        counterfactual: counterfactual(runs, undefined, undefined, o.items),
     };
 }
 
@@ -324,17 +361,33 @@ export function counterfactual(
     runs: GradedRun[],
     memory = "eidnara",
     cf = "eidnara-cf",
+    items?: number,
 ): Counterfactual | null {
     const both = runs.filter((g) => [memory, cf].every((a) => g.run.arms.some((x) => x.arm === a)));
     if (both.length === 0) return null;
+    const issue = (p: { id: string; event?: string }) =>
+        Number((p.event ?? p.id).replace(/\D/g, ""));
+    const admitted = new Set<string>();
+    for (const type of CF_TYPES) {
+        const probes = both.flatMap((g) =>
+            g.scenario.probes
+                .filter((p) => p.type === type)
+                .map((p) => ({ key: `${g.run.dir}/${p.id}`, at: issue(p) })),
+        );
+        const kept =
+            items === undefined ? probes : probes.sort((a, b) => a.at - b.at).slice(0, items);
+        for (const p of kept) admitted.add(p.key);
+    }
     const deletions = both.flatMap((g) =>
         (g.run.arms.find((a) => a.arm === cf)?.journal ?? [])
             .filter((e) => e.kind === "CounterfactualDeletion")
             .map((e) => ({
                 run: g.run.dir,
                 probe: String(e.probe),
-                deleted: ((e.deleted as number[] | undefined) ?? []).length,
-                remaining: Number(e.remaining ?? 0),
+                deleted: Array.isArray(e.deleted)
+                    ? e.deleted.filter((id) => Number.isInteger(id)).length
+                    : 0,
+                remaining: typeof e.remaining === "number" ? e.remaining : Number.NaN,
                 ...(e.skipped ? { skipped: String(e.skipped) } : {}),
             })),
     );
@@ -343,11 +396,15 @@ export function counterfactual(
             .filter((d) => !d.skipped && d.deleted > 0 && d.remaining === 0)
             .map((d) => `${d.run}/${d.probe}`),
     );
+    const asym = new Set(asymmetric(both, memory, cf));
     const flipsOver = (items: (g: GradedRun) => string[]) => {
         const pairs = both.flatMap((g) => {
             const verdict = (arm: string, item: string) =>
                 g.grades.find((r) => r.arm === arm && r.item === item)?.verdict;
-            return items(g).map((item) => ({ m: verdict(memory, item), c: verdict(cf, item) }));
+            return items(g)
+                .filter((item) => !asym.has(`${runKey(g)}/${item}`))
+                .filter((item) => admitted.has(`${g.run.dir}/${item}`))
+                .map((item) => ({ m: verdict(memory, item), c: verdict(cf, item) }));
         });
         const graded = pairs.filter((p) => p.m && p.c && p.m !== "excluded" && p.c !== "excluded");
         const passes = graded.filter((p) => p.m === "pass");

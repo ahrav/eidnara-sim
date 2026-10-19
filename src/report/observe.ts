@@ -43,6 +43,8 @@ export interface RunIdentity {
     distortions: string[];
     /** `manifest.preflight.hosts` as `<host>@<version>`. */
     host_versions: string[];
+    side_model: string | null;
+    user_sim_model: string;
     /** `scenario.manifest`'s `generator_version/random_schema_version/corpus_inputs_sha256/embedding_model`. */
     scenario_provenance: string;
     /** The digest of `manifest.fault_override`, or `null` for the scenario's own schedule. */
@@ -107,7 +109,7 @@ function callsCoverTurns(arm: ArmLogs): boolean {
 }
 
 /** The prefix that keeps one seed's items apart across the tier's hosts: `<host>/<seed>`. */
-const runKey = (g: GradedRun) => `${g.host}/${g.scenario.manifest.seed}`;
+export const runKey = (g: GradedRun) => `${g.host}/${g.scenario.manifest.seed}`;
 const runId = (g: GradedRun) => `${g.run.tier}-${g.host}-${g.scenario.manifest.seed}`;
 
 interface Pairing {
@@ -180,7 +182,10 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: t
                     .filter(
                         (e) =>
                             (e.kind === "EndTurn" && e.outcome !== "ok") ||
-                            (e.kind === "Event" && e.outcome === "failed(interrupted)"),
+                            (e.kind === "Event" && e.outcome === "failed(interrupted)") ||
+                            (e.kind === "ItemState" &&
+                                e.event !== undefined &&
+                                e.state === "failed(interrupted)"),
                     )
                     .map((e) => String(e.event)),
             ).size,
@@ -308,18 +313,22 @@ function runPairs(
 }
 
 /**
- * The faults that landed in an arm: those the scheduler observed, and those the proxy
- * recorded on the arm's calls as `fault_ref`.
+ * The faults that landed in an arm: those the scheduler observed or a restart interrupted after
+ * firing, and those the proxy recorded on the arm's calls as `fault_ref`.
  */
-function asymmetric(runs: GradedRun[], control: string, treatment: string): string[] {
+export function asymmetric(runs: GradedRun[], control: string, treatment: string): string[] {
     return runs.flatMap((g) => {
         const fired = (name: string) => {
             const arm = g.run.arms.find((a) => a.arm === name);
             const observed = (arm?.journal ?? [])
                 .filter(
                     (e) =>
-                        e.kind === "FaultObserved" &&
-                        (e.evidence as { skipped?: unknown } | undefined)?.skipped === undefined,
+                        (e.kind === "FaultObserved" &&
+                            (e.evidence as { skipped?: unknown } | undefined)?.skipped ===
+                                undefined) ||
+                        (e.kind === "ItemState" &&
+                            e.fault !== undefined &&
+                            e.state === "failed(interrupted)"),
                 )
                 .map((e) => String(e.fault));
             const injected = (arm?.calls ?? []).flatMap((c) =>
@@ -343,6 +352,7 @@ function incomplete(
     control: string,
     treatment: string,
     dropped: ReadonlySet<string>,
+    items = p.stopping_rule.paired_items_per_probe_type,
 ): string[] {
     const present = new Set(runs.map(runKey));
     const missing = p.hosts.flatMap((host) =>
@@ -459,28 +469,6 @@ function incomplete(
         );
         return [...uncovered, ...unsent, ...out, ...outside];
     });
-    const sequential = p.load_stress?.arms_concurrent
-        ? runs.flatMap((g) => {
-              const spans = g.run.arms
-                  .filter((a) => p.arms.run.includes(a.arm))
-                  .flatMap((a) => {
-                      const start = a.journal.find((e) => e.kind === "StartArm")?.seq;
-                      const end = a.journal.find((e) => e.kind === "EndArm")?.seq;
-                      return start === undefined || end === undefined
-                          ? []
-                          : [[start, end] as const];
-                  });
-              const registered = p.arms.run.length;
-              const overlap =
-                  spans.length === registered &&
-                  Math.max(...spans.map(([s]) => s)) <= Math.min(...spans.map(([, e]) => e));
-              return spans.length < 2 || overlap
-                  ? []
-                  : [
-                        `run ${runKey(g)}: arms ran one at a time; load_stress requires concurrent arms`,
-                    ];
-          })
-        : [];
     const overridden = runs.flatMap((g) =>
         g.identity.fault_override === null ? [] : [`run ${runKey(g)}: fault schedule overridden`],
     );
@@ -569,6 +557,8 @@ function incomplete(
         "context_limit",
         "distortions",
         "host_versions",
+        "side_model",
+        "user_sim_model",
         "scenario_provenance",
         "tapes",
         "toolchain",
@@ -586,7 +576,7 @@ function incomplete(
             ? [`runs differ in ${field}: ${values.map((v) => JSON.parse(v)).join(", ")}`]
             : [];
     });
-    const n = p.stopping_rule.paired_items_per_probe_type;
+    const n = items;
     const short = p.families.flatMap((f) => {
         const probeType = /^probe-P\d+$/.test(f.id);
         if (!probeType && f.analysis_unit !== "item") return [];
@@ -617,7 +607,6 @@ function incomplete(
         ...overridden,
         ...unknown,
         ...pairing,
-        ...sequential,
         ...settings,
         ...mixed,
         ...controls,
@@ -643,6 +632,7 @@ export function tierInput(
     given: GradedRun[],
     treatment: string = p.arms.default,
     control = "host",
+    items?: number,
 ): TierInput {
     const runs = ordered(p, given);
     const seen = new Set<string>();
@@ -656,6 +646,27 @@ export function tierInput(
     }
     const asym = asymmetric(runs, control, treatment);
     const dropped = new Set(asym);
+    if (items !== undefined) {
+        const byType = new Map<string, { key: string; at: number }[]>();
+        for (const g of runs) {
+            for (const pr of g.scenario.probes) {
+                const at = Number((pr.event ?? pr.id).replace(/\D/g, ""));
+                const list = byType.get(pr.type) ?? [];
+                list.push({ key: `${runKey(g)}/${pr.id}`, at });
+                byType.set(pr.type, list);
+            }
+        }
+        for (const list of byType.values()) {
+            for (const pr of list.sort((a, b) => a.at - b.at).slice(items)) dropped.add(pr.key);
+        }
+    }
+    const fixedN = (pairs: ItemPair[]) =>
+        items === undefined
+            ? pairs
+            : pairs
+                  .filter((x) => !dropped.has(x.item))
+                  .sort((a, b) => a.order - b.order)
+                  .slice(0, items);
     const observations: Observation[] = p.families.flatMap((f) =>
         f.metrics.map(
             (metric): Observation =>
@@ -664,7 +675,7 @@ export function tierInput(
                           metric,
                           unit: "item",
                           cluster_key: f.cluster_key,
-                          items: itemPairs(runs, metric, control, treatment),
+                          items: fixedN(itemPairs(runs, metric, control, treatment)),
                       }
                     : {
                           metric,
@@ -674,6 +685,21 @@ export function tierInput(
                       },
         ),
     );
+    // A run-level family's metrics come from one set of runs: a run that lacks one of them (an
+    // arm whose cost is unavailable after an interrupted turn) leaves the whole family, and the
+    // campaign reads incomplete for it.
+    const familyGaps: string[] = [];
+    for (const f of p.families.filter((x) => x.analysis_unit !== "item")) {
+        const obs = observations.filter((o) => o.unit === "run" && f.metrics.includes(o.metric));
+        const ids = obs.map((o) => new Set((o.runs ?? []).map((r) => r.run)));
+        const all = new Set(ids.flatMap((set) => [...set]));
+        const shared = new Set([...all].filter((id) => ids.every((set) => set.has(id))));
+        for (const id of [...all].filter((x) => !shared.has(x)).sort()) {
+            const lacking = obs.filter((_, i) => !ids[i]?.has(id)).map((o) => o.metric);
+            familyGaps.push(`${f.id}: run ${id} lacks ${lacking.join(", ")}`);
+        }
+        for (const o of obs) o.runs = (o.runs ?? []).filter((r) => shared.has(r.run));
+    }
     const pairArms = [control, treatment];
     const excluded = runs.flatMap((g) => {
         const judgedPair = (r: GradeRecord) =>
@@ -697,7 +723,10 @@ export function tierInput(
         excluded,
         asymmetric: asym,
         arms: { control, treatment },
-        incomplete: incomplete(p, runs, observations, control, treatment, dropped),
+        incomplete: [
+            ...incomplete(p, runs, observations, control, treatment, dropped, items),
+            ...familyGaps,
+        ],
         journal_seq_at_eval: Object.fromEntries(
             runs.map((g) => [
                 runId(g),

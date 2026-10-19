@@ -539,7 +539,14 @@ export function recoveries(run: RunLogs): Recovery[] {
             if (turns.length === 0) reasons.push("no later turn");
             // A kill between FaultFired and FaultObserved leaves the fault without evidence.
             if (!observed) reasons.push("fault not observed: harness interrupted");
-            const clean = index >= 0 && observed !== undefined;
+            // A fault that runs a turn of its own (the second client's) recovers only when that
+            // turn ended ok.
+            const outcome = (evidence as { outcome?: unknown }).outcome;
+            const ownTurnFailed = outcome !== undefined && outcome !== "ok";
+            if (ownTurnFailed) {
+                reasons.push(`the fault's own turn ended ${String(outcome).slice(0, 80)}`);
+            }
+            const clean = index >= 0 && observed !== undefined && !ownTurnFailed;
             const result = {
                 ...base,
                 turns_to_first_clean: index < 0 ? null : index + 1,

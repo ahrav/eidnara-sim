@@ -44,6 +44,12 @@ interface RunOptions {
     interrupted?: Record<string, number>;
     /** Per arm, events whose terminal `Event` is the scheduler's `failed(interrupted)` recovery, with no `EndTurn`. */
     unended?: Record<string, string[]>;
+    /** The tier and seed the run names; S seed 101 when absent. */
+    tier?: "S" | "L";
+    /** The manifest's arm order; host then eidnara when absent. */
+    order?: string[];
+    /** The scenario's counterfactual deletion sample. */
+    cf_deletions?: { probe: string }[];
 }
 
 function run(o: RunOptions): string {
@@ -67,23 +73,26 @@ function run(o: RunOptions): string {
             session: "s-1",
         },
     ];
+    const tier = o.tier ?? "S";
+    const seedOf = tier === "S" ? 101 : 301;
     const body = {
-        manifest: { seed: 101, tier: "S" },
+        manifest: { seed: seedOf, tier },
         probes: o.probes.map((p, i) => ({ ...p, session: "s-1", event: `e-${i + 1}` })),
         events,
+        ...(o.cf_deletions ? { cf_deletions: o.cf_deletions } : {}),
     };
     const scenario = { ...body, scenario_hash: sha256Hex(canonicalJson(body)) };
     writeFileSync(join(dir, "scenario.json"), `${canonicalJson(scenario)}\n`);
     const manifest = {
         schema: "sim-run-manifest/v2",
-        tier: "S",
-        seed: 101,
+        tier,
+        seed: seedOf,
         host: "pi",
-        order: ["host", "eidnara"],
+        order: o.order ?? ["host", "eidnara"],
         events: o.events ?? events.length,
         models: o.models ?? ["global.anthropic.claude-opus-5-5"],
         scenario_hash: o.scenario_hash ?? scenario.scenario_hash,
-        prereg_sha256: o.prereg_sha256 ?? preregistrationHash(loadPrereg("S")),
+        prereg_sha256: o.prereg_sha256 ?? preregistrationHash(loadPrereg(tier)),
     };
     writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
     const ran = events.slice(0, manifest.events);
@@ -429,6 +438,64 @@ describe("grade-run", () => {
         scenario.probes[0].check.must_not = [];
         writeFileSync(path, canonicalJson(scenario));
         await expect(gradeRun(edited, null)).rejects.toThrow("scenario_hash");
+    });
+
+    test("a counterfactual target whose deletion went unverified is graded excluded(cf-unverified)", async () => {
+        const order = ["eidnara", "eidnara-cf"];
+        const dir = run({
+            probes: [p5.probe],
+            tier: "L",
+            order,
+            cf_deletions: [{ probe: p5.probe.id }],
+        });
+        for (const arm of order) snapshot(dir, arm, snap);
+        const deletion = { kind: "CounterfactualDeletion", arm: "eidnara-cf", probe: snap.item };
+        appendFileSync(
+            join(dir, "journal.jsonl"),
+            `${JSON.stringify({ seq: seq++, wall_ms: 0, scenario_ms: 0, ...deletion, skipped: "no store yet" })}\n`,
+        );
+        await gradeRun(dir, null);
+        const grades = () =>
+            readFileSync(join(dir, "grades.jsonl"), "utf8")
+                .trim()
+                .split("\n")
+                .map((l) => JSON.parse(l));
+        expect(grades().find((g) => g.arm === "eidnara")?.verdict).toBe("pass");
+        expect(grades().find((g) => g.arm === "eidnara-cf")).toMatchObject({
+            verdict: "excluded",
+            reason: "cf-unverified",
+        });
+        await gradeRun(dir, null);
+        expect(grades().map((g) => g.version)).toEqual([1, 1]);
+    });
+
+    test("a cached counterfactual grade is graded again once its deletion reads unverified", async () => {
+        const dir = run({ probes: [p5.probe], tier: "L", order: ["eidnara-cf"] });
+        snapshot(dir, "eidnara-cf", snap);
+        await gradeRun(dir, null);
+        const path = join(dir, "scenario.json");
+        const scenario = JSON.parse(readFileSync(path, "utf8"));
+        const { scenario_hash: _old, ...body } = {
+            ...scenario,
+            cf_deletions: [{ probe: snap.item }],
+        };
+        const hash = sha256Hex(canonicalJson(body));
+        writeFileSync(path, `${canonicalJson({ ...body, scenario_hash: hash })}\n`);
+        const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({ ...manifest, scenario_hash: hash }),
+        );
+        await gradeRun(dir, null);
+        const grades = readFileSync(join(dir, "grades.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l));
+        expect(grades.map((g) => [g.version, g.verdict])).toEqual([
+            [1, "pass"],
+            [2, "excluded"],
+        ]);
+        expect((await gradeRun(dir, null)).graded).toBe(0);
     });
 
     test("the summary names the grade versions it aggregates", async () => {

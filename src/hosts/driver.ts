@@ -41,14 +41,26 @@ import {
     type ToolRun,
 } from "./arms";
 import { entriesOf, SnapshotRecorder } from "./snapshot";
-import { checkStore, type Deletion, deleteFactNotes, memoryNotes } from "./storecheck";
+import {
+    checkStore,
+    type Deletion,
+    type DeletionPlan,
+    deleteFactNotes,
+    memoryNotes,
+} from "./storecheck";
 
 interface ArmState {
     model: number;
     /** True once a host_upgrade moved later sessions to the configured next host version. */
     upgraded?: boolean;
-    /** The second host client a two_hosts_one_daemon fault attached, while it runs. */
-    second?: { pid: number; start: string | null } | null;
+    /** The second host client a two_hosts_one_daemon fault attached, with its session, while it runs. */
+    second?: { pid: number; start: string | null; session?: string } | null;
+    /** A session owed a second client again, kept until that client is attached. */
+    second_owed?: string | null;
+    /** The transcript store's newest mtime when an upgraded host's first session opened. */
+    transcript_mark?: number | null;
+    /** The session whose second client exited before its end; the arm stays failed. */
+    second_exited?: string | null;
     daemon: { pid: number; start: string | null } | null;
     host: { pid: number; start: string | null } | null;
     /** The store_full ballast while the fault is active: its length, the blocks it holds, and its fault. */
@@ -84,7 +96,7 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm
     hostFactory?: (ctx: HostContext) => SimHost;
     daemonFactory?: (ctx: DaemonContext) => DaemonStack;
     /** The host's pinned and `config.upgrade` versions, as the run's preflight recorded them. */
-    hostVersions?: { from: string; to: string | null };
+    hostVersions?: { from: string; to: string | null; upgradeTranscriptPaths?: string[] };
     onDaemonExit: (detail: Record<string, unknown>) => void;
     /**
      * Called when a daemon process is up (at reset, resume, and after a fault's restart) and
@@ -220,6 +232,19 @@ export class HostDriver implements ArmDriver {
     private readonly snapshots: SnapshotRecorder;
     private upgraded = false;
     private second: SimHost | null = null;
+    /** The session the second client is attached to, kept in `state.json` for a resume. */
+    private secondSession: string | null = null;
+    /** A session a stopped run had a second client on, owed one again when it reopens. */
+    private secondOwed: string | null = null;
+    /** The session whose second client exited before the primary session's end. */
+    private secondExited: string | null = null;
+    /** The transcript store's newest mtime when an upgraded host's first session opened. */
+    private storeMarkAtOpen: number | null = null;
+    /** A host open or daemon start or restart in flight, which `stop` awaits before closing either. */
+    private inflight: Promise<void> | null = null;
+    private stopping = false;
+    /** The deletion child a counterfactual fault runs, which `stop` ends before the store goes. */
+    private deleting: ReturnType<typeof Bun.spawn> | null = null;
     /**
      * Daemon restarts owed a store check, each with the plugin log's length between the kill and
      * the replacement's start. The check runs at the end of the first turn whose log, past that
@@ -309,8 +334,10 @@ export class HostDriver implements ArmDriver {
     private newHost(primary = true): SimHost {
         const make = this.o.hostFactory ?? makeHost;
         const { keep } = this;
-        const up = this.upgraded ? (this.o.config.upgrade ?? {}) : {};
-        const config = { ...this.o.config, ...up };
+        // An upgrade moves only this host's binary to the configured next version.
+        const field = this.o.host === "pi" ? "pi_install" : "opencode_binary";
+        const next = this.upgraded ? this.o.config.upgrade?.[field] : undefined;
+        const config = next ? { ...this.o.config, [field]: next } : this.o.config;
         const onSpawn = () => this.recordState();
         const onTool = (run: ToolRun) =>
             this.snapshots.addTools([run], run.recovered ? null : this.turn);
@@ -438,11 +465,18 @@ export class HostDriver implements ArmDriver {
         if (host && host.start === null) {
             throw new HarnessFailure(`host launch ${host.pid} has no start identity`);
         }
-        const second = this.second?.hostIdentity() ?? null;
+        const identity = this.second?.hostIdentity() ?? null;
+        const second =
+            identity && this.secondSession
+                ? { ...identity, session: this.secondSession }
+                : identity;
         const state: ArmState = {
             model: this.model,
             upgraded: this.upgraded,
             second,
+            second_owed: this.secondOwed ?? this.secondSession,
+            transcript_mark: this.storeMarkAtOpen,
+            second_exited: this.secondExited,
             daemon,
             switched: this.switched,
             host,
@@ -481,6 +515,7 @@ export class HostDriver implements ArmDriver {
     }
 
     private async startArm(fresh: boolean, state: ArmState | null = null): Promise<void> {
+        this.stopping = false;
         mkdirSync(this.storeRoot, { recursive: true, mode: 0o700 });
         if (this.o.loopStore && eidnaraOn(armBase(this.o.arm))) this.mountStore(fresh);
         const filled = state?.ballast != null;
@@ -504,7 +539,7 @@ export class HostDriver implements ArmDriver {
                     logFile: join(this.armDir, "daemon.log"),
                     model: this.o.sideModel ?? (this.o.models[0] as string),
                 });
-                await this.daemon.start();
+                await this.track(this.daemon.start());
                 this.noteDaemon();
                 this.recordState();
                 this.o.sampleDaemon?.();
@@ -521,8 +556,24 @@ export class HostDriver implements ArmDriver {
             this.refilling = false;
             this.recordState();
         }
+        // A stop that landed during the start owns the daemon it captured; the arm starts no
+        // host behind it.
+        if (this.stopping) return;
         this.host = this.newHost();
         this.recordState();
+    }
+
+    /** Runs a host open or daemon start or restart so that `stop` waits for it to settle. */
+    private async track<T>(pending: Promise<T>): Promise<T> {
+        this.inflight = pending.then(
+            () => undefined,
+            () => undefined,
+        );
+        try {
+            return await pending;
+        } finally {
+            this.inflight = null;
+        }
     }
 
     /** The ballast's length and allocated blocks both have to match; a sparse replacement or a punched hole fails. */
@@ -550,6 +601,10 @@ export class HostDriver implements ArmDriver {
         this.upgraded = false;
         this.snapshots.clear();
         this.transcriptsChecked = false;
+        this.secondSession = null;
+        this.secondOwed = null;
+        this.secondExited = null;
+        this.storeMarkAtOpen = null;
         this.ballastShape = null;
         this.refilling = false;
         this.gitRun = null;
@@ -611,18 +666,35 @@ export class HostDriver implements ArmDriver {
         this.storeFaults = new Map(Object.entries(state.store_faults ?? {}));
         const checked = join(this.armDir, "transcripts.json");
         if (existsSync(checked)) {
-            const { missing } = this.readRecord<{ missing: string[] }>(checked);
-            if (missing.length > 0) {
-                throw new HarnessFailure(`transcript store missing: ${missing.join(", ")}`);
+            const record = this.readRecord<{
+                missing: string[];
+                fresh?: boolean | null;
+                templates?: string[];
+            }>(checked);
+            if (record.missing.length > 0) {
+                throw new HarnessFailure(`transcript store missing: ${record.missing.join(", ")}`);
             }
-            this.transcriptsChecked = true;
+            // An upgraded arm accepts only the record of the upgraded host's own fresh check, of
+            // the store templates that host writes.
+            this.transcriptsChecked =
+                (this.upgraded ? record.fresh === true : record.fresh !== false) &&
+                JSON.stringify(record.templates ?? this.o.transcriptPaths) ===
+                    JSON.stringify(this.transcriptPaths());
         }
+        this.secondOwed = state.second?.session ?? state.second_owed ?? null;
+        this.storeMarkAtOpen = state.transcript_mark ?? null;
+        this.secondExited = state.second_exited ?? null;
         await this.reapStale();
+        if (this.secondExited !== null) {
+            throw new HarnessFailure(
+                `the second client exited before the primary session's session_end in ${this.secondExited}`,
+            );
+        }
         // A fault the journal never observed ended with the killed harness; its ballast goes with it.
         const lost =
             state.ballast?.fault !== undefined && interrupted.includes(state.ballast.fault);
         await this.startArm(false, lost ? { ...state, ballast: null, refilling: false } : state);
-        if (open) await this.event(open);
+        if (open && !this.stopping) await this.event(open);
     }
 
     /**
@@ -736,10 +808,20 @@ export class HostDriver implements ArmDriver {
     }
 
     private async openSession(e: ScenarioEvent, host: SimHost): Promise<void> {
+        // A second client the stopped run had on this session is attached again before the
+        // primary reopens, so the session keeps both clients on the daemon; its fixed turn ran.
+        if (this.secondOwed === e.session && this.daemon && !this.second)
+            await this.attachSecond(e);
+        this.secondOwed = null;
         this.sessionProject = this.project(e);
         const connection = this.daemon?.connectionFile ?? null;
         const dir = this.workspaceDir(this.sessionProject);
-        await host.openSession(dir, e.session, connection);
+        // The mark from a session a stop interrupted stays, so the reopened session's check
+        // measures the whole session.
+        if (this.upgraded && !this.transcriptsChecked && this.storeMarkAtOpen === null) {
+            this.storeMarkAtOpen = this.storeMark(host);
+        }
+        await this.track(host.openSession(dir, e.session, connection));
         this.recordState();
         this.snapshots.sessionStart(e.session, this.sessionProject, dir);
         this.recordState();
@@ -762,6 +844,7 @@ export class HostDriver implements ArmDriver {
             return {};
         }
         if (e.kind === "session_end") {
+            this.requireSecondAttached();
             const project = this.project(e);
             host.drainTools();
             this.snapshots.sessionEnd(e.session, project, this.workspace(project));
@@ -1045,9 +1128,29 @@ export class HostDriver implements ArmDriver {
         }
     }
 
+    /** The transcript store templates of the host version now running. */
+    private transcriptPaths(): string[] {
+        const upgraded = this.o.hostVersions?.upgradeTranscriptPaths;
+        return this.upgraded && upgraded ? upgraded : this.o.transcriptPaths;
+    }
+
+    /** The newest modification time under the store paths, so a new transcript shows as a change. */
+    private storeMark(host: SimHost): number {
+        const env = host.transcriptEnv();
+        // Symlinks count as nothing: the host writes into this tree, and a link could lead out of it.
+        const newest = (path: string): number => {
+            const st = lstatSync(path, { throwIfNoEntry: false });
+            if (!st || st.isSymbolicLink()) return 0;
+            if (!st.isDirectory()) return st.mtimeMs;
+            return Math.max(st.mtimeMs, ...readdirSync(path).map((f) => newest(join(path, f))));
+        };
+        return Math.max(0, ...this.transcriptPaths().map((t) => newest(expandTemplate(t, env))));
+    }
+
     private checkTranscripts(host: SimHost): void {
         const env = host.transcriptEnv();
-        const paths = this.o.transcriptPaths.map((t) => expandTemplate(t, env));
+        const templates = this.transcriptPaths();
+        const paths = templates.map((t) => expandTemplate(t, env));
         // A link anywhere below the arm root, or a node of the wrong kind where the store should
         // be, is the host's placeholder, so the store counts as missing.
         const root = realpathSync(this.o.armRoot);
@@ -1064,10 +1167,19 @@ export class HostDriver implements ArmDriver {
             if (stat === undefined) return false;
             return transcriptKind(template) === "file" ? stat.isFile() : stat.isDirectory();
         };
-        const missing = paths.filter((p, i) => !present(this.o.transcriptPaths[i] as string, p));
-        const record = { checked_after: "first session_end", paths, missing };
+        const missing = paths.filter((p, i) => !present(templates[i] as string, p));
+        const after = this.upgraded ? "first session_end after host_upgrade" : "first session_end";
+        // An upgraded host shares its store path with the version before it, so the check also
+        // requires the session that just ended to have changed the store.
+        const fresh =
+            this.storeMarkAtOpen === null ? null : this.storeMark(host) > this.storeMarkAtOpen;
+        const record = { checked_after: after, templates, paths, missing, fresh };
         writeWhole(join(this.armDir, "transcripts.json"), JSON.stringify(record));
         if (missing.length > 0) throw new Error(`transcript store missing: ${missing.join(", ")}`);
+        if (fresh === false) {
+            throw new Error(`no new transcript in ${paths.join(", ")} after the upgraded session`);
+        }
+        this.storeMarkAtOpen = null;
         this.transcriptsChecked = true;
     }
 
@@ -1116,6 +1228,7 @@ export class HostDriver implements ArmDriver {
         const from_version = this.o.hostVersions?.from ?? null;
         const to_version = this.o.hostVersions?.to ?? null;
         this.upgraded = true;
+        this.transcriptsChecked = false;
         this.host = this.newHost();
         this.recordState();
         return {
@@ -1135,8 +1248,45 @@ export class HostDriver implements ArmDriver {
             second.drainTools();
             await second.closeSession();
             this.second = null;
+            this.secondSession = null;
         } finally {
             if (record) this.recordState();
+        }
+    }
+
+    /** Opens the second client on the session's workspace and records it with its session. */
+    private async attachSecond(at: ScenarioEvent): Promise<SimHost> {
+        const second = this.newHost(false);
+        this.second = second;
+        this.secondSession = at.session;
+        await this.track(
+            second.openSession(
+                this.workspaceDir(this.project(at)),
+                `${at.session}-b`,
+                this.daemon?.connectionFile ?? null,
+            ),
+        );
+        // A stop in progress owns the second client's close; a client the arm no longer holds
+        // is closed here.
+        if (this.second !== second) await second.closeSession();
+        if (this.stopping || this.second !== second) {
+            throw new HarnessFailure("the arm stopped while the second client opened");
+        }
+        this.recordState();
+        return second;
+    }
+
+    /** A second client's host process must still run at the primary session's `session_end`. */
+    private requireSecondAttached(): void {
+        if (!this.second) return;
+        const pid = this.second.hostPid();
+        if (pid === null || !running(pid)) {
+            // The violation is recorded before the throw, so a resumed arm fails the same way.
+            this.secondExited = this.secondSession;
+            this.recordState();
+            throw new HarnessFailure(
+                `the second client exited before the primary session's session_end (pid ${pid})`,
+            );
         }
     }
 
@@ -1145,20 +1295,9 @@ export class HostDriver implements ArmDriver {
         if (at?.kind !== "session_start") {
             throw new HarnessFailure("two_hosts_one_daemon fires at a session_start");
         }
-        const second = this.newHost(false);
         const session = `${at.session}-b`;
-        this.second = second;
         try {
-            await second.openSession(
-                this.workspaceDir(this.project(at)),
-                session,
-                this.daemon.connectionFile,
-            );
-            if (this.second !== second) {
-                await second.closeSession();
-                throw new HarnessFailure("the arm stopped while the second client opened");
-            }
-            this.recordState();
+            const second = await this.attachSecond(at);
             const result = await second.prompt(SECOND_CLIENT_PROMPT, this.o.turnDeadlineMs);
             return {
                 second_session: session,
@@ -1168,7 +1307,8 @@ export class HostDriver implements ArmDriver {
                 attached_until: "the primary session's session_end, or the run's stop",
             };
         } catch (caught) {
-            await this.closeSecond().catch(() => undefined);
+            // A stop in progress owns the second client's close.
+            if (!this.stopping) await this.closeSecond().catch(() => undefined);
             throw caught;
         }
     }
@@ -1176,11 +1316,25 @@ export class HostDriver implements ArmDriver {
     async deleteFact(
         statement: string,
         others: readonly string[] = [],
+        plan: DeletionPlan = {},
     ): Promise<Deletion | { skipped: string }> {
         if (!this.daemon) return { skipped: "arm runs no daemon" };
         if (!existsSync(this.storeDb)) return { skipped: "no store yet" };
         try {
-            return await deleteFactNotes(this.storeDb, statement, others);
+            const onSpawn = (child: ReturnType<typeof Bun.spawn>) => {
+                this.deleting = child;
+                void child.exited.finally(() => {
+                    if (this.deleting === child) this.deleting = null;
+                });
+            };
+            return await deleteFactNotes(
+                this.storeDb,
+                statement,
+                others,
+                onSpawn,
+                this.dataDir,
+                plan,
+            );
         } catch (caught) {
             return { skipped: `deletion failed: ${String(caught).slice(0, 300)}` };
         }
@@ -1375,6 +1529,15 @@ export class HostDriver implements ArmDriver {
      * the failure's state names it and a later stop can try again.
      */
     async stop(checkFinalStore = false): Promise<void> {
+        // A host open or daemon start in flight settles first, so the stop closes what it opened.
+        this.stopping = true;
+        await this.inflight;
+        await this.restarting.catch(() => undefined);
+        const deleting = this.deleting;
+        if (deleting) {
+            deleting.kill();
+            await deleting.exited;
+        }
         let failure: unknown = null;
         try {
             await this.host?.closeSession();

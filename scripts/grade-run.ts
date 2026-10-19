@@ -491,14 +491,41 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     const grader = graderDigest();
     const priorKey = (item: string, arm: string, against: string | undefined, snapshot: string) =>
         `${item}/${arm}/${against ?? ""}/${snapshot}`;
+    const latest = log.latest();
     const prior = new Set(
         regrade
             ? []
-            : log
-                  .latest()
+            : latest
                   .filter((g) => g.grader === grader)
                   .map((g) => priorKey(g.item, g.arm, g.against, g.snapshot)),
     );
+    // A counterfactual arm's sampled item counts only once its journaled deletion verified
+    // every targeted memory gone; until then it is graded excluded(cf-unverified), and a grade
+    // made before that reading is graded again.
+    const verifiedDeletion = new Set(
+        entries
+            .filter(
+                (e) =>
+                    e.kind === "CounterfactualDeletion" &&
+                    e.skipped === undefined &&
+                    Array.isArray(e.deleted) &&
+                    e.deleted.length > 0 &&
+                    e.deleted.every((id) => Number.isInteger(id)) &&
+                    e.remaining === 0,
+            )
+            .map((e) => `${String(e.arm)}/${String(e.probe)}`),
+    );
+    const sampled = new Set((scenario.cf_deletions ?? []).map((d) => d.probe));
+    const unverified = (arm: string, item: string) =>
+        armBase(arm) === "eidnara-cf" &&
+        sampled.has(item) &&
+        !verifiedDeletion.has(`${arm}/${item}`);
+    const standsExcluded = new Set(
+        latest.filter((g) => g.reason === "cf-unverified").map((g) => `${g.item}/${g.arm}`),
+    );
+    const gradedBefore = (item: string, arm: string, against: string | undefined, id: string) =>
+        prior.has(priorKey(item, arm, against, id)) &&
+        !(unverified(arm, item) && !standsExcluded.has(`${item}/${arm}`));
     const staged: GradeRecord[] = [];
     // Every grade of the pass lands in one write after every item is graded.
     const commit = () => {
@@ -531,7 +558,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
             if (lost.size > 0 || !mine?.[0] || !host?.[0]) return [];
             // The pair's two grades land in one write, host side first, so the memory arm's grade
             // means its pair stands.
-            if (prior.has(priorKey(probe.id, arm, "host", mine[0].id))) {
+            if (gradedBefore(probe.id, arm, "host", mine[0].id)) {
                 for (const side of [arm, "host"]) skip(side, "already graded");
                 return [];
             }
@@ -564,7 +591,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
                 skip(arm, unjournaled(arm, probe.id, probe.event));
                 continue;
             }
-            if (prior.has(priorKey(probe.id, arm, undefined, (mine[0] as Snapshot).id))) {
+            if (gradedBefore(probe.id, arm, undefined, (mine[0] as Snapshot).id)) {
                 skip(arm, "already graded");
                 continue;
             }
@@ -577,8 +604,15 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
                 console.error(`${probe.id} (${arm}): ${String(caught)}`);
                 continue;
             }
-            if (grade) staged.push(grade);
-            else skip(arm, "probe turn failed");
+            if (!grade) skip(arm, "probe turn failed");
+            else if (unverified(arm, probe.id)) {
+                staged.push({
+                    ...grade,
+                    verdict: "excluded",
+                    reason: "cf-unverified",
+                    metrics: {},
+                });
+            } else staged.push(grade);
         }
     }
 

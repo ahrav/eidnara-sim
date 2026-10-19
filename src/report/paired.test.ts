@@ -138,5 +138,17 @@ describe("A/A pairing", () => {
         );
         const ref = referenceArm(["eidnara", "eidnara~aa", "host", "host~aa"]);
         expect(["eidnara~aa", "host", "host~aa"].map(ref)).toEqual(["eidnara", "eidnara", "host"]);
+        const cfAfter = referenceArm(["host", "eidnara", "eidnara-cf", "eidnara-kl"]);
+        expect(["eidnara", "eidnara-cf", "eidnara-kl"].map(cfAfter)).toEqual([
+            "host",
+            "eidnara",
+            "host",
+        ]);
+        const cfFirst = referenceArm(["eidnara-kl", "eidnara-cf", "eidnara", "host"]);
+        expect(["eidnara-cf", "eidnara", "host"].map(cfFirst)).toEqual([
+            "eidnara-kl",
+            "eidnara-cf",
+            "eidnara-kl",
+        ]);
     });
 });

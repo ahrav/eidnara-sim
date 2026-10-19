@@ -104,6 +104,16 @@ describe("SIM-P01: deterministic compile across processes", () => {
     });
 });
 
+test("a resized item count sizes the probes and leaves the pre-registration as registered", async () => {
+    const input = inputS(101);
+    const registered = canonicalJson(input.prereg);
+    const s = await compileScenario({ ...input, items: 8 });
+    expect(s.manifest.probes_per_type).toBe(
+        Math.ceil(8 / (input.prereg.seeds.length * input.prereg.hosts.length)),
+    );
+    expect(canonicalJson(input.prereg)).toBe(registered);
+});
+
 describe("compiled S scenario", async () => {
     const input = inputS(101);
     const s = await compileScenario(input);

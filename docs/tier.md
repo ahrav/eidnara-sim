@@ -1,7 +1,10 @@
 # Tier command
 
 `scripts/tier.ts --tier S --out <dir> [--hosts pi,opencode] [--turn-ms N]
-[--resize-from <M tier dir>] [--restart-at <fraction>] [--plan-only]` runs one tier end to end. It compiles each seed's scenario,
+[--resize-from <M tier dir>] [--models a,b] [--restart-at <fraction>] [--plan-only]` runs one tier
+end to end. `--models` lists the models the runs' `model_switch` fault
+cycles through; a tier whose scenarios schedule that fault refuses to start
+with fewer than two distinct models, and the plan records the list. It compiles each seed's scenario,
 plans one run per pre-registered host and seed, builds the vendored
 libfaketime once as a supervised child (`<dir>/faketime.log`), starts
 the runs in parallel, grades each one, reports
@@ -66,22 +69,29 @@ stopped with SIGTERM, and with SIGKILL a minute later if its teardown
 stalls; it stays resumable, with what remains of the limit. Grading and the A/A report run under the same
 125% limit. Rerunning the command resumes every run from its journal;
 without `--turn-ms` it reuses the `turn_ms` of the existing
-`tier-plan.json`, so the planned prefixes match the manifests. Every run
+`tier-plan.json`, so the planned prefixes match the manifests. A group's
+runs are all awaited before any of them is graded, so grading never loads
+a run still inside its measurement window. Every run
 that wrote a manifest is graded and reported, including one stopped at
 the limit; grading leaves the grades that already cite their snapshot, so
 a rerun spends no judge calls on finished items. The report's
 run-conditions panel gives the events each run reached against its plan.
 
 A scheduled fault whose trigger session lies past the prefix moves into
-it (`compressFaults`): the faults keep their order and spread evenly over
-the prefix's sessions, each onto the first session from its place that
-has enough user turns for a turn-triggered fault, or that is in the p90
-regime (else the longest session) for a summarizer-triggered one; a
+it (`compressFaults`): each fault's index in the schedule sets where its
+search starts, spread evenly over the prefix's sessions, and the search
+wraps around the prefix, so two moved faults can land in either session
+order. Each lands on the first session from its start that has enough
+user turns for a turn-triggered fault, that is in the p90 regime (else
+the longest session) for a summarizer-triggered one, or that has an idle
+gap before it for a laptop sleep, measured from the preceding session's
+end, whose duration becomes that gap; a
 session-start fault never lands on the prefix's first session, as the
 compiler never schedules one there. The
 moved schedule goes to `<run>/faults.json` and the run's `--faults`, so
-the manifest records it; a fault no prefix session can host keeps its
-trigger and stays untriggered.
+the manifest records it, and the report reads the schedule from the
+manifest; a fault no prefix session can host keeps its trigger and stays
+untriggered.
 
 The prefix is a cap on the pre-registered scenario, so a tier report
 covers fewer items than the pre-registered `paired_items_per_probe_type`;
@@ -117,6 +127,9 @@ The run-level checks cover:
   context digest differs
   from its reference arm's without a divergence record;
 - SIM-P04: a divergence occurred, its turn on the pairing log;
+- SIM-P74: a sampled P1 item the memory arm passed fails in the
+  counterfactual arm after a verified deletion; a campaign without one
+  reads `unreached`;
 - SIM-P10: user-sim rates recomputed from the journaled turn labels
   inside their bands, with the journaled `UserSimRates` summary equal to
   the recomputation, over the completed arms (those with that entry) of
@@ -167,29 +180,49 @@ where a shell would expand it.
 After its paired runs finish, a tier runs the profiles its pre-registration
 calls for, all of one profile in parallel and each reported apart under
 `<dir>/<profile>/`, so a profile's load never overlaps the paired runs.
+A profile whose runs each hold one arm of the same host and seed gets no
+paired report; `tier-result.json` lists its runs under `unreported` with
+`reports.<profile>` null, and the command's exit ignores a null report.
 Every profile run takes the first seed's paired-run prefix, so it covers
 the paired runs' items. `tier-result.json` gives each profile's start skew
 from its runs' first journal entries:
 
 | Tier | Profile | Runs |
 |---|---|---|
-| M | `side-haiku` | Per host, the first seed's `host` and `eidnara` arms with Eidnara's summarizer and researcher calls on Haiku 5.5 (`--side-model`), the model factor against the paired runs' Opus |
+| M | `side-haiku` | Per host, the first seed's `host` and `eidnara` arms with Eidnara's summarizer and researcher calls on Haiku 5.5 (`--side-model`), replaying the paired run's user-sim tape (`--tapes`), the model factor against the paired runs' Opus; it runs only once that paired run completed inside its budget with its `tape.jsonl` and `pairing.jsonl` in place, else `tier-result.json` records it as skipped |
 | M | `usersim-luna` | One Pi run of the first seed's `host` and `eidnara` arms with `gpt-5.6-luna` as the user-sim (`--user-sim-model`) |
-| L | `concurrent` | Per host, each arm of the first seed alone in its own run (`<dir>/L-301-<host>-concurrent/<arm>`), all started together |
+| L | `concurrent` | Per host, each arm of the first seed alone in its own run (`<dir>/L-301-<host>-concurrent/<arm>`), all started together; a group some of whose runs began and not all finished is refused until its run directories are removed, so a resumed member never measures alone |
 
 M's six paired runs (three seeds on two hosts) each carry `host~aa` and
 `eidnara~aa`, which gives six repeats of each A/A pair.
 
 L starts only after `<dir>/L-resizing.json` records its paired items per
 probe type. `--resize-from <M tier dir>` computes it from the M tier's
-paired runs, the `main` group of its `tier-plan.json`, and refuses while
-any of them is ungraded, so the profiles' changed models never enter it.
+paired runs, the `main` group of its `tier-plan.json`, and refuses until
+that plan is the M tier's with a run for every pre-registered host and
+seed and its `tier-result.json` records a zero `run_exit` and `grade_exit`
+for each of them and a zero exit for the main report, so an interrupted
+run or grading, a report whose witness found a violation, a partial campaign,
+and the profiles' changed models never enter it; while the M directory
+holds a live lease, so a campaign still being graded never enters it; and
+while the M report's campaign-completeness list holds anything besides
+its CUSUM scale and the three marks of a capped prefix (truncated runs, a
+moved fault schedule, fewer paired items than registered), so differing
+settings, unfinished arms, unavailable metrics, or missing A/A controls
+never enter it while the capped pilot's discordance still can. The record names its source directory and both
+pre-registration hashes; a later invocation refuses a record of another
+L pre-registration, or a `--resize-from` naming another source or an M
+pre-registration the record did not see. The record is written through a
+rename, so a killed command leaves no partial file. Fault-asymmetric
+pairs leave the discordance and design effect, as they leave the M gates.
 It applies the pre-registered rule (`src/run/resize.ts`) to each
 superiority and noninferiority item metric:
 the discordance M observed, the ledger-fact design effect from M's
 intraclass correlation, and the n that reaches the family's L effect at
 its power, with Holm's first step over the harm family's metrics; L's count is the
-largest n, and a type M never saw discordant keeps the planning count.
+largest n, where a type M never saw discordant counts as the planning
+count; a count below the planning one follows when every type showed
+discordance, as the registered rule sets no floor.
 The L scenarios are compiled with that count.
 
 ## Counterfactual arm
@@ -213,7 +246,16 @@ delete runs through `python3`'s `sqlite3`, which registers the store's
 caller-scope functions so its ownership triggers admit a delete inside
 the note's own project and report no facade authority drain, so the
 authority triggers stay inactive for the delete; a failed delete is
-journaled as skipped. A run with an `eidnara-cf` arm stops at start when
+journaled as skipped, as is a store path that is a symlink or resolves
+outside the arm's data directory, and the child is stopped with the arm
+when the run is torn down. Each chosen note is journaled as its own
+`DeleteMemoryObject` entry with the object id, its kind, the target probe,
+and the scenario time before the store changes, so a run resumed after
+the delete and before its `CounterfactualDeletion` entry repeats the
+delete on the journaled ids and records them as deleted. The grader marks the arm's grade for a sampled probe whose
+deletion was skipped, deleted nothing, or left matching notes as
+`excluded(cf-unverified)`, so the gates never read an outcome from an
+intervention of unknown effect. A run with an `eidnara-cf` arm stops at start when
 `python3` is not on `PATH`.
 
 The report's counterfactual panel counts a sampled item only when its own
@@ -231,22 +273,45 @@ history summaries, stays in place.
 XL runs one seed per host with `host` and `eidnara`. Its scenario's fault
 schedule adds `host_upgrade` and `two_hosts_one_daemon` (`docs/hosts.md`).
 Each XL paired run is stopped once with SIGTERM when its journal holds
-`--restart-at` (0.4 by default at XL, a fraction in [0, 1)) of its planned
-events across its arms, checked every 30 s, and resumed from its journal
-within the rest of its wall limit. The restart writes `<run>/restarted`,
+`--restart-at` (0.4 by default at XL, a decimal fraction in [0, 1); an
+empty or non-numeric value is refused; recorded in `tier-plan.json` as
+`restart_at` and reused by a rerun without the flag, like `turn_ms`; a
+fraction whose first reachable event count is a run's last event is refused
+before the plan is saved, since that stop could not land before the run ends;
+an explicit fraction that differs from the saved one is refused once a paired
+run of any host the saved plan listed has begun; a cut one event before
+the end can still miss when the run finishes within that second) of its
+planned events across its arms, checked every second,
+and resumed from its journal within the rest of its wall limit. The restart writes `<run>/restarted` only when the journal check requested
+the stop (an outside SIGTERM at the same point leaves no marker),
 so a rerun of the command neither restarts that run again nor reports it
 unrestarted; `tier-result.json` records `restarted` per run, and the
-command exits 1 naming any paired run without a restart.
-A run stopped by the scheduled restart logs no `EndTurn` for the turn the
-stop cut, so the resumed run marks that turn `failed(interrupted)`.
+command exits 1 naming any paired run without a restart and leaves the main
+report unpublished for it. A saved `tier-plan.json` from another tier is
+refused; an unreadable one is replaced when `--turn-ms` (and `--restart-at`
+at XL) are given.
+The stop lands wherever the run is when the check fires: a run stopped by
+the scheduled restart logs no `EndTurn` for the turn, or no `FaultObserved`
+for the scheduler fault, the stop cut, so the resumed run marks that item
+`failed(interrupted)`; an interrupted turn counts in `failed_turns`, and an
+interrupted fault counts as landed in its arm, so its session's probes leave
+the pairing as asymmetric.
 
 The XL report adds a within-month RSS soak verdict per month of scenario
-time for each daemon arm, the last month partial: each
+time for each run's daemon arm, the last month partial: each
 month's slope, bound, and return-to-baseline use that month's samples and
 sessions alone, and the whole-span soak verdict stays the gate's input.
 
-`scripts/report.ts --recall-reference <dir>/continuity-L.json` adds a recall
-drift table to the XL report: each host, arm, and probe's P8 or P9 pass
+`scripts/report.ts --recall-reference <dir>/continuity-L.json` (shape-checked
+row by row: counts with `pass_with_transcript_read <= pass <= n`, one row per
+host, arm, and probe) adds a recall
+drift table to the XL report alone, read when the XL report is built so an L
+report in the same invocation settles its file first, with counts and
+four-decimal rates (a reference row for an arm XL ran but has no row for
+appears with no rate; a reference-only arm is left out): each host, arm, and probe's P8 or P9 pass
 rate against the L tier's 95% Clopper-Pearson interval for the same row,
-`drift` when outside it. Every report writes its continuity rows to
-`continuity-<tier>.json` beside `report-<tier>.json` for this use.
+`drift` when outside it. A report of a complete campaign with no violated
+property witness writes its continuity rows to `continuity-<tier>.json` beside
+`report-<tier>.json` for this use; an incomplete or unsound one writes none
+and removes a stale one; the previous reference is removed before the new
+report files land.

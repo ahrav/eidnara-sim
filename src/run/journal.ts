@@ -43,6 +43,8 @@ export type EntryKind =
     | "StoreChecked"
     | "UserTurn"
     | "UserSimRates"
+    | "CounterfactualSample"
+    | "DeleteMemoryObject"
     | "CounterfactualDeletion"
     | "EndArm"
     | "EndRun";
@@ -77,6 +79,8 @@ const KINDS: ReadonlySet<string> = new Set<EntryKind>([
     "StoreChecked",
     "UserTurn",
     "UserSimRates",
+    "CounterfactualSample",
+    "DeleteMemoryObject",
     "CounterfactualDeletion",
     "EndArm",
     "EndRun",

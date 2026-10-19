@@ -8,7 +8,19 @@ import type { Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
 import { leaseHeld, releaseLease, takeLease } from "./journal";
-import { capEvents, compressFaults, planConflicts, runSpan, type TierJob, tierPlan } from "./tier";
+import {
+    capEvents,
+    compressFaults,
+    planConflicts,
+    restartConflicts,
+    restartCut,
+    restartFraction,
+    runSpan,
+    scheduleConflicts,
+    type TierJob,
+    tierPlan,
+    uncuttableRuns,
+} from "./tier";
 
 const event = (kind: string, i: number) => ({
     id: `e-${i}`,
@@ -102,6 +114,49 @@ describe("tier plan", () => {
             "s-1",
         ]);
     });
+
+    test("two moved turn-triggered faults never share a session and turn", () => {
+        const events = ["s-1", "s-2", "s-3"].flatMap((session, k) => [
+            { id: `${session}-start`, kind: "session_start", session },
+            ...Array.from({ length: [2, 5, 1][k] as number }, (_, t) => ({
+                id: `${session}-${t}`,
+                kind: "user_turn",
+                session,
+            })),
+            { id: `${session}-end`, kind: "session_end", session },
+        ]);
+        const fault = (id: string) =>
+            ({
+                id,
+                type: "provider_429",
+                trigger: { kind: "user_turn", session: "s-far", n: 4 },
+            }) as unknown as FaultEpisode;
+        const s = { events, sessions: [], faults: [fault("a"), fault("b")] } as unknown as Scenario;
+        expect(compressFaults(s, events.length).map((f) => f.trigger.session)).toEqual([
+            "s-2",
+            "s-far",
+        ]);
+    });
+
+    test("a moved laptop sleep lasts the idle gap before the session it lands on", () => {
+        const at = { "s-1": 0, "s-2": 50_000, "s-3": 400_000 };
+        const events = Object.entries(at).flatMap(([session, start]) => [
+            { id: `${session}-diff`, kind: "apply_diff", session, scenario_ms: start },
+            { id: `${session}-start`, kind: "session_start", session, scenario_ms: start },
+            { id: `${session}-0`, kind: "user_turn", session, scenario_ms: start + 1_000 },
+            { id: `${session}-end`, kind: "session_end", session, scenario_ms: start + 2_000 },
+        ]);
+        const sleep = {
+            id: "sleep",
+            type: "laptop_sleep",
+            trigger: { kind: "session_start", session: "s-far" },
+            params: { duration_ms: 9_999_999 },
+        } as unknown as FaultEpisode;
+        const s = { events, sessions: [], faults: [sleep] } as unknown as Scenario;
+        const [moved] = compressFaults(s, events.length);
+        expect(moved?.trigger.session).toBe("s-2");
+        expect(moved?.params.duration_ms).toBe(50_000 - 2_000);
+    });
 });
 
 test("the tier command refuses an unknown flag before it plans anything", () => {
@@ -114,6 +169,43 @@ test("the tier command refuses an unknown flag before it plans anything", () => 
     expect(r.status).toBe(2);
     expect(r.stderr).toContain("--host");
     expect(existsSync(join(out, "tier-plan.json"))).toBe(false);
+});
+
+describe("restartFraction", () => {
+    test("the flag wins; without a flag or prior plan, XL stops at 0.4 and other tiers never", () => {
+        expect(restartFraction("0.7", null, "XL")).toBe(0.7);
+        expect(restartFraction(undefined, null, "XL")).toBe(0.4);
+        expect(restartFraction(undefined, null, "L")).toBe(0);
+    });
+
+    test("a rerun without the flag reuses the prior plan's fraction", () => {
+        expect(restartFraction(undefined, { restart_at: 0 }, "XL")).toBe(0);
+        expect(restartFraction(undefined, { restart_at: 0.7 }, "XL")).toBe(0.7);
+        expect(restartFraction("0.2", { restart_at: 0.7 }, "XL")).toBe(0.2);
+        for (const saved of ["0", false, [], Number.NaN, Number.POSITIVE_INFINITY]) {
+            expect(restartFraction(undefined, { restart_at: saved as number }, "XL")).toBeNaN();
+        }
+    });
+});
+
+describe("restartFraction syntax", () => {
+    test("an empty or non-numeric flag is not a fraction", () => {
+        expect(restartFraction("", null, "XL")).toBeNaN();
+        expect(restartFraction("abc", null, "XL")).toBeNaN();
+        expect(restartFraction(" ", { restart_at: 0.3 }, "XL")).toBeNaN();
+        expect(restartFraction("0.25", null, "XL")).toBe(0.25);
+        expect(restartFraction("0", null, "XL")).toBe(0);
+    });
+});
+
+describe("restartCut", () => {
+    test("the cut is the first event count at or past the fraction, and none when that is the last event", () => {
+        expect(restartCut(0.4, 50, 2)).toBe(40);
+        expect(restartCut(0.405, 50, 2)).toBe(41);
+        expect(restartCut(0, 50, 2)).toBeNull();
+        expect(restartCut(0.995, 50, 2)).toBeNull();
+        expect(restartCut(0.99, 50, 2)).toBe(99);
+    });
 });
 
 test("the tier command refuses an output directory another invocation holds", () => {
@@ -186,6 +278,32 @@ describe("tier resume", () => {
     });
 });
 
+describe("uncuttableRuns", () => {
+    test("names the paired runs whose first reachable cut is their last event", () => {
+        const job = (dir: string, events: number, group = "main") =>
+            ({ dir, events, arms: ["host", "eidnara"], group }) as TierJob;
+        const plan = [job("/r/a", 50), job("/r/b", 2), job("/r/p", 2, "profile")];
+        expect(uncuttableRuns(plan, 0.4)).toEqual([]);
+        expect(uncuttableRuns(plan, 0.9)).toEqual(["/r/b"]);
+        expect(uncuttableRuns(plan, 0)).toEqual([]);
+    });
+});
+
+describe("restartConflicts", () => {
+    test("a changed fraction is a conflict once a paired run has begun", () => {
+        const out = mkdtempSync(join(tmpdir(), "sim-tier-"));
+        const job = { dir: join(out, "XL-101-pi"), group: "main" } as TierJob;
+        expect(restartConflicts([job], 0.4, 0.7)).toEqual([]);
+        mkdirSync(job.dir);
+        writeFileSync(join(job.dir, "journal.jsonl"), "");
+        expect(restartConflicts([job], 0.4, 0.7)).toEqual([
+            `${job.dir} began under --restart-at 0.4; the plan now says 0.7`,
+        ]);
+        expect(restartConflicts([job], 0.7, 0.7)).toEqual([]);
+        expect(restartConflicts([job], undefined, 0.7)).toEqual([]);
+    });
+});
+
 test("a run directory with a live lease is being written by another process", () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-tier-"));
     expect(leaseHeld(dir)).toBe(false);
@@ -203,4 +321,28 @@ test("the tier command refuses an output directory inside the Eidnara checkout",
     expect(r.status).toBe(2);
     expect(r.stderr).toContain("Eidnara checkout");
     expect(existsSync(out)).toBe(false);
+});
+
+describe("scheduleConflicts", () => {
+    test("a completed run whose manifest ran another fault schedule than the plan compresses to is a conflict", () => {
+        const out = mkdtempSync(join(tmpdir(), "sim-tier-"));
+        const job = { dir: join(out, "XL-101-pi"), events: 7 } as TierJob;
+        const f = (session: string) =>
+            ({ id: "f-1", trigger: { session } }) as unknown as FaultEpisode;
+        expect(scheduleConflicts([[job, [f("s-1")]]])).toEqual([]);
+        mkdirSync(job.dir);
+        writeFileSync(
+            join(job.dir, "manifest.json"),
+            JSON.stringify({ events: 7, fault_override: [f("s-1")] }),
+        );
+        expect(scheduleConflicts([[job, [f("s-1")]]])).toEqual([]);
+        writeFileSync(
+            join(job.dir, "manifest.json"),
+            JSON.stringify({ events: 7, fault_override: null }),
+        );
+        expect(scheduleConflicts([[job, [f("s-1")]]])).toEqual([
+            `${job.dir} ran another fault schedule than the plan compresses to`,
+        ]);
+        expect(scheduleConflicts([[job, null]])).toEqual([]);
+    });
 });

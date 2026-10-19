@@ -180,6 +180,10 @@ export function requireOrder(
 }
 const modelRef = (model: string) => `amazon-bedrock/${model}`;
 
+export function piModels(ctx: Pick<HostContext, "model" | "sideModel">): string[] {
+    return [...new Set([ctx.model, ...(ctx.sideModel ? [ctx.sideModel] : [])])];
+}
+
 function eidnaraUserConfig(connectionFile: string, model: string): Record<string, unknown> {
     return {
         enabled: true,
@@ -459,7 +463,17 @@ export abstract class SimHost {
 
     abstract openSession(cwd: string, session: string, connection: string | null): Promise<void>;
     abstract prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult>;
-    abstract closeSession(): Promise<void>;
+    private closing: Promise<void> | null = null;
+
+    /** Closes the session; concurrent callers share one in-progress close. */
+    closeSession(): Promise<void> {
+        this.closing ??= this.shutdownSession().finally(() => {
+            this.closing = null;
+        });
+        return this.closing;
+    }
+
+    protected abstract shutdownSession(): Promise<void>;
     abstract transcriptEnv(): Record<string, string>;
     abstract hostPid(): number | null;
 
@@ -541,7 +555,7 @@ export class PiSimHost extends SimHost {
             packages: [],
             defaultProvider: "amazon-bedrock",
             defaultModel: this.ctx.model,
-            enabledModels: [modelRef(this.ctx.model)],
+            enabledModels: piModels(this.ctx).map(modelRef),
             compaction: { enabled: this.ctx.arm === "host" || this.ctx.arm === "eidnara-kl" },
             retry: { enabled: true },
             defaultThinkingLevel: "off",
@@ -549,17 +563,17 @@ export class PiSimHost extends SimHost {
             enableInstallTelemetry: false,
         };
         this.writeControlFile(join(agentDir, "settings.json"), JSON.stringify(settings, null, 2));
-        const model = {
-            id: this.ctx.model,
-            name: this.ctx.model,
+        const models = piModels(this.ctx).map((id) => ({
+            id,
+            name: id,
             api: "bedrock-converse-stream",
             reasoning: false,
             input: ["text"],
             contextWindow: this.ctx.contextLimit,
             maxTokens: 8192,
             cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-        };
-        const providers = { "amazon-bedrock": { baseUrl: this.ctx.proxyHttp2, models: [model] } };
+        }));
+        const providers = { "amazon-bedrock": { baseUrl: this.ctx.proxyHttp2, models } };
         this.writeControlFile(
             join(agentDir, "models.json"),
             JSON.stringify({ providers }, null, 2),
@@ -793,7 +807,7 @@ export class PiSimHost extends SimHost {
     }
 
     // The handle is cleared only after the whole teardown succeeds, so a failed close can be retried.
-    async closeSession(): Promise<void> {
+    protected async shutdownSession(): Promise<void> {
         const rpc = this.rpc;
         if (!rpc) return;
         rpc.child.stdin?.end();
@@ -1219,7 +1233,7 @@ export class OpencodeSimHost extends SimHost {
     // The handles are cleared only after the whole teardown succeeds, so a failed close can be retried.
     // The launcher's exit, confirmed through its launch identity, settles the close; the kill
     // step's own report counts only while that confirmation is missing.
-    async closeSession(): Promise<void> {
+    protected async shutdownSession(): Promise<void> {
         const oc = this.oc;
         if (!oc) return;
         const launched = this.launched ?? { pid: this.hostPid(), start: null };

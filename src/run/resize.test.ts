@@ -1,13 +1,13 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { deleteFactNotes, factMatcher } from "../hosts/storecheck";
 import type { Scenario } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import type { ItemPair, TierInput } from "../stats/gate";
-import { icc, resizeFromM } from "./resize";
+import { gradedMainRuns, icc, resizeFromM } from "./resize";
 import { profileJobs } from "./tier";
 
 const pairs = (n: number, discordant: number, facts: number): ItemPair[] =>
@@ -18,6 +18,12 @@ const pairs = (n: number, discordant: number, facts: number): ItemPair[] =>
         treatment: i < discordant ? 1 : 0,
         order: i,
     }));
+
+/** The tier input fields every resizing reads beside its observations. */
+const base = (p: { arms: { default: string } }) => ({
+    arms: { control: "host", treatment: p.arms.default },
+    journal_seq_at_eval: {},
+});
 
 describe("L resizing from M", () => {
     test("the intraclass correlation is zero for scattered differences and one for fact-aligned ones", () => {
@@ -92,6 +98,111 @@ describe("L resizing from M", () => {
         });
         expect(clustered.per_type[0]?.design_effect).toBeGreaterThan(1);
     });
+
+    test("only main runs with a recorded zero grade exit in a finished tier count as graded", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-m-"));
+        const [a, b, c] = [`${dir}/M-201-pi`, `${dir}/M-202-pi`, `${dir}/M-201-pi-side-haiku`];
+        const plan = [
+            { group: "main", dir: a, host: "pi", seed: 201 },
+            { group: "main", dir: b, host: "pi", seed: 202 },
+            { group: "side-haiku", dir: c, host: "pi", seed: 201 },
+        ];
+        writeFileSync(join(dir, "tier-plan.json"), JSON.stringify({ tier: "M", plan }));
+        for (const j of plan) {
+            mkdirSync(j.dir);
+            writeFileSync(join(j.dir, "grades.jsonl"), "");
+        }
+        expect(() => gradedMainRuns(dir)).toThrow(/tier-result\.json/);
+        const results = [
+            { dir: a, run_exit: 0, grade_exit: 0 },
+            { dir: b, run_exit: 0, grade_exit: 1 },
+            { dir: c, run_exit: 0, grade_exit: 0 },
+        ];
+        writeFileSync(join(dir, "tier-result.json"), JSON.stringify({ results }));
+        expect(() => gradedMainRuns(dir)).toThrow(/main report exit of none/);
+        const reports = { main: 1 };
+        writeFileSync(join(dir, "tier-result.json"), JSON.stringify({ reports, results }));
+        expect(() => gradedMainRuns(dir)).toThrow(/main report exit of 1/);
+        writeFileSync(
+            join(dir, "tier-result.json"),
+            JSON.stringify({ reports: { main: 0 }, results }),
+        );
+        expect(gradedMainRuns(dir)).toEqual({ main: [a, b], ungraded: [b] });
+    });
+
+    test("a main run that exited non-zero stays ungraded even when its grader exited zero", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-m-"));
+        const a = `${dir}/M-201-pi`;
+        const plan = [{ group: "main", dir: a, host: "pi", seed: 201 }];
+        writeFileSync(join(dir, "tier-plan.json"), JSON.stringify({ tier: "M", plan }));
+        const results = [{ dir: a, run_exit: 1, grade_exit: 0 }];
+        writeFileSync(
+            join(dir, "tier-result.json"),
+            JSON.stringify({ reports: { main: 0 }, results }),
+        );
+        expect(gradedMainRuns(dir).ungraded).toEqual([a]);
+    });
+
+    test("resizing refuses a directory of another tier or one missing a registered host or seed", () => {
+        const M = loadPrereg("M");
+        const dir = mkdtempSync(join(tmpdir(), "sim-m-"));
+        const job = (host: string, seed: number) => ({
+            group: "main",
+            dir: `${dir}/M-${seed}-${host}`,
+            host,
+            seed,
+        });
+        const full = M.hosts.flatMap((h) => M.seeds.map((s) => job(h, s)));
+        const results = full.map((j) => ({ dir: j.dir, run_exit: 0, grade_exit: 0 }));
+        writeFileSync(
+            join(dir, "tier-result.json"),
+            JSON.stringify({ reports: { main: 0 }, results }),
+        );
+        writeFileSync(join(dir, "tier-plan.json"), JSON.stringify({ tier: "S", plan: full }));
+        expect(() => gradedMainRuns(dir, M)).toThrow(/S tier plan/);
+        const pi = full.filter((j) => j.host === "pi");
+        writeFileSync(join(dir, "tier-plan.json"), JSON.stringify({ tier: "M", plan: pi }));
+        expect(() => gradedMainRuns(dir, M)).toThrow(/opencode/);
+        writeFileSync(join(dir, "tier-plan.json"), JSON.stringify({ tier: "M", plan: full }));
+        expect(gradedMainRuns(dir, M).ungraded).toEqual([]);
+    });
+
+    test("fault-asymmetric pairs leave the discordance and the design effect, as they leave the gates", () => {
+        const L = loadPrereg("L");
+        const items = pairs(100, 30, 100);
+        const observations: TierInput["observations"] = [
+            { metric: "P1.pass", unit: "item", cluster_key: "ledger_fact_id", items },
+        ];
+        const all = resizeFromM(L, { ...base(L), observations, excluded: [], asymmetric: [] });
+        const dropped = resizeFromM(L, {
+            ...base(L),
+            observations,
+            excluded: [],
+            asymmetric: items.slice(0, 30).map((x) => x.item),
+        });
+        expect(all.per_type[0]?.discordance).toBe(0.3);
+        expect(dropped.per_type[0]).toMatchObject({ pairs: 70, discordance: 0, n: null });
+    });
+
+    test("a type M never saw discordant keeps the planning count, so L's count never falls below it", () => {
+        const L = loadPrereg("L");
+        const r = resizeFromM(L, {
+            ...base(L),
+            observations: [
+                {
+                    metric: "P1.pass",
+                    unit: "item",
+                    cluster_key: "ledger_fact_id",
+                    items: pairs(100, 10, 100),
+                },
+            ],
+            excluded: [],
+            asymmetric: [],
+        });
+        expect(r.per_type.find((t) => t.metric === "P1.pass")?.n).toBeLessThan(r.planning);
+        expect(r.per_type.some((t) => t.n === null)).toBe(true);
+        expect(r.paired_items_per_probe_type).toBe(r.planning);
+    });
 });
 
 describe("tier profiles", () => {
@@ -105,9 +216,11 @@ describe("tier profiles", () => {
         const M = loadPrereg("M");
         const all = (p: { seeds: number[] }) => new Map(p.seeds.map((seed) => [seed, scenario]));
         const m = profileJobs(M, all(M), ["pi", "opencode"], "/o", 1000);
+        const side = (h: string) =>
+            `--side-model ${M.user_sim.model} --tapes /o/M-201-${h}/tape.jsonl`;
         expect(m.map((j) => [j.group, j.host, j.arms.join(","), j.extra.join(" ")])).toEqual([
-            ["side-haiku", "pi", "host,eidnara", `--side-model ${M.user_sim.model}`],
-            ["side-haiku", "opencode", "host,eidnara", `--side-model ${M.user_sim.model}`],
+            ["side-haiku", "pi", "host,eidnara", side("pi")],
+            ["side-haiku", "opencode", "host,eidnara", side("opencode")],
             ["usersim-luna", "pi", "host,eidnara", `--user-sim-model ${M.grading.judge.model}`],
         ]);
         const L = loadPrereg("L");
@@ -174,12 +287,77 @@ describe("counterfactual deletion", () => {
         after.close();
     });
 
+    test("the chosen ids reach the caller before the delete, and planned ids repeat it without matching", async () => {
+        const path = store([
+            [1, "/p/a", "Codename is ember_magpie."],
+            [2, "/p/a", "Prefer tabs."],
+        ]);
+        const planned: number[][] = [];
+        const first = await deleteFactNotes(
+            path,
+            "codename is ember_magpie",
+            [],
+            undefined,
+            undefined,
+            {
+                onPlanned: (ids) => planned.push([...ids]),
+            },
+        );
+        expect(planned).toEqual([[1]]);
+        expect(first).toEqual({ deleted: [1], remaining: 0 });
+        const again = await deleteFactNotes(
+            path,
+            "codename is ember_magpie",
+            [],
+            undefined,
+            undefined,
+            {
+                planned: [1],
+                onPlanned: (ids) => planned.push([...ids]),
+            },
+        );
+        expect(again).toEqual({ deleted: [1], remaining: 0 });
+        expect(planned).toEqual([[1]]);
+    });
+
+    test("a store path that is a symlink is refused before any read or delete", async () => {
+        const real = store([[1, "/p/a", "Codename is ember_magpie."]]);
+        const moved = `${real}.real`;
+        renameSync(real, moved);
+        symlinkSync(moved, real);
+        await expect(deleteFactNotes(real, "codename is ember_magpie", [])).rejects.toThrow(
+            /symlink/,
+        );
+        const after = new Database(moved);
+        expect(after.query("select id from notes").all()).toEqual([{ id: 1 }]);
+        after.close();
+        const root = mkdtempSync(join(tmpdir(), "sim-cf-root-"));
+        const target = store([[1, "/p/a", "Codename is ember_magpie."]]);
+        symlinkSync(dirname(target), join(root, "context"));
+        const viaLink = join(root, "context", "store.db");
+        await expect(
+            deleteFactNotes(viaLink, "codename is ember_magpie", [], () => undefined, root),
+        ).rejects.toThrow(/resolves outside/);
+        const kept = new Database(target);
+        expect(kept.query("select id from notes").all()).toEqual([{ id: 1 }]);
+        kept.close();
+    });
+
     test("a four-word run unique to the fact deletes; one shared with another fact, or three words, does not", () => {
         const fact = "the next step is adding a lark_count field to the cache";
         const carries = factMatcher(fact, ["the next step is adding a ember_count field"], 4);
         expect(carries("we keep adding a lark_count column")).toBe(true);
         expect(carries("Plan: a lark_count field to the cache layer")).toBe(true);
         expect(carries("the next step is adding retries")).toBe(false);
+        const bracketed = "the release codename is [ember_magpie]";
+        expect(factMatcher(bracketed, [], 4)("codename ember_magpie noted")).toBe(true);
+        expect(
+            factMatcher(
+                bracketed,
+                ["the ember_magpie service restarts nightly"],
+                4,
+            )("codename ember_magpie noted"),
+        ).toBe(false);
         const plain = factMatcher("page size for the listing view is fifty", [], 4);
         expect(plain("the listing view is fifty rows")).toBe(true);
         expect(plain("the listing view has paging")).toBe(false);

@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { join, relative } from "node:path";
 
 /** The check format whose ranges carry content digests; checks recorded before it have no format. */
 export const DIGEST_FORMAT = 2;
@@ -251,13 +252,13 @@ export interface Deletion {
 }
 
 const words = (text: string) => text.toLowerCase().match(/[\w[\]-]+/g) ?? [];
+const unbracket = (t: string) => t.replace(/[[\]]/g, "");
 const runsOf = (text: string, size: number) => {
-    const w = words(text).map((t) => t.replace(/[[\]]/g, ""));
+    const w = words(text).map(unbracket);
     return new Set(
         w.slice(0, Math.max(0, w.length - size + 1)).map((_, i) => w.slice(i, i + size).join(" ")),
     );
 };
-const literal = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * Notes carry a fact when they share a run of `size` words with its statement that no other
@@ -267,16 +268,16 @@ const literal = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
  */
 export function factMatcher(statement: string, others: readonly string[], size: number) {
     const shared = new Set(others.flatMap((o) => [...runsOf(o, size)]));
-    const sharedWords = new Set(others.flatMap(words));
+    const sharedWords = new Set(others.flatMap(words).map(unbracket));
     const runs = [...runsOf(statement, size)].filter((r) => !shared.has(r));
     const values = words(statement)
         .filter((t) => /^\[.+\]$/.test(t) || (t.length >= 4 && /[\d_]/.test(t)))
-        .filter((t) => !sharedWords.has(t))
-        .map((t) => new RegExp(`(^|[^\\w-])${literal(t.replace(/[[\]]/g, ""))}($|[^\\w-])`));
+        .map(unbracket)
+        .filter((t) => !sharedWords.has(t));
     return (content: string) => {
-        const text = content.toLowerCase().replace(/[[\]]/g, "");
+        const tokens = new Set(words(content).map(unbracket));
         const own = runsOf(content, size);
-        return runs.some((r) => own.has(r)) || values.some((v) => v.test(text));
+        return runs.some((r) => own.has(r)) || values.some((v) => tokens.has(v));
     };
 }
 
@@ -315,19 +316,42 @@ const readNotes = (path: string) => {
  * supplies the store's caller-scope functions so its ownership triggers admit the delete, then
  * reads back how many notes still match the fact by three-word runs or values.
  */
+export interface DeletionPlan {
+    planned?: number[];
+    onPlanned?: (ids: number[]) => void;
+}
+
 export async function deleteFactNotes(
     path: string,
     statement: string,
     others: readonly string[] = [],
+    onSpawn: (child: ReturnType<typeof Bun.spawn>) => void = () => undefined,
+    within?: string,
+    plan: DeletionPlan = {},
 ): Promise<Deletion> {
+    if (lstatSync(path).isSymbolicLink()) {
+        throw new Error(`${path} is a symlink; the deletion opens only the arm's own store file`);
+    }
+    if (
+        within !== undefined &&
+        realpathSync(path) !== join(realpathSync(within), relative(within, path))
+    ) {
+        throw new Error(
+            `${path} resolves outside ${within}; the deletion opens only the arm's own store file`,
+        );
+    }
     const carries = factMatcher(statement, others, 4);
-    const ids = readNotes(path)
-        .filter((n) => carries(n.content))
-        .map((n) => n.id);
+    const ids =
+        plan.planned ??
+        readNotes(path)
+            .filter((n) => carries(n.content))
+            .map((n) => n.id);
+    if (plan.planned === undefined) plan.onPlanned?.(ids);
     if (ids.length > 0) {
         const p = Bun.spawn(["python3", "-c", DELETE, path, JSON.stringify(ids)], {
             stderr: "pipe",
         });
+        onSpawn(p);
         if ((await p.exited) !== 0) throw new Error(await new Response(p.stderr).text());
     }
     const verify = factMatcher(statement, others, 3);

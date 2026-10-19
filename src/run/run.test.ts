@@ -961,3 +961,26 @@ test("a delivered user turn sits just before its turn's first proxy call, in one
     expect(merged[2]?.seq).toBeGreaterThan(4);
     expect(merged[2]?.seq).toBeLessThan(9);
 });
+
+describe("scenario loading", () => {
+    test("an L scenario compiles only with the resized count the tier command records", async () => {
+        const out = mkdtempSync(join(tmpdir(), "sim-l-"));
+        const config = {} as SimConfig;
+        await expect(loadScenario({ config, tier: "L", seed: 301, out })).rejects.toThrow(
+            /resizing/,
+        );
+    });
+
+    test("a cached scenario compiled for another item count is refused with the resized count", async () => {
+        const out = mkdtempSync(join(tmpdir(), "sim-l-"));
+        const body = { manifest: { seed: 301, tier: "L", probes_per_type: 25 }, events: [] };
+        writeFileSync(
+            join(out, "scenario.json"),
+            canonicalJson({ ...body, scenario_hash: sha256Hex(canonicalJson(body)) }),
+        );
+        const config = {} as SimConfig;
+        await expect(loadScenario({ config, tier: "L", seed: 301, out }, 300)).rejects.toThrow(
+            /probes_per_type 25/,
+        );
+    });
+});

@@ -20,6 +20,50 @@ export interface TierJob {
 /** Room left in the wall budget for setup, grading, and the turns' variance. */
 const BUDGET_SHARE = 0.85;
 
+export function restartFraction(
+    flag: string | undefined,
+    prior: { restart_at?: number } | null,
+    tier: Preregistration["tier"],
+): number {
+    if (flag !== undefined) return /^\d*\.?\d+$/.test(flag) ? Number(flag) : Number.NaN;
+    const saved = prior?.restart_at;
+    if (saved === undefined) return tier === "XL" ? 0.4 : 0;
+    return typeof saved === "number" && Number.isFinite(saved) ? saved : Number.NaN;
+}
+
+/**
+ * The journal `Event` threshold for requesting a paired run's restart: the first count at or past
+ * `restartAt` of the planned events across `arms`. Null when that count is the run's last event
+ * or `restartAt` is 0.
+ */
+export function restartCut(restartAt: number, events: number, arms: number): number | null {
+    const total = events * arms;
+    const cut = Math.ceil(restartAt * total);
+    return restartAt > 0 && cut < total ? cut : null;
+}
+
+/** The paired runs that began under a saved restart fraction the chosen one would change. */
+export function restartConflicts(
+    plan: TierJob[],
+    saved: number | undefined,
+    chosen: number,
+): string[] {
+    if (saved === undefined || saved === chosen) return [];
+    return plan
+        .filter((j) => j.group === "main" && existsSync(join(j.dir, "journal.jsonl")))
+        .map((j) => `${j.dir} began under --restart-at ${saved}; the plan now says ${chosen}`);
+}
+
+/** The paired runs a positive `restartAt` has no cut for, named before the plan is saved. */
+export function uncuttableRuns(plan: TierJob[], restartAt: number): string[] {
+    if (!(restartAt > 0)) return [];
+    return plan
+        .filter(
+            (j) => j.group === "main" && restartCut(restartAt, j.events, j.arms.length) === null,
+        )
+        .map((j) => j.dir);
+}
+
 /**
  * The longest prefix of the scenario that ends on a session end and whose user turns, run once
  * per arm at `turnMs` each, fit inside the tier's wall budget.
@@ -81,57 +125,6 @@ export function tierPlan(
 }
 
 /**
- * When the run began and, for a completed run, ended: its journaled `StartRun` and `EndRun`,
- * with `now` standing in for a run with no journal yet.
- */
-export function runSpan(dir: string, now: number): { started: number; ended?: number } {
-    const path = join(dir, "journal.jsonl");
-    if (!existsSync(path)) return { started: now };
-    const entries = readJournal(path);
-    const wall = (kind: string) => {
-        const e = entries.find((x) => x.kind === kind);
-        if (e === undefined) return undefined;
-        if (!Number.isFinite(e.wall_ms))
-            throw new Error(`${path}: ${kind} wall_ms is not a number`);
-        return e.wall_ms;
-    };
-    const started = wall("StartRun") ?? now;
-    const ended = wall("EndRun");
-    if (ended !== undefined && ended < started)
-        throw new Error(`${path}: EndRun at ${ended} is before StartRun at ${started}`);
-    return ended === undefined ? { started } : { started, ended };
-}
-
-/** Jobs whose planned prefix differs from the events their existing manifest ran. */
-export function planConflicts(plan: TierJob[]): string[] {
-    return plan.flatMap((job) => {
-        const path = join(job.dir, "manifest.json");
-        if (!existsSync(path)) return [];
-        const m = JSON.parse(readFileSync(path, "utf8")) as {
-            events: number;
-            order?: string[];
-            host?: string;
-            seed?: number;
-        };
-        const out: string[] = [];
-        if (Number(m.events) !== job.events)
-            out.push(`${job.dir} ran ${m.events} events, the plan says ${job.events}`);
-        if (m.order && m.order.join(",") !== job.arms.join(","))
-            out.push(
-                `${job.dir} ran arms ${m.order.join(",")}, the plan says ${job.arms.join(",")}`,
-            );
-        if (
-            (m.host !== undefined && m.host !== job.host) ||
-            (m.seed !== undefined && m.seed !== job.seed)
-        )
-            out.push(
-                `${job.dir} ran host ${m.host} seed ${m.seed}, the plan says ${job.host} ${job.seed}`,
-            );
-        return out;
-    });
-}
-
-/**
  * The tier's extra profiles. M adds a model-factor run per host with Eidnara's side calls on
  * the user-sim's Haiku model, and one Pi run with the judge's `gpt-5.6-luna` as the user-sim.
  * L adds the concurrent-arms load-stress profile: each arm of the first seed in its own run,
@@ -164,7 +157,7 @@ export function profileJobs(
                     h,
                     "side-haiku",
                     pair,
-                    ["--side-model", prereg.user_sim.model],
+                    ["--side-model", prereg.user_sim.model, "--tapes", `${base(h)}/tape.jsonl`],
                     `${base(h)}-side-haiku`,
                 ),
             ),
@@ -198,6 +191,14 @@ export function profileJobs(
  */
 export function compressFaults(scenario: Scenario, events: number): FaultEpisode[] {
     const prefix = scenario.events.slice(0, events);
+    const gap = new Map<string, number>();
+    let lastEnd: number | null = null;
+    for (const e of prefix) {
+        if (e.kind === "session_start" && lastEnd !== null) {
+            gap.set(String(e.session), Number(e.scenario_ms) - lastEnd);
+        }
+        if (e.kind === "session_end") lastEnd = Number(e.scenario_ms);
+    }
     const ended = new Set(
         prefix.filter((e) => e.kind === "session_end").map((e) => String(e.session)),
     );
@@ -215,16 +216,95 @@ export function compressFaults(scenario: Scenario, events: number): FaultEpisode
         );
         p90.add(longest);
     }
+    const slot = (t: FaultEpisode["trigger"], s = t.session) => (t.kind === "user_turn" ? s : null);
+    const taken = new Set(
+        scenario.faults
+            .filter((f) => sessions.includes(f.trigger.session))
+            .flatMap((f) => slot(f.trigger) ?? []),
+    );
     return scenario.faults.map((f, i) => {
         if (sessions.includes(f.trigger.session)) return f;
         const n = f.trigger.kind === "user_turn" ? (f.trigger.n ?? 1) : 0;
+        const sleep = f.type === "laptop_sleep";
         const fits = (s: string) =>
             (f.trigger.kind !== "session_start" || s !== sessions[0]) &&
             (turns.get(s) ?? 0) >= Math.max(1, n) &&
-            (f.trigger.kind !== "first_summarizer_call" || p90.has(s));
+            (f.trigger.kind !== "first_summarizer_call" || p90.has(s)) &&
+            (!sleep || (gap.get(s) ?? 0) > 0) &&
+            !taken.has(slot(f.trigger, s) ?? "");
         const start = Math.floor(((i + 1) * sessions.length) / (scenario.faults.length + 1));
         const order = [...sessions.slice(start), ...sessions.slice(0, start)];
         const session = order.find(fits);
-        return session ? { ...f, trigger: { ...f.trigger, session } } : f;
+        if (!session) return f;
+        const used = slot(f.trigger, session);
+        if (used) taken.add(used);
+        const params = sleep ? { ...f.params, duration_ms: gap.get(session) ?? 0 } : f.params;
+        return { ...f, trigger: { ...f.trigger, session }, params };
+    });
+}
+
+/**
+ * When the run began and, for a completed run, ended: its journaled `StartRun` and `EndRun`,
+ * with `now` standing in for a run with no journal yet.
+ */
+export function runSpan(dir: string, now: number): { started: number; ended?: number } {
+    const path = join(dir, "journal.jsonl");
+    if (!existsSync(path)) return { started: now };
+    const entries = readJournal(path);
+    const wall = (kind: string) => {
+        const e = entries.find((x) => x.kind === kind);
+        if (e === undefined) return undefined;
+        if (!Number.isFinite(e.wall_ms))
+            throw new Error(`${path}: ${kind} wall_ms is not a number`);
+        return e.wall_ms;
+    };
+    const started = wall("StartRun") ?? now;
+    const ended = wall("EndRun");
+    if (ended !== undefined && ended < started)
+        throw new Error(`${path}: EndRun at ${ended} is before StartRun at ${started}`);
+    return ended === undefined ? { started } : { started, ended };
+}
+
+/**
+ * Completed or begun runs whose manifest records another fault schedule than the plan compresses
+ * their prefix to; `null` faults means the scenario's own schedule.
+ */
+export function scheduleConflicts(plan: [TierJob, FaultEpisode[] | null][]): string[] {
+    return plan.flatMap(([job, faults]) => {
+        const path = join(job.dir, "manifest.json");
+        if (!existsSync(path)) return [];
+        const ran = JSON.parse(readFileSync(path, "utf8")).fault_override ?? null;
+        return JSON.stringify(ran) === JSON.stringify(faults)
+            ? []
+            : [`${job.dir} ran another fault schedule than the plan compresses to`];
+    });
+}
+
+/** Jobs whose planned prefix differs from the events their existing manifest ran. */
+export function planConflicts(plan: TierJob[]): string[] {
+    return plan.flatMap((job) => {
+        const path = join(job.dir, "manifest.json");
+        if (!existsSync(path)) return [];
+        const m = JSON.parse(readFileSync(path, "utf8")) as {
+            events: number;
+            order?: string[];
+            host?: string;
+            seed?: number;
+        };
+        const out: string[] = [];
+        if (Number(m.events) !== job.events)
+            out.push(`${job.dir} ran ${m.events} events, the plan says ${job.events}`);
+        if (m.order && m.order.join(",") !== job.arms.join(","))
+            out.push(
+                `${job.dir} ran arms ${m.order.join(",")}, the plan says ${job.arms.join(",")}`,
+            );
+        if (
+            (m.host !== undefined && m.host !== job.host) ||
+            (m.seed !== undefined && m.seed !== job.seed)
+        )
+            out.push(
+                `${job.dir} ran host ${m.host} seed ${m.seed}, the plan says ${job.host} ${job.seed}`,
+            );
+        return out;
     });
 }

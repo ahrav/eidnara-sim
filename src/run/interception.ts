@@ -9,6 +9,8 @@ export interface BinaryProbe {
     keep: string[];
     argv: string[];
     env?: Record<string, string>;
+    /** Paths the probe may read but must leave as they are, such as the Eidnara checkout. */
+    readOnly?: string[];
     mode: "prints-time" | "binds-clock";
     /** The normal exit for this invocation; exit 0 when absent. */
     expect?: { exit: number; stderr?: RegExp };
@@ -101,15 +103,21 @@ export function interceptionTest(
         const wallBefore = Date.now();
         // GNU timeout signals its own process group, so a KILL on expiry reaches sudo, the
         // unshare parent (which ignores TERM while it waits), namespace PID 1, and the probe.
+        // The probe runs from an allowlisted environment: the sandbox preserves whatever it is
+        // handed, so the tier process's own variables stay out of it.
         const r = Bun.spawnSync(
             [
                 "timeout",
                 "-s",
                 "KILL",
                 String(timeoutSeconds),
-                ...launch(launcher, keep, env, b.argv),
+                ...launch(launcher, keep, env, b.argv, b.readOnly ?? []),
             ],
-            { stdout: "pipe", stderr: "pipe" },
+            {
+                stdout: "pipe",
+                stderr: "pipe",
+                env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: clockDir, ...env },
+            },
         );
         const wall = Date.now() - wallBefore;
         let evidence: Record<string, unknown> = {

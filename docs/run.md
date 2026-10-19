@@ -108,7 +108,8 @@ entries of different arms are not ordered by scenario time.
 
 ## Clock
 
-`Clock` keeps scenario time and a busy set of turns and background jobs; an
+`Clock` keeps scenario time and a busy set of turns, background jobs, and
+scheduler fault mechanisms; an
 id that is already busy is refused, so two jobs never share one marker, and an
 end for an id that is not busy is refused before anything is journaled.
 While anything is busy, scenario time runs at wall speed, measured on the
@@ -160,7 +161,7 @@ call through it is refused:
    at the Nth user turn of their session, and `FaultFired` is journaled after
    the proxy accepted the arming; a failed append disarms the episode before
    the error propagates. Scheduler faults call the driver's
-   `fault` and journal its evidence, which must serialize to a JSON object
+   `fault`, hold the clock busy while its mechanism runs, and journal its evidence, which must serialize to a JSON object
    (the journaled form is what is checked, so a `toJSON` that yields anything
    else fails the fault and the run); a daemon exit's detail is held to the
    same shape. The mid-fold SIGKILL, the daemon restart,

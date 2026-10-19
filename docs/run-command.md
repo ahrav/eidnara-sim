@@ -170,7 +170,9 @@ toolchain wrappers are created exclusively after removing any planted name.
    a row whose `seq` or `scenario_ms` is not a number), when any of those digests or a replay
    tape's digest (`tape_sha256`) changed, when an
    interception result, probed path, or toolchain version
-   changed, or when the selected host's version or transcript paths changed,
+   changed, when a probed host version or install path (current or
+   `config.upgrade`) changed, or when the selected host's version or transcript
+   paths changed,
    and appends its preflight result to `preflight.jsonl` (dropping an
    unterminated final line first). The `Preflight` journal entry carries a
    digest of the manifest's execution fields (everything but the

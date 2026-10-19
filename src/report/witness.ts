@@ -59,6 +59,36 @@ const outcome = (instances: number, bad: string[], what: string) =>
 
 const jsonl = <T>(path: string): T[] => readJsonl<T>(path);
 
+/** The count measures paired pass-to-fail outcomes for probes of `type` with verified deletions. */
+function counterfactualFlips(
+    g: GradedRun,
+    type: string,
+    memory = "eidnara",
+    cf = "eidnara-cf",
+): number {
+    const arm = g.run.arms.find((a) => a.arm === cf);
+    if (!arm || !g.run.arms.some((a) => a.arm === memory)) return 0;
+    const verified = new Set(
+        arm.journal
+            .filter(
+                (e) =>
+                    e.kind === "CounterfactualDeletion" &&
+                    e.skipped === undefined &&
+                    Array.isArray(e.deleted) &&
+                    e.deleted.length > 0 &&
+                    e.remaining === 0,
+            )
+            .map((e) => String(e.probe)),
+    );
+    const typed = new Set(g.scenario.probes.filter((p) => p.type === type).map((p) => p.id));
+    const verdict = (a: string, item: string) =>
+        g.grades.find((r) => r.arm === a && r.item === item)?.verdict;
+    return (g.scenario.cf_deletions ?? [])
+        .map((d) => d.probe)
+        .filter((p) => typed.has(p) && verified.has(p))
+        .filter((p) => verdict(memory, p) === "pass" && verdict(cf, p) === "fail").length;
+}
+
 function context(g: GradedRun): Ctx {
     const grades = join(g.run.dir, "grades.jsonl");
     const manifest = join(g.run.dir, "manifest.json");
@@ -224,6 +254,10 @@ const CHECKS: Record<string, Check> = {
             0,
         );
         return outcome(n, [], "divergences");
+    },
+    "SIM-P74": (runs) => {
+        const flips = runs.reduce((s, c) => s + counterfactualFlips(c.g, "P1"), 0);
+        return outcome(flips, [], "sampled P1 passes flipped by deletion");
     },
     "SIM-P10": (runs) => {
         const full = runs.filter((c) => c.manifest.events >= c.g.scenario.events.length);

@@ -9,6 +9,7 @@ import type { Entry } from "../run/journal";
 import type { Scenario } from "../scenario/compile";
 import {
     continuity,
+    parseContinuity,
     recallDrift,
     renderConditions,
     renderDrift,
@@ -172,9 +173,75 @@ describe("recall drift", () => {
             ["host", false],
             ["x", null],
         ]);
-        expect(renderDrift(drift, "L").join("\n")).toContain("| pi | eidnara | P8 | 0.50 |");
+        expect(renderDrift(drift, "L").join("\n")).toContain(
+            "| pi | eidnara | P8 | 10/20 | 0.5000 | 38/40 [0.8308, 0.9939] | drift |",
+        );
+    });
+
+    test("a reference row for an arm the campaign ran shows as missing; a reference-only arm is left out", () => {
+        const p9 = { ...row("eidnara", 30, 29), probe: "P9" as const };
+        const reference = [row("eidnara", 40, 38), p9, row("eidnara-cf", 40, 1)];
+        const drift = recallDrift([row("eidnara", 20, 10)], reference);
+        expect(drift.map((d) => [d.arm, d.probe, d.rate, d.drift])).toEqual([
+            ["eidnara", "P8", 0.5, true],
+            ["eidnara", "P9", null, null],
+        ]);
+        expect(renderDrift(drift, "L").join("\n")).toContain("| pi | eidnara | P9 | 0/0 | - |");
+        const allExcluded = recallDrift([], reference, ["pi/eidnara"]);
+        expect(allExcluded.map((d) => [d.arm, d.probe, d.rate])).toEqual([
+            ["eidnara", "P8", null],
+            ["eidnara", "P9", null],
+        ]);
     });
 });
+
+describe("parseContinuity", () => {
+    const row: Record<string, unknown> = {
+        host: "pi",
+        arm: "eidnara",
+        probe: "P8",
+        n: 40,
+        pass: 38,
+        pass_with_transcript_read: 2,
+        v1: null,
+    };
+    const file = (rows: unknown[], over: Record<string, unknown> = {}) => ({
+        schema: "sim-continuity/v1",
+        tier: "L",
+        prereg_sha256: "abc",
+        rows,
+        ...over,
+    });
+    test("a continuity file written by the report parses back", () => {
+        const parsed: unknown[] = parseContinuity(file([row, { ...row, probe: "P9" }]), "L", "abc");
+        expect(parsed).toEqual([row, { ...row, probe: "P9" }]);
+    });
+
+    test("a reference from another tier or pre-registration is refused", () => {
+        expect(() => parseContinuity(file([row], { tier: "S" }), "L", "abc")).toThrow(
+            "continuity.tier: expected L, found S",
+        );
+        expect(() => parseContinuity(file([row], { prereg_sha256: "zzz" }), "L", "abc")).toThrow(
+            "continuity.prereg_sha256: expected abc",
+        );
+        expect(() => parseContinuity([row], "L", "abc")).toThrow("continuity: expected an object");
+    });
+
+    test("a malformed reference is refused by row and field", () => {
+        const parseRows = (rows: unknown) => parseContinuity(file(rows as unknown[]), "L", "abc");
+        expect(() => parseRows({ rows: [row] })).toThrow("continuity.rows: expected an array");
+        expect(() => parseRows([{ ...row, n: "40" }])).toThrow("continuity[0].n");
+        expect(() => parseRows([{ ...row, n: 1e20, pass: 5e19 }])).toThrow("continuity[0].n");
+        expect(() => parseRows([{ ...row, pass: 41 }])).toThrow("continuity[0].pass");
+        expect(() => parseRows([{ ...row, pass: -1 }])).toThrow("continuity[0].pass");
+        expect(() => parseRows([{ ...row, pass_with_transcript_read: 39 }])).toThrow(
+            "continuity[0].pass_with_transcript_read",
+        );
+        expect(() => parseRows([{ ...row, probe: "P1" }])).toThrow("continuity[0].probe");
+        expect(() => parseRows([row, row])).toThrow("continuity[1]: duplicates pi/eidnara/P8");
+    });
+});
+
 test("a symlink inside the transcript tree is skipped, so a loop or an escape cannot derail the walk", () => {
     const g = fixture();
     const sessions = join(g.run.dir, "host/r/home/.pi/agent/sessions");

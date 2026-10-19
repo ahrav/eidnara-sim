@@ -5,6 +5,7 @@ import {
     OpencodeSimHost,
     PiSimHost,
     type PromptResult,
+    piModels,
     toolCommand,
 } from "./arms";
 
@@ -29,6 +30,12 @@ test("a structured write or edit keeps the content it wrote under its target pat
     expect(toolCommand("read", { path: "src/db.rs", offset: 200 })).not.toBe(
         toolCommand("read", { path: "src/db.rs", offset: 10 }),
     );
+});
+
+test("a Pi host registers its side-call model beside the agent model, once", () => {
+    expect(piModels({ model: "opus" })).toEqual(["opus"]);
+    expect(piModels({ model: "opus", sideModel: "opus" })).toEqual(["opus"]);
+    expect(piModels({ model: "opus", sideModel: "haiku" })).toEqual(["opus", "haiku"]);
 });
 
 test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's clock from the turn's first message", async () => {

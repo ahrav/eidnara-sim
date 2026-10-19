@@ -56,7 +56,7 @@ import {
 import { writeAtomic } from "./atomic";
 import { type Entry, Journal, releaseLease, requireAppendable, takeLease } from "./journal";
 import { plainPath } from "./launcher";
-import { type Preflight, piCli, preflight } from "./preflight";
+import { type Preflight, piCli, preflight, preflightDrift } from "./preflight";
 import { PRICE_TABLE, type PriceTable } from "./price";
 import { running } from "./procs";
 import { ResourceSampler } from "./sampler";
@@ -295,7 +295,7 @@ export function requireJournalShape(
             throw bad(e, `has scenario_ms ${JSON.stringify(e.scenario_ms)}`);
         if (!Number.isInteger(e.seq)) throw bad(e, `has seq ${JSON.stringify(e.seq)}`);
         if (ended) throw bad(e, "follows EndRun");
-        if (e.kind === "Preflight") continue;
+        if (e.kind === "Preflight" || e.kind === "CounterfactualSample") continue;
         if (e.kind === "StartRun") {
             if (started) throw bad(e, "repeats StartRun");
             started = true;
@@ -611,20 +611,28 @@ function preregOf(o: Pick<RunOptions, "tier">): Preregistration {
     return loaded;
 }
 
+/**
+ * `items` supplies L's resized paired-item count per probe type. A tier that pre-registers
+ * resizing compiles only with that count.
+ */
 export async function loadScenario(
     o: Pick<RunOptions, "config" | "out" | "seed" | "tier">,
     items?: number,
 ): Promise<Scenario> {
     const path = join(o.out, "scenario.json");
     if (!existsSync(path)) {
+        if (items === undefined && loadPrereg(o.tier).resizing) {
+            throw new HarnessFailure(
+                `${o.tier} compiles only with the resizing scripts/tier.ts --resize-from records`,
+            );
+        }
         const { aws_profile, region } = o.config.bedrock;
         const cache = join(ROOT, "runs/scenarios/embeddings.jsonl");
         mkdirSync(dirname(cache), { recursive: true });
         requirePlainCache(cache, o.config.eidnara_checkout);
         const embedder = bedrockEmbedder(aws_profile, region, cache);
         const input = loadCompileInput(o.seed, o.tier, embedder);
-        if (items !== undefined) input.prereg.stopping_rule.paired_items_per_probe_type = items;
-        const compiled = await compileScenario(input);
+        const compiled = await compileScenario(items === undefined ? input : { ...input, items });
         writeAtomic(path, `${canonicalJson(compiled)}\n`);
     }
     const scenario = readJsonFile<Scenario>(path);
@@ -634,10 +642,20 @@ export async function loadScenario(
             `scenario.json does not hash to its scenario_hash ${scenario_hash}`,
         );
     }
-    const expected = structuredClone(preregOf(o));
-    if (items !== undefined) expected.stopping_rule.paired_items_per_probe_type = items;
+    if (items !== undefined) {
+        const { seeds, hosts } = loadPrereg(o.tier);
+        const want = Math.ceil(items / (seeds.length * hosts.length));
+        const { probes_per_type } = scenario.manifest as { probes_per_type: number };
+        if (probes_per_type !== want) {
+            throw new HarnessFailure(
+                `${path} has probes_per_type ${probes_per_type}; the recorded resizing needs ${want}`,
+            );
+        }
+    }
+    // A resized compile takes its count as an input, so the scenario records the registered
+    // pre-registration's hash.
     const stale = scenarioInputMismatch(scenario, {
-        preregistration_sha256: preregistrationHash(expected),
+        preregistration_sha256: preregistrationHash(preregOf(o)),
         corpus_inputs_sha256: corpusInputsSha256(),
     });
     if (stale) throw new HarnessFailure(stale);
@@ -875,11 +893,42 @@ export function requireAdmittedOrder(
     }
 }
 
-/** The arm a user-sim divergence is measured against: an A/A control's own arm, else the first. */
-export const referenceArm = (order: string[]) => (arm: string) =>
-    arm.includes("~") ? armBase(arm) : (order[0] as string);
+const PARTNER: Partial<Record<string, string>> = { eidnara: "eidnara-cf", "eidnara-cf": "eidnara" };
+
+/**
+ * The arm a user-sim divergence is measured against: an A/A control's own arm; the
+ * `eidnara`/`eidnara-cf` partner when it appears earlier in `order`; else the first arm.
+ */
+export const referenceArm = (order: string[]) => (arm: string) => {
+    if (arm.includes("~")) return armBase(arm);
+    const partner = PARTNER[arm];
+    const at = (a: string) => order.indexOf(a);
+    return partner && at(partner) >= 0 && at(partner) < at(arm) ? partner : (order[0] as string);
+};
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+export interface ProxyScope {
+    session: string | null;
+    turn: string | null;
+}
+
+/**
+ * The proxy scope while a fault runs and after it: a second client's calls belong to its own
+ * session, and the primary's session is current again once the fault returns.
+ */
+export function faultScope(
+    prior: ProxyScope,
+    f: Pick<FaultEpisode, "type">,
+    at: ScenarioEvent | undefined,
+): { during: ProxyScope; after: ProxyScope } {
+    if (f.type !== "two_hosts_one_daemon" || at === undefined)
+        return { during: prior, after: prior };
+    return {
+        during: { session: `${at.session}-b`, turn: null },
+        after: { session: at.session, turn: null },
+    };
+}
 
 /** `--events` may not exceed the compiled schedule, so the manifest never claims unrun events. */
 function eventCount(requested: number | undefined, compiled: number): number {
@@ -1169,6 +1218,11 @@ export async function loadManifest(
         const upgradeRow = (p: Preflight) => (p.upgrade ?? []).find((h) => h.host === o.host);
         if (!sameJson(upgradeRow(manifest.preflight), upgradeRow(checks))) {
             throw new HarnessFailure(`the ${o.host} upgrade host changed since the run started`);
+        }
+        // Every host version and install path, the other host's and its upgrade included.
+        const drift = preflightDrift(manifest.preflight, checks);
+        if (drift.length > 0) {
+            throw new HarnessFailure(`${drift.join(", ")} changed since the run started`);
         }
         if (manifest.fault_override !== null) {
             if (!Array.isArray(manifest.fault_override)) {
@@ -1595,6 +1649,7 @@ async function runArms(
     const events = allEvents.slice(0, manifest.events);
     const hostRow = manifest.preflight.hosts.find((h) => h.host === o.host);
     if (!hostRow) throw new Error(`preflight lists no ${o.host} host`);
+    const upgradeRow = manifest.preflight.upgrade?.find((h) => h.host === o.host);
 
     const drivers: Record<string, ArmDriver> = {};
     const samplers = new Map<string, ResourceSampler>();
@@ -1758,7 +1813,7 @@ async function runArms(
     const turnIndex = new Map(
         events.filter((e) => e.index !== undefined).map((e) => [e.id, e.index as number]),
     );
-    const scripted = scenario.events.filter((e) => e.kind === "user_turn") as unknown as {
+    const scripted = scenario.events.filter((e) => e.kind === "user_turn") as {
         id: string;
         session: string;
         index: number;
@@ -1808,11 +1863,30 @@ async function runArms(
         const statement = scenario.facts.find((f) => f.id === fact)?.statement ?? "";
         deletions.set(at, [...(deletions.get(at) ?? []), { probe: c.probe, fact, statement }]);
     }
-    const statements = scenario.facts.map((f) => f.statement);
+    const othersOf = (fact: string) =>
+        scenario.facts.filter((f) => f.id !== fact).map((f) => f.statement);
     if (manifest.order.some((a) => armBase(a) === "eidnara-cf") && !Bun.which("python3")) {
         throw new HarnessFailure(
             "the eidnara-cf arm deletes through python3, which is not on PATH",
         );
+    }
+    const journaled = (kind: string) => journal.entries.some((e) => e.kind === kind);
+    if (deletions.size > 0 && journaled("StartRun") && !journaled("CounterfactualSample")) {
+        throw new HarnessFailure(
+            "this run started before its counterfactual sample was journaled; start it afresh",
+        );
+    }
+    if (deletions.size > 0 && !journaled("StartRun")) {
+        journal.append({
+            kind: "CounterfactualSample",
+            arm: null,
+            scenario_ms: 0,
+            sample: (scenario.cf_deletions ?? []).map((c) => ({
+                probe: c.probe,
+                fact: String(c.fact),
+                before_event: String(c.before_event),
+            })),
+        });
     }
     const userTurns = (arm: string, session?: string) =>
         deliveredTurns(journal.entries, arm, session);
@@ -1842,7 +1916,8 @@ async function runArms(
             transcriptPaths: hostRow.transcript_paths,
             hostVersions: {
                 from: hostRow.version,
-                to: manifest.preflight.upgrade?.find((h) => h.host === o.host)?.version ?? null,
+                to: upgradeRow?.version ?? null,
+                ...(upgradeRow ? { upgradeTranscriptPaths: upgradeRow.transcript_paths } : {}),
             },
             loopStore,
             onDaemonExit: (detail) => scheduler.daemonExited(detail),
@@ -1925,6 +2000,7 @@ async function runArms(
                         // host prompt share it.
                         const opened = Date.now();
                         const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
+                        guard();
                         const user = { session: e.session, label: d.label, delivered: d.delivered };
                         if (!d.delivered) return { user };
                         const out = await driver.event({
@@ -1955,24 +2031,48 @@ async function runArms(
                     if (armBase(arm) !== "eidnara-cf") return;
                     for (const c of deletions.get(e.id) ?? []) {
                         if (done(c.probe)) continue;
-                        const others = statements.filter((x) => x !== c.statement);
-                        log({
-                            probe: c.probe,
-                            fact: c.fact,
-                            ...(await driver.deleteFact(c.statement, others)),
+                        // The note ids a deletion targets are journaled before it runs, so a
+                        // resumed run deletes the same notes rather than planning anew.
+                        const planned = journal.entries
+                            .filter(
+                                (x) =>
+                                    x.kind === "DeleteMemoryObject" &&
+                                    x.arm === arm &&
+                                    x.target_item_id === c.probe,
+                            )
+                            .map((x) => Number(x.object_id));
+                        const result = await driver.deleteFact(c.statement, othersOf(c.fact), {
+                            ...(planned.length ? { planned } : {}),
+                            onPlanned: (ids) => {
+                                for (const id of ids) {
+                                    journal.append({
+                                        kind: "DeleteMemoryObject",
+                                        arm,
+                                        scenario_ms: now(),
+                                        object_id: id,
+                                        object_kind: "note",
+                                        target_item_id: c.probe,
+                                        fact: c.fact,
+                                        event: e.id,
+                                    });
+                                }
+                            },
                         });
+                        // A stop that landed during the deletion leaves its result unjournaled,
+                        // so the resumed run completes the planned deletion.
                         guard();
+                        log({ probe: c.probe, fact: c.fact, ...result });
                     }
                 }),
             fault: (f, at) =>
                 tracked(async () => {
-                    const second = f.type === "two_hosts_one_daemon" && at !== undefined;
                     const prior = { session: scope.session, turn: scope.turn };
-                    if (second) Object.assign(scope, { session: `${at.session}-b`, turn: null });
+                    const scopes = faultScope(prior, f, at);
+                    Object.assign(scope, scopes.during);
                     try {
                         return await driver.fault(f, at);
                     } finally {
-                        Object.assign(scope, prior);
+                        Object.assign(scope, scopes.after);
                     }
                 }),
             supports: (f) => driver.supports(f),

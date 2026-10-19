@@ -235,7 +235,10 @@ import leaves it unchanged. Grading a run again is therefore free of judge
 calls and leaves earlier judgments as they stand. A pass appends its grades
 in one write after every item is graded, a P7 pair's host grade before its
 memory arm's, so the memory arm's grade means its pair stands. `--regrade`
-grades every item anew as a further version. It checks the judge
+grades every item anew as a further version. On the counterfactual arm, a sampled item
+whose journaled `CounterfactualDeletion` did not verify every targeted note
+gone is graded `excluded(cf-unverified)`, and a grade made before that
+reading is graded again. It checks the judge
 model's family against every model the manifest records before it appends
 the first grade, so a refused judge leaves the log untouched. A P7 pair
 whose answers are refused before the judge call (empty, or carrying an arm

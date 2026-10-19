@@ -5014,6 +5014,34 @@ describe("fault delivery", () => {
         }).run();
         expect(log).toContain(`fault:f@${start.id}`);
     });
+
+    test("scenario time runs while a scheduler fault's mechanism is under way", async () => {
+        const events = fixtureEvents(1);
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        const seen: number[] = [];
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            fault: async () => {
+                seen.push(scheduler?.clock?.now() ?? -1);
+                await Bun.sleep(40);
+                seen.push(scheduler?.clock?.now() ?? -1);
+                return {};
+            },
+        };
+        scheduler = new Scheduler({
+            events,
+            faults: [episode("f", "daemon_restart", { kind: "session_start", session: "s-0000" })],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await scheduler.run();
+        expect(seen).toHaveLength(2);
+        expect((seen[1] as number) - (seen[0] as number)).toBeGreaterThanOrEqual(30);
+        invariants(j.entries);
+    });
 });
 
 describe("fault schedule validity", () => {

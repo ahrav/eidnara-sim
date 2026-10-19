@@ -284,8 +284,20 @@ export class Scheduler {
         const preflights = this.o.journal.entries.filter((e) => e.kind === "Preflight");
         const scoped = preflights.find((e) => e.arm !== null || e.scenario_ms !== 0);
         if (scoped) throw new Error(`journal: Preflight carries an arm scope (seq ${scoped.seq})`);
+        // The run's counterfactual sample is a run-level entry the runner journals before
+        // `StartRun`, unscoped like a Preflight.
+        const sample = this.o.journal.entries.filter((e) => e.kind === "CounterfactualSample");
+        const misplaced = sample.find((e) => e.arm !== null || e.scenario_ms !== 0);
+        if (misplaced) {
+            throw new Error(
+                `journal: CounterfactualSample carries an arm scope (seq ${misplaced.seq})`,
+            );
+        }
+        if (sample.length > 1) throw new Error("journal: CounterfactualSample appears twice");
         // Lifecycle replay requires `StartRun` as the first lifecycle entry.
-        const entries = this.o.journal.entries.filter((e) => e.kind !== "Preflight");
+        const entries = this.o.journal.entries.filter(
+            (e) => e.kind !== "Preflight" && e.kind !== "CounterfactualSample",
+        );
         const fatal = entries.find((e) => e.kind === "ItemState" && e.fatal === true);
         if (fatal) {
             const cause = fatal.fault
@@ -841,6 +853,16 @@ export class Scheduler {
                     users.add(e.event);
                     return;
                 }
+                case "DeleteMemoryObject": {
+                    // The runner journals each note a deletion targets before the deletion runs.
+                    if (!due || e.event !== due.id || begun.has(e.event)) {
+                        throw fail(`DeleteMemoryObject before ${e.event} is not due`, e);
+                    }
+                    if (typeof e.target_item_id !== "string" || !Number.isInteger(e.object_id)) {
+                        throw fail(`DeleteMemoryObject before ${e.event} names no note`, e);
+                    }
+                    return;
+                }
                 case "CounterfactualDeletion": {
                     if (!due || e.event !== due.id || begun.has(e.event)) {
                         throw fail(`CounterfactualDeletion before ${e.event} is not due`, e);
@@ -1213,9 +1235,18 @@ export class Scheduler {
         let owed: TurnOutcome["stores"];
         try {
             const where = at ? structuredClone(at) : undefined;
-            const call = driver.fault(structuredClone(f), where);
-            this.faultCall = call;
-            const got: unknown = await this.untilFatal(call);
+            // The fault's mechanism holds the clock as a turn does, so a second client's prompt
+            // advances scenario time and no jump lands while it runs.
+            const owner = `fault:${f.id}`;
+            this.clock?.begin(owner);
+            let got: unknown;
+            try {
+                const call = driver.fault(structuredClone(f), where);
+                this.faultCall = call;
+                got = await this.untilFatal(call);
+            } finally {
+                this.clock?.end(owner);
+            }
             const { stores, ...rest } = plainObject(got, "fault evidence");
             // Store checks an earlier restart owed, settled before this fault took the daemon down.
             owed = stores as TurnOutcome["stores"];

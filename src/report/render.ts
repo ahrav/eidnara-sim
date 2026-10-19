@@ -43,7 +43,7 @@ export interface TierReport {
     drift: RecallDrift[] | null;
     drift_source: string | null;
     counterfactual: Counterfactual | null;
-    soak_by_month: (SoakVerdict & { month: number })[];
+    soak_by_month: (SoakVerdict & { run: string; month: number })[];
 }
 
 const fmt = (x: number | null | undefined, digits = 2) =>
@@ -215,15 +215,29 @@ function panels(r: TierReport): string[] {
                   "### Within-month RSS soak, by month of scenario time",
                   "",
                   ...table(
-                      ["arm", "month", "verdict", "samples", "slope MB/session", "R2", "bound"],
+                      [
+                          "run",
+                          "arm",
+                          "month",
+                          "verdict",
+                          "samples",
+                          "sessions",
+                          "slope MB/session",
+                          "R2",
+                          "bound",
+                          "returned",
+                      ],
                       r.soak_by_month.map((s) => [
+                          s.run,
                           s.arm,
                           s.month,
                           s.verdict,
                           s.samples,
+                          s.sessions,
                           mb(s.slope_per_session),
                           fmt(s.r2),
                           s.bound.holds ? "holds" : `broken at ${s.bound.worst?.sessions} sessions`,
+                          String(s.returned_to_baseline),
                       ]),
                   ),
               ]),
@@ -371,11 +385,11 @@ function panels(r: TierReport): string[] {
     ];
 }
 
-function counterfactualText(c: Counterfactual): string {
+export function counterfactualText(c: Counterfactual): string {
     const deletion = (d: Counterfactual["deletions"][number]) =>
         d.skipped
-            ? `${d.probe} skipped (${d.skipped})`
-            : `${d.probe} deleted ${d.deleted}, ${d.remaining} left`;
+            ? `${d.run} ${d.probe} skipped (${d.skipped})`
+            : `${d.run} ${d.probe} deleted ${d.deleted}, ${d.remaining} left`;
     return [
         `${c.verified} of ${c.attempted} attempted deletions verified.`,
         `Of ${c.memory_passes} verified items the memory arm passed, ${c.flips} fail with the fact's memory deleted:`,
