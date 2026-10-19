@@ -10,7 +10,7 @@ import {
     renderConditions,
     renderDrift,
 } from "./conditions";
-import { type CostPanel, PRICE_TABLE, V1_PRICE } from "./cost";
+import type { ComponentCost, CostPanel } from "./cost";
 import type { Intrusiveness } from "./intrusive";
 import type { SoakVerdict } from "./soak";
 import type { Counterfactual } from "./tier";
@@ -19,7 +19,7 @@ import type { PropertyWitness } from "./witness";
 export interface TierReport {
     tier: string;
     treatment: string;
-    falsification_pair: [string, string];
+    falsification_pairs: [string, string][];
     observed: Record<string, number[]>;
     runs: string[];
     arms: string[];
@@ -27,9 +27,12 @@ export interface TierReport {
     verdict: TierVerdict;
     oracles: Record<string, OracleCount>;
     recoveries: (Recovery & { run: string })[];
-    soak: SoakVerdict[];
-    intrusiveness: Intrusiveness[];
-    cost: CostPanel[];
+    missed_faults: { run: string; faults: string[] }[];
+    distortions: { run: string; distortions: string[] }[];
+    soak: (SoakVerdict & { run: string })[];
+    intrusiveness: (Intrusiveness & { run: string })[];
+    cost: (CostPanel & { run: string })[];
+    judge: { run: string; cost: ComponentCost | null }[];
     falsification: ZeroEffect[];
     aa: unknown[];
     prereg: Preregistration;
@@ -84,7 +87,13 @@ function gates(r: TierReport): string[] {
             f.direction === "threshold" || f.direction === "zero-tolerance"
                 ? `observed ${(r.observed[m.metric] ?? []).map((x) => fmt(x)).join(" ") || "-"}`
                 : fmt(m.difference),
-            m.interval ? `[${fmt(m.interval[0])}, ${fmt(m.interval[1])}]` : "-",
+            m.interval
+                ? `[${fmt(m.interval[0])}, ${fmt(m.interval[1])}]`
+                : m.rate_ratio_upper === undefined
+                  ? "-"
+                  : m.rate_ratio_upper === "unbounded"
+                    ? "ratio unbounded"
+                    : `ratio ≤ ${fmt(m.rate_ratio_upper)}`,
             fmt(m.p_adjusted ?? m.p, 4),
             fmt(m.detectable),
             fmt(m.resolution_ratio),
@@ -106,6 +115,7 @@ function gates(r: TierReport): string[] {
         }.`,
         `Pre-registration ${v.prereg_sha256}. Excluded per arm: ${JSON.stringify(v.excluded_per_arm)}. Fault-asymmetric stratum: ${v.asymmetric_stratum.length} pairs.`,
         `CUSUM stops: ${v.stops.map((s) => `${s.kind} on ${s.metric} at ${s.signal_index} (${s.window.join(" ")})`).join("; ") || "none"}${v.cusum_unavailable.length ? `; unavailable: ${v.cusum_unavailable.join("; ")}` : ""}.`,
+        `Campaign: ${v.pass.incomplete.length ? v.pass.incomplete.join("; ") : "complete"}.`,
         "",
         ...table(
             [
@@ -153,6 +163,8 @@ function panels(r: TierReport): string[] {
         "",
         "## Recovery after infrastructure faults",
         "",
+        `Runs left out of the fault metrics, a scheduled fault having never fired: ${r.missed_faults.length ? r.missed_faults.map((m) => `${m.run}: ${m.faults.join(", ")}`).join("; ") : "none"}.`,
+        "",
         ...table(
             ["run", "arm", "fault", "type", "turns to clean", "recovered", "reasons"],
             r.recoveries.map((x) => [
@@ -169,6 +181,7 @@ function panels(r: TierReport): string[] {
         "",
         ...table(
             [
+                "run",
                 "arm",
                 "resource",
                 "verdict",
@@ -182,6 +195,7 @@ function panels(r: TierReport): string[] {
                 "max gap s",
             ],
             r.soak.map((s) => [
+                s.run,
                 s.arm,
                 s.resource,
                 s.verdict,
@@ -217,6 +231,7 @@ function panels(r: TierReport): string[] {
         "",
         ...table(
             [
+                "run",
                 "arm",
                 "internal-string hits",
                 "corrections citing injected text",
@@ -227,28 +242,44 @@ function panels(r: TierReport): string[] {
                 "p95 delta ms",
             ],
             r.intrusiveness.map((i) => {
-                const host = r.intrusiveness.find((x) => x.arm === "host")?.latency_ms;
+                const host = r.intrusiveness.find(
+                    (x) => x.run === i.run && x.arm === "host",
+                )?.latency_ms;
                 const delta = (a: number | null, b: number | null | undefined) =>
                     a === null || b === null || b === undefined ? null : a - b;
                 return [
+                    i.run,
                     i.arm,
-                    i.internal_string_hits.length,
-                    i.corrections_referencing_injected_text.length,
-                    i.reverted_edits.length,
-                    fmt(i.latency_ms.p50, 0),
-                    fmt(i.latency_ms.p95, 0),
-                    fmt(delta(i.latency_ms.p50, host?.p50), 0),
-                    fmt(delta(i.latency_ms.p95, host?.p95), 0),
+                    i.internal_string_hits?.length ?? "-",
+                    i.corrections_referencing_injected_text?.length ?? "-",
+                    i.reverted_edits?.length ?? "-",
+                    fmt(i.latency_ms?.p50, 0),
+                    fmt(i.latency_ms?.p95, 0),
+                    fmt(delta(i.latency_ms?.p50 ?? null, host?.p50), 0),
+                    fmt(delta(i.latency_ms?.p95 ?? null, host?.p95), 0),
                 ];
             }),
         ),
-        `## Cost (est $ at price table ${PRICE_TABLE}: USD ${V1_PRICE.input}, ${V1_PRICE.output}, ${V1_PRICE.cache_read}, ${V1_PRICE.cache_write} per million input, output, cache-read, cache-write tokens; arm totals leave out harness calls)`,
+        "## Cost (est $ at the price table each run's manifest recorded, named per row; arm totals leave out harness calls; a run that recorded no table has no rows)",
         "",
         ...table(
-            ["arm", "caller", "calls", "input", "output", "cacheRead", "cacheWrite", "est $"],
+            [
+                "run",
+                "arm",
+                "table",
+                "caller",
+                "calls",
+                "input",
+                "output",
+                "cacheRead",
+                "cacheWrite",
+                "est $",
+            ],
             r.cost.flatMap((c) => [
                 ...c.components.map((x) => [
+                    c.run,
                     c.arm,
+                    c.price_table,
                     x.component,
                     x.calls,
                     x.input,
@@ -257,14 +288,48 @@ function panels(r: TierReport): string[] {
                     x.cache_write,
                     fmt(x.usd),
                 ]),
-                [c.arm, "TOTAL", "", "", "", "", "", fmt(c.usd)],
+                [
+                    c.run,
+                    c.arm,
+                    c.price_table,
+                    "TOTAL",
+                    ...(["calls", "input", "output", "cache_read", "cache_write"] as const).map(
+                        (k) => c.components.reduce((s, x) => s + x[k], 0),
+                    ),
+                    fmt(c.usd),
+                ],
             ]),
         ),
         ...table(
-            ["arm", "useful passes", "$ per pass", "memory writes", "writes with zero reads"],
+            ["run", "caller", "calls", "input", "output", "cacheRead", "cacheWrite", "est $"],
+            r.judge.map(({ run, cost: x }) =>
+                x
+                    ? [
+                          run,
+                          x.component,
+                          x.calls,
+                          x.input,
+                          x.output,
+                          x.cache_read,
+                          x.cache_write,
+                          fmt(x.usd),
+                      ]
+                    : [run, "-", "-", "-", "-", "-", "-", "not graded"],
+            ),
+        ),
+        ...table(
+            [
+                "run",
+                "arm",
+                "useful passes",
+                "$ per pass",
+                "memory writes",
+                "writes with zero reads",
+            ],
             r.cost.map((c) => [
+                c.run,
                 c.arm,
-                c.passes,
+                c.passes ?? "-",
                 fmt(c.usd_per_pass),
                 c.memory_writes ?? "-",
                 c.writes_with_zero_reads ?? "-",
@@ -272,7 +337,7 @@ function panels(r: TierReport): string[] {
         ),
         "## Harness falsification set",
         "",
-        `Pair: ${r.falsification_pair.join(" against ")}. On an A/B pair the daemon arm's background work holds the clock, so the idle-gap check measures it; the set is a zero-effect check on an A/A pair.`,
+        `Pairs: ${r.falsification_pairs.map((p) => p.join(" against ")).join("; ")}. On an A/B pair the daemon arm's background work holds the clock, so the idle-gap check measures it; the set is a zero-effect check on an A/A pair.`,
         "",
         ...table(
             ["check", "n", "diff", "interval", "zero effect"],
@@ -286,6 +351,17 @@ function panels(r: TierReport): string[] {
         ),
         "## A/A controls",
         "",
+        ...(r.aa.some((a) => (a as { stale?: boolean }).stale)
+            ? [
+                  `Stale: ${r.aa
+                      .filter((a) => (a as { stale?: boolean }).stale)
+                      .map((a) => String((a as { run?: string }).run))
+                      .join(
+                          ", ",
+                      )} have an aa.json older than grades.jsonl; rerun scripts/aa-report.ts.`,
+                  "",
+              ]
+            : []),
         r.aa.length === 0
             ? r.arms.some((a) => a.includes("~"))
                 ? "A/A control arms ran; run scripts/aa-report.ts on the graded run for their report."
@@ -315,6 +391,15 @@ export function renderTier(r: TierReport): string {
         `# Tier ${r.tier} report`,
         "",
         `Runs: ${r.runs.join(", ")}. Arms: ${r.arms.join(", ")}.`,
+        "",
+        `Clock distortions: ${
+            r.distortions.some((d) => d.distortions.length)
+                ? r.distortions
+                      .filter((d) => d.distortions.length)
+                      .map((d) => `${d.run}: ${d.distortions.join("; ")}`)
+                      .join(". ")
+                : "none recorded"
+        }.`,
         "",
         ...renderConditions(r.conditions, r.continuity),
         ...renderDrift(r.drift, r.drift_source),

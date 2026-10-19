@@ -31,6 +31,8 @@ const fixtures = readdirSync(DIR)
 const runOf = (f: Fixture, tier = "S"): RunLogs => ({
     dir: "",
     tier,
+    price: null,
+    journal_seq: 0,
     base_wall_ms: 0,
     prereg,
     kinds: new Map(Object.entries(f.kinds)),
@@ -110,7 +112,11 @@ describe("oracle report", () => {
         const order = ["host", "eidnara"];
         const scenario = { events: [{ id: "e-1", kind: "user_turn" }] };
         const scenario_hash = scenarioHash(scenario);
-        const manifest = { tier: "S", order, events: 1, scenario_hash };
+        const price_table = {
+            version: "v1",
+            rates: { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 },
+        };
+        const manifest = { tier: "S", order, events: 1, scenario_hash, price_table };
         writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
         writeFileSync(join(dir, "calls.jsonl"), "");
         for (const arm of manifest.order) {
@@ -149,6 +155,7 @@ describe("oracle report", () => {
             ["c"],
         ]);
         expect(run.arms.find((a) => a.arm === "host")?.journal).toHaveLength(5);
+        expect(run.price).toEqual(price_table);
     });
 });
 
@@ -199,6 +206,8 @@ const runWith = (...arms: ArmLogs[]): RunLogs => ({
     dir: "",
     tier: "S",
     base_wall_ms: 0,
+    price: null,
+    journal_seq: 0,
     prereg,
     kinds: new Map(),
     arms,
@@ -367,6 +376,8 @@ describe("oracle evidence integrity", () => {
             dir: "",
             tier: "S",
             base_wall_ms: 0,
+            price: null,
+            journal_seq: 0,
             prereg,
             kinds,
             arms: [armOf("eidnara", { journal: ends, resources })],
@@ -1022,6 +1033,8 @@ describe("oracle round ten", () => {
             dir: "",
             tier: "S",
             base_wall_ms: 0,
+            price: null,
+            journal_seq: 0,
             prereg,
             kinds: new Map(),
             arms: [
@@ -1132,6 +1145,8 @@ describe("oracle round twelve", () => {
             dir: "",
             tier: "S",
             base_wall_ms: 0,
+            price: null,
+            journal_seq: 0,
             prereg,
             kinds,
             arms: [armOf("eidnara", { journal: ends, resources })],
@@ -1440,6 +1455,8 @@ describe("oracle round seventeen", () => {
             dir: "",
             tier: "S",
             base_wall_ms: 0,
+            price: null,
+            journal_seq: 0,
             prereg,
             kinds,
             arms: [armOf("eidnara", { journal: ends, resources })],

@@ -710,7 +710,9 @@ describe("Scheduler", () => {
         const driver: ArmDriver = {
             ...fakeDriver([]),
             event: async (e) =>
-                e.kind === "user_turn" ? { user: { label: "pushback", delivered: true } } : {},
+                e.kind === "user_turn"
+                    ? { prompt_ms: 1234, user: { label: "pushback", delivered: true } }
+                    : {},
         };
         await new Scheduler({
             events: fixtureEvents(2),
@@ -727,6 +729,7 @@ describe("Scheduler", () => {
         for (const u of users) {
             const end = j.entries.find((e) => e.kind === "EndTurn" && e.event === u.event);
             expect(end && u.seq < end.seq).toBe(true);
+            expect(end?.prompt_ms).toBe(1234);
             expect(u.label).toBe("pushback");
         }
         expect(kinds.slice(-3)).toEqual(["UserSimRates", "EndArm", "EndRun"]);

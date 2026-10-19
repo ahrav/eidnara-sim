@@ -57,6 +57,8 @@ describe("L resizing from M", () => {
             ],
             excluded: [],
             asymmetric: [],
+            arms: { control: "host", treatment: L.arms.default },
+            journal_seq_at_eval: {},
         };
         const r = resizeFromM(L, input);
         const p1 = r.per_type.find((t) => t.metric === "P1.pass");

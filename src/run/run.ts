@@ -55,6 +55,7 @@ import { writeAtomic } from "./atomic";
 import { type Entry, Journal, releaseLease, requireAppendable, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { type Preflight, piCli, preflight } from "./preflight";
+import { PRICE_TABLE, type PriceTable } from "./price";
 import { running } from "./procs";
 import { ResourceSampler } from "./sampler";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent, Scheduler } from "./scheduler";
@@ -111,6 +112,8 @@ export interface Manifest {
     user_sim_model: string;
     prereg_sha256: string;
     base_wall_ms: number;
+    /** The rates the cost panel prices this run's calls at, fixed when the run starts. */
+    price_table: PriceTable;
     preflight: Preflight;
 }
 
@@ -403,6 +406,19 @@ function manifestProblems(m: Manifest, compiledEvents: number): string[] {
     }
     if (typeof m.user_sim_model !== "string" || m.user_sim_model === "") {
         problems.push("user_sim_model is not a name");
+    }
+    const price = m.price_table as Partial<PriceTable> | undefined;
+    const rates = price?.rates as Record<string, unknown> | undefined;
+    if (
+        typeof price?.version !== "string" ||
+        price.version === "" ||
+        typeof rates !== "object" ||
+        rates === null ||
+        ["input", "output", "cache_read", "cache_write"].some(
+            (k) => typeof rates[k] !== "number" || !Number.isFinite(rates[k]) || rates[k] < 0,
+        )
+    ) {
+        problems.push("price_table is not a versioned table of non-negative rates");
     }
     return problems;
 }
@@ -1176,6 +1192,7 @@ export async function loadManifest(
         ...digests(),
         tape_sha256: tapeDigests(wanted.tapes),
         base_wall_ms: Date.now(),
+        price_table: PRICE_TABLE,
         preflight: checks,
     };
     writeAtomic(path, `${JSON.stringify(manifest, null, 2)}\n`);

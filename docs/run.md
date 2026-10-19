@@ -99,7 +99,7 @@ entries of different arms are not ordered by scenario time.
 | `AdvanceClock` | The clock jumps; carries `from_ms`, an empty `busy` list, and the next event id or the laptop-sleep fault |
 | `ClockOffset` | The arm starts or resumes, or a jump was published, after its `AdvanceClock`; carries `offset_s`, the whole-second offset the arm's processes read from then on, and `offset_wall_ms` and `offset_settled_ms`, the wall instants before and after the rename that put it in effect (`docs/time.md`) |
 | `BeginTurn` | A user turn is delivered |
-| `EndTurn` | The turn is answered; a probe turn carries `probe` and `state` (`completed`, or `failed` whenever the driver returned `failed`, even empty) |
+| `EndTurn` | The turn is answered, with `prompt_ms`, the wall time of the host's prompt call (`null` when the turn spent its deadline before the prompt); a probe turn carries `probe` and `state` (`completed`, or `failed` whenever the driver returned `failed`, even empty) |
 | `RegisterJob`, `EndJob` | A background job starts and ends; on resume, a job in flight at the kill gets an `EndJob` with outcome `failed(interrupted)` |
 | `FaultFired`, `FaultObserved` | A scheduled fault fires, and the driver returns its evidence |
 | `ItemState` | On resume, an in-flight turn or a scheduler fault without evidence is `failed(interrupted)`, as is a kill the fatal channel cut; the daemon exits; a scheduler fault the driver could not carry out, or an event whose delivery failed, is `failed` with `fatal: true`, as is a daemon exit outside an outage window; a sleep or summarizer fault that never fired is `missed` |

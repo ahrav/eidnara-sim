@@ -16,10 +16,10 @@ and the hash matches the pre-registration file.
 
 `src/prereg/validate.test.ts` constructs reports that `checkReport`
 (`src/prereg/report.ts`) refuses for a missing family, another
-pre-registration hash, or a verdict without `n` and MDE. The verdict emitter
-and the `StartRun` journal land in M7 (#1032); no run exists yet.
+pre-registration hash, or a verdict without `n` and MDE.
 
-M7 (#1032) puts the pre-registration digest, each family's MDE and margin, n, the detectable difference, and the resolution ratio into every verdict.
+M7 (#1032) puts the pre-registration digest, each family's MDE and margin, n,
+the detectable difference, and the resolution ratio into every verdict.
 
 ## Failure scenario
 
@@ -35,4 +35,16 @@ A tier report and its pre-registration file.
 
 ## Investigation log
 
-No open questions.
+### Q: Does the verdict's digest get compared with the hash journaled at `StartRun`?
+
+- Sources examined: `src/stats/gate.ts` (`prereg_sha256` is
+  `preregistrationHash(p)` of the pre-registration the caller supplies;
+  `TierInput` carries no journaled hash); `src/prereg/report.ts`
+  (`checkReport` refuses a report whose `prereg_hash` differs from the
+  pre-registration file); the journal reader is #1033 work.
+- Findings: the gate records which pre-registration it evaluated under and
+  the report check compares a report's hash with the frozen file. The
+  comparison with the digest the `StartRun` journal entry recorded is in
+  neither place yet.
+- Missing evidence: the report path that reads `StartRun` and compares.
+- Conclusion: unresolved, needs the #1033 report path.

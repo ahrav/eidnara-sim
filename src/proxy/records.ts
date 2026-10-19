@@ -49,7 +49,12 @@ export interface CallRecord {
     error: string | null;
     /** Request fields the proxy removed before forwarding, keyed by field path. */
     stripped?: Record<string, unknown>;
-    /** The response text the proxy relayed for agent, user-sim, and judge calls, first 262,144 characters. */
+    /**
+     * The response text the proxy relayed for agent, user-sim, and judge calls, first
+     * `RESPONSE_TEXT_LIMIT` characters, empty when the response carried no text; absent on other
+     * components, on a call that failed before any assistant text, and on records from before the
+     * capture.
+     */
     response_text?: string;
     /** Set when the relayed text ran past that cap, so `response_text` is a prefix. */
     response_text_truncated?: true;
@@ -60,6 +65,9 @@ export interface CallRecord {
     /** The last 6,000 characters of the relayed text, present when `response_text` cut it. */
     response_tail?: string;
 }
+
+/** Characters of relayed response text a record keeps; a text this long may have been cut. */
+export const RESPONSE_TEXT_LIMIT = 262_144;
 
 const NUMBERS = [
     "seq",

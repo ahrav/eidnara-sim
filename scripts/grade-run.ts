@@ -1,4 +1,12 @@
-import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
+import {
+    appendFileSync,
+    closeSync,
+    existsSync,
+    openSync,
+    readFileSync,
+    readSync,
+    rmSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig, type SimConfig } from "../src/config/config";
 import {
@@ -33,6 +41,7 @@ import { FaultInjector } from "../src/proxy/inject";
 import type { CallRecord } from "../src/proxy/records";
 import { RecordWriter } from "../src/proxy/records";
 import { Rng } from "../src/rng";
+import { writeAtomic } from "../src/run/atomic";
 import {
     type Entry,
     keepCompleteLines,
@@ -55,7 +64,12 @@ export interface Summary {
     p11: Record<string, { n: number; weighted_score: number }>;
     p3: { arm: string; delta_mem: { delta: number; n: number } | null }[];
     judge_errors: number;
+    /** The last `seq` of the journal this pass graded, so a later resume marks the summary stale. */
+    journal_seq: number;
 }
+
+/** Where a finished grading pass records its summary; `src/report/cost.ts` reads it. */
+const summaryPath = (dir: string) => join(dir, "grade-summary.json");
 
 /**
  * `gradeRun` holds the run directory's lease while it grades, which serializes grade-version
@@ -65,7 +79,11 @@ export interface Summary {
 export async function gradeRun(dir: string, config: SimConfig | null): Promise<Summary> {
     const lease = takeLease(dir);
     try {
-        return await grade(dir, config);
+        // A pass that stops early leaves no summary, so a reader never takes a stale one as current.
+        rmSync(summaryPath(dir), { force: true });
+        const summary = await grade(dir, config);
+        writeAtomic(summaryPath(dir), `${JSON.stringify(summary, null, 2)}\n`);
+        return summary;
     } finally {
         releaseLease(dir, lease);
     }
@@ -641,6 +659,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         p11,
         p3,
         judge_errors: judgeErrors,
+        journal_seq: entries.at(-1)?.seq ?? 0,
     };
 }
 

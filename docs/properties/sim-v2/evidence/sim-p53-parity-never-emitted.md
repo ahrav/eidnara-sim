@@ -17,10 +17,24 @@ inconclusive, insufficient-runs, passed-gate, and descriptive, and the string
 `parity` is absent from every report.
 
 `src/prereg/validate.test.ts` constructs a report carrying the token `parity`,
-which `checkReport` (`src/prereg/report.ts`) refuses. The report emitter lands
-in M7 (#1032); no run exists yet.
+which `checkReport` (`src/prereg/report.ts`) refuses.
 
-M7 (#1032) emits better, worse, no-difference-above-X-detectable-at-n, inconclusive, insufficient-runs(k), within-bound, or failed-gate(metric, ids), and refuses any evaluation whose output contains the word parity; a test scans its fixture verdicts.
+M7 (#1032) emits, per metric, better, worse,
+no-difference-above-X-detectable-at-n, inconclusive, insufficient-runs(k),
+within-bound, failed-gate(metric, ids), or descriptive for a family whose
+pre-registration names no interval method, and refuses any evaluation whose
+output contains the word parity; a test scans its fixture verdicts. The
+report check (`src/prereg/report.ts`) expects one family-level verdict from
+this vocabulary, `descriptive` exactly for a descriptive-claim family, while
+the gate's family result carries per-metric verdicts and `passed: null` for
+such a family; the translation from metric verdicts to one family verdict is
+the report path's part (#1033) and is unresolved here. `within-bound`, which
+the gate emits for a met bound, is absent from both the guarantee and the
+report check's `VERDICT_KINDS` (which names `passed-gate` for a satisfied
+bound gate), so the mapping of a passing bound family is
+a second unresolved disagreement, carried in the catalog's open questions,
+as is the scale suffix of the null verdict (`pp`, `pp-of-runs`, or the
+registered MDE scale) against the guarantee's `pp`-only form.
 
 ## Failure scenario
 

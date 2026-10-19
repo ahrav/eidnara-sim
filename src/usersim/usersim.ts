@@ -402,6 +402,7 @@ export class Tape {
         return this.entries.get(key);
     }
 
+    /** Appends the entry to this run's tape unless that file already holds its key. */
     put(entry: TapeEntry): void {
         if (this.own.has(entry.key)) return;
         this.own.add(entry.key);
@@ -424,6 +425,8 @@ export interface TurnRecord {
     prefix_sha256: string;
     text_sha256: string;
     source: "script" | "tape" | "live";
+    /** The tape key of a `tape` or `live` reply, which `<run>/tape.jsonl` holds. */
+    tape_key?: string;
     fallback?: string[];
     /** The corpus item a paste turn delivered, by id and byte length. */
     paste?: { sample_id: string; bytes: number };
@@ -751,6 +754,7 @@ export class UserSim {
             prefix_sha256: prefix,
             text_sha256: sha256Hex(text),
             source: reply?.source ?? "script",
+            ...(reply ? { tape_key: reply.key } : {}),
             ...(reply?.fallback ? { fallback: reply.fallback } : {}),
             ...(t.paste ? { paste: t.paste } : {}),
         });
@@ -787,8 +791,8 @@ export class UserSim {
         // The script conveys each fact once; a reply that repeats one conveys it again.
         const fact = (this.o.facts ?? []).some((f) => got.text.includes(f)) ? ["fact"] : [];
         const fallback = [...empty, ...cut, ...hits, ...fact];
-        if (fallback.length === 0) return { text: got.text, source };
-        return { text: FALLBACK[label] ?? "", source, fallback };
+        if (fallback.length === 0) return { key, text: got.text, source };
+        return { key, text: FALLBACK[label] ?? "", source, fallback };
     }
 }
 
@@ -814,4 +818,35 @@ export function pairingMismatches(
             return other !== undefined && other.text_sha256 !== r.text_sha256;
         })
         .map((r) => `${r.arm} ${r.session} #${r.index}`);
+}
+
+/**
+ * The pairing checks `scripts/pairing-check.ts` reports: a pre-divergence reply whose text differs
+ * from the reference arm's, a probe or paste turn sent with other text than the script's, and a
+ * non-filler turn the arm never sent.
+ */
+export function pairingFailures(
+    records: readonly PairingRecord[],
+    scenario: { events: readonly Record<string, unknown>[] },
+    reference: (arm: string) => string,
+): Record<
+    "mismatches_before_divergence" | "probe_or_paste_text_altered" | "non_filler_unsent",
+    string[]
+> {
+    const turns = records.filter((r): r is TurnRecord => r.kind === "turn");
+    const script = new Map(
+        scenario.events.filter((e) => e.kind === "user_turn").map((e) => [String(e.id), e]),
+    );
+    const verbatim = turns.filter((r) =>
+        ["paste", "probe"].includes(String(script.get(r.event)?.role ?? "")),
+    );
+    return {
+        mismatches_before_divergence: pairingMismatches(records, reference),
+        probe_or_paste_text_altered: verbatim
+            .filter((r) => r.text_sha256 !== sha256Hex(String(script.get(r.event)?.text)))
+            .map((r) => `${r.arm} ${r.event}`),
+        non_filler_unsent: turns
+            .filter((r) => !r.delivered && script.get(r.event)?.role !== "filler")
+            .map((r) => `${r.arm} ${r.event}`),
+    };
 }

@@ -6,6 +6,7 @@ import { parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
 import { ARMS, type Preregistration } from "../prereg/schema";
 import { type CallRecord, recordProblems } from "../proxy/records";
 import { type Entry, requireAppendable, requireComplete } from "../run/journal";
+import type { PriceTable } from "../run/price";
 import type { Sample as ResourceSample } from "../run/sampler";
 import { type Scenario, scenarioHash } from "../scenario/compile";
 
@@ -42,6 +43,10 @@ export interface RunLogs {
     /** Each scheduled fault's type by id, from the same source, so a journaled fault must match its schedule. */
     faultTypes?: Map<string, string>;
     arms: ArmLogs[];
+    /** The price table the manifest recorded; `null` for a run that recorded none. */
+    price: PriceTable | null;
+    /** The last `seq` in the run's journal, every arm included; a grading summary names the one it saw. */
+    journal_seq: number;
 }
 
 /**
@@ -124,6 +129,24 @@ interface Manifest {
     base_wall_ms: number;
     scenario_hash?: string;
     fault_override?: { id: string; type: string; params?: { duration_ms?: number } }[] | null;
+    price_table?: unknown;
+}
+
+/** The manifest's price table: `null` when the run recorded none, refused when malformed. */
+function priceOf(table: unknown, path: string): PriceTable | null {
+    if (table === undefined) return null;
+    const t = table as Partial<PriceTable> | null;
+    const rates = t?.rates as Record<string, unknown> | undefined;
+    const ok =
+        typeof t?.version === "string" &&
+        t.version !== "" &&
+        typeof rates === "object" &&
+        rates !== null &&
+        ["input", "output", "cache_read", "cache_write"].every(
+            (k) => typeof rates[k] === "number" && Number.isFinite(rates[k]) && rates[k] >= 0,
+        );
+    if (!ok) throw new Error(`${path}: price_table is not a versioned table of non-negative rates`);
+    return t as PriceTable;
 }
 
 /** Reads one JSON file as the record type its reader names, naming the file when the text does not parse. */
@@ -506,5 +529,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         sleeps,
         faultTypes,
         arms,
+        price: priceOf(manifest.price_table, join(dir, "manifest.json")),
+        journal_seq: journal.at(-1)?.seq ?? 0,
     };
 }

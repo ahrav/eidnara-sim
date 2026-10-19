@@ -17,9 +17,13 @@ six paired runs; below that the verdict is `insufficient-runs(k)`.
 `src/prereg/validate.test.ts` constructs a run-level gate below six paired
 runs, which `validatePreregistration` refuses, and a report verdict below the
 family's floor, which `checkReport` refuses unless it is `insufficient-runs`.
-The verdict emitter lands in M7 (#1032); no run exists yet.
 
-M7 (#1032) answers `insufficient-runs(k)` for a run-level gate below six paired runs; a test checks four runs, and six runs give a sign-test verdict.
+M7 (#1032) answers `insufficient-runs(k)` for a run-level gate with a paired
+claim below its family's registered floor, which the validator keeps at six or
+more for such gates (a bound gate such as S dependability registers two and
+answers `within-bound` or `failed-gate`); a test
+checks four runs against the floor of six, six runs give a sign-test verdict,
+and six runs against a registered floor of eight give `insufficient-runs(6)`.
 
 ## Failure scenario
 

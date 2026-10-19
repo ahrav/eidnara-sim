@@ -147,12 +147,14 @@ toolchain wrappers are created exclusively after removing any planted name.
    there), the Node runtime Pi runs on, the libfaketime interposer, the
    OpenCode SDK package directory the host stack imports and the e2e
    workspace's lock file (`absent` when not installed), the
-   Bedrock region and profile name, base wall time, and preflight result. The working-tree digest hashes an
+   Bedrock region and profile name, base wall time, price table (the version
+   and rates the report prices the run's calls at), and preflight result. The working-tree digest hashes an
    untracked symlink's target text.
    A later invocation refuses a manifest whose `schema` is not
    `sim-run-manifest/v2` or whose execution fields are out of range (an event
    count outside the compiled schedule, a non-positive context limit, an
-   unnamed model, a non-integer seed, an unknown host), revalidates a saved
+   unnamed model, a non-integer seed, an unknown host, a price table without a
+   version or with a negative or non-finite rate), revalidates a saved
    fault override as on the first run, and refuses when any option it states differs from the manifest, when the manifest's arm order is not a non-empty subsequence
    of the seed's pre-registered arm order (with each A/A control right after
    its arm), when a resumed journal breaks the

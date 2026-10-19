@@ -23,7 +23,7 @@ import { Rng } from "../rng";
 import { COMPONENT_HEADER, type ConverseBody, classify } from "./classify";
 import { encodeError, encodeEvent, encodeException, wireJson } from "./eventstream";
 import { type FaultInjector, type Sink, sleep, writeFault } from "./inject";
-import type { CallRecord, Component, RecordWriter } from "./records";
+import { type CallRecord, type Component, RESPONSE_TEXT_LIMIT, type RecordWriter } from "./records";
 
 export type UpstreamResponse =
     | { events: AsyncIterable<Record<string, unknown>> }
@@ -144,7 +144,6 @@ type Usage = Record<string, number>;
 type Done = Partial<CallRecord> &
     Pick<CallRecord, "component" | "componentSource" | "model" | "status">;
 
-const RESPONSE_TEXT_LIMIT = 262_144;
 const RESPONSE_TAIL_LIMIT = 6_000;
 const RELAYED_TEXT = new Set<string>(["agent", "user-sim", "judge"]);
 

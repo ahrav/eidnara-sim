@@ -476,11 +476,20 @@ describe("tape and pairing", () => {
         expect(recordedTexts[0]).toBe("Look at the parser.");
 
         const replay = counting();
-        const again = sim(dir(), replay, "a", [join(first, "tape.jsonl")]);
+        const second = dir();
+        const again = sim(second, replay, "a", [join(first, "tape.jsonl")]);
         expect(await play(again.user, "a", outputs)).toEqual(recordedTexts);
         expect(replay.calls).toBe(0);
         const sources = again.pairing.records.map((r) => (r.kind === "turn" ? r.source : r.kind));
         expect(sources).toEqual(["script", "tape", "tape", "tape", "script"]);
+        const keys = (root: string) =>
+            readFileSync(join(root, "tape.jsonl"), "utf8")
+                .trim()
+                .split("\n")
+                .map((l) => (JSON.parse(l) as { key: string }).key);
+        expect(keys(second)).toEqual(keys(first));
+        const taped = again.pairing.records.filter((r) => r.kind === "turn" && r.source === "tape");
+        expect(taped.map((r) => (r.kind === "turn" ? r.tape_key : undefined))).toEqual(keys(first));
     });
 
     test("one changed agent output gives one divergence record, written before the turn, and live replies after it", async () => {

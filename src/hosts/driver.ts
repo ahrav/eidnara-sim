@@ -825,6 +825,7 @@ export class HostDriver implements ArmDriver {
         }
         let result: PromptResult;
         this.turn = e.id;
+        const started = performance.now();
         try {
             result = await host.prompt(String(e.text), deadline, interruptMs);
         } catch (caught) {
@@ -833,10 +834,15 @@ export class HostDriver implements ArmDriver {
             check();
             throw caught;
         }
+        // Wall time of the host's prompt call alone, the turn latency the report reads.
+        const prompt_ms = Math.round(performance.now() - started);
         check();
         const tools = host.drainTools();
         this.turn = null;
-        const outcome: TurnOutcome = result.interrupted ? { user: { interrupted: true } } : {};
+        const outcome: TurnOutcome = {
+            prompt_ms,
+            ...(result.interrupted ? { user: { interrupted: true } } : {}),
+        };
         if (result.undelivered) outcome.undelivered = true;
         if (owedBefore) outcome.stores = owedBefore;
         if (result.error) outcome.failed = result.error;

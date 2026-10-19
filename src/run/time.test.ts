@@ -552,6 +552,13 @@ describe("ResourceSampler", () => {
         expect(lines).toHaveLength(3);
         expect(lines[0]).toMatchObject({ scenario_ms: 42, pid: process.pid });
         expect(lines[0].rss).toBeGreaterThan(0);
+        expect(Number(lines[0].start)).toBeGreaterThan(0);
+        sampler.start();
+        sampler.stop();
+        // `start` takes a sample immediately, and `stop` on a running sampler takes a final one.
+        expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(5);
+        sampler.stop();
+        expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(5);
         expect(lines[0].store_bytes).toBeGreaterThan(0);
     });
 

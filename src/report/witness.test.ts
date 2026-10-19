@@ -78,9 +78,26 @@ function run(broken: boolean): GradedRun {
     };
     const scenario = { events: [], faults: [], probes: [] } as unknown as Scenario;
     return {
-        run: { dir, tier: "S", base_wall_ms: 0, prereg, kinds: new Map(), arms: [arm] },
+        run: {
+            dir,
+            tier: "S",
+            base_wall_ms: 0,
+            prereg,
+            kinds: new Map(),
+            arms: [arm],
+            price: null,
+            journal_seq: 0,
+        },
         scenario,
         grades: [],
+        judged: [],
+        host: "pi",
+        identity: {} as GradedRun["identity"],
+        witnesses: null,
+        pairing: null,
+        captured: false,
+        tape: false,
+        tooled: new Set(),
     };
 }
 
@@ -198,7 +215,16 @@ function second(broken: boolean, busy = false): GradedRun {
         probes: [],
     } as unknown as Scenario;
     return {
-        run: { dir, tier: "S", base_wall_ms: 0, prereg, kinds: new Map(), arms: [arm] },
+        run: {
+            dir,
+            tier: "S",
+            base_wall_ms: 0,
+            prereg,
+            kinds: new Map(),
+            arms: [arm],
+            price: null,
+            journal_seq: 0,
+        },
         scenario,
         grades: [grade(1, cited)],
     } as unknown as GradedRun;

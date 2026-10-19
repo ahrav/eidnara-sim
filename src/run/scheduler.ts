@@ -18,6 +18,8 @@ export interface ScenarioEvent {
 
 export interface TurnOutcome {
     failed?: string;
+    /** Wall time of the host's prompt call alone, journaled on `EndTurn`. */
+    prompt_ms?: number;
     snapshot?: string;
     /** Store checks the arm owed daemon restarts, one `StoreChecked` entry each. */
     stores?: { fault: string; store: StoreCheck }[];
@@ -680,6 +682,14 @@ export class Scheduler {
                     if (ended.has(e.event)) throw fail(`EndTurn for ${e.event} repeats`, e);
                     if (typeof e.outcome !== "string") {
                         throw fail(`EndTurn for ${e.event} has no outcome`, e);
+                    }
+                    const ms = e.prompt_ms;
+                    if (
+                        ms !== undefined &&
+                        ms !== null &&
+                        !(Number.isSafeInteger(ms) && Number(ms) >= 0)
+                    ) {
+                        throw fail(`EndTurn for ${e.event} has a prompt_ms that is no duration`, e);
                     }
                     const probe = events.find((x) => x.id === e.event)?.probe;
                     if (probe !== undefined) {
@@ -1347,7 +1357,13 @@ export class Scheduler {
                 );
             }
             const snapshot = outcome.snapshot ? { snapshot: outcome.snapshot } : {};
-            const end = { event: e.id, outcome: outcome.failed ?? "ok", ...item, ...snapshot };
+            const end = {
+                event: e.id,
+                outcome: outcome.failed ?? "ok",
+                prompt_ms: outcome.prompt_ms ?? null,
+                ...item,
+                ...snapshot,
+            };
             try {
                 this.log({ kind: "EndTurn", ...end });
             } catch (caught) {

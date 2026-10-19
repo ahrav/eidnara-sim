@@ -238,8 +238,11 @@ counts per arm and probe type (a P7 row also names the arm judged against),
 the skipped items by arm and reason, the grade versions the summary
 aggregates, the summed
 `P11.weighted_score` per arm, Δmem per memory arm from this invocation's
-grades, and the judge errors,
-and exits 1 when a judge call failed. The scenario plants no canary
+grades, the judge errors, and the journal's last `seq` as `journal_seq`.
+It removes any `grade-summary.json` in the run directory when it starts,
+under the run's lease, and writes the same summary there atomically when it
+finishes, so the cost panel prices only a finished pass over the journal as
+it stands; it exits 1 when a judge call failed. The scenario plants no canary
 strings, so it passes the judge none; blinding still refuses arm names. P14 items have no probe turn of their
 own and wait on the user simulator's labels (M6), so it lists them as
 skipped.
