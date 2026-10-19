@@ -235,7 +235,7 @@ export function kernelObjects(path: string): Record<string, number> | null {
     const db = new Database(path, { readonly: true });
     try {
         const rows = db
-            .query("select kind, count(*) as n from object_registry group by kind")
+            .query("select object_kind as kind, count(*) as n from object_registry group by object_kind")
             .all() as { kind: string; n: number }[];
         return Object.fromEntries(rows.map((r) => [r.kind, r.n]));
     } catch {
