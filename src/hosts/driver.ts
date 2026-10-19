@@ -46,6 +46,7 @@ import {
     type Deletion,
     type DeletionPlan,
     deleteFactNotes,
+    kernelObjects,
     memoryNotes,
 } from "./storecheck";
 
@@ -1561,6 +1562,26 @@ export class HostDriver implements ArmDriver {
                 writeWhole(join(this.armDir, "store-check.json"), `${JSON.stringify(check)}\n`);
                 const notes = memoryNotes(this.storeDb);
                 writeWhole(join(this.armDir, "memory.json"), `${JSON.stringify(notes)}\n`);
+                // Eidnara keeps its memories in the Kernel registry; the stopped daemon's stores
+                // are kept beside the arm, since the loop-mounted store is unmounted next.
+                const kept = join(this.armDir, "final-store");
+                mkdirSync(kept, { recursive: true });
+                const context = dirname(this.storeDb);
+                for (const [from, to] of [
+                    [this.storeDb, "store.db"],
+                    [join(context, "kernel", "kernel.sqlite"), "kernel.sqlite"],
+                ] as const) {
+                    for (const suffix of ["", "-wal", "-shm"]) {
+                        if (existsSync(from + suffix)) {
+                            copyFileSync(from + suffix, join(kept, to + suffix));
+                        }
+                    }
+                }
+                const objects = kernelObjects(join(kept, "kernel.sqlite"));
+                writeWhole(
+                    join(this.armDir, "kernel-objects.json"),
+                    `${JSON.stringify(objects)}\n`,
+                );
             }
         } catch (caught) {
             failure ??= caught;

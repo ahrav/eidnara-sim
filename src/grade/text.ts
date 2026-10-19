@@ -1,6 +1,6 @@
 const SENTINEL = /^\W*UNKNOWN\W*$/i;
 const ABSTAIN =
-    /\b(don'?t|do not) (know|have|see)\b|\bnever (settled|decided|discussed|set|mentioned)\b|\bnot (sure|aware)\b|\bno record\b|\bcan(no|')t find\b/i;
+    /\b(don'?t|do not) (know|have|see)\b|\bnever (settled|decided|discussed|set|mentioned)\b|\bnot (sure|aware)\b|\bno record\b|\bcan(no|')t find\b|\b(nobody|no one|no-one|none)\b[^.\n]{0,60}\b(named|assigned|decided|chosen|set|owns|recorded)\b|\b(isn'?t|wasn'?t|hasn'?t been|not been|not) (named|assigned|decided|chosen|recorded)\b|\b(doesn'?t|does not|don'?t|do not) (name|say|record|specify|state)\b/i;
 const CANDIDATE_VALUE = /\b\d{5}\b|\b[a-z]+-[a-z]+-\d{2}\b|\b[a-z]{2}-[a-z]+(-[a-z]+)?-\d\b/i;
 const HEDGED_GUESS =
     /\b(probably|maybe|perhaps|likely|possibly|presumably|my (best )?guess|if I had to guess|I('d| would) (guess|say)|I (think|guess|believe|suspect|assume)|might be|could be)\b/i;

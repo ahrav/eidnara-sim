@@ -259,6 +259,25 @@ describe("grading harness", () => {
         }
     });
 
+    test("P9 passes an answer that says nobody was named, and fails one that names a value", () => {
+        const f = fixture("P9-pass-wording");
+        const graded = (answer: string) => {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+            if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+            (calls.calls[0] as { response_text: string }).response_text = answer;
+            return gradeItem(f.probe, [snap], rules)?.verdict;
+        };
+        for (const answer of [
+            "Nobody has been named owner of the release checklist yet.",
+            "No one is named as the owner of these steps anywhere in this repo.",
+            "The repo doesn't name an owner for these steps.",
+        ]) {
+            expect(graded(answer)).toBe("pass");
+        }
+        expect(graded("Nobody was named, so it is nimble-quokka-44.")).toBe("fail");
+    });
+
     test("a cut final grade line is dropped on read and overwritten by the next append", () => {
         const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
         const log = new GradeLog(path);

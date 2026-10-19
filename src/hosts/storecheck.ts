@@ -229,6 +229,22 @@ export interface MemoryNote {
     first_delivery_ms: number | null;
 }
 
+/** Object counts by kind in a Kernel registry; null when the file is absent or unreadable. */
+export function kernelObjects(path: string): Record<string, number> | null {
+    if (!existsSync(path)) return null;
+    const db = new Database(path, { readonly: true });
+    try {
+        const rows = db
+            .query("select kind, count(*) as n from object_registry group by kind")
+            .all() as { kind: string; n: number }[];
+        return Object.fromEntries(rows.map((r) => [r.kind, r.n]));
+    } catch {
+        return null;
+    } finally {
+        db.close();
+    }
+}
+
 export function memoryNotes(path: string): MemoryNote[] | null {
     if (!existsSync(path)) return null;
     let db: Database | null = null;
