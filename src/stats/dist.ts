@@ -14,23 +14,29 @@ export function logGamma(x: number): number {
     return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(a);
 }
 
+const MIN_NORMAL = 2 ** -1022;
+
 export function binomialPmf(k: number, n: number, p: number): number {
     if (k < 0 || k > n) return 0;
     if (p === 0) return k === 0 ? 1 : 0;
     if (p === 1) return k === n ? 1 : 0;
-    if (n <= 1000) {
+    const [pk, qk] = [p ** k, (1 - p) ** (n - k)];
+    if (n <= 1000 && pk >= MIN_NORMAL && qk >= MIN_NORMAL) {
         let choose = 1;
         for (let i = 1; i <= Math.min(k, n - k); i++)
             choose = (choose * (n - Math.min(k, n - k) + i)) / i;
-        return choose * p ** k * (1 - p) ** (n - k);
+        return choose * pk * qk;
     }
     const log = logGamma(n + 1) - logGamma(k + 1) - logGamma(n - k + 1);
     return Math.exp(log + k * Math.log(p) + (n - k) * Math.log(1 - p));
 }
 
 export function binomialCdf(k: number, n: number, p: number): number {
+    if (k < 0) return 0;
+    if (k >= n) return 1;
+    if (n > 1000) return incompleteBeta(1 - p, n - k, k + 1);
     let sum = 0;
-    for (let i = 0; i <= Math.min(k, n); i++) sum += binomialPmf(i, n, p);
+    for (let i = 0; i <= k; i++) sum += binomialPmf(i, n, p);
     return Math.min(1, sum);
 }
 
@@ -85,11 +91,13 @@ export function normalQuantile(p: number): number {
     }
     const e = normalCdf(x) - p;
     const u = e * Math.sqrt(2 * Math.PI) * Math.exp((x * x) / 2);
-    return x - u / (1 + (x * u) / 2);
+    return Number.isFinite(u) ? x - u / (1 + (x * u) / 2) : x;
 }
 
 /** The regularized incomplete beta function by Lentz's continued fraction. */
 export function incompleteBeta(x: number, a: number, b: number): number {
+    if (!(a > 0 && b > 0 && Number.isFinite(a) && Number.isFinite(b)))
+        throw new RangeError("incompleteBeta: the shapes must be finite and positive");
     if (x <= 0) return 0;
     if (x >= 1) return 1;
     if (x > (a + 1) / (a + b + 2)) return 1 - incompleteBeta(1 - x, b, a);
@@ -98,7 +106,8 @@ export function incompleteBeta(x: number, a: number, b: number): number {
     );
     const tiny = 1e-300;
     let [f, c, d] = [1, 1, 0];
-    for (let i = 0; i <= 400; i++) {
+    let step = 0;
+    for (let i = 0; i <= 10_000 && Math.abs(1 - step) >= 1e-15; i++) {
         const m = Math.floor(i / 2);
         const num =
             i === 0
@@ -111,15 +120,20 @@ export function incompleteBeta(x: number, a: number, b: number): number {
         d = 1 / d;
         c = 1 + num / c;
         c = Math.abs(c) < tiny ? tiny : c;
-        const step = c * d;
+        step = c * d;
         f *= step;
-        if (Math.abs(1 - step) < 1e-15) break;
     }
+    if (Math.abs(1 - step) >= 1e-15)
+        throw new RangeError("incompleteBeta: the continued fraction did not converge");
     return (front * (f - 1)) / a;
 }
 
 /** The `q` quantile of Beta(a, b), by bisection on the incomplete beta function. */
 export function betaQuantile(q: number, a: number, b: number): number {
+    if (!(q >= 0 && q <= 1)) throw new RangeError("betaQuantile: q must lie in [0, 1]");
+    if (!(a > 0 && b > 0 && Number.isFinite(a) && Number.isFinite(b)))
+        throw new RangeError("betaQuantile: the shapes must be finite and positive");
+    if (q === 0 || q === 1) return q;
     let [lo, hi] = [0, 1];
     for (let i = 0; i < 200; i++) {
         const mid = (lo + hi) / 2;
@@ -129,26 +143,67 @@ export function betaQuantile(q: number, a: number, b: number): number {
     return (lo + hi) / 2;
 }
 
+const ASYMPTOTIC_MIN = 6;
+
+/** The asymptotic expansion of `digamma(x) - log(x)` for `x >= ASYMPTOTIC_MIN`. */
+function digammaTail(x: number): number {
+    const f = 1 / (x * x);
+    return -0.5 / x - f * (1 / 12 - f * (1 / 120 - f * (1 / 252 - f / 240)));
+}
+
+/** The asymptotic expansion of `logGamma(x) - ((x - 1/2) log x - x + log(2 pi) / 2)`. */
+function logGammaTail(x: number): number {
+    const f = 1 / (x * x);
+    return (1 / x) * (1 / 12 - f * (1 / 360 - f * (1 / 1260 - f / 1680)));
+}
+
 export function digamma(x: number): number {
+    if (!(x > 0)) throw new RangeError("digamma: the argument must be positive");
     let r = 0;
     let y = x;
-    while (y < 6) {
+    while (y < ASYMPTOTIC_MIN) {
         r -= 1 / y;
         y += 1;
     }
-    const f = 1 / (y * y);
-    return r + Math.log(y) - 0.5 / y - f * (1 / 12 - f * (1 / 120 - f * (1 / 252 - f / 240)));
+    return r + Math.log(y) + digammaTail(y);
 }
 
-export function trigamma(x: number): number {
-    let r = 0;
-    let y = x;
-    while (y < 6) {
-        r += 1 / (y * y);
-        y += 1;
+const HARMONIC_MAX = 1000;
+
+/**
+ * `digamma(t + y) - digamma(t)` for a count `y`, as the finite sum `sum(1 / (t + k))` up to
+ * `HARMONIC_MAX` and above it as the difference of asymptotic expansions once `t` reaches
+ * `ASYMPTOTIC_MIN`, so the result keeps its digits when `y / t` is small.
+ */
+export function digammaDiff(t: number, y: number): number {
+    if (y <= HARMONIC_MAX) {
+        let sum = 0;
+        for (let k = 0; k < y; k++) sum += 1 / (t + k);
+        return sum;
     }
-    const f = 1 / (y * y);
-    return r + 1 / y + f / 2 + (f / y) * (1 / 6 - f * (1 / 30 - f / 42));
+    if (t < ASYMPTOTIC_MIN) return digamma(y + t) - digamma(t);
+    return Math.log1p(y / t) + digammaTail(t + y) - digammaTail(t);
+}
+
+/**
+ * `logGamma(t + y) - logGamma(t)` for a count `y`, as the finite sum `sum(log(t + k))` up to
+ * `HARMONIC_MAX` and above it as the difference of Stirling expansions once `t` reaches
+ * `ASYMPTOTIC_MIN`.
+ */
+export function logGammaDiff(t: number, y: number): number {
+    if (y <= HARMONIC_MAX) {
+        let sum = 0;
+        for (let k = 0; k < y; k++) sum += Math.log(t + k);
+        return sum;
+    }
+    if (t < ASYMPTOTIC_MIN) return logGamma(y + t) - logGamma(t);
+    return (
+        y * Math.log(t) +
+        (t + y - 0.5) * Math.log1p(y / t) -
+        y +
+        logGammaTail(t + y) -
+        logGammaTail(t)
+    );
 }
 
 /** The upper tail `1 - normalCdf(x)`, computed directly so it keeps precision far out. */
