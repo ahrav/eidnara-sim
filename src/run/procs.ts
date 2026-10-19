@@ -130,8 +130,10 @@ function signal(targets: Target[], name: NodeJS.Signals): void {
     for (const t of targets.filter(alive)) {
         try {
             process.kill(t.pid, name);
-        } catch {
+        } catch (caught) {
             // A target that exits before the signal is already stopped.
+            const code = (caught as { code?: string }).code;
+            if (code !== "ESRCH" && code !== "EPERM") throw caught;
         }
     }
 }
@@ -205,4 +207,12 @@ function treeProcesses(rootPid: number): number[] {
         queue.push(...childrenOf(next, readChildren, fallback));
     }
     return out;
+}
+
+/** Sends SIGKILL once to every process of the tree the caller owns, each pinned to its start. */
+export function killOwnedTree(rootPid: number): void {
+    signal(
+        ownedProcesses(rootPid).map((pid) => ({ pid, start: processStart(pid) })),
+        "SIGKILL",
+    );
 }

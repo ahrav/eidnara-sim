@@ -91,7 +91,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     const sm = scenario.manifest as {
         generator_version?: string;
         random_schema_version?: number;
-        corpus_manifest_sha256?: string;
+        corpus_inputs_sha256?: string;
         embedding_model?: string;
     };
     const hostP7 = (r: GradeRecord) => r.probe_type === "P7" && armBase(r.arm) === "host";
@@ -116,7 +116,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             events,
             distortions: manifest.preflight?.distortions ?? [],
             host_versions: (manifest.preflight?.hosts ?? []).map((h) => `${h.host}@${h.version}`),
-            scenario_provenance: `${sm.generator_version}/${sm.random_schema_version}/${sm.corpus_manifest_sha256}/${sm.embedding_model}`,
+            scenario_provenance: `${sm.generator_version}/${sm.random_schema_version}/${sm.corpus_inputs_sha256}/${sm.embedding_model}`,
             fault_override:
                 manifest.fault_override == null
                     ? null
@@ -125,6 +125,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
                 existsSync(t) ? sha256Hex(readFileSync(t, "utf8")) : `missing:${t}`,
             ),
             toolchain: (manifest.preflight?.toolchain ?? []).map((t) => canonicalJson(t)),
+            grader: [...new Set(grades.map((g) => g.grader ?? "unrecorded"))].sort(),
         },
         witnesses: reports === null ? null : [...witnesses.values()],
         pairing,

@@ -113,9 +113,11 @@ sequence.
 Pi reaches the proxy over HTTP/2 and OpenCode over HTTP/1.1. The HTTP/2
 server reports each session error, frame error, GOAWAY, and stream reset
 on the host side through the `downstream` option, and the run appends
-them to `downstream.jsonl` with `h2_session`, the connection's number in
-the run, and the arm, session, and turn in scope when the stream opened or
-the connection event fired. A
+them to `downstream.jsonl` (opened once at run start without following
+symlinks) with `h2_session`, the connection's number in
+the gateway process, `gateway`, which names that process so a resumed
+run's connection numbers stay distinct, and the arm, session, and turn in
+scope when the stream opened or the connection event fired. A
 host turn that ends with a socket error while its call record shows a
 complete upstream stream reads its connection's events there.
 

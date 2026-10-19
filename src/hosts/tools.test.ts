@@ -48,7 +48,7 @@ test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's cl
         ],
     };
     const fresh = {
-        info: { id: "m2", time: { created: fakeNow } },
+        info: { id: "m2", role: "assistant", finish: "stop", time: { created: fakeNow } },
         parts: [
             {
                 type: "tool",
@@ -86,6 +86,8 @@ test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's cl
     expect(await host.prompt("go", 5_000)).toEqual({});
     expect(reported).toEqual([{ command: "cargo test", exit: 1, scenario_ms: 2_100 }]);
     expect(host.drainTools()).toEqual([{ command: "cargo test", exit: 1, scenario_ms: 2_100 }]);
+    // One listing before the prompt and one after it: tool logging and finish validation share it.
+    expect(calls).toBe(2);
 });
 
 function failingTurn(mode: "result-error" | "rejected" | "deadline", listing = true) {
@@ -433,7 +435,8 @@ test("a turn whose listing used its deadline fails without prompting", async () 
     expect(prompted).toBe(0);
 });
 
-test("an OpenCode turn whose last assistant step has not finished is a failed turn", async () => {
+test("an OpenCode turn whose last assistant step has not finished is a failed turn, and the session is aborted first", async () => {
+    let aborted = 0;
     const step = (finish?: string) => ({
         info: { id: "m", role: "assistant", finish },
         parts: [],
@@ -446,11 +449,15 @@ test("an OpenCode turn whose last assistant step has not finished is a failed tu
         ["tool-calls", early("tool-calls")],
         [undefined, early(undefined)],
     ] as const) {
+        let calls = 0;
         const client = {
             session: {
-                messages: async () => ({ data: [step(finish)] }),
+                messages: async () => ({ data: calls++ === 0 ? [] : [step(finish)] }),
                 prompt: async () => ({ data: { info: {} } }),
-                abort: async () => ({ data: true }),
+                abort: async () => {
+                    aborted++;
+                    return {};
+                },
             },
         };
         const host = new OpencodeSimHost({
@@ -463,6 +470,30 @@ test("an OpenCode turn whose last assistant step has not finished is a failed tu
         Object.assign(host as unknown as Record<string, unknown>, { client, sid: "s", oc: {} });
         expect(await host.prompt("go", 5_000)).toEqual(want);
     }
+    // The two unfinished cases each aborted the session before the turn failed.
+    expect(aborted).toBe(2);
+});
+
+test("an OpenCode turn that leaves no assistant message of its own is a failed turn", async () => {
+    const prior = { info: { id: "m0", role: "assistant", finish: "stop" }, parts: [] };
+    const client = {
+        session: {
+            messages: async () => ({ data: [prior] }),
+            prompt: async () => ({ data: { info: {} } }),
+            abort: async () => ({}),
+        },
+    };
+    const host = new OpencodeSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 0,
+    });
+    Object.assign(host as unknown as Record<string, unknown>, { client, sid: "s", oc: {} });
+    expect(await host.prompt("go", 5_000)).toEqual({
+        error: "the turn returned without an assistant message of its own",
+    });
 });
 
 test("a Pi turn whose abort never drains fails as a turn still running, so no later turn takes its events", async () => {
@@ -712,16 +743,26 @@ function opencodeHost(client: Record<string, unknown>): OpencodeSimHost {
     return host;
 }
 
+/** A message listing that holds the turn's finished assistant reply from its second call on. */
+function turnMessages() {
+    let calls = 0;
+    const reply = { info: { id: "m-reply", role: "assistant", finish: "stop" }, parts: [] };
+    return async () => ({ data: calls++ === 0 ? [] : [reply] });
+}
+
 test("an OpenCode interrupt counts only when the abort landed; a turn that ran to its end is reported as it ended", async () => {
-    const messages = async () => ({ data: [] });
     const slow = () => Bun.sleep(300).then(() => ({ data: { info: {} } }));
     const refused = opencodeHost({
-        session: { messages, prompt: slow, abort: async () => ({ error: { message: "no" } }) },
+        session: {
+            messages: turnMessages(),
+            prompt: slow,
+            abort: async () => ({ error: { message: "no" } }),
+        },
     });
     expect(await refused.prompt("go", 5_000, 50)).toEqual({});
     const rejected = opencodeHost({
         session: {
-            messages,
+            messages: turnMessages(),
             prompt: slow,
             abort: async () => {
                 throw new Error("connection reset");
@@ -730,7 +771,7 @@ test("an OpenCode interrupt counts only when the abort landed; a turn that ran t
     });
     expect(await rejected.prompt("go", 5_000, 50)).toEqual({});
     const aborted = opencodeHost({
-        session: { messages, prompt: slow, abort: async () => ({ data: true }) },
+        session: { messages: turnMessages(), prompt: slow, abort: async () => ({ data: true }) },
     });
     expect(await aborted.prompt("go", 5_000, 50)).toEqual({ interrupted: true });
 });
@@ -738,7 +779,7 @@ test("an OpenCode interrupt counts only when the abort landed; a turn that ran t
 test("an OpenCode turn whose abort was refused runs on under its own deadline", async () => {
     const host = opencodeHost({
         session: {
-            messages: async () => ({ data: [] }),
+            messages: turnMessages(),
             prompt: () => Bun.sleep(400).then(() => ({ data: { info: {} } })),
             abort: async () => ({ data: false }),
         },

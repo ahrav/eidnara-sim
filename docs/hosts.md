@@ -148,7 +148,10 @@ its deadline the user-sim call left (`deadline_ms`). A Pi `agent_end` seen befor
 that turn with its result.
 Every deadline timer is cleared once its race settles. An OpenCode prompt that returns before the session's last
 assistant step finishes (`finish` other than `stop` or `length`) is a
-failed turn; a prompt sent in that state ends its conversation on an
+failed turn, and the session is aborted first (an abort still unanswered
+after the abort wait stops the run) so the step runs into no later turn. A
+prompt that returns with no assistant message of its own is a failed turn
+too. A prompt sent in that state ends its conversation on an
 assistant message, which Bedrock refuses as a prefill.
 An `apply_diff` event writes its file inside the
 workspace and commits that path alone, so the agent's own uncommitted edits

@@ -111,7 +111,10 @@ writes `report-<tier>.md` and the gate verdict as `report-<tier>.json`
 through staged files renamed into place (an unbounded rate ratio is written
 as the string `"Infinity"`), or prints the Markdown; it refuses a manifest
 tier outside the registered literals and an `--out` inside
-`sim.config.json`'s `eidnara_checkout`. `loadGraded` refuses a run directory whose manifest
+`sim.config.json`'s `eidnara_checkout`. It exits 1 after writing when the
+property witness holds a violated record, so a verdict over runs that
+broke an invariant does not pass unremarked. `loadGraded` refuses a run
+directory whose manifest
 records a `prereg_sha256` other than the hash of the tier's current
 pre-registration, or whose `scenario.json` hashes to other than the
 manifest's `scenario_hash`, so a verdict carries the registration and the
@@ -153,8 +156,10 @@ a pre-registered arm (`arms.run`) that has no `EndArm` entry, each run whose man
 `events` stops short of its scenario's events, each manifest setting
 (`eidnara_commit`, `models`, `context_limit`, the preflight's clock
 `distortions`, its host versions, the scenario's generator, random
-schema, corpus manifest, and embedding model, the tapes it replayed, and the
-preflight's toolchain probes) the runs disagree on, each run with
+schema, corpus manifest, compile inputs, and embedding model, the tapes it
+replayed, the preflight's toolchain probes, and the `grader` digests of
+the grades the report uses) the runs disagree on, each run whose used
+grades come from more than one grader, each run with
 a scheduled proxy fault without its witness in `faults.jsonl`, each run made
 with a fault override, each run with grades for
 items outside its scenario's probes, for a metric of another probe type
@@ -235,19 +240,30 @@ read from its manifest and arm directories: the events its furthest arm
 reached against the events planned, and the planned prefix against the
 scenario's total when it is a capped prefix; the time
 interception outcome per binary from the preflight; and any transcript
-store path the driver found missing after the first `session_end`. It then
+store path the driver found missing after the first `session_end`, or
+`<arm> unchecked` for an arm that never reached that check or whose
+`transcripts.json` a stop cut short or left in another shape. It then
 reads each host's transcripts back, Pi's session files under
-`.pi/agent/sessions` and OpenCode's `session` table in `opencode.db`, and
+`.pi/agent/sessions` (regular files under a real directory that resolves
+inside the arm's directory; a symlinked root or entry, or a path that
+leads outside the arm, is left unread) and OpenCode's `session` table in
+`opencode.db` (a store that cannot be opened or queried yields no
+sessions), and
 compares each `sim-<session>` creation time with the session's scheduled
 wall time (`base_wall_ms` plus the `session_start` event's scenario time). The table
-says whether the creation times follow scenario order and gives the
-largest lead and lag. Hosts run at wall pace between clock jumps, so a
+names the reached sessions the store lacks (a transcript with no finite
+creation time among them), says whether the creation
+times follow scenario order, and gives the largest lead and lag; an arm
+whose transcript check never ran reads `unchecked` there too. Hosts run at wall pace between clock jumps, so a
 lead up to the idle wall time since the last jump is expected; a lag, or
 an order break, is a D2 caveat for that host.
 
 The continuity table gives each host and arm's P8 and P9 pass rate, over
 non-excluded items, beside the v1
 harness's cross-session recall (host 0 to 3%, Eidnara 99 to 100%). For
-every pass it counts the passes whose turn ran a command that reads the
-host's transcript store, so a `host` pass is split between transcript
-search and the rest.
+every pass it counts the passes whose turn ran a simple command whose
+program is a reader or searcher (`cat`, `grep`, `rg`, `find`, `sqlite3`,
+Pi's `read`, and the like) with the host's transcript store, as the
+sandboxed agent names it (Pi's `agent/sessions`, OpenCode's
+`opencode/opencode.db` or `opencode/storage`), among its words, so a
+`host` pass is split between transcript search and the rest.

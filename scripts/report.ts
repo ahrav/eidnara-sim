@@ -90,12 +90,14 @@ const scales = new Map(
         return [tier, { scale: aaScale(t.prereg, t.runs), complete }];
     }),
 );
+let violated = 0;
 for (const [tier, { prereg, runs }] of loaded) {
     const report = tierReport(prereg, runs, boundary, {
         catalog,
         reference,
         scale: cusumScale(prereg, scales),
     });
+    violated += report.witness.filter((w) => w.status === "violated").length;
     const text = renderTier(report);
     if (out) {
         mkdirSync(out, { recursive: true });
@@ -116,4 +118,10 @@ for (const [tier, { prereg, runs }] of loaded) {
         }
         for (const [i, [path]] of staged.entries()) renameSync(tmp[i] as string, path);
     } else console.log(text);
+}
+// A violated property means the runs broke an invariant the verdict rests on; the report stays
+// written for reading, and the exit status says the campaign is not sound.
+if (violated > 0) {
+    console.error(`${violated} property record(s) violated; see the report's property witness`);
+    process.exit(1);
 }

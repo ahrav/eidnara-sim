@@ -3,6 +3,7 @@ import {
     appendFileSync,
     closeSync,
     existsSync,
+    constants as fsConstants,
     fstatSync,
     lstatSync,
     mkdirSync,
@@ -15,6 +16,7 @@ import {
     rmSync,
     statSync,
     truncateSync,
+    writeSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
@@ -1698,6 +1700,11 @@ async function runArms(
             callIndex.add(record, offset, length);
         }
     }
+    // The diagnostics file is opened once without following symlinks, like a child's log.
+    const downstreamFd = openSync(
+        join(o.out, "downstream.jsonl"),
+        fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
+    );
     const gateway = new Gateway({
         upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
         records: new RunRecords(callsPath, { resume: true, retain: false }),
@@ -1705,8 +1712,16 @@ async function runArms(
         rng: new Rng((seed ^ 0x27d4eb2f) >>> 0),
         clock: { scenarioMs: now },
         scope: () => ({ ...scope }),
-        downstream: (e) =>
-            appendFileSync(join(o.out, "downstream.jsonl"), `${JSON.stringify(e)}\n`),
+        downstream: (e) => {
+            // The sink runs inside an HTTP/2 event listener; a failed write ends the run through
+            // its signal path rather than escaping as an uncaught exception.
+            try {
+                writeSync(downstreamFd, `${JSON.stringify(e)}\n`);
+            } catch (caught) {
+                console.error(`downstream.jsonl: ${(caught as Error).message}`);
+                process.kill(process.pid, "SIGTERM");
+            }
+        },
         arrival: () => {
             if (scope.arm === "" || scheduler.runningArm() !== scope.arm) return;
             const id = `request-${jobSeq++}`;

@@ -8,6 +8,8 @@ import {
     rmSync,
     writeSync,
 } from "node:fs";
+import { join } from "node:path";
+import { sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
 import type { ProbeItem } from "../scenario/compile";
 import {
@@ -79,6 +81,8 @@ export interface GradeRecord extends Outcome {
     snapshot: string;
     inputs: string[];
     later_attempts_logged: number;
+    /** The digest of the grader's source files that produced the record. */
+    grader?: string;
     pair?: string;
     /**
      * The arm a pairwise (P7) grade was judged against. One host answer is judged once per
@@ -930,6 +934,7 @@ export function gradeItem(
 }
 
 const VERDICTS: Verdict[] = ["pass", "fail", "excluded"];
+const digest = (v: unknown) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v);
 const LOCK_WAIT_MS = 2000;
 const LOCK_POLL_MS = 10;
 
@@ -958,7 +963,7 @@ function isGradeRecord(value: unknown): value is GradeRecord {
     const pair = paired ? text(g.pair) : g.pair === undefined;
     const against = g.probe_type === "P7" ? text(g.against) : g.against === undefined;
     const graded = metrics && (g.verdict === "excluded" || metricsAgree(g));
-    const optionals = optional(str)(g.reason);
+    const optionals = optional(str)(g.reason) && optional(digest)(g.grader);
     return (
         strings &&
         known &&
@@ -1069,6 +1074,16 @@ function newest(grades: GradeRecord[]): GradeRecord[] {
     }
     return [...byKey.values()];
 }
+/**
+ * A digest over the grader's own source files, so a grade carries the implementation that made
+ * it and a rerun under another one grades again.
+ */
+export const graderDigest = (): string =>
+    sha256Hex(
+        ["artefacts.ts", "judge.ts", "probes.ts", "text.ts", "../../scripts/grade-run.ts"]
+            .map((f) => readFileSync(join(import.meta.dir, f), "utf8"))
+            .join("\n"),
+    );
 
 export class GradeLog {
     /** A log path that names a link or a non-regular file is refused when the log is opened. */
@@ -1118,6 +1133,7 @@ export class GradeLog {
         }
     }
 
+    /** Every complete record; one a kill cut short at the end of the file is left out. */
     all(): GradeRecord[] {
         const lines = this.complete().split("\n").filter(Boolean);
         const seen = new Map<string, GradeRecord>();
@@ -1193,29 +1209,45 @@ export class GradeLog {
     }
 
     append(record: GradeRecord): void {
-        if (!isGradeRecord(record)) {
-            throw new GradeRefused(`grade ${keyOf(record)} is not a grade record`);
-        }
-        this.locked(() => this.appendLocked(record));
+        this.appendAll([record]);
     }
 
-    private appendLocked(record: GradeRecord): void {
-        const key = keyOf(record);
-        const mine = this.all().filter((g) => keyOf(g) === key);
-        const expected = mine.length === 0 ? 1 : Math.max(...mine.map((g) => g.version)) + 1;
-        if (record.version !== expected) {
-            throw new GradeRefused(`grade ${key} v${record.version} expected v${expected}`);
+    /**
+     * Appends the records in one write under the lock, each checked as a grade record whose
+     * version follows its key's last one (earlier records of the batch included) and keeps that
+     * key's identity. A kill leaves a prefix of the batch, and the next read drops a cut last line.
+     */
+    appendAll(records: GradeRecord[]): void {
+        for (const record of records) {
+            if (!isGradeRecord(record)) {
+                throw new GradeRefused(`grade ${keyOf(record)} is not a grade record`);
+            }
         }
-        const last = mine.at(-1);
-        const changedField = last && identityChange(last, record);
-        if (changedField) {
-            throw new GradeRefused(`grade ${key} v${record.version} changes ${changedField}`);
+        if (records.length === 0) return;
+        this.locked(() => this.appendLocked(records));
+    }
+
+    private appendLocked(records: GradeRecord[]): void {
+        const last = new Map<string, GradeRecord>();
+        for (const g of this.all()) last.set(keyOf(g), g);
+        for (const record of records) {
+            const key = keyOf(record);
+            const previous = last.get(key);
+            const expected = (previous?.version ?? 0) + 1;
+            if (record.version !== expected) {
+                throw new GradeRefused(`grade ${key} v${record.version} expected v${expected}`);
+            }
+            const changedField = previous && identityChange(previous, record);
+            if (changedField) {
+                throw new GradeRefused(`grade ${key} v${record.version} changes ${changedField}`);
+            }
+            last.set(key, record);
         }
         const fd = this.open(constants.O_RDWR | constants.O_CREAT) as number;
         try {
             const kept = Buffer.byteLength(this.completeFrom(fd));
             ftruncateSync(fd, kept);
-            const line = Buffer.from(`${JSON.stringify(record)}\n`);
+            const line = Buffer.from(records.map((r) => `${JSON.stringify(r)}\n`).join(""));
             let written = 0;
             while (written < line.length) {
                 written += writeSync(fd, line, written, line.length - written, kept + written);

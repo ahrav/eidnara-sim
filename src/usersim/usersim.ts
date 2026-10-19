@@ -180,7 +180,7 @@ const pairingRow: RowCheck = (row) => {
     ];
 };
 
-const pairingBeside = (tape: string) => join(dirname(tape), "pairing.jsonl");
+export const pairingBeside = (tape: string) => join(dirname(tape), "pairing.jsonl");
 
 function requireSource(path: string): string {
     const stat = lstatSync(path, { throwIfNoEntry: false });

@@ -95,6 +95,7 @@ const identity = (commit = "abc") => ({
     fault_override: null as string | null,
     tapes: [] as string[],
     toolchain: ["bun 1"],
+    grader: ["0".repeat(64)],
 });
 
 function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): GradedRun {
@@ -147,7 +148,7 @@ function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): Graded
     );
     writeFileSync(
         join(dir, "pairing.jsonl"),
-        pairing.map((r) => JSON.stringify(r)).join("\n") + "\n",
+        `${pairing.map((r) => JSON.stringify(r)).join("\n")}\n`,
     );
     const probes = Array.from({ length: 12 }, (_, i) => ({
         id: `q-${i}`,
@@ -1021,6 +1022,23 @@ describe("tier report", () => {
         expect(renderTier(report)).toContain(`${b.run.dir}: opencode reads wall-clock time`);
     });
 
+    test("runs graded by different grader implementations keep the campaign incomplete", () => {
+        const a = fixture(undefined, { host: "pi" });
+        const b = fixture(undefined, { host: "opencode" });
+        b.identity.grader = ["1".repeat(64)];
+        expect(tierInput(prereg, [a, b]).incomplete).toContain(
+            `runs differ in grader: ${a.identity.grader.join(",")}, ${"1".repeat(64)}`,
+        );
+    });
+
+    test("a run whose used grades come from two graders is incomplete on its own", () => {
+        const a = fixture(undefined, { host: "pi" });
+        a.identity.grader = ["0".repeat(64), "1".repeat(64)];
+        expect(tierInput(prereg, [a]).incomplete).toContainEqual(
+            expect.stringMatching(/^run .*: grades from 2 graders/),
+        );
+    });
+
     test("runs made with different host releases keep the campaign incomplete", () => {
         const a = fixture(undefined, { host: "pi" });
         const b = fixture(undefined, { host: "opencode" });
@@ -1340,14 +1358,14 @@ describe("tier report", () => {
         );
     });
 
-    test("the scenario provenance includes the embedding model", () => {
+    test("the scenario provenance includes the compile inputs and the embedding model", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
         const body = {
             manifest: {
                 seed: 101,
                 generator_version: "g",
                 random_schema_version: 1,
-                corpus_manifest_sha256: "c",
+                corpus_inputs_sha256: "c",
                 embedding_model: "emb",
             },
             events: [],

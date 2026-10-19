@@ -513,6 +513,25 @@ export function releaseLease(runDir: string, lease: Lease): void {
 }
 
 /**
+ * Whether the directory's highest lease is unreleased and names a live process on this host or
+ * any process on another host, the same holder `takeLease` refuses to take over from.
+ */
+export function leaseHeld(runDir: string): boolean {
+    const pinned = new PinnedDir(runDir);
+    try {
+        const top = leaseNumbers(pinned.at(".")).at(-1);
+        if (top === undefined) return false;
+        const held = readLease(pinned.at(`lease.${top}.json`));
+        const mine = ownIdentity();
+        return (
+            held !== null && !held.released && (held.host !== mine.host || holderAlive(held, mine))
+        );
+    } finally {
+        pinned.close();
+    }
+}
+
+/**
  * Reads a JSONL log the harness appends to: every line but the last must parse, and a cut
  * last line, which a kill mid-write leaves, is dropped. The path must be a regular file or
  * absent; an absent file reads as empty. Journals read through `readJournal`, which also

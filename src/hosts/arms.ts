@@ -1012,6 +1012,7 @@ export class OpencodeSimHost extends SimHost {
         return listed.data as Array<{ info: Untyped; parts: Untyped[] }>;
     }
 
+    /** Logs the tools of the turn's own messages, listed within `deadlineMs`, and returns those messages. */
     private async logTurnTools(
         seen: Set<string>,
         startScenario: number,
@@ -1028,7 +1029,7 @@ export class OpencodeSimHost extends SimHost {
                 this.logTool(part.tool, part.state?.input, exit, ms, callId(part));
             }
         }
-        return listed;
+        return fresh;
     }
 
     /**
@@ -1120,10 +1121,25 @@ export class OpencodeSimHost extends SimHost {
         if (outcome.error || outcome.interrupted) return outcome;
         const last = listed.filter((m) => m.info?.role === "assistant").at(-1);
         if (last?.info?.error) return { error: JSON.stringify(last.info.error).slice(0, 2000) };
-        const finish = last?.info?.finish;
-        return !last || finish === "stop" || finish === "length"
-            ? outcome
-            : { error: `the turn returned before its last assistant step finished (${finish})` };
+        if (!last) return { error: "the turn returned without an assistant message of its own" };
+        const finish = last.info?.finish;
+        if (finish === "stop" || finish === "length") return outcome;
+        // The step is still running; aborting it keeps it out of the next turn's transcript. An
+        // abort still unanswered after `abortWaitMs` stops the run, since it would cancel the
+        // next turn instead.
+        const aborted = await withDeadline(
+            this.client.session.abort({ path: { id: this.sid } }).then(
+                () => true,
+                () => true,
+            ),
+            this.abortWaitMs,
+        );
+        if (aborted === null) {
+            throw new Error(
+                `OpenCode abort still pending ${this.abortWaitMs} ms after an unfinished step`,
+            );
+        }
+        return { error: `the turn returned before its last assistant step finished (${finish})` };
     }
 
     /**

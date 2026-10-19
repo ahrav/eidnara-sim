@@ -2748,6 +2748,70 @@ describe("downstream diagnostics", () => {
             }),
         );
     });
+
+    test("a stream cancelled with NO_ERROR mid-response is recorded and aborts the provider call", async () => {
+        const signals: AbortSignal[] = [];
+        const slow: Upstream = {
+            async converse(_m, _b, _s, signal) {
+                signals.push(signal);
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    await Bun.sleep(300);
+                    yield { messageStop: { stopReason: "end_turn" } };
+                }
+                return { events: events() };
+            },
+        };
+        const { gateway, downstream } = await start(null, slow);
+        const session = http2Connect(gateway.urls[1] as string);
+        const stream = session.request({ ":method": "POST", ":path": "/model/m/converse-stream" });
+        stream.on("error", () => undefined);
+        stream.once("data", () => stream.close(constants.NGHTTP2_NO_ERROR));
+        stream.end(JSON.stringify(AGENT_BODY));
+        await Bun.sleep(600);
+        session.close();
+        expect(downstream).toContainEqual(
+            expect.objectContaining({ kind: "stream_reset", code: constants.NGHTTP2_NO_ERROR }),
+        );
+        expect(signals.map((s) => s.aborted)).toEqual([true]);
+    });
+
+    test("downstream records name the gateway process that wrote them, so a resumed run's connection numbers stay distinct", async () => {
+        const slow: Upstream = {
+            async converse() {
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    await Bun.sleep(300);
+                    yield { messageStop: { stopReason: "end_turn" } };
+                }
+                return { events: events() };
+            },
+        };
+        const ids: unknown[] = [];
+        for (let i = 0; i < 2; i++) {
+            const { gateway, downstream } = await start(null, slow);
+            const session = http2Connect(gateway.urls[1] as string);
+            const stream = session.request({
+                ":method": "POST",
+                ":path": "/model/m/converse-stream",
+            });
+            stream.on("error", () => undefined);
+            stream.once("data", () => stream.close(constants.NGHTTP2_CANCEL));
+            stream.end(JSON.stringify(AGENT_BODY));
+            await Bun.sleep(600);
+            session.close();
+            await gateway.stop();
+            const reset = downstream.find((e) => e.kind === "stream_reset") as Record<
+                string,
+                unknown
+            >;
+            expect(reset).toMatchObject({ h2_session: 0 });
+            ids.push(reset.gateway);
+            await Bun.sleep(5);
+        }
+        expect(typeof ids[0]).toBe("string");
+        expect(ids[0]).not.toBe(ids[1]);
+    });
 });
 
 test("a record writer creates its file at once, so a run with no calls still has calls.jsonl", () => {

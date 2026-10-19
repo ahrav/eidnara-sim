@@ -1,6 +1,9 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Preregistration } from "../prereg/schema";
 import type { Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
+import { readJournal } from "./journal";
 
 export interface TierJob {
     host: "pi" | "opencode";
@@ -36,17 +39,6 @@ export function capEvents(
     return best;
 }
 
-/** The seed's pre-registered arm order plus an A/A control for each same-arm pair in it. */
-function seedArms(prereg: Preregistration, i: number): string[] {
-    const order = prereg.arms.order_by_seed[i] ?? prereg.arms.run;
-    const controls = (prereg.aa_controls?.pairs ?? [])
-        .filter(([arm, twin]) => arm === twin)
-        .map(([arm]) => arm as string)
-        .filter((arm) => order.includes(arm as never))
-        .map((arm) => `${arm}~aa`);
-    return [...order, ...controls];
-}
-
 /** Every pre-registered host and seed of a tier, each with its arms and A/A controls. */
 export function tierPlan(
     prereg: Preregistration,
@@ -55,20 +47,88 @@ export function tierPlan(
     out: string,
     turnMs: number,
 ): TierJob[] {
-    return hosts.flatMap((host) =>
-        prereg.seeds.map((seed, i) => {
-            const arms = seedArms(prereg, i);
-            const scenario = scenarios.get(seed) as Scenario;
-            const cap = capEvents(
-                scenario,
-                arms.length,
-                prereg.liveness_bounds.tier_wall_budget_ms,
-                turnMs,
-            );
-            const dir = `${out}/${prereg.tier}-${seed}-${host}`;
-            return { host, seed, arms, ...cap, dir, group: "main", extra: [] };
-        }),
+    // The A/A controls ride on exactly `aa_controls.repeats` runs, which is what the campaign's
+    // completeness check counts; seeds vary first so the controls spread across hosts.
+    const repeats = prereg.aa_controls?.repeats ?? 0;
+    const jobs = prereg.seeds.flatMap((seed, i) =>
+        hosts.map((host) => ({
+            host,
+            seed,
+            order: prereg.arms.order_by_seed[i] ?? prereg.arms.run,
+        })),
     );
+    const planned = jobs.map((job, n) => {
+        const paired = new Set(
+            (prereg.aa_controls?.pairs ?? [])
+                .filter(([arm, twin]) => arm === twin)
+                .map(([arm]) => arm as string),
+        );
+        // Each control follows its arm, the order armOrder() persists in the manifest.
+        const arms = (job.order as string[]).flatMap((arm) =>
+            n < repeats && paired.has(arm) ? [arm, `${arm}~aa`] : [arm],
+        );
+        return { ...job, arms };
+    });
+    // Every run shares the prefix that fits the run with the most arms.
+    const widest = Math.max(...planned.map((j) => j.arms.length));
+    const byHost = hosts.flatMap((host) => planned.filter((j) => j.host === host));
+    return byHost.map(({ host, seed, arms }) => {
+        const scenario = scenarios.get(seed) as Scenario;
+        const cap = capEvents(scenario, widest, prereg.liveness_bounds.tier_wall_budget_ms, turnMs);
+        const dir = `${out}/${prereg.tier}-${seed}-${host}`;
+        return { host, seed, arms, ...cap, dir, group: "main", extra: [] };
+    });
+}
+
+/**
+ * When the run began and, for a completed run, ended: its journaled `StartRun` and `EndRun`,
+ * with `now` standing in for a run with no journal yet.
+ */
+export function runSpan(dir: string, now: number): { started: number; ended?: number } {
+    const path = join(dir, "journal.jsonl");
+    if (!existsSync(path)) return { started: now };
+    const entries = readJournal(path);
+    const wall = (kind: string) => {
+        const e = entries.find((x) => x.kind === kind);
+        if (e === undefined) return undefined;
+        if (!Number.isFinite(e.wall_ms))
+            throw new Error(`${path}: ${kind} wall_ms is not a number`);
+        return e.wall_ms;
+    };
+    const started = wall("StartRun") ?? now;
+    const ended = wall("EndRun");
+    if (ended !== undefined && ended < started)
+        throw new Error(`${path}: EndRun at ${ended} is before StartRun at ${started}`);
+    return ended === undefined ? { started } : { started, ended };
+}
+
+/** Jobs whose planned prefix differs from the events their existing manifest ran. */
+export function planConflicts(plan: TierJob[]): string[] {
+    return plan.flatMap((job) => {
+        const path = join(job.dir, "manifest.json");
+        if (!existsSync(path)) return [];
+        const m = JSON.parse(readFileSync(path, "utf8")) as {
+            events: number;
+            order?: string[];
+            host?: string;
+            seed?: number;
+        };
+        const out: string[] = [];
+        if (Number(m.events) !== job.events)
+            out.push(`${job.dir} ran ${m.events} events, the plan says ${job.events}`);
+        if (m.order && m.order.join(",") !== job.arms.join(","))
+            out.push(
+                `${job.dir} ran arms ${m.order.join(",")}, the plan says ${job.arms.join(",")}`,
+            );
+        if (
+            (m.host !== undefined && m.host !== job.host) ||
+            (m.seed !== undefined && m.seed !== job.seed)
+        )
+            out.push(
+                `${job.dir} ran host ${m.host} seed ${m.seed}, the plan says ${job.host} ${job.seed}`,
+            );
+        return out;
+    });
 }
 
 /**
@@ -86,9 +146,8 @@ export function profileJobs(
     turnMs: number,
 ): TierJob[] {
     const seed = prereg.seeds[0] as number;
-    const scenario = scenarios.get(seed) as Scenario;
-    const budget = prereg.liveness_bounds.tier_wall_budget_ms;
-    const cap = capEvents(scenario, seedArms(prereg, 0).length, budget, turnMs);
+    const paired = tierPlan(prereg, scenarios, hosts, out, turnMs).find((j) => j.seed === seed);
+    const cap = { events: paired?.events ?? 0, user_turns: paired?.user_turns ?? 0 };
     const job = (
         host: "pi" | "opencode",
         group: string,

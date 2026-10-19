@@ -435,7 +435,42 @@ describe("grade-run", () => {
         const dir = run({ probes: [p5.probe], unended: { host: ["e-1"] } });
         snapshot(dir, "eidnara", snap);
         expect((await gradeRun(dir, null)).versions).toEqual({ "1": 1 });
-        expect((await gradeRun(dir, null)).versions).toEqual({ "2": 1 });
+        expect((await gradeRun(dir, null)).versions).toEqual({ "1": 1 });
+        expect((await gradeRun(dir, null, true)).versions).toEqual({ "2": 1 });
+    });
+
+    test("grading a run again keeps the grades that cite their snapshot; a regrade appends new versions", async () => {
+        const dir = run({ probes: [p5.probe], unended: { host: ["e-1"] } });
+        snapshot(dir, "eidnara", snap);
+        const versions = () =>
+            readFileSync(join(dir, "grades.jsonl"), "utf8")
+                .trim()
+                .split("\n")
+                .map((l) => JSON.parse(l).version);
+        expect((await gradeRun(dir, null)).graded).toBe(1);
+        const again = await gradeRun(dir, null);
+        expect(versions()).toEqual([1]);
+        expect(again.graded).toBe(0);
+        expect(again.verdicts).toEqual({ "eidnara/P5": { pass: 1 } });
+        expect(again.skipped).toEqual({
+            eidnara: { "already graded": 1 },
+            host: { "probe turn interrupted": 1 },
+        });
+        expect((await gradeRun(dir, null, true)).graded).toBe(1);
+        expect(versions()).toEqual([1, 2]);
+    });
+
+    test("grades from another grader implementation are graded again", async () => {
+        const dir = run({ probes: [p5.probe], unended: { host: ["e-1"] } });
+        snapshot(dir, "eidnara", snap);
+        await gradeRun(dir, null);
+        const path = join(dir, "grades.jsonl");
+        const record = JSON.parse(readFileSync(path, "utf8").trim());
+        expect(record.grader).toMatch(/^[0-9a-f]{64}$/);
+        writeFileSync(path, `${JSON.stringify({ ...record, grader: "0".repeat(64) })}\n`);
+        expect((await gradeRun(dir, null)).graded).toBe(1);
+        const lines = readFileSync(path, "utf8").trim().split("\n");
+        expect(lines.map((l) => JSON.parse(l).version)).toEqual([1, 2]);
     });
 
     test("a journal whose events are complete but reordered is refused", async () => {

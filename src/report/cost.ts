@@ -105,13 +105,16 @@ function gradingComplete(run: RunLogs): boolean {
         (reasons) =>
             typeof reasons === "object" &&
             reasons !== null &&
-            Object.entries(reasons).every(([why, n]) => why === UNGRADED_BY_DESIGN || n === 0),
+            Object.entries(reasons).every(([why, n]) => COVERED_SKIPS.has(why) || n === 0),
     );
     return summary.judge_errors === 0 && summary.journal_seq === run.journal_seq && covered;
 }
 
-/** The grader's one skip reason that leaves no useful item ungraded: P14 items have no probe turn. */
-const UNGRADED_BY_DESIGN = "P14 has no probe turn";
+/**
+ * The grader's skip reasons that leave no useful item ungraded: P14 items have no probe turn, and
+ * an item graded by an earlier pass of the same grader keeps that grade in the summary.
+ */
+const COVERED_SKIPS = new Set(["P14 has no probe turn", "already graded"]);
 
 /**
  * The arm's cost at the price table its run recorded; `null` for a run that recorded none, and

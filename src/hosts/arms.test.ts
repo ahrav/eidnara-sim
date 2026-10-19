@@ -277,7 +277,9 @@ const host = new OpencodeSimHost({
     offsetFile: run + "/offset", keep: [run + "/arm"], proxyHttp1: "", proxyHttp2: "", model: "m", contextLimit: 1,
 });
 (host as any).sid = "s";
-(host as any).client = { session: { prompt: async () => ({ data: { info: {} } }), messages: async () => ({ data: [] }) } };
+let listed = 0;
+const reply = { info: { id: "m", role: "assistant", finish: "stop" }, parts: [] };
+(host as any).client = { session: { prompt: async () => ({ data: { info: {} } }), messages: async () => ({ data: listed++ === 0 ? [] : [reply] }) } };
 console.log(JSON.stringify(await host.prompt("hi", 20_000)));
 `;
     const started = Date.now();

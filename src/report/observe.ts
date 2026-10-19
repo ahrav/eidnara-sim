@@ -43,7 +43,7 @@ export interface RunIdentity {
     distortions: string[];
     /** `manifest.preflight.hosts` as `<host>@<version>`. */
     host_versions: string[];
-    /** `scenario.manifest`'s `generator_version/random_schema_version/corpus_manifest_sha256`. */
+    /** `scenario.manifest`'s `generator_version/random_schema_version/corpus_inputs_sha256/embedding_model`. */
     scenario_provenance: string;
     /** The digest of `manifest.fault_override`, or `null` for the scenario's own schedule. */
     fault_override: string | null;
@@ -51,6 +51,8 @@ export interface RunIdentity {
     tapes: string[];
     /** `manifest.preflight.toolchain`, one string per probe. */
     toolchain: string[];
+    /** The `grader` digests of the grades the report uses, sorted; one for a run graded by one grader. */
+    grader: string[];
 }
 
 const ALIASES: Record<string, string> = {
@@ -570,7 +572,14 @@ function incomplete(
         "scenario_provenance",
         "tapes",
         "toolchain",
+        "grader",
     ];
+    // The grades a run's report uses come from one grader implementation.
+    const mixed = runs.flatMap((g) =>
+        g.identity.grader.length > 1
+            ? [`run ${runKey(g)}: grades from ${g.identity.grader.length} graders`]
+            : [],
+    );
     const settings = shared.flatMap((field) => {
         const values = [...new Set(runs.map((g) => JSON.stringify(g.identity[field])))];
         return values.length > 1
@@ -610,6 +619,7 @@ function incomplete(
         ...pairing,
         ...sequential,
         ...settings,
+        ...mixed,
         ...controls,
         ...coverage,
         ...leaks,

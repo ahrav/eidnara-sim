@@ -179,7 +179,7 @@ changed.
 The harness captures no `test-result` or `workspace-state` artefact yet;
 the graders read neither.
 
-`scripts/grade-run.ts <run dir>` takes the run's lease, so one grader at a
+`scripts/grade-run.ts <run dir> [--regrade]` takes the run's lease, so one grader at a
 time allocates versions, refuses a run whose pre-registration or scenario no
 longer hashes to the digests in its manifest, whose `scenario.json` names a
 seed or tier other than the manifest's, whose seed the tier does not
@@ -225,7 +225,17 @@ the `judge-calls.jsonl` sequence numbers of its two calls), and
 grades every snapshot the
 journal names
 into `grades.jsonl` and judges each P7 item for each memory arm against the
-host arm, through a gateway it starts for the judge. It checks the judge
+host arm, through a gateway it starts for the judge. An item whose latest
+grade already cites its snapshot (and, for P7, its opponent) is skipped as
+`already graded` when the same grader made it: each record carries
+`grader`, a digest of the grader's source files and of
+`scripts/grade-run.ts`, and a grade from another implementation is made
+again. The digest covers those files, so a change confined to a module they
+import leaves it unchanged. Grading a run again is therefore free of judge
+calls and leaves earlier judgments as they stand. A pass appends its grades
+in one write after every item is graded, a P7 pair's host grade before its
+memory arm's, so the memory arm's grade means its pair stands. `--regrade`
+grades every item anew as a further version. It checks the judge
 model's family against every model the manifest records before it appends
 the first grade, so a refused judge leaves the log untouched. A P7 pair
 whose answers are refused before the judge call (empty, or carrying an arm
@@ -233,12 +243,13 @@ name) is skipped as refused; a judge call that fails or returns no verdict
 is a judge error. The journaled
 snapshot is an item's first attempt and the arm's later snapshots of that
 item are its later attempts. A probe whose turn lies past the run's event
-count is listed as outside the run. It prints the verdict
+count is listed as outside the run. The printed summary covers the run's
+latest grades, earlier passes' included, and `graded` counts the ones this
+invocation appended. It prints the verdict
 counts per arm and probe type (a P7 row also names the arm judged against),
 the skipped items by arm and reason, the grade versions the summary
 aggregates, the summed
-`P11.weighted_score` per arm, Δmem per memory arm from this invocation's
-grades, the judge errors, and the journal's last `seq` as `journal_seq`.
+`P11.weighted_score` per arm, Δmem per memory arm from those grades, the judge errors, and the journal's last `seq` as `journal_seq`.
 It removes any `grade-summary.json` in the run directory when it starts,
 under the run's lease, and writes the same summary there atomically when it
 finishes, so the cost panel prices only a finished pass over the journal as

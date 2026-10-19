@@ -66,8 +66,9 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
         const seq = Number(e.seq);
         const ms = Number(e.scenario_ms);
         const previous = last.get(arm) ?? 0;
-        if (ms < previous) report.decreasing_scenario_ms.push(seq);
-        last.set(arm, ms);
+        // A time that is not a finite number cannot be shown in order and breaks it.
+        if (!Number.isFinite(ms) || ms < previous) report.decreasing_scenario_ms.push(seq);
+        if (Number.isFinite(ms)) last.set(arm, ms);
         const busy = open.get(arm) ?? new Set<string>();
         open.set(arm, busy);
         const done = ran.get(arm) ?? new Set<string>();
@@ -100,13 +101,16 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
         if (e.kind === "EndJob") busy.delete(`job:${String(e.job)}`);
         if (e.kind !== "AdvanceClock") continue;
         if (busy.size > 0) report.advance_while_busy.push(seq);
-        if (Number(e.from_ms) !== previous) report.jump_origin_mismatch.push(seq);
+        // The jump's origin is the arm's clock before it; a record that claims another origin is
+        // off schedule whatever destination it names.
+        const mismatch = Number(e.from_ms) !== previous;
+        if (mismatch) report.jump_origin_mismatch.push(seq);
         const from = previous;
         const pending = [...schedule.events].filter(([id]) => !done.has(id)).map(([, t]) => t);
         const later = pending.filter((t) => t > from);
         const crossed = pending.some((t) => t >= from && t < ms);
         const lands = ms > from && later.length > 0 && Math.min(...later) === ms;
-        if (crossed || !lands) report.off_schedule_jumps.push(seq);
+        if (crossed || !lands || mismatch) report.off_schedule_jumps.push(seq);
         if (e.fault === undefined) {
             report.next_event_jumps++;
             continue;

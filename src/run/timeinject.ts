@@ -21,12 +21,19 @@ export const FAKETIME_LIB = join(
     "libfaketimeMT.so.1",
 );
 
-/** The rename atomically publishes a complete build at `FAKETIME_LIB`. */
+/** Each download, extraction, and build step of the vendored libfaketime ends within this. */
+const BUILD_STEP_MS = 600_000;
+
+/**
+ * Builds the vendored libfaketime in a staging directory of its own and renames the library
+ * into place, so concurrent builders each publish a complete build at `FAKETIME_LIB` and a
+ * reader sees either no library or a complete one.
+ */
 export async function buildFaketime(): Promise<string> {
     if (existsSync(FAKETIME_LIB)) return FAKETIME_LIB;
     mkdirSync(VENDOR, { recursive: true });
     const url = `https://github.com/wolfcw/libfaketime/archive/refs/tags/v${FAKETIME_VERSION}.tar.gz`;
-    const response = await fetch(url);
+    const response = await fetch(url, { signal: AbortSignal.timeout(BUILD_STEP_MS) });
     if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
     const tarball = Buffer.from(await response.arrayBuffer());
     const digest = createHash("sha256").update(tarball).digest("hex");
@@ -42,8 +49,17 @@ export async function buildFaketime(): Promise<string> {
             ["tar", "xzf", archive, "-C", staging],
             ["make", "-C", src, "libfaketimeMT.so.1"],
         ]) {
-            const r = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
-            if (r.exitCode !== 0) throw new Error(`${argv.join(" ")}: ${r.stderr.toString()}`);
+            // Async with a timeout, so a signal to the caller is handled and a stalled step ends.
+            const child = Bun.spawn(argv, {
+                stdout: "pipe",
+                stderr: "pipe",
+                timeout: BUILD_STEP_MS,
+            });
+            const [code, stderr] = await Promise.all([
+                child.exited,
+                new Response(child.stderr).text(),
+            ]);
+            if (code !== 0) throw new Error(`${argv.join(" ")}: ${stderr || `exit ${code}`}`);
         }
         mkdirSync(dirname(FAKETIME_LIB), { recursive: true });
         renameSync(join(src, "libfaketimeMT.so.1"), FAKETIME_LIB);

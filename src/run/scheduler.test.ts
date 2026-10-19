@@ -4688,6 +4688,21 @@ describe("resume", () => {
         expect(last.arm).toBe("eidnara");
         expect(last.scenario_ms).toBeGreaterThan(0);
     }, 60_000);
+
+    test("a completed run started again appends nothing and exits clean", async () => {
+        const d = dir();
+        const spawn = () =>
+            Bun.spawn(["bun", "tests/run-fixture.ts", d, "300", "0"], {
+                cwd: ROOT,
+                stdout: "ignore",
+                stderr: "inherit",
+            });
+        expect(await spawn().exited).toBe(0);
+        const done = readJournal(join(d, "journal.jsonl"));
+        expect(done.at(-1)?.kind).toBe("EndRun");
+        expect(await spawn().exited).toBe(0);
+        expect(readJournal(join(d, "journal.jsonl"))).toEqual(done);
+    }, 60_000);
 });
 
 describe("resume of fired faults", () => {

@@ -16,7 +16,7 @@ import { compileScenario, type ProbeItem } from "../scenario/compile";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { hashEmbedder } from "../scenario/similarity";
 import { type CallView, type Command, GradeRefused, type Snapshot } from "./artefacts";
-import { deltaMem, GradeLog, type GradeRecord, gradeItem, graderFor } from "./probes";
+import { deltaMem, GradeLog, type GradeRecord, gradeItem, graderDigest, graderFor } from "./probes";
 
 const DIR = join(import.meta.dir, "../../tests/fixtures/grade");
 const rules = loadPrereg("S").grading;
@@ -2303,4 +2303,24 @@ test("every programmatic probe the compiler emits carries a check its grader acc
     const graded = scenario.probes.filter((p) => p.type !== "P7");
     expect(graded.length).toBeGreaterThan(0);
     for (const p of graded) expect(() => graderFor(p as ProbeItem)).not.toThrow();
+});
+
+test("appendAll writes a batch whose versions follow each key in order, and refuses a malformed grader digest", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "sim-grade-log-")), "grades.jsonl");
+    const log = new GradeLog(path);
+    const g = grade("P2-pass");
+    const grader = graderDigest();
+    log.appendAll([
+        { ...g, grader },
+        { ...g, version: 2, grader },
+    ]);
+    expect(log.all().map((x) => [x.version, x.grader])).toEqual([
+        [1, grader],
+        [2, grader],
+    ]);
+    expect(() => log.appendAll([{ ...g, version: 4 }])).toThrow(/expected v3/);
+    expect(() => log.append({ ...g, version: 3, grader: "not a digest" })).toThrow(
+        /not a grade record/,
+    );
+    expect(log.all()).toHaveLength(2);
 });

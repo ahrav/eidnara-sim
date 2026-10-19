@@ -392,6 +392,8 @@ export function renderTier(r: TierReport): string {
         "",
         `Runs: ${r.runs.join(", ")}. Arms: ${r.arms.join(", ")}.`,
         "",
+        ...renderConditions(r.conditions, r.continuity),
+        ...renderDrift(r.drift, r.drift_source),
         `Clock distortions: ${
             r.distortions.some((d) => d.distortions.length)
                 ? r.distortions
@@ -401,8 +403,6 @@ export function renderTier(r: TierReport): string {
                 : "none recorded"
         }.`,
         "",
-        ...renderConditions(r.conditions, r.continuity),
-        ...renderDrift(r.drift, r.drift_source),
         ...accuracy(r),
         ...gates(r),
         ...panels(r),

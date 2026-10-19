@@ -30,6 +30,7 @@ import {
     GradeLog,
     type GradeRecord,
     gradeItem,
+    graderDigest,
     requireEvidence,
     verdictCounts,
 } from "../src/grade/probes";
@@ -56,7 +57,10 @@ import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
 export interface Summary {
+    /** Verdict counts over the run's current grades, the ones kept from earlier passes included. */
     verdicts: Record<string, Record<string, number>>;
+    /** The number of grades this pass appended. */
+    graded: number;
     /** Skipped item counts by arm, then by reason. */
     skipped: Record<string, Record<string, number>>;
     /** Each grade version maps to the number of aggregated grades carrying it. */
@@ -74,14 +78,20 @@ const summaryPath = (dir: string) => join(dir, "grade-summary.json");
 /**
  * `gradeRun` holds the run directory's lease while it grades, which serializes grade-version
  * allocation across invocations, and requires the pre-registration and scenario to hash to
- * the digests recorded in the manifest.
+ * the digests recorded in the manifest. A grade already on the log for an item, arm, opponent,
+ * and snapshot, made by this grader (`graderDigest`), stands and its item is skipped as `already
+ * graded`; `regrade` grades every item anew as a further version.
  */
-export async function gradeRun(dir: string, config: SimConfig | null): Promise<Summary> {
+export async function gradeRun(
+    dir: string,
+    config: SimConfig | null,
+    regrade = false,
+): Promise<Summary> {
     const lease = takeLease(dir);
     try {
         // A pass that stops early leaves no summary, so a reader never takes a stale one as current.
         rmSync(summaryPath(dir), { force: true });
-        const summary = await grade(dir, config);
+        const summary = await grade(dir, config, regrade);
         writeAtomic(summaryPath(dir), `${JSON.stringify(summary, null, 2)}\n`);
         return summary;
     } finally {
@@ -161,7 +171,7 @@ interface RowMeta {
     length: number;
 }
 
-async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
+async function grade(dir: string, config: SimConfig | null, regrade: boolean): Promise<Summary> {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
     const digests = {
@@ -476,13 +486,25 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         const mine = skipped[arm] as Record<string, number>;
         mine[why] = (mine[why] ?? 0) + 1;
     };
+    // A grade this grader already made from the same snapshot stands unless `regrade` asks anew;
+    // a grade from another grader implementation is made again.
+    const grader = graderDigest();
+    const priorKey = (item: string, arm: string, against: string | undefined, snapshot: string) =>
+        `${item}/${arm}/${against ?? ""}/${snapshot}`;
+    const prior = new Set(
+        regrade
+            ? []
+            : log
+                  .latest()
+                  .filter((g) => g.grader === grader)
+                  .map((g) => priorKey(g.item, g.arm, g.against, g.snapshot)),
+    );
     const staged: GradeRecord[] = [];
+    // Every grade of the pass lands in one write after every item is graded.
     const commit = () => {
-        for (const g of staged) {
-            const record = { ...g, version: log.nextVersion(g) };
-            log.append(record);
-            graded.push(record);
-        }
+        const records = staged.map((g) => ({ ...g, version: log.nextVersion(g), grader }));
+        log.appendAll(records);
+        graded.push(...records);
     };
     const outside = `probe turn outside the run's ${manifest.events} events`;
     let judgeErrors = 0;
@@ -507,6 +529,12 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             }
             const [mine, host] = [sides[arm], sides.host];
             if (lost.size > 0 || !mine?.[0] || !host?.[0]) return [];
+            // The pair's two grades land in one write, host side first, so the memory arm's grade
+            // means its pair stands.
+            if (prior.has(priorKey(probe.id, arm, "host", mine[0].id))) {
+                for (const side of [arm, "host"]) skip(side, "already graded");
+                return [];
+            }
             for (const side of [mine[0], host[0]]) requireEvidence(probe, side);
             return [{ probe, arm, a: mine[0], b: host[0], rows: { a: mine, b: host } }];
         }),
@@ -534,6 +562,10 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             const mine = attempts(arm, probe.id);
             if (!mine) {
                 skip(arm, unjournaled(arm, probe.id, probe.event));
+                continue;
+            }
+            if (prior.has(priorKey(probe.id, arm, undefined, (mine[0] as Snapshot).id))) {
+                skip(arm, "already graded");
                 continue;
             }
             let grade: GradeRecord | null;
@@ -634,14 +666,20 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             const log = join(dir, "judgments.jsonl");
             keepCompleteLines(log);
             appendFileSync(log, rows);
-            for (const { grades } of judged) staged.push(...grades);
+            // Host side first: a write cut after the host grade leaves the memory arm ungraded,
+            // which grades the pair again on the next pass.
+            for (const { grades } of judged) {
+                staged.push(...grades.filter((g) => g.arm === "host"));
+                staged.push(...grades.filter((g) => g.arm !== "host"));
+            }
         }
     }
     commit();
 
+    const current = log.latest();
     const p11 = Object.fromEntries(
         arms.map((arm) => {
-            const mine = graded.filter((g) => g.arm === arm && g.probe_type === "P11");
+            const mine = current.filter((g) => g.arm === arm && g.probe_type === "P11");
             const score = mine.reduce(
                 (n, g) => n + Number(g.metrics["P11.weighted_score"] ?? 0),
                 0,
@@ -649,11 +687,12 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             return [arm, { n: mine.length, weighted_score: score }];
         }),
     );
-    const p3 = memoryArms.map((arm) => ({ arm, delta_mem: deltaMem(graded, arm) }));
+    const p3 = memoryArms.map((arm) => ({ arm, delta_mem: deltaMem(current, arm) }));
     const versions: Summary["versions"] = {};
-    for (const g of graded) versions[g.version] = (versions[g.version] ?? 0) + 1;
+    for (const g of current) versions[g.version] = (versions[g.version] ?? 0) + 1;
     return {
-        verdicts: verdictCounts(graded),
+        verdicts: verdictCounts(current),
+        graded: graded.length,
         skipped,
         versions,
         p11,
@@ -666,10 +705,10 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
 if (import.meta.main) {
     const dir = resolve(process.argv[2] ?? "");
     if (!process.argv[2] || !existsSync(join(dir, "manifest.json"))) {
-        console.error("usage: bun scripts/grade-run.ts <run dir>");
+        console.error("usage: bun scripts/grade-run.ts <run dir> [--regrade]");
         process.exit(2);
     }
-    const summary = await gradeRun(dir, loadConfig());
+    const summary = await gradeRun(dir, loadConfig(), process.argv.includes("--regrade"));
     console.log(JSON.stringify(summary, null, 2));
     if (summary.judge_errors > 0) process.exit(1);
 }

@@ -314,8 +314,11 @@ export class Gateway {
             socket.on("close", () => this.sockets.delete(socket));
         });
         const h2 = createHttp2Server();
+        // A resumed run's new gateway restarts the connection count, so each record also names
+        // the gateway that wrote it.
+        const gateway = `${process.pid}-${Date.now().toString(36)}`;
         const log = (kind: string, detail: Record<string, unknown>) =>
-            this.options.downstream?.({ kind, wall_ms: Date.now(), ...detail });
+            this.options.downstream?.({ kind, wall_ms: Date.now(), gateway, ...detail });
         const ids = new WeakMap<object, number>();
         let sessions = 0;
         h2.on("session", (session) => {
@@ -342,13 +345,15 @@ export class Gateway {
             this.aborts.add(gone);
             const opened = { ...this.options.scope(), h2_session: ids.get(stream.session ?? {}) };
             stream.on("close", () => {
-                if (stream.rstCode)
+                // A peer can cancel a response with RST_STREAM(NO_ERROR), whose rstCode is 0.
+                const cut = stream.aborted || !stream.writableFinished;
+                if (cut || stream.rstCode)
                     log("stream_reset", {
                         ...opened,
                         code: stream.rstCode,
                         finished: stream.writableFinished,
                     });
-                if (!stream.writableFinished) gone.abort();
+                if (cut) gone.abort();
             });
             collectBody(stream, (body) => {
                 const live = () => !stream.destroyed;
