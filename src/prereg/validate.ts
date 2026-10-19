@@ -13,6 +13,7 @@ import {
     MIN_FORCED_P90_SESSIONS,
     MIN_PAIRED_RUNS_FOR_RUN_GATE,
     MULTIPLICITY,
+    NORMALISATION_RULES,
     needsPairedRuns,
     OUTCOMES,
     PREREG_SCHEMA,
@@ -110,7 +111,7 @@ const INTERVALS_FOR: Record<string, readonly string[]> = {
     slope: ["slope-paired-bootstrap"],
 };
 /** The divergence normalisers OQ-3 fixes (#1024). */
-const NORMALISERS = ["iso-8601-timestamps", "durations", "pids", "temp-paths", "run-ids"];
+const NORMALISERS: readonly string[] = NORMALISATION_RULES;
 
 const FAMILY_SHAPE: Shape = {
     id: text,
@@ -502,6 +503,11 @@ function checkUserSim(p: Preregistration, errors: string[]): void {
     }
     if (p.oracles.hang_quiet_ms >= p.liveness_bounds.turn_deadline_ms) {
         errors.push("oracles.hang_quiet_ms: must be below liveness_bounds.turn_deadline_ms");
+    }
+    if (u.interrupt_after_ms.max >= p.liveness_bounds.turn_deadline_ms) {
+        errors.push(
+            "user_sim.interrupt_after_ms: max must be below liveness_bounds.turn_deadline_ms",
+        );
     }
 }
 

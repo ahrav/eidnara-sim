@@ -69,6 +69,8 @@ export interface CallView {
     response_text_truncated?: boolean;
     failed?: boolean;
     label?: string;
+    /** The entry restates a journaled user turn; `calls.jsonl` holds no record for it. */
+    journal?: true;
 }
 
 export interface ProxyCalls {
@@ -161,6 +163,7 @@ const CALL: Record<string, Field> = {
     response_text_truncated: optional((v) => typeof v === "boolean"),
     failed: optional((v) => typeof v === "boolean"),
     label: optional(str),
+    journal: optional((v) => v === true),
 };
 const COMMAND: Record<string, Field> = {
     command: str,

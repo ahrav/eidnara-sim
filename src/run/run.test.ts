@@ -772,10 +772,10 @@ describe("run inputs", () => {
         const { manifest } = await loadManifest(o, scenario, checks);
         writeFileSync(
             join(out, "manifest.json"),
-            JSON.stringify({ ...manifest, schema: "sim-run-manifest/v2" }),
+            JSON.stringify({ ...manifest, schema: "sim-run-manifest/v1" }),
         );
         await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
-            /schema sim-run-manifest\/v2 is not sim-run-manifest\/v1/,
+            /schema sim-run-manifest\/v1 is not sim-run-manifest\/v2/,
         );
     });
 

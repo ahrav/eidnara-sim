@@ -498,6 +498,15 @@ describe("Journal and lease", () => {
         expect(JSON.parse(readFileSync(join(d, "lease.1.json"), "utf8")).released).toBe(true);
     });
 
+    test("staging files left by killed holders, under any pid or host, block nothing", () => {
+        const d = dir();
+        writeFileSync(join(d, `lease.${process.pid}.tmp`), "{}");
+        writeFileSync(join(d, `lease.${require("node:os").hostname()}.${process.pid}.tmp`), "{}");
+        const lease = takeLease(d);
+        expect(lease.pid).toBe(process.pid);
+        releaseLease(d, lease);
+    });
+
     test("a lease name with a non-canonical number refuses the directory", () => {
         const d = dir();
         writeFileSync(
@@ -696,7 +705,7 @@ describe("Journal and lease", () => {
 });
 
 describe("Scheduler", () => {
-    test("a turn's user record lands after its EndTurn, and each arm's rates before its EndArm", async () => {
+    test("a turn's user record lands before its EndTurn, and each arm's rates before its EndArm", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));
         const driver: ArmDriver = {
             ...fakeDriver([]),
@@ -717,7 +726,7 @@ describe("Scheduler", () => {
         expect(users.length).toBeGreaterThan(0);
         for (const u of users) {
             const end = j.entries.find((e) => e.kind === "EndTurn" && e.event === u.event);
-            expect(end && end.seq < u.seq).toBe(true);
+            expect(end && u.seq < end.seq).toBe(true);
             expect(u.label).toBe("pushback");
         }
         expect(kinds.slice(-3)).toEqual(["UserSimRates", "EndArm", "EndRun"]);
@@ -5218,6 +5227,114 @@ describe("store checks outside turns", () => {
 });
 
 describe("driver lifecycle hooks", () => {
+    /** A journal killed inside the first user turn, with the turn's user record journaled when `user` is set. */
+    async function killedInTurn(user: boolean): Promise<string> {
+        const path = join(dir(), "j.jsonl");
+        const first = new Journal(path);
+        const hung: ArmDriver = {
+            ...fakeDriver([]),
+            event: async (e) => (e.kind === "user_turn" ? new Promise(() => undefined) : {}),
+        };
+        await killAt(
+            new Scheduler({
+                events: fixtureEvents(2),
+                faults: [],
+                journal: first,
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: hung },
+            }),
+            first,
+            (e) => e.kind === "BeginTurn",
+        );
+        if (user) {
+            const begun = first.entries.find((e) => e.kind === "BeginTurn");
+            first.append({
+                kind: "UserTurn",
+                arm: "a",
+                scenario_ms: begun?.scenario_ms ?? 0,
+                event: begun?.event,
+                label: "task",
+                delivered: true,
+            });
+        }
+        first.close();
+        return path;
+    }
+
+    test("a turn interrupted by a kill keeps the user record its driver can recover", async () => {
+        const path = await killedInTurn(false);
+        const second = new Journal(path);
+        const turn = second.entries.find((e) => e.kind === "BeginTurn")?.event as string;
+        await new Scheduler({
+            events: fixtureEvents(2),
+            faults: [],
+            journal: second,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+            recoverTurn: (event) =>
+                event === turn
+                    ? { session: "s-0001", label: "pushback", delivered: true }
+                    : undefined,
+        }).run();
+        const kinds = second.entries.map((e) => [e.kind, e.event ?? null]);
+        const user = kinds.findIndex(([k, e]) => k === "UserTurn" && e === turn);
+        const done = kinds.findIndex(([k, e]) => k === "Event" && e === turn);
+        expect(user).toBeGreaterThan(0);
+        expect(user).toBeLessThan(done);
+        expect(second.entries[user]).toMatchObject({ label: "pushback", recovered: true });
+    });
+
+    test("a turn killed after its user record was journaled is not given a second one on resume", async () => {
+        const path = await killedInTurn(true);
+        const second = new Journal(path);
+        const turn = second.entries.find((e) => e.kind === "BeginTurn")?.event;
+        await new Scheduler({
+            events: fixtureEvents(2),
+            faults: [],
+            journal: second,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+            recoverTurn: () => ({ session: "s-0001", label: "task", delivered: true }),
+        }).run();
+        const users = second.entries.filter((e) => e.kind === "UserTurn" && e.event === turn);
+        expect(users).toHaveLength(1);
+    });
+
+    test("an arm killed after its rate summary resumes without a second one", async () => {
+        const path = join(dir(), "j.jsonl");
+        const events = fixtureEvents(2);
+        const first = new Journal(path);
+        const run = (journal: Journal, armSummary: () => object) =>
+            new Scheduler({
+                events,
+                faults: [],
+                journal,
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+                armSummary,
+            }).run();
+        await expect(
+            run(first, () => {
+                throw new Error("harness killed");
+            }),
+        ).rejects.toThrow("harness killed");
+        first.append({
+            kind: "UserSimRates",
+            arm: "a",
+            scenario_ms: first.entries.at(-1)?.scenario_ms ?? 0,
+            rates: { arm: "a" },
+        });
+        first.close();
+        const second = new Journal(path);
+        await run(second, () => ({ rates: { arm: "a" } }));
+        expect(second.entries.filter((e) => e.kind === "UserSimRates")).toHaveLength(1);
+        expect(second.entries.filter((e) => e.kind === "EndArm")).toHaveLength(1);
+    });
+
     test("a resumed arm gets the open session, its open jobs end, and finish precedes EndArm", async () => {
         const path = join(dir(), "j.jsonl");
         const events = fixtureEvents(3);

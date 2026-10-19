@@ -252,7 +252,10 @@ test("a Pi prompt Pi refuses returns its error without aborting or draining a tu
         return Promise.resolve({ success: false, error: "busy" });
     };
     (host as Untyped).rpc = rpc;
-    expect(await host.prompt("hi", 1_000)).toEqual({ error: '{"success":false,"error":"busy"}' });
+    expect(await host.prompt("hi", 1_000)).toEqual({
+        error: '{"success":false,"error":"busy"}',
+        undelivered: true,
+    });
     expect(rpc.commands).toEqual(["prompt"]);
 });
 
@@ -523,7 +526,10 @@ test("a rejected OpenCode prompt request aborts the turn before reporting the er
             },
         },
     };
-    expect(await host.prompt("hi", 1_000)).toEqual({ error: "Error: socket hang up" });
+    expect(await host.prompt("hi", 1_000)).toEqual({
+        error: "Error: socket hang up",
+        undelivered: true,
+    });
     expect(calls).toEqual(["prompt", "abort"]);
     (host as Untyped).client.session.abort = async () => {
         throw new Error("abort failed");
@@ -1226,7 +1232,7 @@ test("a Pi abort that never answers does not delay a drain that already ended", 
     (host as Untyped).rpc = rpc;
     (host as Untyped).drainMs = 2_000;
     const started = Date.now();
-    expect(await host.prompt("hi", 5_000)).toEqual({ error: "Error: lost" });
+    expect(await host.prompt("hi", 5_000)).toEqual({ error: "Error: lost", undelivered: true });
     expect(Date.now() - started).toBeLessThan(1_000);
 });
 

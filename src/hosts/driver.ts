@@ -786,6 +786,7 @@ export class HostDriver implements ArmDriver {
             this.applyDiff(e);
             return {};
         }
+        const entered = Date.now();
         const project = this.project(e);
         const dir = this.workspaceDir(project);
         let before: string | null = "";
@@ -808,10 +809,24 @@ export class HostDriver implements ArmDriver {
             if (reported) return;
             reported = this.checkDaemon(e);
         };
+        // A turn that spent part of its deadline before the prompt passes the rest along; one
+        // that spent all of it fails here, so the agent never runs past the deadline.
+        const deadline =
+            typeof e.deadline_ms === "number"
+                ? Math.min(this.o.turnDeadlineMs, e.deadline_ms - (Date.now() - entered))
+                : this.o.turnDeadlineMs;
+        if (deadline <= 0) {
+            const spent: TurnOutcome = {
+                failed: `turn deadline ${this.o.turnDeadlineMs} ms spent before the prompt`,
+                undelivered: true,
+            };
+            if (owedBefore) spent.stores = owedBefore;
+            return spent;
+        }
         let result: PromptResult;
         this.turn = e.id;
         try {
-            result = await host.prompt(String(e.text), this.o.turnDeadlineMs, interruptMs);
+            result = await host.prompt(String(e.text), deadline, interruptMs);
         } catch (caught) {
             this.turn = null;
             // A daemon gone during the turn is the cause of a lost connection; it is reported first.
@@ -822,6 +837,7 @@ export class HostDriver implements ArmDriver {
         const tools = host.drainTools();
         this.turn = null;
         const outcome: TurnOutcome = result.interrupted ? { user: { interrupted: true } } : {};
+        if (result.undelivered) outcome.undelivered = true;
         if (owedBefore) outcome.stores = owedBefore;
         if (result.error) outcome.failed = result.error;
         if (e.probe && before === null) {

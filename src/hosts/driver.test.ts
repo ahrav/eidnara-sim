@@ -88,9 +88,11 @@ class FakeHost {
     }
     failNext = false;
     interrupts: (number | undefined)[] = [];
-    async prompt(_text: string, _timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
+    deadlines: number[] = [];
+    async prompt(_text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
         this.onPrompt();
         this.interrupts.push(interruptMs);
+        this.deadlines.push(timeoutMs);
         if (interruptMs !== undefined) return { interrupted: true };
         if (!this.failNext) return {};
         this.failNext = false;
@@ -631,6 +633,48 @@ describe("HostDriver lifecycle", () => {
         await expect(gap.driver.event(ev("session_end"))).rejects.toThrow(missing);
         const listed = JSON.parse(readFileSync(join(gap.armDir, "transcripts.json"), "utf8"));
         expect(listed.missing).toEqual([missing]);
+    });
+
+    test("a turn's remaining deadline bounds the host prompt under the pre-registered one", async () => {
+        const { driver } = fixture("host");
+        const host = new FakeHost({} as HostContext, "/x");
+        driver.host = host as unknown as SimHost;
+        await driver.event(ev("user_turn", { id: "e-1", text: "go", deadline_ms: 400 }));
+        await driver.event(ev("user_turn", { id: "e-2", text: "go" }));
+        await driver.event(ev("user_turn", { id: "e-3", text: "go", deadline_ms: 5_000 }));
+        await driver.event(ev("user_turn", { id: "e-4", text: "go", deadline_ms: 30 }));
+        const spent = await driver.event(
+            ev("user_turn", { id: "e-5", text: "go", deadline_ms: 0 }),
+        );
+        expect(host.deadlines).toEqual([400, 1_000, 1_000, 30]);
+        expect(spent.failed).toContain("turn deadline");
+        expect(spent.undelivered).toBe(true);
+    });
+
+    test("a probe's pre-turn snapshot spends the turn's shared deadline", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const host = new FakeHost({} as HostContext, "/x");
+        driver.host = host as unknown as SimHost;
+        const snapshots = (driver as unknown as { snapshots: { tree: (d: string) => string } })
+            .snapshots;
+        const tree = snapshots.tree.bind(snapshots);
+        snapshots.tree = (d: string) => {
+            const until = Date.now() + 300;
+            while (Date.now() < until) {}
+            return tree(d);
+        };
+        await driver.event(ev("session_start", { session: "s-0" }));
+        await driver.event(
+            ev("user_turn", {
+                id: "e-8",
+                session: "s-0",
+                text: "go",
+                probe: "q-1",
+                deadline_ms: 900,
+            }),
+        );
+        expect(host.deadlines[0]).toBeLessThan(700);
     });
 
     test("a scheduled interrupt reaches the host's prompt and the turn reports it", async () => {

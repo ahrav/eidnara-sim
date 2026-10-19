@@ -26,7 +26,13 @@ cycles through (`agent_model` by default). `--tapes` names earlier runs'
 user-sim tapes to replay replies from (`docs/user-sim.md`), `--side-model`
 sets Eidnara's side-call model for a model-factor run, and `--user-sim-model`
 replaces the pre-registered user-sim model for a variant run. The manifest
-records every one of these values. An argument outside this list, an option without a value, an
+records every one of these values, and a digest of each tape and the
+pairing log beside it (`tape_sha256`). Each tape must come from a finished
+run (its journal holds `EndRun`) of the same seed, scenario,
+pre-registration, and fault override that ran every arm of this run over
+at least its events, with a pairing record per arm and user turn and a tape
+entry for each recorded reactive turn (`checkTapeSources`); a resume checks
+the sources again against the manifest's event count, order, and override. An argument outside this list, an option without a value, an
 empty model name, or an `--events` count above the compiled schedule is
 refused. The run refuses a seed outside the pre-registration, an arm
 outside the seed's order, an arm listed twice, an A/A control label whose
@@ -144,7 +150,7 @@ toolchain wrappers are created exclusively after removing any planted name.
    Bedrock region and profile name, base wall time, and preflight result. The working-tree digest hashes an
    untracked symlink's target text.
    A later invocation refuses a manifest whose `schema` is not
-   `sim-run-manifest/v1` or whose execution fields are out of range (an event
+   `sim-run-manifest/v2` or whose execution fields are out of range (an event
    count outside the compiled schedule, a non-positive context limit, an
    unnamed model, a non-integer seed, an unknown host), revalidates a saved
    fault override as on the first run, and refuses when any option it states differs from the manifest, when the manifest's arm order is not a non-empty subsequence
@@ -155,10 +161,12 @@ toolchain wrappers are created exclusively after removing any planted name.
    no open item, an `Event` that is not the arm's next scheduled event, a
    user turn's `Event` without its `EndTurn` or interruption marker, or an
    `EndArm` with an item open or events of the prefix still unrun, an item
-   opened twice or a turn reopened, a `StartArm` out of the manifest's order,
+   opened twice or a turn reopened, a `UserTurn` outside its open turn or
+   repeated, an arm's second `UserSimRates`, a `StartArm` out of the manifest's order,
    an `Event` recorded before its scheduled time, a `StartArm` while the
    previous arm is open, any entry after `EndRun`, or
-   a row whose `seq` or `scenario_ms` is not a number), when any of those digests changed, when an
+   a row whose `seq` or `scenario_ms` is not a number), when any of those digests or a replay
+   tape's digest (`tape_sha256`) changed, when an
    interception result, probed path, or toolchain version
    changed, or when the selected host's version or transcript paths changed,
    and appends its preflight result to `preflight.jsonl` (dropping an

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
     closeSync,
     constants,
@@ -137,6 +137,15 @@ function readTrimmed(path: string): string | null {
  * or containers that share a hostname on one shared directory stay distinct; the hostname
  * stands in where the file is absent.
  */
+/**
+ * A staging name beside `path` that no other process, on this host or another sharing the
+ * directory, is writing: host, pid, and a random nonce. An exclusive create at it refuses a
+ * planted symlink, and a leftover from a killed process collides with nothing.
+ */
+export function stagingPath(path: string): string {
+    return `${path}.${hostname()}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+}
+
 export function leaseHost(): string {
     const id = readTrimmed("/etc/machine-id");
     return id ? id : `hostname:${hostname()}`;

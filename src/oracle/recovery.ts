@@ -1,3 +1,4 @@
+import { armBase } from "../hosts/arms";
 import { DIGEST_FORMAT, parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
 import type { Entry } from "../run/journal";
 import { INFRA_FAULTS } from "../scenario/faults";
@@ -433,7 +434,7 @@ export function recoveries(run: RunLogs): Recovery[] {
             if (built) return built;
             // An arm whose verdicts depend on the plugin log needs that log on disk; the host
             // control arm runs no plugin, so its faults are judged on its calls and turns alone.
-            if (arm.pluginLogMissing && arm.arm !== "host") {
+            if (arm.pluginLogMissing && armBase(arm.arm) !== "host") {
                 throw new Error(
                     `${arm.arm}: r/eidnara.log is missing, so fail-open evidence cannot be read`,
                 );

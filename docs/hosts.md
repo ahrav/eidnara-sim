@@ -132,10 +132,19 @@ the call to drain; a call still running then stops the run, and so does an
 abort call still pending after 30 s, since it would cancel the next turn,
 an OpenCode session setup (listing or creating the session) still pending
 after 120 s,
-and so does an abort the server does not confirm with `true`. A
+and so does a deadline abort the server does not confirm with `true`. A
+scheduled interrupt's abort the server refuses or fails leaves the turn to run
+on under its deadline, reported as it ends. A
 prompt request that fails before the server answers is aborted the same way,
 and an abort that fails stops the run, since the turn's completion cannot be
-established. A Pi `agent_end` seen before the prompt response fails settles
+established. A Pi interrupt sends `abort` and reads the turn's own `agent_end`
+within the drain wait, whatever the abort's answer; the turn is `interrupted`
+only when the last assistant message stopped with `aborted`. A prompt the host
+refused, a prompt request that failed before Pi accepted it or the OpenCode
+server answered, and a turn whose deadline the user-sim call or the message
+listing spent before the prompt report `undelivered`, and the runner journals
+that turn's `UserTurn` as not delivered. The runner passes each turn the part of
+its deadline the user-sim call left (`deadline_ms`). A Pi `agent_end` seen before the prompt response fails settles
 that turn with its result.
 Every deadline timer is cleared once its race settles. An OpenCode prompt that returns before the session's last
 assistant step finishes (`finish` other than `stop` or `length`) is a

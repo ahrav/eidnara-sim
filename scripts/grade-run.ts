@@ -391,6 +391,24 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         const row = readRow(meta);
         const calls = row.artefacts.find((a) => a.class === "proxy-call");
         if (calls?.class !== "proxy-call") continue;
+        // A journal-backed user-sim entry restates a journaled turn; the log holds no record
+        // for it. The mark is honoured only on a user-sim entry whose turn the journal holds
+        // with that label.
+        for (const c of calls.calls) {
+            if (!c.journal) continue;
+            const backed = entries.some(
+                (e) =>
+                    e.kind === "UserTurn" &&
+                    e.arm === meta.arm &&
+                    String(e.event) === c.turn &&
+                    e.label === c.label,
+            );
+            if (c.component !== "user-sim" || !backed) {
+                throw new Error(
+                    `snapshot ${meta.id} marks call ${c.seq} as journal-backed, but the journal holds no such user turn`,
+                );
+            }
+        }
         const recorded = callsOf(callIndex, meta.arm, String(meta.session), turnIndex).filter(
             (c) => c.component !== "user-sim",
         );

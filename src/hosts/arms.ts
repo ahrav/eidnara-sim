@@ -137,6 +137,8 @@ export function toolCommand(tool: string, args: Record<string, unknown> | undefi
 
 export interface PromptResult {
     error?: string;
+    /** The host never sent the text: the turn failed before its prompt. */
+    undelivered?: true;
     /** The user aborted the turn through the host's abort path. */
     interrupted?: boolean;
 }
@@ -145,6 +147,37 @@ export const eidnaraOn = (arm: ArmName) => arm !== "host";
 
 /** An A/A control arm `host~aa` runs as `host` under its own label. */
 export const armBase = (label: string) => label.split("~")[0] as ArmName;
+/** A control label: a run arm, a tilde, and a tag; nothing a path could carry. */
+export const CONTROL_LABEL = /^[a-z-]+~[a-z0-9]+$/;
+
+/**
+ * Admits a manifest order of pre-registered arms and A/A controls: a control's label matches
+ * `CONTROL_LABEL`, its arm is in `pairs` and runs right before it, and each arm has at most one.
+ */
+export function requireOrder(
+    order: readonly string[],
+    arms: readonly string[],
+    pairs: readonly (readonly string[])[],
+): void {
+    for (const arm of order) {
+        const base = armBase(arm);
+        const known =
+            arms.includes(base) &&
+            (arm === base || (CONTROL_LABEL.test(arm) && pairs.some(([x]) => x === base)));
+        if (!known) throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
+    }
+    const controls = order.filter((arm) => arm !== armBase(arm));
+    for (const control of controls) {
+        const base = armBase(control);
+        if (!order.includes(base)) throw new Error(`manifest arm ${control} runs without ${base}`);
+        if (order.indexOf(control) !== order.indexOf(base) + 1) {
+            throw new Error(`manifest arm ${control} runs apart from ${base}`);
+        }
+        if (controls.filter((c) => armBase(c) === base).length > 1) {
+            throw new Error(`manifest order runs two A/A controls of ${base}`);
+        }
+    }
+}
 const modelRef = (model: string) => `amazon-bedrock/${model}`;
 
 function eidnaraUserConfig(connectionFile: string, model: string): Record<string, unknown> {
@@ -640,6 +673,8 @@ export class PiSimHost extends SimHost {
     }
 
     async prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
+        if (!this.rpc)
+            return { error: "Pi process is gone; the prompt was never sent", undelivered: true };
         const deadline = Date.now() + timeoutMs;
         const watch = { activity: 0, last: undefined as Untyped, promised: 0 };
         const off = this.rpc.onEvent((e: Untyped) => {
@@ -665,27 +700,36 @@ export class PiSimHost extends SimHost {
             () => undefined,
         );
         let settling = false;
+        let accepted = false;
         try {
             const response = await this.rpc.sendCommand("prompt", { message: text }, { timeoutMs });
             if (response.success === false) {
                 waiting.abort();
-                return { error: JSON.stringify(response).slice(0, 2000) };
+                return { error: JSON.stringify(response).slice(0, 2000), undelivered: true };
             }
+            accepted = true;
             const first =
                 interruptMs === undefined ? await end : await withDeadline(end, interruptMs);
             if (first === null) {
-                // The user's abort ends the turn through Pi's abort path; its agent_end follows.
-                waiting.abort();
-                const drained = this.agentEnd(this.drainMs);
+                // The user's abort ends the turn through Pi's abort path. The turn's own waiter
+                // reads the ending, whether the abort landed, failed, or stalls, within the drain
+                // wait; an abort that reached Pi after the agent had finished leaves a stop
+                // reason other than `aborted`, and the turn reports as it ended.
                 this.rpc
                     .sendCommand("abort", {}, { timeoutMs: this.drainMs })
                     .catch(() => undefined);
-                await drained.catch((reason: unknown) => {
+                const ending = await withDeadline(end, this.drainMs).catch(() => null);
+                if (ending === null) {
+                    waiting.abort();
                     throw new Error(
-                        `Pi turn still running ${this.drainMs} ms after the user's abort (${String(reason)})`,
+                        `Pi turn still running ${this.drainMs} ms after the user's abort`,
                     );
-                });
-                return { interrupted: true };
+                }
+                const messages = (ending.messages ?? []) as Array<Record<string, Untyped>>;
+                const last = messages.filter((m) => m.role === "assistant").at(-1);
+                if (last?.stopReason === "aborted") return { interrupted: true };
+                settling = true;
+                return turnResult((await this.settle(watch, deadline)) ?? ending);
             }
             settling = true;
             return turnResult(await this.settle(watch, deadline));
@@ -714,7 +758,9 @@ export class PiSimHost extends SimHost {
                     `Pi turn still running ${this.drainMs} ms after abort (${String(reason)})`,
                 );
             });
-            return { error: String(caught).slice(0, 2000) };
+            // A prompt the command never accepted was never received.
+            const receipt = accepted ? {} : { undelivered: true as const };
+            return { error: String(caught).slice(0, 2000), ...receipt };
         } finally {
             off();
         }
@@ -1035,6 +1081,12 @@ export class OpencodeSimHost extends SimHost {
         const remaining = () => Math.max(0, deadline - Date.now());
         /** Kept back from the turn so the post-turn tool listing fits inside the same deadline. */
         const reserve = Math.min(1_000, Math.floor(timeoutMs / 4));
+        if (timeoutMs <= 0) {
+            return {
+                error: `turn deadline ${timeoutMs} ms spent before the prompt`,
+                undelivered: true,
+            };
+        }
         let seen: Set<string>;
         try {
             const listed = await this.messages(timeoutMs);
@@ -1043,13 +1095,16 @@ export class OpencodeSimHost extends SimHost {
             this.unlogged = null;
             seen = new Set(listed.map((m) => String(m.info?.id)));
         } catch (caught) {
-            return { error: `tool capture: ${String(caught)}`.slice(0, 2000) };
+            return { error: `tool capture: ${String(caught)}`.slice(0, 2000), undelivered: true };
         }
         const startScenario = this.ctx.now?.() ?? 0;
         if (remaining() <= reserve) {
-            return { error: `turn deadline of ${timeoutMs} ms passed during the message listing` };
+            return {
+                error: `turn deadline of ${timeoutMs} ms passed during the message listing`,
+                undelivered: true,
+            };
         }
-        const outcome = await this.turn(text, remaining() - reserve, interruptMs);
+        const outcome = await this.turn(text, remaining() - reserve, interruptMs, timeoutMs);
         let listed: Array<{ info: Untyped; parts: Untyped[] }>;
         try {
             if (remaining() === 0) throw new Error("turn deadline passed before the tool listing");
@@ -1057,7 +1112,10 @@ export class OpencodeSimHost extends SimHost {
         } catch (caught) {
             this.unlogged = seen;
             const gap = `tool capture: ${String(caught)}`;
-            return { error: (outcome.error ? `${outcome.error} | ${gap}` : gap).slice(0, 2000) };
+            return {
+                ...outcome,
+                error: (outcome.error ? `${outcome.error} | ${gap}` : gap).slice(0, 2000),
+            };
         }
         if (outcome.error || outcome.interrupted) return outcome;
         const last = listed.filter((m) => m.info?.role === "assistant").at(-1);
@@ -1068,10 +1126,19 @@ export class OpencodeSimHost extends SimHost {
             : { error: `the turn returned before its last assistant step finished (${finish})` };
     }
 
+    /**
+     * Sends the prompt and waits for it under `timeoutMs`. A scheduled interrupt asks OpenCode to
+     * abort: an abort answered true is the interrupt; an abort answered false or with an error
+     * leaves the turn to run on under its deadline and report as it ends; an abort still
+     * unanswered after `abortWaitMs` stops the run, since an abort in flight when the next turn
+     * starts would cancel that turn instead. `wholeMs` is the turn's whole deadline, named in a
+     * deadline error.
+     */
     private async turn(
         text: string,
         timeoutMs: number,
         interruptMs?: number,
+        wholeMs = timeoutMs,
     ): Promise<PromptResult> {
         const model = { providerID: "amazon-bedrock", modelID: this.ctx.model };
         const call = this.client.session.prompt({
@@ -1082,14 +1149,12 @@ export class OpencodeSimHost extends SimHost {
             (result: Untyped) => ({ result }),
             (caught: unknown) => ({ caught }),
         );
+        const turnEnd = Date.now() + timeoutMs;
         const wait = Math.min(timeoutMs, interruptMs ?? timeoutMs);
-        const first = await withDeadline(settled, wait);
-        if (first === null) {
-            const abort = this.client.session.abort({ path: { id: this.sid } });
-            // An abort still in flight when the next turn starts would cancel that turn instead.
-            const answered = await withDeadline(
-                abort.then(
-                    (r: Untyped) => r?.data === true,
+        const abort = async (): Promise<boolean> => {
+            const answered = await withDeadline<boolean>(
+                this.client.session.abort({ path: { id: this.sid } }).then(
+                    (r: Untyped) => r?.data === true && !r?.error,
                     () => false,
                 ),
                 this.abortWaitMs,
@@ -1099,25 +1164,35 @@ export class OpencodeSimHost extends SimHost {
                     `OpenCode abort still pending ${this.abortWaitMs} ms after the deadline`,
                 );
             }
-            if (!answered) throw new Error("OpenCode turn not aborted after its deadline");
+            return answered;
+        };
+        let first = await withDeadline(settled, wait);
+        if (first === null && wait < timeoutMs) {
+            if (await abort()) {
+                const drained = await withDeadline(settled, 30_000);
+                if (drained === null)
+                    throw new Error("OpenCode turn still running 30 s after abort");
+                return { interrupted: true };
+            }
+            first = await withDeadline(settled, Math.max(0, turnEnd - Date.now()));
+        }
+        if (first === null) {
+            if (!(await abort())) throw new Error("OpenCode turn not aborted after its deadline");
             const drained = await withDeadline(settled, 30_000);
             if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
-            if (wait < timeoutMs) return { interrupted: true };
-            return { error: `turn deadline ${timeoutMs} ms` };
+            return { error: `turn deadline ${wholeMs} ms` };
         }
         if ("caught" in first) {
             // The request failed with the server's answer unknown, so the turn is aborted before the next one.
-            const abort = this.client.session.abort({ path: { id: this.sid } }).then(
-                (r: Untyped) => r?.data === true,
-                () => false,
-            );
             const tail = String(this.oc?.stderr?.() ?? "").slice(-600);
             const cause = String(first.caught);
             const error = (tail ? `${cause} | serve stderr: ${tail}` : cause).slice(0, 2000);
-            if (!(await withDeadline(abort, this.abortWaitMs))) {
+            if (!(await abort())) {
                 throw new Error(`OpenCode turn not aborted after a rejected prompt (${error})`);
             }
-            return { error };
+            // A rejected prompt call never got an acknowledgement, so the text's receipt is
+            // unknown and the turn counts as undelivered.
+            return { error, undelivered: true };
         }
         const { result } = first;
         if (result.error) return { error: JSON.stringify(result.error).slice(0, 2000) };

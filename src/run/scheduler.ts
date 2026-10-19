@@ -23,6 +23,8 @@ export interface TurnOutcome {
     stores?: { fault: string; store: StoreCheck }[];
     /** The user turn the user-sim sent or skipped, journaled as `UserTurn`. */
     user?: Record<string, unknown>;
+    /** The host never received the turn's text. */
+    undelivered?: boolean;
 }
 
 export interface ArmDriver {
@@ -115,6 +117,11 @@ export interface SchedulerOptions {
     onArmReady?: (arm: string) => void;
     /** The arm's realised user-sim rates, journaled as `UserSimRates` before `EndArm`. */
     armSummary?: (arm: string) => object | undefined;
+    /**
+     * The user record of a turn a kill interrupted, from the driver's own log, journaled as
+     * `UserTurn` with `recovered: true` ahead of the turn's `failed(interrupted)` state.
+     */
+    recoverTurn?: (event: string) => Record<string, unknown> | undefined;
 }
 
 const PROXY_LAYER = "proxy-sink";
@@ -434,7 +441,11 @@ export class Scheduler {
                 this.o.beforeEnd?.();
                 await this.o.verify?.("EndArm");
                 this.checkStop();
-                const rates = this.o.armSummary?.(arm);
+                // A kill between the summary and EndArm resumes here; the arm keeps its one summary.
+                const summarised = this.o.journal.entries.some(
+                    (e) => e.arm === arm && e.kind === "UserSimRates",
+                );
+                const rates = summarised ? undefined : this.o.armSummary?.(arm);
                 if (rates) this.log({ kind: "UserSimRates", ...rates });
                 this.log({ kind: "EndArm" });
                 ended = true;
@@ -502,6 +513,8 @@ export class Scheduler {
         let marked = new Set<unknown>();
         let jobs = new Map<unknown, number>();
         let snapshots = new Set<unknown>();
+        let users = new Set<unknown>();
+        let summarised = false;
         let done = 0;
         let outage: string | null = null;
         let clockMs = 0;
@@ -547,6 +560,8 @@ export class Scheduler {
                 marked = new Set();
                 jobs = new Map();
                 snapshots = new Set();
+                users = new Set();
+                summarised = false;
                 done = 0;
                 outage = null;
                 clockMs = 0;
@@ -807,9 +822,13 @@ export class Scheduler {
                     return;
                 }
                 case "UserTurn": {
-                    if (!ended.has(e.event)) {
-                        throw fail(`${e.kind} for ${e.event} follows no EndTurn`, e);
+                    // The user record lands inside its turn: before EndTurn, or, recovered from
+                    // the pairing log, before the turn's interruption.
+                    if (!begun.has(e.event) || ended.has(e.event)) {
+                        throw fail(`${e.kind} for ${e.event} lies outside its open turn`, e);
                     }
+                    if (users.has(e.event)) throw fail(`${e.kind} for ${e.event} repeats`, e);
+                    users.add(e.event);
                     return;
                 }
                 case "CounterfactualDeletion": {
@@ -825,6 +844,8 @@ export class Scheduler {
                     if (done < events.length) {
                         throw fail(`arm ${open} has UserSimRates before its events completed`, e);
                     }
+                    if (summarised) throw fail(`arm ${open} has UserSimRates twice`, e);
+                    summarised = true;
                     return;
                 }
                 case "ItemState": {
@@ -1041,9 +1062,14 @@ export class Scheduler {
                 this.log({ kind: "ItemState", fault: f.id, state: "failed(interrupted)" });
             }
         }
+        const journaled = new Set(kinds("UserTurn").map((e) => e.event));
         for (const e of kinds("BeginTurn").filter(
             (x) => !ended.has(x.event) && !done.has(x.event),
         )) {
+            const user = journaled.has(e.event)
+                ? undefined
+                : this.o.recoverTurn?.(e.event as string);
+            if (user) this.log({ kind: "UserTurn", event: e.event, ...user, recovered: true });
             if (!marked.has(e.event)) {
                 this.log({ kind: "ItemState", event: e.event, state: "failed(interrupted)" });
             }
@@ -1311,8 +1337,15 @@ export class Scheduler {
             }
             const state = outcome.failed === undefined ? "completed" : "failed";
             const item = e.probe ? { probe: e.probe, state } : {};
-            // The checks go first: a kill before EndTurn replays the turn with them on record.
+            // The checks and the user record go first: a kill before EndTurn replays the turn
+            // with them on record, and a resume reads a turn's EndTurn as the whole turn.
             this.logStores(outcome.stores, e.id);
+            if (outcome.user) {
+                this.record(
+                    { kind: "UserTurn", event: e.id, ...outcome.user },
+                    `user turn ${e.id}`,
+                );
+            }
             const snapshot = outcome.snapshot ? { snapshot: outcome.snapshot } : {};
             const end = { event: e.id, outcome: outcome.failed ?? "ok", ...item, ...snapshot };
             try {
@@ -1322,12 +1355,6 @@ export class Scheduler {
                 throw caught;
             }
             this.snapshotTurn(end);
-            if (outcome.user) {
-                this.record(
-                    { kind: "UserTurn", event: e.id, ...outcome.user },
-                    `user turn ${e.id}`,
-                );
-            }
             await this.untilFatal(Bun.sleep(this.o.settleMs ?? 1_000));
         } else {
             outcome = await deliver();
@@ -1448,6 +1475,11 @@ export class Scheduler {
     /** The arm whose events the scheduler is delivering, or null between arms. */
     runningArm(): string | null {
         return this.current ? this.arm : null;
+    }
+
+    /** The arm the scheduler is starting, resuming, or running, or null between arms. */
+    get currentArm(): string | null {
+        return this.arm;
     }
 
     private live(): ArmHandle {

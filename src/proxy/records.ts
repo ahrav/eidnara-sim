@@ -55,6 +55,10 @@ export interface CallRecord {
     response_text_truncated?: true;
     /** The request's arrival ordinal within its proxy process, so restores can order same-ms calls. */
     arrival?: number;
+    /** SHA-256 of the whole relayed text, present with `response_text`. */
+    response_sha256?: string;
+    /** The last 6,000 characters of the relayed text, present when `response_text` cut it. */
+    response_tail?: string;
 }
 
 const NUMBERS = [
@@ -93,6 +97,9 @@ export function recordProblems(input: Partial<CallRecord> | Record<string, unkno
     const arrival = value.arrival;
     if (arrival !== undefined && (!Number.isInteger(arrival) || (arrival as number) < 0)) {
         problems.push("arrival invalid");
+    }
+    for (const k of ["response_sha256", "response_tail"] as const) {
+        if (value[k] !== undefined && typeof value[k] !== "string") problems.push(`${k} invalid`);
     }
     return problems;
 }

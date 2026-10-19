@@ -13,9 +13,6 @@ v2 harness before any harness code existed.
 
 At least one arm pair diverges before the last event of its run.
 
-No harness code, test, or run exists yet. The surface lands in M6
-(#1031).
-
 The live `usersim-1` run diverged in three of its ten sessions, each at the second user turn.
 
 ## Failure scenario

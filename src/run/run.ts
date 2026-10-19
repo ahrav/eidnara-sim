@@ -19,7 +19,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
-import { armBase } from "../hosts/arms";
+import { armBase, CONTROL_LABEL } from "../hosts/arms";
 import { driverSupports, HostDriver } from "../hosts/driver";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Preregistration, Tier } from "../prereg/schema";
@@ -32,8 +32,25 @@ import { compileScenario, type Scenario, scenarioInputMismatch } from "../scenar
 import { type FaultEpisode, type FaultType, SEAMS, validateFault } from "../scenario/faults";
 import { corpusInputsSha256, loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
-import { behaviourPlan, type Label, realisedRates } from "../usersim/plan";
-import { normaliser, Pairing, proxyUserSim, Tape, UserSim } from "../usersim/usersim";
+import {
+    beganAt,
+    behaviourPlan,
+    deliveredTurns,
+    type Label,
+    pinnedTurns,
+    realisedRates,
+} from "../usersim/plan";
+import {
+    type AgentReply,
+    agentReplyOf,
+    checkTapeSources,
+    normaliser,
+    Pairing,
+    proxyUserSim,
+    Tape,
+    tapeDigests,
+    UserSim,
+} from "../usersim/usersim";
 import { writeAtomic } from "./atomic";
 import { type Entry, Journal, releaseLease, requireAppendable, takeLease } from "./journal";
 import { plainPath } from "./launcher";
@@ -62,7 +79,7 @@ export interface RunOptions {
 }
 
 export interface Manifest {
-    schema: "sim-run-manifest/v1";
+    schema: "sim-run-manifest/v2";
     tier: Tier;
     seed: number;
     host: "pi" | "opencode";
@@ -88,6 +105,8 @@ export interface Manifest {
     binaries: Record<string, string>;
     fault_override: FaultEpisode[] | null;
     tapes: string[];
+    /** One digest per entry of `tapes`, over the tape and the pairing log beside it. */
+    tape_sha256: string[];
     side_model: string | null;
     user_sim_model: string;
     prereg_sha256: string;
@@ -371,6 +390,13 @@ function manifestProblems(m: Manifest, compiledEvents: number): string[] {
     if (!Number.isFinite(m.base_wall_ms)) problems.push("base_wall_ms is not a number");
     if (!Array.isArray(m.tapes) || m.tapes.some((x) => typeof x !== "string" || x === "")) {
         problems.push("tapes is not a list of paths");
+    }
+    if (
+        !Array.isArray(m.tape_sha256) ||
+        m.tape_sha256.some((x) => typeof x !== "string") ||
+        m.tape_sha256.length !== (Array.isArray(m.tapes) ? m.tapes.length : -1)
+    ) {
+        problems.push("tape_sha256 is not one digest per tape");
     }
     if (m.side_model !== null && (typeof m.side_model !== "string" || m.side_model === "")) {
         problems.push("side_model is neither null nor a name");
@@ -796,8 +822,7 @@ export function armOrder(o: Pick<RunOptions, "tier" | "seed" | "arms">): string[
     const order: string[] = prereg.arms.order_by_seed[index] ?? prereg.arms.run;
     const pairs = prereg.aa_controls?.pairs ?? [];
     const control = (a: string) =>
-        /^[a-z-]+~[a-z0-9]+$/.test(a) &&
-        pairs.some(([x, y]) => x === armBase(a) && y === armBase(a));
+        CONTROL_LABEL.test(a) && pairs.some(([x, y]) => x === armBase(a) && y === armBase(a));
     if (new Set(o.arms).size !== (o.arms ?? []).length) {
         throw new HarnessFailure("--arms lists an arm twice");
     }
@@ -809,10 +834,30 @@ export function armOrder(o: Pick<RunOptions, "tier" | "seed" | "arms">): string[
     if ((o.arms ?? []).some((a) => control(a) && !kept.includes(armBase(a)))) {
         throw new HarnessFailure("an A/A control arm runs only beside its arm");
     }
+    const controls = (o.arms ?? []).filter(control).map(armBase);
+    if (new Set(controls).size !== controls.length) {
+        throw new HarnessFailure("an arm runs one A/A control");
+    }
     if (kept.length === 0) throw new HarnessFailure("no arm to run");
     return kept;
 }
 
+/**
+ * A persisted order is one `armOrder` would schedule for the tier and seed: pre-registered arms
+ * in the seed's relative order, each control right after its arm, once, for a registered pair.
+ */
+export function requireAdmittedOrder(
+    o: Pick<RunOptions, "tier" | "seed">,
+    order: readonly string[],
+): void {
+    if (!sameJson(armOrder({ ...o, arms: [...order] }), order)) {
+        throw new HarnessFailure(
+            `manifest order ${order.join(",")} is not an order ${o.tier} seed ${o.seed} admits`,
+        );
+    }
+}
+
+/** The arm a user-sim divergence is measured against: an A/A control's own arm, else the first. */
 export const referenceArm = (order: string[]) => (arm: string) =>
     arm.includes("~") ? armBase(arm) : (order[0] as string);
 
@@ -1017,11 +1062,35 @@ export async function loadManifest(
             scenario.projects.map((p) => p.id),
         ),
     });
+    /** Each replay source is a finished run of this seed, scenario, and order, holding every turn. */
+    const sources = (
+        tapes: string[],
+        events: number,
+        order: readonly string[],
+        faultOverride: FaultEpisode[] | null,
+    ) =>
+        checkTapeSources(tapes, {
+            seed: o.seed,
+            scenario_hash: scenario.scenario_hash,
+            prereg_sha256: preregistrationHash(preregOf(o)),
+            events,
+            order,
+            fault_override: faultOverride,
+            turns: scenario.events
+                .slice(0, events)
+                .filter((e) => e.kind === "user_turn")
+                .map((e) => String(e.id)),
+            scripted: new Map(
+                scenario.events
+                    .filter((e) => e.kind === "user_turn")
+                    .map((e) => [String(e.id), String((e as { text?: unknown }).text ?? "")]),
+            ),
+        });
     if (existsSync(path)) {
         const manifest = readJsonFile<Manifest>(path);
-        if (manifest?.schema !== "sim-run-manifest/v1") {
+        if (manifest?.schema !== "sim-run-manifest/v2") {
             throw new HarnessFailure(
-                `manifest.json schema ${manifest?.schema} is not sim-run-manifest/v1`,
+                `manifest.json schema ${manifest?.schema} is not sim-run-manifest/v2`,
             );
         }
         const fieldProblems = manifestProblems(manifest, scenario.events.length);
@@ -1058,9 +1127,10 @@ export async function loadManifest(
             const names = differs.map(([k]) => k).join(", ");
             throw new HarnessFailure(`resume options differ from the manifest: ${names}`);
         }
-        const changed = Object.entries(digests()).filter(
-            ([k, v]) => !sameJson(manifest[k as keyof Manifest], v),
-        );
+        const changed = Object.entries({
+            ...digests(),
+            tape_sha256: tapeDigests(manifest.tapes),
+        }).filter(([k, v]) => !sameJson(manifest[k as keyof Manifest], v));
         if (changed.length > 0) {
             const names = changed.map(([k]) => k).join(", ");
             throw new HarnessFailure(`inputs changed since the run started: ${names}`);
@@ -1089,17 +1159,22 @@ export async function loadManifest(
             validateEpisodes(manifest.fault_override, scenario, "manifest.json fault_override");
         }
         requireMechanisms(manifest.fault_override ?? scenario.faults, manifest.models);
+        // A resume checks the sources against the run it continues, whose event count and arm
+        // order the manifest holds whether or not this invocation restates them.
+        sources(manifest.tapes, manifest.events, manifest.order, manifest.fault_override);
         const preflightLog = join(o.out, "preflight.jsonl");
         dropCutTail(preflightLog);
         appendFileSync(preflightLog, `${JSON.stringify(checks)}\n`);
         return { manifest, checks };
     }
     requireMechanisms(wanted.fault_override ?? scenario.faults, wanted.models);
+    sources(wanted.tapes, wanted.events, wanted.order, wanted.fault_override);
     checks = await probe();
     const manifest: Manifest = {
-        schema: "sim-run-manifest/v1",
+        schema: "sim-run-manifest/v2",
         ...wanted,
         ...digests(),
+        tape_sha256: tapeDigests(wanted.tapes),
         base_wall_ms: Date.now(),
         preflight: checks,
     };
@@ -1341,6 +1416,8 @@ export function withUserTurns(
             cache_read_tokens: 0,
             cache_write_tokens: 0,
             label: t.label,
+            // The entry comes from the journal, not from a proxy call record.
+            journal: true,
         } satisfies CallView;
     });
     return [...calls, ...views].sort((a, b) => a.seq - b.seq);
@@ -1493,9 +1570,10 @@ async function runArms(
         manifest_sha256: manifestDigest,
     });
     const scenario = { ...compiled, faults: manifest.fault_override ?? compiled.faults };
-    const events: ScenarioEvent[] = scenario.events
-        .slice(0, manifest.events)
-        .map((e) => ({ ...e, id: String(e.id), session: String(e.session) }) as ScenarioEvent);
+    const allEvents: ScenarioEvent[] = scenario.events.map(
+        (e) => ({ ...e, id: String(e.id), session: String(e.session) }) as ScenarioEvent,
+    );
+    const events = allEvents.slice(0, manifest.events);
     const hostRow = manifest.preflight.hosts.find((h) => h.host === o.host);
     if (!hostRow) throw new Error(`preflight lists no ${o.host} host`);
 
@@ -1504,11 +1582,10 @@ async function runArms(
     const proxyFaults = scenario.faults.filter((f) => f.seam.layer === "proxy-sink");
     const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
     const callsPath = join(o.out, "calls.jsonl");
-    const agentText = new Map<string, string>();
+    const agentText = new Map<string, AgentReply>();
     const noteAgent = (r: CallRecord) => {
-        if (r.component === "agent" && r.response_text) {
-            agentText.set(`${r.arm}/${r.session}`, r.response_text);
-        }
+        const reply = agentReplyOf(r);
+        if (reply) agentText.set(`${r.arm}/${r.session}`, reply);
     };
     const prior: Pick<
         CallRecord,
@@ -1543,6 +1620,14 @@ async function runArms(
         witnessed.done = true;
     };
     const offsetFile = (arm: string) => join(o.out, arm, "clock", "offset");
+    for (const log of ["downstream.jsonl", "tape.jsonl", "pairing.jsonl"]) {
+        dropCutTail(join(o.out, log));
+    }
+    const pairing = new Pairing(
+        join(o.out, "pairing.jsonl"),
+        referenceArm(manifest.order),
+        manifest.tapes.map((t) => join(dirname(t), "pairing.jsonl")),
+    );
     const scheduler = new Scheduler({
         events,
         faults: scenario.faults,
@@ -1558,6 +1643,17 @@ async function runArms(
                 label: e.label as Label,
             }));
             return realisedRates(turns, prereg);
+        },
+        // The pairing log holds the turn's user record ahead of the prompt, so a turn a kill
+        // interrupted mid-prompt keeps its label and delivery in the journal.
+        recoverTurn: (event: string): Record<string, unknown> | undefined => {
+            const arm: string | null = scheduler.currentArm;
+            const r = pairing.records.find(
+                (x) => x.kind === "turn" && x.arm === arm && x.event === event,
+            );
+            return r?.kind === "turn"
+                ? { session: r.session, label: r.label, delivered: r.delivered }
+                : undefined;
         },
         stopped: () => stop.reason,
         onArmReady: (arm) => {
@@ -1584,9 +1680,6 @@ async function runArms(
         protected override placed(record: CallRecord, offset: number, length: number): void {
             callIndex.add(record, offset, length);
         }
-    }
-    for (const log of ["downstream.jsonl", "tape.jsonl", "pairing.jsonl"]) {
-        dropCutTail(join(o.out, log));
     }
     const gateway = new Gateway({
         upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
@@ -1639,27 +1732,36 @@ async function runArms(
         index: number;
         role: string;
         text: string;
+        paste?: { sample_id: string; bytes: number };
     }[];
+    // Pinning reads the whole scenario, so a shorter `--events` run labels its prefix the way
+    // a full run of the seed does.
+    const pinned = pinnedTurns(allEvents, scenario.faults);
+    const tape = new Tape(join(o.out, "tape.jsonl"), manifest.tapes);
+    // Both loaders have read the sources; the bytes they read must be the ones the manifest
+    // attests.
+    if (!sameJson(tapeDigests(manifest.tapes), manifest.tape_sha256)) {
+        throw new HarnessFailure("replay sources changed since the manifest hashed them");
+    }
     const userSim = new UserSim({
         seed,
-        plan: behaviourPlan(scripted, prereg, seed),
-        tape: new Tape(join(o.out, "tape.jsonl"), manifest.tapes),
-        pairing: new Pairing(
-            join(o.out, "pairing.jsonl"),
-            referenceArm(manifest.order),
-            manifest.tapes.map((t) => join(dirname(t), "pairing.jsonl")),
-        ),
+        plan: behaviourPlan(scripted, prereg, seed, pinned),
+        tape,
+        pairing,
         llm: proxyUserSim(
             gateway.urls[0] as string,
             manifest.user_sim_model ?? prereg.user_sim.model,
             prereg.user_sim.max_tokens,
+            prereg.liveness_bounds.turn_deadline_ms,
         ),
         normalise: normaliser(prereg.divergence_policy.normalisation),
         keys: [
             ...scenario.facts.flatMap((f) => [f.id, f.template]),
             ...scenario.probes.map((p) => p.id),
         ],
+        facts: scenario.facts.flatMap((f) => [f.statement, ...f.cues]),
     });
+    const scriptedById = new Map(scripted.map((t) => [t.id, t]));
     const startOf = new Map(
         scenario.events
             .filter((e) => e.kind === "session_start")
@@ -1681,14 +1783,11 @@ async function runArms(
         );
     }
     const userTurns = (arm: string, session?: string) =>
-        journal.entries.filter(
-            (e) =>
-                e.kind === "UserTurn" &&
-                e.arm === arm &&
-                e.delivered === true &&
-                (session === undefined || e.session === session),
-        );
-    const lastAgent = (arm: string, session: string) => agentText.get(`${arm}/${session}`) ?? "";
+        deliveredTurns(journal.entries, arm, session);
+    // The call index replays every record through `noteAgent` when it opens, so a resume holds
+    // each session's last agent reply.
+    const lastAgent = (arm: string, session: string): AgentReply =>
+        agentText.get(`${arm}/${session}`) ?? { text: "" };
     for (const arm of manifest.order) {
         const armRoot = join(o.out, arm, "r");
         mkdirSync(dirname(offsetFile(arm)), { recursive: true });
@@ -1721,11 +1820,14 @@ async function runArms(
                 const calls = callsOf(callIndex, arm, session, turnIndex).filter(
                     (c) => c.component !== "user-sim",
                 );
+                const began = beganAt(journal.entries, arm);
                 const turns = userTurns(arm, session).map((e) => {
                     const index = turnIndex.get(String(e.event));
                     return {
                         event: String(e.event),
-                        scenario_ms: e.scenario_ms,
+                        // The user's text reached the agent when the turn began; the journal
+                        // row that carries the label is appended after the turn ends.
+                        scenario_ms: began.get(String(e.event)) ?? e.scenario_ms,
                         label: String(e.label),
                         ...(index === undefined ? {} : { turn_index: index }),
                     };
@@ -1783,9 +1885,13 @@ async function runArms(
                     scope.session = e.session;
                     scope.turn = e.kind === "user_turn" ? e.id : null;
                     try {
+                        if (e.kind === "session_end") agentText.delete(`${arm}/${e.session}`);
                         if (e.kind !== "user_turn") return await driver.event(e);
-                        const turn = scripted.find((t) => t.id === e.id);
+                        const turn = scriptedById.get(e.id);
                         if (!turn) throw new HarnessFailure(`${e.id}: no scripted user turn`);
+                        // The turn's deadline opened at BeginTurn; the user-sim call and the
+                        // host prompt share it.
+                        const opened = Date.now();
                         const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
                         const user = { session: e.session, label: d.label, delivered: d.delivered };
                         if (!d.delivered) return { user };
@@ -1793,14 +1899,19 @@ async function runArms(
                             ...e,
                             text: d.text,
                             interrupt_ms: d.interruptMs,
+                            deadline_ms:
+                                prereg.liveness_bounds.turn_deadline_ms - (Date.now() - opened),
                         });
                         guard();
                         const cut = d.label !== "interrupt" || out.user?.interrupted === true;
                         const label = cut ? d.label : "task";
                         const scheduled = cut ? {} : { scheduled: "interrupt" };
+                        // A turn the host never received counts as undelivered, whatever the
+                        // user-sim decided.
+                        const delivered = d.delivered && !out.undelivered;
                         return {
                             ...out,
-                            user: { ...user, ...out.user, label, ...scheduled },
+                            user: { ...user, ...out.user, label, delivered, ...scheduled },
                         };
                     } finally {
                         scope.turn = null;

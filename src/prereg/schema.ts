@@ -13,6 +13,15 @@ export type Tier = (typeof TIERS)[number];
 
 export const ARMS = ["host", "eidnara", "eidnara-kl", "eidnara-cf"] as const;
 export const HOSTS = ["pi", "opencode"] as const;
+/** The `divergence_policy.normalisation` rules the user-sim implements. */
+export const NORMALISATION_RULES = [
+    "iso-8601-timestamps",
+    "durations",
+    "pids",
+    "temp-paths",
+    "run-ids",
+] as const;
+export type NormalisationRule = (typeof NORMALISATION_RULES)[number];
 
 /** The families a tier report carries; `checkReport` refuses a report missing one by name. */
 export const PROBE_FAMILIES = Array.from({ length: 14 }, (_, i) => `probe-P${i + 1}`);

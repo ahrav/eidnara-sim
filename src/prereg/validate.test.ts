@@ -130,6 +130,22 @@ describe("pre-registration validator", () => {
         ]);
     });
 
+    test("refuses an interrupt delay that reaches the turn deadline", () => {
+        const prereg = load("S") as any;
+        prereg.user_sim.interrupt_after_ms.max = prereg.liveness_bounds.turn_deadline_ms;
+        expect(validatePreregistration(prereg)).toEqual([
+            "user_sim.interrupt_after_ms: max must be below liveness_bounds.turn_deadline_ms",
+        ]);
+    });
+
+    test("refuses a normalisation rule the user-sim does not know", () => {
+        const prereg = load("S") as any;
+        prereg.divergence_policy.normalisation.push("colours");
+        expect(validatePreregistration(prereg)).toEqual([
+            "divergence_policy.normalisation: expected iso-8601-timestamps, durations, pids, temp-paths, run-ids",
+        ]);
+    });
+
     test("refuses a missing family by name", () => {
         const errors = validatePreregistration(without(load("M"), "families[harm]"));
         expect(errors).toContain("families[harm]: missing");

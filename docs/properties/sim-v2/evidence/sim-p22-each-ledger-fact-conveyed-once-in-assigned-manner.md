@@ -15,10 +15,10 @@ For every ledger fact, exactly one conveyance event with the compiled manner and
 session is journaled as delivered; reversal facts have exactly two, the
 statement and the reversal.
 
-No harness code, test, or run exists yet. The surface lands in M6
-(#1031).
-
-M6 (#1031) delivers every conveyance, update, and reversal turn with its compiled text; a reply placed in front of one is written from a prompt that leaves the fact out, and abandon skips only filler turns. `pairing-check.ts` fails a run that leaves a non-filler turn unsent.
+M6 (#1031) delivers every conveyance, update, and reversal turn with its
+compiled text; a reply placed in front of one is written from a prompt that
+leaves the fact out, and abandon skips only filler turns. `pairing-check.ts`
+fails a run that leaves a non-filler turn unsent.
 
 ## Failure scenario
 

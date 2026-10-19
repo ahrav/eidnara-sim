@@ -178,7 +178,7 @@ describe("catalog checker", () => {
         );
         edit(
             path,
-            /Exercised: not yet - [^\n]*\n(?:[^\n]+\n)*?(?=Guarantee: SIM-P03)/,
+            /Exercised: (?:not yet|partial) - [^\n]*\n(?:[^\n]+\n)*?(?=Guarantee: SIM-P03)/,
             "Exercised: not yet -\n",
         );
         edit(

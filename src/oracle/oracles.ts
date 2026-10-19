@@ -268,7 +268,7 @@ export function ledger(arm: ArmLogs): Ledger {
 
 function f6(arm: ArmLogs, run: RunLogs): Activation[] {
     const host = run.arms.find((a) => a.arm === "host");
-    if (!host || arm.arm === "host") return [];
+    if (!host || armBase(arm.arm) === "host") return [];
     const [mine, base] = [ledger(arm), ledger(host)];
     const evidence: string[] = [];
     const limit = Number(run.prereg.oracles.cost_ratio_max);
