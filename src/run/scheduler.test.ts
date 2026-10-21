@@ -3231,6 +3231,42 @@ describe("Scheduler", () => {
         }).run();
     });
 
+    test("a fault mechanism that runs for a while advances scenario time, and its journal replays", async () => {
+        const events = fixtureEvents(1);
+        const restart = episode("t", "daemon_restart", {
+            kind: "user_turn",
+            session: "s-0000",
+            n: 1,
+        });
+        const slow = (): ArmDriver => ({
+            ...fakeDriver([]),
+            fault: async () => {
+                await Bun.sleep(20);
+                return { restarted_by: "harness" };
+            },
+        });
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        await new Scheduler({
+            events,
+            faults: [restart],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: slow() },
+        }).run();
+        const at = (kind: string) => j.entries.find((e) => e.kind === kind)?.scenario_ms ?? -1;
+        expect(at("FaultObserved")).toBeGreaterThan(at("FaultFired"));
+        await new Scheduler({
+            events,
+            faults: [restart],
+            journal: new Journal(path),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: slow() },
+        }).run();
+    });
+
     test("replay refuses array evidence, a detail-less daemon exit, a jump naming no cause or both, and nameless jobs; an unjournalable observation poisons the run", async () => {
         const restart = episode("r", "daemon_restart", {
             kind: "session_start",
