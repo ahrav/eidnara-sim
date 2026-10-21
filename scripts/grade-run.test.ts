@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../src/config/config";
 import type { CallView, Snapshot } from "../src/grade/artefacts";
+import { armProfile } from "../src/hosts/profiles";
 import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { type Entry, releaseLease, takeLease } from "../src/run/journal";
@@ -93,11 +94,15 @@ function run(o: RunOptions): string {
         models: o.models ?? ["global.anthropic.claude-opus-5-5"],
         scenario_hash: o.scenario_hash ?? scenario.scenario_hash,
         prereg_sha256: o.prereg_sha256 ?? preregistrationHash(loadPrereg(tier)),
+        arms: Object.fromEntries(
+            (o.order ?? ["host", "eidnara"]).map((arm) => [arm, { profile: armProfile(arm) }]),
+        ),
     };
     writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
     for (const arm of manifest.order) {
         mkdirSync(join(dir, arm), { recursive: true });
-        writeFileSync(join(dir, arm, "capabilities.json"), JSON.stringify({ mismatches: [] }));
+        const record = { profile: armProfile(arm), observed: { arm }, mismatches: [] };
+        writeFileSync(join(dir, arm, "capabilities.json"), JSON.stringify(record));
     }
     const ran = events.slice(0, manifest.events);
     const journal: Record<string, unknown>[] = [
@@ -1086,39 +1091,70 @@ describe("grade-run", () => {
 
 describe("arm capability evidence", () => {
     const ended = (arm: string) => ({ kind: "EndArm", arm }) as unknown as Entry;
+    const record = (arm: string, mismatches: string[] = []) => ({
+        profile: armProfile(arm),
+        observed: { arm },
+        mismatches,
+    });
+    const pinned = (...arms: string[]) => ({
+        schema: "sim-run-manifest/v3",
+        arms: Object.fromEntries(arms.map((a) => [a, { profile: armProfile(a) }])),
+    });
     const runDir = (arms: Record<string, unknown>) => {
         const dir = mkdtempSync(join(tmpdir(), "sim-grade-caps-"));
         dirs.push(dir);
-        for (const [arm, record] of Object.entries(arms)) {
+        for (const [arm, value] of Object.entries(arms)) {
             mkdirSync(join(dir, arm));
-            if (record !== undefined) {
-                writeFileSync(join(dir, arm, "capabilities.json"), JSON.stringify(record));
+            if (value !== undefined) {
+                writeFileSync(join(dir, arm, "capabilities.json"), JSON.stringify(value));
             }
         }
         return dir;
     };
 
     test("a run from before the capability check is refused, so its grades stand as they were", () => {
-        const dir = runDir({ host: { mismatches: [] } });
-        expect(() =>
-            requireCapabilities(dir, "sim-run-manifest/v2", ["host"], [ended("host")]),
-        ).toThrow(/predates the arm capability check/);
+        const dir = runDir({ host: record("host") });
+        const v2 = { ...pinned("host"), schema: "sim-run-manifest/v2" };
+        expect(() => requireCapabilities(dir, v2, ["host"], [ended("host")])).toThrow(
+            /predates the arm capability check/,
+        );
     });
 
     test("an ended arm with a mismatch or no capability record is refused; an unended one is not checked", () => {
         const dir = runDir({
-            host: { mismatches: [] },
-            "eidnara-kl": { mismatches: ["3 transform passes"] },
+            host: record("host"),
+            "eidnara-kl": record("eidnara-kl", ["3 transform passes"]),
             eidnara: undefined,
         });
-        const v3 = "sim-run-manifest/v3";
-        expect(() => requireCapabilities(dir, v3, ["host"], [ended("host")])).not.toThrow();
-        expect(() => requireCapabilities(dir, v3, ["eidnara-kl"], [ended("eidnara-kl")])).toThrow(
+        const m = pinned("host", "eidnara", "eidnara-kl");
+        expect(() => requireCapabilities(dir, m, ["host"], [ended("host")])).not.toThrow();
+        expect(() => requireCapabilities(dir, m, ["eidnara-kl"], [ended("eidnara-kl")])).toThrow(
             /ran other capabilities than it declares: \["3 transform passes"\]/,
         );
-        expect(() => requireCapabilities(dir, v3, ["eidnara"], [ended("eidnara")])).toThrow(
+        expect(() => requireCapabilities(dir, m, ["eidnara"], [ended("eidnara")])).toThrow(
             /ended with no readable/,
         );
-        expect(() => requireCapabilities(dir, v3, ["eidnara"], [])).not.toThrow();
+        expect(() => requireCapabilities(dir, m, ["eidnara"], [])).not.toThrow();
+    });
+
+    test("a record copied from another arm, or bare of its profile, is refused", () => {
+        const dir = runDir({ eidnara: record("host"), "eidnara-kl": { mismatches: [] } });
+        const m = pinned("eidnara", "eidnara-kl");
+        for (const arm of ["eidnara", "eidnara-kl"]) {
+            expect(() => requireCapabilities(dir, m, [arm], [ended(arm)])).toThrow(
+                /is not the capability record of arm/,
+            );
+        }
+    });
+
+    test("grading refuses a pre-v3 run before it removes the run's grade summary", async () => {
+        const dir = runDir({});
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({ schema: "sim-run-manifest/v2" }),
+        );
+        writeFileSync(join(dir, "grade-summary.json"), "{}\n");
+        await expect(gradeRun(dir, null)).rejects.toThrow(/predates the arm capability check/);
+        expect(readFileSync(join(dir, "grade-summary.json"), "utf8")).toBe("{}\n");
     });
 });

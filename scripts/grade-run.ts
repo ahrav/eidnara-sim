@@ -91,6 +91,8 @@ export async function gradeRun(
 ): Promise<Summary> {
     const lease = takeLease(dir);
     try {
+        // A refused run keeps the summary of the grades it has.
+        requireCheckedSchema(JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).schema);
         // A pass that stops early leaves no summary, so a reader never takes a stale one as current.
         rmSync(summaryPath(dir), { force: true });
         const summary = await grade(dir, config, regrade);
@@ -173,6 +175,15 @@ interface RowMeta {
     length: number;
 }
 
+/** A run from before the arm capability check keeps the grades it has. */
+function requireCheckedSchema(schema: unknown): void {
+    if (schema !== "sim-run-manifest/v3") {
+        throw new Error(
+            `manifest schema ${String(schema)} predates the arm capability check; its grades stand as they were`,
+        );
+    }
+}
+
 /**
  * Grades come only from runs whose arms ran what they declare: a `sim-run-manifest/v3` run, whose
  * every ended arm holds the `capabilities.json` its `EndArm` check wrote with no mismatch. Runs
@@ -180,24 +191,31 @@ interface RowMeta {
  */
 export function requireCapabilities(
     dir: string,
-    schema: unknown,
+    manifest: { schema?: unknown; arms?: Record<string, { profile?: unknown }> },
     arms: readonly string[],
     entries: readonly Entry[],
 ): void {
-    if (schema !== "sim-run-manifest/v3") {
-        throw new Error(
-            `manifest schema ${String(schema)} predates the arm capability check; its grades stand as they were`,
-        );
-    }
+    requireCheckedSchema(manifest.schema);
     for (const arm of arms) {
         if (!entries.some((e) => e.kind === "EndArm" && e.arm === arm)) continue;
         const path = join(dir, arm, "capabilities.json");
-        let record: { mismatches?: unknown };
+        let record: { mismatches?: unknown; profile?: unknown; observed?: { arm?: unknown } };
         try {
             record = JSON.parse(readFileSync(path, "utf8"));
         } catch (caught) {
             throw new Error(
                 `arm ${arm} ended with no readable ${path}: ${(caught as Error).message}`,
+            );
+        }
+        // The record must be this arm's own, under the profile the manifest pinned for it.
+        const profile = manifest.arms?.[arm]?.profile;
+        if (
+            record.observed?.arm !== arm ||
+            profile === undefined ||
+            canonicalJson(record.profile) !== canonicalJson(profile)
+        ) {
+            throw new Error(
+                `${path} is not the capability record of arm ${arm} as the manifest pins it`,
             );
         }
         const mismatches = record.mismatches;
@@ -272,7 +290,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     }
     const scheduled = scenario.events.slice(0, manifest.events).map((e) => String(e.id));
     requireComplete(entries, arms, scheduled);
-    requireCapabilities(dir, manifest.schema, arms, entries);
+    requireCapabilities(dir, manifest, arms, entries);
     const log = new GradeLog(join(dir, "grades.jsonl"));
 
     const named = new Map<string, { arm: string; item: string }>();

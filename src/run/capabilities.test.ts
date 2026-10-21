@@ -206,6 +206,10 @@ describe("audited daemon capabilities", () => {
         const audited = commit(repo, "crates/daemon/examples/direct_host_fixture.rs", "a\n");
         commit(repo, "README.md", "unrelated\n");
         expect(() => requireAuditedVariants(repo, ["eidnara", "host"], audited)).not.toThrow();
+        writeFileSync(join(repo, "crates/daemon/examples/direct_host_fixture.rs"), "edited\n");
+        expect(() => requireAuditedVariants(repo, ["eidnara"], audited)).toThrow(
+            /direct_host_fixture.rs changed since/,
+        );
         commit(repo, "crates/daemon/examples/direct_host_fixture.rs", "b\n");
         expect(() => requireAuditedVariants(repo, ["eidnara-kl"], audited)).toThrow(
             /direct-host-fixture capabilities were read at .*crates\/daemon\/examples\/direct_host_fixture.rs changed since/,
