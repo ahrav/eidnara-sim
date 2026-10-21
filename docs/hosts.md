@@ -307,8 +307,10 @@ already found; a resume stops on a ballast whose length or blocks changed, or
 that is a link (a sparse replacement, a punched hole, or a look-alike
 elsewhere all count), or on a recorded gap, since neither may heal.
 A new harness process calls `reap()` and then `resume(open)` on an arm that
-has `StartArm` and no `EndArm`; an arm whose every event is journaled is only
-reaped and finished. `reap` requires the state, stops each recorded process, host first,
+has `StartArm` and no `EndArm`; an arm whose every event is journaled resumes
+with `resume(null)`, which restores its daemon, store, and owed store checks
+without opening a session, and then finishes, so its final store check reads
+the store the killed harness left. `reap` requires the state, stops each recorded process, host first,
 and then refuses an arm whose `finish` failed earlier (the state records the
 failure, so a resume cannot heal it, while the reap still releases what it
 can),

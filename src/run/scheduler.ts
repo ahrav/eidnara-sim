@@ -388,18 +388,22 @@ export class Scheduler {
                     this.current = handle;
                     driver.bind?.(handle);
                     this.o.onArmReady?.(arm);
-                    // A resume reopens the session the next pending event belongs to; a pending
-                    // `session_end` closes nothing the killed harness still had open, and an
-                    // arm with no event left is finished without one.
+                    // A resume restores the driver's recorded daemon and owed store checks, and
+                    // reopens the session the next pending event belongs to; a pending
+                    // `session_end` closes nothing the killed harness still had open, and an arm
+                    // with no event left resumes with no session, so its finish still checks
+                    // the restored store.
                     const delivered = new Set(
                         this.o.journal.entries
                             .filter((e) => e.arm === arm && e.kind === "Event")
                             .map((e) => e.event as string),
                     );
                     const next = this.o.events.find((e) => !delivered.has(e.id));
-                    if (started && driver.resume && next) {
+                    if (started && driver.resume) {
                         const open =
-                            next.kind === "session_end" ? null : this.openStart(this.session);
+                            !next || next.kind === "session_end"
+                                ? null
+                                : this.openStart(this.session);
                         await this.untilFatal(driver.resume(open, this.interrupted));
                     }
                     if (answered.length > 0) {

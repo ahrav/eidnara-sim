@@ -254,6 +254,18 @@ describe("Journal and lease", () => {
         expect(readJournal(path).map((e) => e.seq)).toEqual([0, 1, 2, 3]);
     });
 
+    test("a journal whose run opens with a Preflight entry reopens for the resume", () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        j.append({ kind: "Preflight", arm: null, scenario_ms: 0 });
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+        j.close();
+        expect(readJournal(path).map((e) => e.kind)).toEqual(["Preflight", "StartRun"]);
+        const again = new Journal(path);
+        expect(again.entries.map((e) => e.kind)).toEqual(["Preflight", "StartRun"]);
+        again.close();
+    });
+
     /** Overwrites the directory's highest lease file, the one `takeLease` reads. */
     const writeTopLease = (d: string, body: string) => {
         const top = readdirSync(d)
@@ -5739,7 +5751,7 @@ describe("driver lifecycle hooks", () => {
         expect(j.entries.filter((e) => e.kind === "EndJob" && e.arm === null)).toHaveLength(0);
     });
 
-    test("an arm whose every event is journaled is finished on resume without starting anything", async () => {
+    test("an arm whose every event is journaled is resumed with no session, then finished", async () => {
         const path = join(dir(), "j.jsonl");
         const j = new Journal(path);
         const events = fixtureEvents(1);
@@ -5752,7 +5764,7 @@ describe("driver lifecycle hooks", () => {
         const driver: ArmDriver = {
             ...fakeDriver([]),
             reap: async () => void calls.push("reap"),
-            resume: async () => void calls.push("resume"),
+            resume: async (open) => void calls.push(`resume:${open?.id ?? "none"}`),
             finish: async () => void calls.push("finish"),
         };
         const resumed = new Journal(path);
@@ -5764,7 +5776,7 @@ describe("driver lifecycle hooks", () => {
             order: ["a"],
             drivers: { a: driver },
         }).run();
-        expect(calls).toEqual(["reap", "finish"]);
+        expect(calls).toEqual(["reap", "resume:none", "finish"]);
         expect(resumed.entries.map((e) => e.kind).slice(-2)).toEqual(["EndArm", "EndRun"]);
     });
 

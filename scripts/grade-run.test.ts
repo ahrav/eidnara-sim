@@ -120,6 +120,23 @@ function run(o: RunOptions): string {
     return dir;
 }
 
+/**
+ * Adds a journal entry where the scheduler would have written it: before its arm's `EndArm`, or
+ * before `EndRun` for a run-level entry, so the journal stays sealed by its `EndRun`.
+ */
+function journalAppend(dir: string, entry: Record<string, unknown>): void {
+    const path = join(dir, "journal.jsonl");
+    const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
+    const at = lines.findIndex((l) => {
+        const e = JSON.parse(l);
+        return entry.arm == null ? e.kind === "EndRun" : e.kind === "EndArm" && e.arm === entry.arm;
+    });
+    const fallback = lines.findIndex((l) => JSON.parse(l).kind === "EndRun");
+    const index = at !== -1 ? at : fallback !== -1 ? fallback : lines.length;
+    lines.splice(index, 0, JSON.stringify(entry));
+    writeFileSync(path, `${lines.join("\n")}\n`);
+}
+
 let seq = 0;
 /** The `(run, arm, seq)` call records already written, since cumulative snapshots repeat earlier calls. */
 const writtenCalls = new Set<string>();
@@ -177,7 +194,7 @@ function snapshot(dir: string, arm: string, given: Snapshot, journaled = true): 
             probe: s.item,
             snapshot: row.id,
         };
-        appendFileSync(join(dir, "journal.jsonl"), `${JSON.stringify(end)}\n`);
+        journalAppend(dir, end);
     }
     const calls = s.artefacts.find((a) => a.class === "proxy-call");
     if (calls?.class === "proxy-call" && journaled) {
@@ -217,7 +234,7 @@ function snapshot(dir: string, arm: string, given: Snapshot, journaled = true): 
         item: s.item,
         snapshot: row.id,
     };
-    appendFileSync(join(dir, "journal.jsonl"), `${JSON.stringify(entry)}\n`);
+    journalAppend(dir, entry);
 }
 
 const p5 = fixture("P5-pass");
@@ -291,10 +308,17 @@ describe("grade-run", () => {
         };
         snapshot(dir, "eidnara", withUser);
         // The journal holds the user turn the entry restates.
-        appendFileSync(
-            join(dir, "journal.jsonl"),
-            `${JSON.stringify({ seq: 998, wall_ms: 998, kind: "UserTurn", arm: "eidnara", scenario_ms: 0, event: base.turn, session: "s-1", label: "task", delivered: true })}\n`,
-        );
+        journalAppend(dir, {
+            seq: 998,
+            wall_ms: 998,
+            kind: "UserTurn",
+            arm: "eidnara",
+            scenario_ms: 0,
+            event: base.turn,
+            session: "s-1",
+            label: "task",
+            delivered: true,
+        });
         const calls = readFileSync(join(dir, "calls.jsonl"), "utf8")
             .trim()
             .split("\n")
@@ -450,10 +474,13 @@ describe("grade-run", () => {
         });
         for (const arm of order) snapshot(dir, arm, snap);
         const deletion = { kind: "CounterfactualDeletion", arm: "eidnara-cf", probe: snap.item };
-        appendFileSync(
-            join(dir, "journal.jsonl"),
-            `${JSON.stringify({ seq: seq++, wall_ms: 0, scenario_ms: 0, ...deletion, skipped: "no store yet" })}\n`,
-        );
+        journalAppend(dir, {
+            seq: seq++,
+            wall_ms: 0,
+            scenario_ms: 0,
+            ...deletion,
+            skipped: "no store yet",
+        });
         await gradeRun(dir, null);
         const grades = () =>
             readFileSync(join(dir, "grades.jsonl"), "utf8")
@@ -637,10 +664,16 @@ describe("grade-run", () => {
 
         const failed = run({ probes: [p5.probe] });
         snapshot(failed, "eidnara", snap);
-        appendFileSync(
-            join(failed, "journal.jsonl"),
-            `${JSON.stringify({ seq: 900, wall_ms: 900, kind: "EndTurn", arm: "host", scenario_ms: 0, event: "e-1", outcome: "snapshot: git timed out", probe: p5.probe.id })}\n`,
-        );
+        journalAppend(failed, {
+            seq: 900,
+            wall_ms: 900,
+            kind: "EndTurn",
+            arm: "host",
+            scenario_ms: 0,
+            event: "e-1",
+            outcome: "snapshot: git timed out",
+            probe: p5.probe.id,
+        });
         expect((await gradeRun(failed, null)).skipped).toEqual({
             host: { "probe turn failed": 1 },
         });
