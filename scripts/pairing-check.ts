@@ -44,9 +44,10 @@ if (
     console.error("manifest.json needs a tier, an event count, and a non-empty distinct arm order");
     process.exit(2);
 }
-if (manifest.schema !== "sim-run-manifest/v2") {
+// v3 adds the arm configurations and plugin digests to v2's fields; the checker reads neither.
+if (manifest.schema !== "sim-run-manifest/v2" && manifest.schema !== "sim-run-manifest/v3") {
     console.error(
-        `manifest.json is ${String(manifest.schema)}; the checker reads sim-run-manifest/v2`,
+        `manifest.json is ${String(manifest.schema)}; the checker reads sim-run-manifest/v2 and v3`,
     );
     process.exit(2);
 }

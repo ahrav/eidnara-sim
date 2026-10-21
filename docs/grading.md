@@ -228,10 +228,11 @@ into `grades.jsonl` and judges each P7 item for each memory arm against the
 host arm, through a gateway it starts for the judge. An item whose latest
 grade already cites its snapshot (and, for P7, its opponent) is skipped as
 `already graded` when the same grader made it: each record carries
-`grader`, a digest of the grader's source files and of
-`scripts/grade-run.ts`, and a grade from another implementation is made
-again. The digest covers those files, so a change confined to a module they
-import leaves it unchanged. Grading a run again is therefore free of judge
+`grader`, a digest of the grader's source files, `scripts/grade-run.ts`, and
+the proxy record, classifier, and canonical-JSON modules they read, and a
+grade from another implementation is made again. The digest covers those
+files alone; a change confined to another module they import leaves it
+unchanged. Grading a run again is therefore free of judge
 calls and leaves earlier judgments as they stand. A pass appends its grades
 in one write after every item is graded, a P7 pair's host grade before its
 memory arm's, so the memory arm's grade means its pair stands. `--regrade`
@@ -252,7 +253,13 @@ invocation appended. It prints the verdict
 counts per arm and probe type (a P7 row also names the arm judged against),
 the skipped items by arm and reason, the grade versions the summary
 aggregates, the summed
-`P11.weighted_score` per arm, Δmem per memory arm from those grades, the judge errors, and the journal's last `seq` as `journal_seq`.
+`P11.weighted_score` per arm, Δmem per memory arm from those grades, the judge errors, the journal's last `seq` as `journal_seq`, and
+`grader`: the grader digest each grade carries with the eidnara-sim commit
+and working-tree digest, both read when the pass starts.
+It grades only a `sim-run-manifest/v3` run, and every arm whose `EndArm` is
+journaled must hold the `capabilities.json` that arm's check wrote, with no
+mismatch (`docs/hosts.md`); a run from before the check keeps the grades it
+has.
 It removes any `grade-summary.json` in the run directory when it starts,
 under the run's lease, and writes the same summary there atomically when it
 finishes, so the cost panel prices only a finished pass over the journal as

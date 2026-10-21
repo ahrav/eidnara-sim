@@ -60,3 +60,30 @@ host closed it. The daemon exited outside any scheduled outage, the
 harness stopped each run there, and each run resumed from its journal with
 a fresh daemon. All three are on M runs, on both hosts, during user turns
 with long sessions; no S run and no host arm shows the line.
+
+## G5. The fixture daemon serves memory search from the legacy scan
+
+Runs: every `eidnara` arm of the 2026-10-18 `smr/full` and `smr/sched` Pi
+runs (Eidnara `08de9051a`).
+
+Each `eidnara_search` result in those arms' Pi transcripts opens with
+`Memory: the fused search route is unavailable (disabled); results come
+from the legacy snapshot scan.` The hermetic host stack starts
+`direct_host_fixture`, which never sets the query route limits, links a
+deterministic 8-dimension embedding engine, and has no memory reviewer;
+production `eidnara-host serve` sets all three. The runs measure Eidnara's
+fallback search, not its production hybrid search. The `eidnara` arm now
+declares that route (`docs/hosts.md`), and a production-hybrid arm waits on
+an Eidnara seam that lets the production daemon's model calls reach the
+proxy.
+
+## G6. The knowledge-layer arm ran another configuration
+
+Runs: every `eidnara-kl` arm before the capability check, on both hosts.
+
+The harness never wrote Eidnara's `compaction.enabled=false` for
+`eidnara-kl`. On OpenCode the plugin logged `disabled due to conflicts:
+OpenCode auto-compaction is enabled` at every session start (for example
+`tier-S/S-101-opencode`), so the arm ran as a host arm; on Pi, Eidnara's
+transform ran beside Pi's own compaction. Neither arm measured the
+knowledge layer alone, and their results do not describe SIM-P76's arm.

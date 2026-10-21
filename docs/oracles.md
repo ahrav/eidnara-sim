@@ -59,7 +59,7 @@ happened, and the evidence.
 | F6 cost | An arm whose total tokens exceed `oracles.cost_ratio_max` (1.5) times the host arm's, or that makes more title calls than the host arm: one activation per arm and run, its evidence naming each exceeded bound; until the report prices tokens (M7) this is a token ratio |
 | F7 visible internal text | An agent response carrying plugin markup or diagnostics: history-segment tags, `eidnara` tags, context-researcher augmentation, `[eidnara] ` log prefixes at a line start (a Markdown link to the project is prose), pass fields such as `row_version` and `served_from`, or reference markers such as `§12§`; read from the recorded response text, the first 262,144 characters; a call whose text ran past that cap carries `response_text_truncated` beside the retained prefix |
 | F8 invalid memory-capture array | A plugin or daemon log line where the daemon refused capture output (`memory capture output rejected`, or the refusal reason: schema mismatch, unsupported version, size or decision bounds, an unclosed code fence, missing or unknown source ids) |
-| F9 compaction ownership gap | An arm with host compaction off (`eidnara`, `eidnara-cf`) whose agent conversation overflowed (an agent-component or turn-level F1) and that made no native-compaction call |
+| F9 compaction ownership gap | An arm with host compaction off (`eidnara`, `eidnara-cf`; the profile the manifest's `arms` recorded, else the current one) whose agent conversation overflowed (an agent-component or turn-level F1) and that made no native-compaction call |
 
 A token count is input, output, cache-read, and cache-write tokens. `ledger`
 sums them per component, leaving out the harness's own user-sim, judge, and

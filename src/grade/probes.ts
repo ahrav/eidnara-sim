@@ -1080,7 +1080,16 @@ function newest(grades: GradeRecord[]): GradeRecord[] {
  */
 export const graderDigest = (): string =>
     sha256Hex(
-        ["artefacts.ts", "judge.ts", "probes.ts", "text.ts", "../../scripts/grade-run.ts"]
+        [
+            "artefacts.ts",
+            "judge.ts",
+            "probes.ts",
+            "text.ts",
+            "../../scripts/grade-run.ts",
+            "../proxy/records.ts",
+            "../proxy/classify.ts",
+            "../prereg/canonical.ts",
+        ]
             .map((f) => readFileSync(join(import.meta.dir, f), "utf8"))
             .join("\n"),
     );

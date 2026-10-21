@@ -41,15 +41,79 @@ on `PATH` as `opencode`, launches it through the sandbox.
 
 ## Arms
 
-| Arm | Daemon | Plugin | Host compaction |
-|---|---|---|---|
-| `host` | none | none | on |
-| `eidnara` | hermetic host stack | Eidnara | off |
-| `eidnara-kl` | hermetic host stack | Eidnara | on |
-| `eidnara-cf` | hermetic host stack | Eidnara | off |
+`src/hosts/profiles.ts` declares each arm's profile, and the host stack
+derives Pi's `compaction.enabled`, OpenCode's `compaction.auto` and
+`compaction.prune`, and the user-tier `eidnara.jsonc` `compaction.enabled`
+from it.
+
+| Arm | Role | Daemon | Plugin | Eidnara compaction | Host compaction | Search route |
+|---|---|---|---|---|---|---|
+| `host` | host-only | none | none | n/a | on | none |
+| `eidnara` | fallback-search | `direct_host_fixture` | Eidnara | on | off | legacy scan |
+| `eidnara-kl` | knowledge-only | `direct_host_fixture` | Eidnara | off | on | legacy scan |
+| `eidnara-cf` | fallback-search | `direct_host_fixture` | Eidnara | on | off | legacy scan |
+| `eidnara-hybrid` | production-hybrid | production `eidnara-host` | Eidnara | on | off | fused |
 
 `eidnara-cf` runs as `eidnara` here; its counterfactual deletions land with
-the counterfactual arm.
+the counterfactual arm. `eidnara-kl` keeps Eidnara's knowledge layer
+(memory, injection, notes, `eidnara_search`, `eidnara_memory`) and leaves the
+context window to the host (SIM-P76); with Eidnara compaction off, OpenCode's
+conflict check reports no conflict with its native compaction.
+
+Each daemon variant provides a fixed capability set, read from the Eidnara
+source at commit `08de9051a` (`AUDITED_EIDNARA`):
+
+| Variant | Search route | Embeddings | Memory reviewer | Side calls |
+|---|---|---|---|---|
+| `direct_host_fixture` | legacy scan (no query route limits) | deterministic 8-dimension engine | none | through the proxy, by the `--harness-runtime` redirect extension |
+| production `eidnara-host` | fused | `gte-modernbert-base-f32` | yes | straight to Bedrock |
+
+The production launcher admits only its compiled-in qualified harness
+closures, runs Pi with `--no-extensions` and a fresh `HOME`, and refuses AWS
+endpoint overrides, so its model calls cannot reach the proxy and their cost
+goes unmeasured. `armOrder` refuses an arm whose profile declares a
+capability its variant lacks, naming each gap, before the run writes a
+manifest or starts preflight; `eidnara-hybrid` is refused that way for its
+side calls, and no tier pre-registers it. Before preflight, the run also
+requires the build clone to hold `AUDITED_EIDNARA` and its copies of each
+running variant's source files (`sources` in `src/hosts/profiles.ts`) to
+match that commit's, so a build whose fixture changed stops until the
+capabilities are read again.
+
+## Capability evidence
+
+The run checks each arm's evidence against its profile, and an arm is
+complete evidence only when the two agree:
+
+- At every `session_end` of the arm, the part of the plugin log
+  (`<arm>/r/eidnara.log`) written since the session's host started (its
+  length at `session_start`, or at the resume that reopened the session)
+  must hold an enabled boot (Pi's `registered tools:` line, OpenCode's
+  `plugin enabled` line) and no `disabled due to conflicts` or `plugin
+  DISABLED` line, and each Pi boot must match the arm's Eidnara compaction
+  (`eidnara_reduce` registered when on, `compaction-off mode` when off; a
+  registration naming neither mode is a mismatch); a host-only arm must hold
+  no boot. A mismatch fails the event, so the journal records it fatal and a
+  resume refuses the run.
+- Before `EndArm`, once the arm's finish and every job it started have
+  ended, a session still open when the arm ended (an `--events` prefix can
+  stop inside one) gets the same boot check, and the run writes
+  `<arm>/capabilities.json`: the profile, the observed boots, the number of
+  `served_from=transform` passes, the routes Pi's transcripts show each
+  `eidnara_search` result came from (the legacy scan when the result carries
+  the plugin's fallback note, an error when it reports one, and the fused
+  route for every other success; `null` on OpenCode, whose transcripts this
+  check does not read), and the arm's proxy calls by component. A mismatch
+  leaves `EndArm` unwritten, so the run is incomplete and a resume checks the
+  same evidence again: a host-only arm with a plugin boot
+  or an Eidnara component call; an arm with Eidnara compaction on that
+  answered agent calls with no transform pass; one with it off that shows a
+  transform pass or a `history_summarizer` call; or a search result from a
+  route other than the declared one.
+
+The plugin writes its log inside the arm root, which the agent's tools can
+write too, so the evidence holds against an agent that leaves the log alone;
+a log replaced by a link or a non-regular file is refused.
 
 `HostDriver` owns the arm's daemon and its current host. `reset` stops both,
 deletes the arm root and store, clones each scenario repository into a

@@ -129,7 +129,7 @@ function fixture(arms: string[] = ["host", "eidnara"], events: Row[] = scriptedE
     }
     journal.push({ kind: "EndRun", arm: null });
     const manifest = {
-        schema: "sim-run-manifest/v2",
+        schema: "sim-run-manifest/v3",
         tier: "S",
         seed: 101,
         order: arms,

@@ -1,4 +1,5 @@
 import { armBase } from "../hosts/arms";
+import { armProfile } from "../hosts/profiles";
 import type { CallRecord } from "../proxy/records";
 import type { ArmLogs, RunLogs, Sample } from "./logs";
 
@@ -49,7 +50,6 @@ export const INTERNAL_TEXT = [
     /\bdecision=(SOFT|HARD)/,
     /§\d+§/,
 ];
-const NO_HOST_COMPACTION = new Set(["eidnara", "eidnara-cf"]);
 /** A proxy record lands after the host's own tool event can, so a tool start this close counts. */
 const CLOCK_SLACK_MS = 1_000;
 const STAMP = /\d{4}-\d\d-\d\dT[\d:.]+Z/;
@@ -318,7 +318,7 @@ export function runOracles(run: RunLogs): Activation[] {
         const overflow = f1(arm);
         const agentOverflow = overflow.filter((a) => (a.component ?? "agent") === "agent");
         const f9 =
-            NO_HOST_COMPACTION.has(armBase(arm.arm)) &&
+            !(arm.hostCompaction ?? armProfile(arm.arm).host_compaction) &&
             agentOverflow.length > 0 &&
             !arm.calls.some((c) => c.component === "native_compaction")
                 ? [

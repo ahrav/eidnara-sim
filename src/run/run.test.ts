@@ -21,6 +21,7 @@ import { corpusInputsSha256, loadPrereg } from "../scenario/inputs";
 import type { Entry } from "./journal";
 import type { Preflight } from "./preflight";
 import {
+    armOrder,
     CallIndex,
     corpusIdentity,
     faultOverride,
@@ -781,7 +782,7 @@ describe("run inputs", () => {
             JSON.stringify({ ...manifest, schema: "sim-run-manifest/v1" }),
         );
         await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
-            /schema sim-run-manifest\/v1 is not sim-run-manifest\/v2/,
+            /schema sim-run-manifest\/v1 is not sim-run-manifest\/v3/,
         );
     });
 
@@ -817,6 +818,59 @@ describe("run inputs", () => {
         });
     });
 
+    test("the manifest pins each arm's profile and configuration, and a resume refuses a changed one", async () => {
+        const out = dir();
+        const scenario = writeScenario(out, scenarioBody());
+        const checks: Preflight = {
+            launcher: join(out, "launcher"),
+            time_injection: [],
+            distortions: [],
+            hosts: [{ host: "pi", version: "0.80.2", transcript_paths: [] }],
+            upgrade: [],
+            toolchain: [],
+        };
+        const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
+        const { manifest } = await loadManifest(o, scenario, checks);
+        expect(manifest.schema).toBe("sim-run-manifest/v3");
+        expect(Object.keys(manifest.arms)).toEqual(manifest.order);
+        expect(manifest.arms.host).toMatchObject({
+            profile: { role: "host-only", plugin: false, host_compaction: true },
+            eidnara_config: null,
+            daemon_config: null,
+        });
+        expect(manifest.arms.eidnara).toMatchObject({
+            profile: {
+                role: "fallback-search",
+                daemon: "direct-host-fixture",
+                search: "legacy-scan",
+            },
+            eidnara_config: { compaction: { enabled: true } },
+            daemon_config: {
+                history_summarizer: { module_model: `amazon-bedrock/${config.agent_model}` },
+            },
+        });
+        expect(manifest.arms["eidnara-kl"]).toMatchObject({
+            profile: { role: "knowledge-only", host_compaction: true, eidnara_compaction: false },
+            eidnara_config: { compaction: { enabled: false }, memory: { enabled: true } },
+        });
+        const kl = manifest.arms["eidnara-kl"] as { eidnara_config: Record<string, unknown> };
+        kl.eidnara_config.compaction = { enabled: true };
+        writeFileSync(join(out, "manifest.json"), JSON.stringify(manifest));
+        await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
+            /inputs changed since the run started: arms/,
+        );
+    });
+
+    test("an arm whose daemon cannot provide its declared capabilities is refused before preflight", () => {
+        expect(() => armOrder({ tier: "S", seed: 101, arms: ["host", "eidnara-hybrid"] })).toThrow(
+            /arm capability refused: eidnara-hybrid \(production-hybrid\) needs side_calls=proxy, but production-payload provides direct-bedrock/,
+        );
+        expect(armOrder({ tier: "S", seed: 101, arms: ["eidnara-kl", "host"] })).toEqual([
+            "host",
+            "eidnara-kl",
+        ]);
+    });
+
     test("a resume is refused when an executable's content changed, whatever its version", async () => {
         const out = dir();
         const scenario = writeScenario(out, scenarioBody());
@@ -836,11 +890,15 @@ describe("run inputs", () => {
             "git",
             "node",
             "opencode",
+            "opencode_plugin",
             "opencode_sdk",
             "opencode_sdk_lock",
             "pi",
             "pi_install",
+            "pi_plugin",
         ]);
+        // The test checkout has no plugin builds; a build clone's are hashed as trees.
+        expect(manifest.binaries.pi_plugin).toBe("absent");
         expect(manifest.toolchain.tools.daemon).toMatch(/^[0-9a-f]{64}$/);
         expect(manifest.toolchain.tools.cargo).toBe("absent");
         const swapped = { ...config, daemon_binary: join(out, "daemon") };

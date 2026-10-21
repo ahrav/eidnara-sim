@@ -73,7 +73,7 @@ fault and preflight files, `tape.jsonl`, `pairing.jsonl`, `downstream.jsonl`, th
 scenario, and the manifest, and each arm's `resources.jsonl`, clock offset,
 `state.json`, `daemon.log`, `store.img`, `transcripts.json`, and the snapshot
 and store-check files (`snapshots.jsonl`, `tools.jsonl`, `commands.jsonl`,
-`store-check.json`, `memory.json`), plus this
+`store-check.json`, `memory.json`), `capabilities.json`, plus this
 process's staging names for the clock offset and `state.json`) must be absent
 or a regular file with a single link; a `lease.<pid>.tmp` left by a dead
 acquirer is removed first, so a crash between link and unlink stays resumable
@@ -147,12 +147,16 @@ toolchain wrappers are created exclusively after removing any planted name.
    link under `pi_install`, since Node resolves the CLI's dependencies
    there), the Node runtime Pi runs on, the libfaketime interposer, the
    OpenCode SDK package directory the host stack imports and the e2e
-   workspace's lock file (`absent` when not installed), the
+   workspace's lock file (`absent` when not installed), the Pi and OpenCode
+   plugin `dist` trees the hosts load (ignored build outputs, so the eidnara
+   working-tree digest omits them; `absent` when not built), each ordered
+   arm's profile with the user-tier `eidnara.jsonc` and daemon configuration
+   it writes (`arms`, `docs/hosts.md`), the
    Bedrock region and profile name, base wall time, price table (the version
    and rates the report prices the run's calls at), and preflight result. The working-tree digest hashes an
    untracked symlink's target text.
    A later invocation refuses a manifest whose `schema` is not
-   `sim-run-manifest/v2` or whose execution fields are out of range (an event
+   `sim-run-manifest/v3` or whose execution fields are out of range (an event
    count outside the compiled schedule, a non-positive context limit, an
    unnamed model, a non-integer seed, an unknown host, a price table without a
    version or with a negative or non-finite rate), revalidates a saved
@@ -168,8 +172,8 @@ toolchain wrappers are created exclusively after removing any planted name.
    repeated, an arm's second `UserSimRates`, a `StartArm` out of the manifest's order,
    an `Event` recorded before its scheduled time, a `StartArm` while the
    previous arm is open, any entry after `EndRun`, or
-   a row whose `seq` or `scenario_ms` is not a number), when any of those digests or a replay
-   tape's digest (`tape_sha256`) changed, when an
+   a row whose `seq` or `scenario_ms` is not a number), when any of those digests, a replay
+   tape's digest (`tape_sha256`), or an arm's recorded configuration (`arms`) changed, when an
    interception result, probed path, or toolchain version
    changed, when a probed host version or install path (current or
    `config.upgrade`) changed, or when the selected host's version or transcript

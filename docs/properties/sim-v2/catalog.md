@@ -2099,8 +2099,11 @@ Open questions:
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M8 (#1034); nothing constructs
-it yet
+Exercised: partial - `src/hosts/profiles.ts` declares the arm's configuration,
+the host stack writes it, and the run's capability check (`src/run/capabilities.ts`)
+refuses an `eidnara-kl` arm whose plugin disabled itself, booted with the
+transform, served a transform pass, or made a history summarizer call; no
+check asserts a `native_compaction` record in a p90 session
 Guarantee: SIM-P76: `eidnara-kl` runs with Eidnara's `compaction.enabled=false`
 and host compaction enabled, and at least one `native_compaction` call record
 exists in a p90 session.
@@ -2109,9 +2112,14 @@ record in a p90 session.
 Fault/timing angle: none.
 Required faults and enabling state: a p90 session in the `eidnara-kl` arm.
 Confidence: low - [evidence](evidence/sim-p76-kl-arm-has-host-compaction-on.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+PROPOSED: reconstructed from the condensed index in spec #1007. Runs before
+the capability check wrote no Eidnara `compaction.enabled`, so their
+`eidnara-kl` arms ran Eidnara compaction beside the host's on Pi, and on
+OpenCode the plugin logged `disabled due to conflicts` and the arm ran as a
+host arm.
+Existing check: `src/run/capabilities.ts` `bootMismatches` and `armMismatches`
+(unaudited), run at each `session_end` and before `EndArm`; the arm
+configuration in `src/hosts/arms.test.ts` (unaudited).
 Impact: The knowledge-layer comparison arm is not the configuration it claims.
 Open questions: None.
 

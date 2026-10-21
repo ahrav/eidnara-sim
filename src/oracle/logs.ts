@@ -25,6 +25,8 @@ export interface ArmLogs {
     tools: (Command & { turn: string | null })[];
     /** The arm's store at the end of the run (`<arm>/store-check.json`), absent when unchecked. */
     finalStore?: StoreCheck;
+    /** Host compaction as the manifest's arm profile recorded it; absent on runs from before the record. */
+    hostCompaction?: boolean;
 }
 
 export interface RunLogs {
@@ -480,8 +482,14 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         }
     }
     requireCallsInTurns(calls, bounds, armEnds);
+    const recorded = (
+        manifest as { arms?: Record<string, { profile?: { host_compaction?: unknown } }> }
+    ).arms;
     const arms = order.map((arm) => ({
         arm,
+        ...(typeof recorded?.[arm]?.profile?.host_compaction === "boolean"
+            ? { hostCompaction: recorded[arm]?.profile?.host_compaction as boolean }
+            : {}),
         calls: calls.filter((c) => c.arm === arm),
         journal: journal.filter((e) => e.arm === arm),
         pluginLog: lines(join(dir, arm, "r", "eidnara.log")),

@@ -21,8 +21,9 @@ import {
 import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
-import { armBase, CONTROL_LABEL } from "../hosts/arms";
+import { armBase, CONTROL_LABEL, eidnaraUserConfig, fixtureDaemonConfig } from "../hosts/arms";
 import { driverSupports, HostDriver } from "../hosts/driver";
+import { type ArmProfile, armProfile, capabilityGaps, isArmName } from "../hosts/profiles";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Preregistration, Tier } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
@@ -54,6 +55,14 @@ import {
     UserSim,
 } from "../usersim/usersim";
 import { writeAtomic } from "./atomic";
+import {
+    armMismatches,
+    bootMismatches,
+    logLength,
+    observeArm,
+    readPluginLog,
+    requireAuditedVariants,
+} from "./capabilities";
 import { type Entry, Journal, releaseLease, requireAppendable, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { contains, realExisting } from "./paths";
@@ -85,7 +94,7 @@ export interface RunOptions {
 }
 
 export interface Manifest {
-    schema: "sim-run-manifest/v2";
+    schema: "sim-run-manifest/v3";
     tier: Tier;
     seed: number;
     host: "pi" | "opencode";
@@ -107,8 +116,13 @@ export interface Manifest {
     sim_commit: string;
     /** Digest of the eidnara-sim working tree's uncommitted content at the start (`treeIdentity`). */
     sim_worktree: string;
-    /** SHA-256 of the daemon, OpenCode, and Pi executables; a resume must present the same. */
+    /**
+     * SHA-256 of the daemon, OpenCode, and Pi executables and of the plugin builds the hosts
+     * load; a resume must present the same.
+     */
     binaries: Record<string, string>;
+    /** Each ordered arm's profile and the Eidnara and daemon configuration it writes. */
+    arms: Record<string, ArmConfig>;
     fault_override: FaultEpisode[] | null;
     tapes: string[];
     /** One digest per entry of `tapes`, over the tape and the pairing log beside it. */
@@ -166,6 +180,7 @@ const ARTIFACTS = [
 ];
 
 const ARM_EVIDENCE = [
+    "capabilities.json",
     "snapshots.jsonl",
     "tools.jsonl",
     "commands.jsonl",
@@ -848,8 +863,15 @@ function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): v
     });
 }
 
+/** Arm startup requires a daemon variant that supplies every capability the arm's profile declares. */
+function refuseCapabilityGaps(arms: readonly string[]): void {
+    const gaps = arms.filter((a) => isArmName(armBase(a))).flatMap((a) => capabilityGaps(a));
+    if (gaps.length > 0) throw new HarnessFailure(`arm capability refused: ${gaps.join("; ")}`);
+}
+
 /** An A/A control label `<arm>~<tag>` runs right after its arm when the tier pre-registers the `[arm, arm]` pair. */
 export function armOrder(o: Pick<RunOptions, "tier" | "seed" | "arms">): string[] {
+    refuseCapabilityGaps(o.arms ?? []);
     const prereg = preregOf(o);
     const index = prereg.seeds.indexOf(o.seed);
     if (index < 0) throw new HarnessFailure(`seed ${o.seed} is not pre-registered for ${o.tier}`);
@@ -873,6 +895,7 @@ export function armOrder(o: Pick<RunOptions, "tier" | "seed" | "arms">): string[
         throw new HarnessFailure("an arm runs one A/A control");
     }
     if (kept.length === 0) throw new HarnessFailure("no arm to run");
+    refuseCapabilityGaps(kept);
     return kept;
 }
 
@@ -1025,7 +1048,8 @@ function toolchainIdentity(config: SimConfig): {
     return { config: config.toolchain, tools };
 }
 
-const simIdentity = () => {
+/** The eidnara-sim revision and uncommitted-content digest this process runs from. */
+export const simIdentity = () => {
     const { commit, worktree } = treeIdentity(ROOT);
     return { sim_commit: commit, sim_worktree: worktree };
 };
@@ -1045,8 +1069,9 @@ export function corpusIdentity(
 
 /**
  * Runtime artifacts the hosts load, hashed by content; the Pi install is hashed as a whole tree,
- * since Node resolves the CLI's dependencies anywhere under it. The interposer and the OpenCode
- * SDK are `absent` when not yet built or not installed; preflight builds the interposer first.
+ * since Node resolves the CLI's dependencies anywhere under it. The interposer, the OpenCode
+ * SDK, and the plugin builds are `absent` when not yet built or not installed; preflight builds
+ * the interposer first, and a completed build clone holds both plugin builds.
  */
 function binaryDigests(config: SimConfig): Record<string, string> {
     const files = {
@@ -1059,6 +1084,9 @@ function binaryDigests(config: SimConfig): Record<string, string> {
         git: GIT,
         opencode_sdk: join(config.eidnara_checkout, OPENCODE_SDK),
         opencode_sdk_lock: join(config.eidnara_checkout, "packages/e2e-tests/bun.lock"),
+        // The plugin builds are ignored outputs, so the checkout's worktree digest omits them.
+        pi_plugin: join(config.eidnara_checkout, "packages/pi-plugin/dist"),
+        opencode_plugin: join(config.eidnara_checkout, "packages/opencode-plugin/dist"),
         ...(config.upgrade?.opencode_binary
             ? { opencode_upgrade: config.upgrade.opencode_binary }
             : {}),
@@ -1066,10 +1094,42 @@ function binaryDigests(config: SimConfig): Record<string, string> {
     };
     return Object.fromEntries(
         Object.entries(files).map(([name, path]) => {
-            const optional = name.startsWith("opencode_sdk") || name === "faketime";
+            const optional =
+                name.startsWith("opencode_sdk") || name.endsWith("_plugin") || name === "faketime";
             if (optional && !existsSync(path)) return [name, "absent"];
             if (statSync(path).isDirectory()) return [name, directoryDigest(realpathSync(path))];
             return [name, createHash("sha256").update(readFileSync(path)).digest("hex")];
+        }),
+    );
+}
+
+export interface ArmConfig {
+    profile: ArmProfile;
+    /** The user-tier `eidnara.jsonc` the arm's host loads, its connection path elided; null without the plugin. */
+    eidnara_config: Record<string, unknown> | null;
+    /** The configuration the arm's daemon starts with; null without a daemon. */
+    daemon_config: Record<string, unknown> | null;
+}
+
+/**
+ * The configuration each arm runs, as the host stack writes it for the side model the first
+ * session uses; a `model_switch` moves later sessions' side model when no side model is fixed.
+ */
+export function armConfigs(order: readonly string[], sideModel: string): Record<string, ArmConfig> {
+    return Object.fromEntries(
+        order.map((label) => {
+            const profile = armProfile(label);
+            const arm = armBase(label);
+            return [
+                label,
+                {
+                    profile,
+                    eidnara_config: profile.plugin
+                        ? eidnaraUserConfig("<connection file>", sideModel, arm)
+                        : null,
+                    daemon_config: profile.daemon ? fixtureDaemonConfig(sideModel) : null,
+                },
+            ];
         }),
     );
 }
@@ -1104,7 +1164,16 @@ export async function loadManifest(
     checks?: Preflight,
 ): Promise<{ manifest: Manifest; checks: Preflight }> {
     const path = join(o.out, "manifest.json");
-    const probe = async () => checks ?? (await preflight(o.config, o.out));
+    /** Preflight probes the environment once the build is known to match the audited daemon capabilities. */
+    const probe = async (order: readonly string[]) => {
+        if (checks) return checks;
+        try {
+            requireAuditedVariants(o.config.eidnara_checkout, order);
+        } catch (caught) {
+            throw new HarnessFailure((caught as Error).message);
+        }
+        return await preflight(o.config, o.out);
+    };
     const wanted = {
         tier: o.tier,
         seed: o.seed,
@@ -1156,9 +1225,9 @@ export async function loadManifest(
         });
     if (existsSync(path)) {
         const manifest = readJsonFile<Manifest>(path);
-        if (manifest?.schema !== "sim-run-manifest/v2") {
+        if (manifest?.schema !== "sim-run-manifest/v3") {
             throw new HarnessFailure(
-                `manifest.json schema ${manifest?.schema} is not sim-run-manifest/v2`,
+                `manifest.json schema ${manifest?.schema} is not sim-run-manifest/v3`,
             );
         }
         const fieldProblems = manifestProblems(manifest, scenario.events.length);
@@ -1199,12 +1268,13 @@ export async function loadManifest(
         const changed = Object.entries({
             ...digests(),
             tape_sha256: tapeDigests(manifest.tapes),
+            arms: armConfigs(manifest.order, manifest.side_model ?? manifest.models[0] ?? ""),
         }).filter(([k, v]) => !sameJson(manifest[k as keyof Manifest], v));
         if (changed.length > 0) {
             const names = changed.map(([k]) => k).join(", ");
             throw new HarnessFailure(`inputs changed since the run started: ${names}`);
         }
-        checks = await probe();
+        checks = await probe(manifest.order);
         const intercepted = (p: Preflight) =>
             p.time_injection.map((t) => [t.name, t.path, t.intercepted, t.wall_clock_only]);
         if (!sameJson(intercepted(manifest.preflight), intercepted(checks))) {
@@ -1255,11 +1325,12 @@ export async function loadManifest(
         wanted.fault_override,
         wanted.turns_await_jobs,
     );
-    checks = await probe();
+    checks = await probe(wanted.order);
     const manifest: Manifest = {
-        schema: "sim-run-manifest/v2",
+        schema: "sim-run-manifest/v3",
         ...wanted,
         ...digests(),
+        arms: armConfigs(wanted.order, wanted.side_model ?? wanted.models[0] ?? ""),
         tape_sha256: tapeDigests(wanted.tapes),
         base_wall_ms: Date.now(),
         price_table: PRICE_TABLE,
@@ -1671,9 +1742,14 @@ async function runArms(
     const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
     const callsPath = join(o.out, "calls.jsonl");
     const agentText = new Map<string, AgentReply>();
+    /** Each arm's call records by component, for the capability check at its finish. */
+    const components = new Map<string, Record<string, number>>();
     const noteAgent = (r: CallRecord) => {
         const reply = agentReplyOf(r);
         if (reply) agentText.set(`${r.arm}/${r.session}`, reply);
+        const counts = components.get(r.arm) ?? {};
+        counts[r.component] = (counts[r.component] ?? 0) + 1;
+        components.set(r.arm, counts);
     };
     const prior: Pick<
         CallRecord,
@@ -1750,6 +1826,8 @@ async function runArms(
             if (sampler) holdForCpu(sampler, arm);
         },
         verify: async (point) => {
+            const ending = scheduler.currentArm;
+            if (point === "EndArm" && ending !== null) verifyArm(ending, join(o.out, ending, "r"));
             if (point === "EndRun") await gateway.stop();
             handlersFailed();
             if (samplerFailure !== null) throw samplerFailure;
@@ -1905,6 +1983,38 @@ async function runArms(
     }
     const userTurns = (arm: string, session?: string) =>
         deliveredTurns(journal.entries, arm, session);
+    // Each session's own plugin boots, read from the log's length when its host started: a
+    // plugin that disabled itself, booted in another mode than the arm declares, or left no boot
+    // stops the run at the session that shows it.
+    // A session still open when the arm ends (an `--events` prefix can stop inside one) is checked
+    // before `EndArm`.
+    const sessionMark = new Map<string, number>();
+    const unchecked = new Set<string>();
+    const markSession = (arm: string, armRoot: string) => {
+        sessionMark.set(arm, logLength(join(armRoot, "eidnara.log")));
+        unchecked.add(arm);
+    };
+    const requireBoots = (arm: string, armRoot: string) => {
+        unchecked.delete(arm);
+        const boots = readPluginLog(join(armRoot, "eidnara.log"), sessionMark.get(arm) ?? 0);
+        const wrong = bootMismatches(armProfile(arm), boots);
+        if (wrong.length > 0) {
+            throw new HarnessFailure(`arm ${arm} capability mismatch: ${wrong.join("; ")}`);
+        }
+    };
+    // The arm's evidence against its profile, written whole once its finish and every job it
+    // started have ended, before `EndArm`; a mismatch leaves the arm open, so the run is not
+    // complete evidence and a resume checks the same evidence again.
+    const verifyArm = (arm: string, armRoot: string) => {
+        if (unchecked.has(arm)) requireBoots(arm, armRoot);
+        const observed = observeArm(arm, o.host, armRoot, components.get(arm) ?? {});
+        const mismatches = armMismatches(observed);
+        const record = { profile: armProfile(arm), observed, mismatches };
+        writeAtomic(join(o.out, arm, "capabilities.json"), `${JSON.stringify(record, null, 2)}\n`);
+        if (mismatches.length > 0) {
+            throw new HarnessFailure(`arm ${arm} capability mismatch: ${mismatches.join("; ")}`);
+        }
+    };
     // The call index replays every record through `noteAgent` when it opens, so a resume holds
     // each session's last agent reply.
     const lastAgent = (arm: string, session: string): AgentReply =>
@@ -1998,6 +2108,7 @@ async function runArms(
                 tracked(async () => {
                     scope.arm = arm;
                     scope.session = open?.session ?? null;
+                    if (open) markSession(arm, armRoot);
                     await driver.resume(open, interrupted);
                     sampler.start();
                 }),
@@ -2007,7 +2118,13 @@ async function runArms(
                     scope.session = e.session;
                     scope.turn = e.kind === "user_turn" ? e.id : null;
                     try {
-                        if (e.kind === "session_end") agentText.delete(`${arm}/${e.session}`);
+                        if (e.kind === "session_start") markSession(arm, armRoot);
+                        if (e.kind === "session_end") {
+                            agentText.delete(`${arm}/${e.session}`);
+                            const out = await driver.event(e);
+                            requireBoots(arm, armRoot);
+                            return out;
+                        }
                         if (e.kind !== "user_turn") return await driver.event(e);
                         const turn = scriptedById.get(e.id);
                         if (!turn) throw new HarnessFailure(`${e.id}: no scripted user turn`);

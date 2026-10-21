@@ -18,6 +18,7 @@ import { dirname, join } from "node:path";
 import { loadConfig } from "../config/config";
 import { processStart, running } from "../run/procs";
 import {
+    type ArmName,
     DaemonStack,
     type HostContext,
     nodeInstall,
@@ -1442,4 +1443,58 @@ test("an OpenCode close whose launcher is confirmed gone clears its handles desp
     delete (host as Untyped).stopTree;
     await expect(host.closeSession()).rejects.toThrow(/did not exit after SIGKILL/);
     expect((host as Untyped).oc).toBe(oc);
+});
+
+test("each Pi arm writes the host and Eidnara compaction its profile declares", () => {
+    const run = runDir();
+    const rows: Array<[ArmName, boolean, boolean | null]> = [
+        ["host", true, null],
+        ["eidnara", false, true],
+        ["eidnara-kl", true, false],
+    ];
+    for (const [arm, hostCompaction, eidnaraCompaction] of rows) {
+        const dir = join(run, arm);
+        mkdirSync(dir);
+        const host = new PiSimHost({ ...context(dir), arm });
+        const connection = eidnaraCompaction === null ? null : join(dir, "connection.json");
+        (host as Untyped).writeConfigs(connection);
+        const home = join(dir, "arm/home");
+        const settings = JSON.parse(readFileSync(join(home, ".pi/agent/settings.json"), "utf8"));
+        expect(settings.compaction).toEqual({ enabled: hostCompaction });
+        const eidnara = join(home, "config/eidnara/eidnara.jsonc");
+        if (eidnaraCompaction === null) {
+            expect(existsSync(eidnara)).toBe(false);
+            continue;
+        }
+        const config = JSON.parse(readFileSync(eidnara, "utf8"));
+        expect(config.compaction).toEqual({ enabled: eidnaraCompaction });
+        expect(config.memory).toMatchObject({ enabled: true, auto_search: { enabled: true } });
+    }
+});
+
+test("the OpenCode knowledge-only arm turns host compaction on and Eidnara compaction off", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    for (const [arm, auto, eidnara] of [
+        ["eidnara-kl", true, false],
+        ["eidnara", false, true],
+    ] as const) {
+        const dir = join(run, `oc-${arm}`);
+        mkdirSync(dir);
+        const ctx = { ...context(dir), host: "opencode" as const, arm };
+        const host = new OpencodeSimHost({
+            ...ctx,
+            config: { ...ctx.config, eidnara_checkout: checkout },
+        });
+        try {
+            await host
+                .openSession(join(dir, "arm"), "s1", join(dir, "c.json"))
+                .catch(() => undefined);
+        } finally {
+            for (const pid of serving()) process.kill(pid, "SIGKILL");
+        }
+        const opts = (globalThis as Untyped).__simSpawnOpts;
+        expect(opts.openCodeConfigExtra.compaction !== undefined).toBe(auto);
+        expect(opts.eidnaraConfig.compaction).toEqual({ enabled: eidnara });
+    }
 });

@@ -52,7 +52,7 @@ import {
     requireComplete,
     takeLease,
 } from "../src/run/journal";
-import { CallIndex, callsOf } from "../src/run/run";
+import { CallIndex, callsOf, simIdentity } from "../src/run/run";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
@@ -70,6 +70,8 @@ export interface Summary {
     judge_errors: number;
     /** The last `seq` of the journal this pass graded, so a later resume marks the summary stale. */
     journal_seq: number;
+    /** The grader implementation (`graderDigest`) and the eidnara-sim revision this pass ran. */
+    grader: { digest: string; sim_commit: string; sim_worktree: string };
 }
 
 /** Where a finished grading pass records its summary; `src/report/cost.ts` reads it. */
@@ -89,6 +91,8 @@ export async function gradeRun(
 ): Promise<Summary> {
     const lease = takeLease(dir);
     try {
+        // A refused run keeps the summary of the grades it has.
+        requireCheckedSchema(JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).schema);
         // A pass that stops early leaves no summary, so a reader never takes a stale one as current.
         rmSync(summaryPath(dir), { force: true });
         const summary = await grade(dir, config, regrade);
@@ -171,6 +175,58 @@ interface RowMeta {
     length: number;
 }
 
+/** A run from before the arm capability check keeps the grades it has. */
+function requireCheckedSchema(schema: unknown): void {
+    if (schema !== "sim-run-manifest/v3") {
+        throw new Error(
+            `manifest schema ${String(schema)} predates the arm capability check; its grades stand as they were`,
+        );
+    }
+}
+
+/**
+ * Grades come only from runs whose arms ran what they declare: a `sim-run-manifest/v3` run, whose
+ * every ended arm holds the `capabilities.json` its `EndArm` check wrote with no mismatch. Runs
+ * from before the check stay as they were graded.
+ */
+export function requireCapabilities(
+    dir: string,
+    manifest: { schema?: unknown; arms?: Record<string, { profile?: unknown }> },
+    arms: readonly string[],
+    entries: readonly Entry[],
+): void {
+    requireCheckedSchema(manifest.schema);
+    for (const arm of arms) {
+        if (!entries.some((e) => e.kind === "EndArm" && e.arm === arm)) continue;
+        const path = join(dir, arm, "capabilities.json");
+        let record: { mismatches?: unknown; profile?: unknown; observed?: { arm?: unknown } };
+        try {
+            record = JSON.parse(readFileSync(path, "utf8"));
+        } catch (caught) {
+            throw new Error(
+                `arm ${arm} ended with no readable ${path}: ${(caught as Error).message}`,
+            );
+        }
+        // The record must be this arm's own, under the profile the manifest pinned for it.
+        const profile = manifest.arms?.[arm]?.profile;
+        if (
+            record.observed?.arm !== arm ||
+            profile === undefined ||
+            canonicalJson(record.profile) !== canonicalJson(profile)
+        ) {
+            throw new Error(
+                `${path} is not the capability record of arm ${arm} as the manifest pins it`,
+            );
+        }
+        const mismatches = record.mismatches;
+        if (!Array.isArray(mismatches) || mismatches.length > 0) {
+            throw new Error(
+                `arm ${arm} ran other capabilities than it declares: ${JSON.stringify(mismatches)}`,
+            );
+        }
+    }
+}
+
 async function grade(dir: string, config: SimConfig | null, regrade: boolean): Promise<Summary> {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
@@ -234,6 +290,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     }
     const scheduled = scenario.events.slice(0, manifest.events).map((e) => String(e.id));
     requireComplete(entries, arms, scheduled);
+    requireCapabilities(dir, manifest, arms, entries);
     const log = new GradeLog(join(dir, "grades.jsonl"));
 
     const named = new Map<string, { arm: string; item: string }>();
@@ -488,7 +545,9 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     };
     // A grade this grader already made from the same snapshot stands unless `regrade` asks anew;
     // a grade from another grader implementation is made again.
+    // The grader's identity is read once, before any grade, so the summary names the code that ran.
     const grader = graderDigest();
+    const graderSim = simIdentity();
     const priorKey = (item: string, arm: string, against: string | undefined, snapshot: string) =>
         `${item}/${arm}/${against ?? ""}/${snapshot}`;
     const latest = log.latest();
@@ -733,6 +792,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
         p3,
         judge_errors: judgeErrors,
         journal_seq: entries.at(-1)?.seq ?? 0,
+        grader: { digest: grader, ...graderSim },
     };
 }
 
