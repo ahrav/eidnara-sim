@@ -1140,8 +1140,10 @@ export async function loadManifest(
         events: number,
         order: readonly string[],
         faultOverride: FaultEpisode[] | null,
+        turnsAwaitJobs: boolean,
     ) =>
         checkTapeSources(tapes, {
+            turns_await_jobs: turnsAwaitJobs,
             seed: o.seed,
             scenario_hash: scenario.scenario_hash,
             prereg_sha256: preregistrationHash(preregOf(o)),
@@ -1239,14 +1241,26 @@ export async function loadManifest(
         requireMechanisms(manifest.fault_override ?? scenario.faults, manifest.models);
         // A resume checks the sources against the run it continues, whose event count and arm
         // order the manifest holds whether or not this invocation restates them.
-        sources(manifest.tapes, manifest.events, manifest.order, manifest.fault_override);
+        sources(
+            manifest.tapes,
+            manifest.events,
+            manifest.order,
+            manifest.fault_override,
+            manifest.turns_await_jobs,
+        );
         const preflightLog = join(o.out, "preflight.jsonl");
         dropCutTail(preflightLog);
         appendFileSync(preflightLog, `${JSON.stringify(checks)}\n`);
         return { manifest, checks };
     }
     requireMechanisms(wanted.fault_override ?? scenario.faults, wanted.models);
-    sources(wanted.tapes, wanted.events, wanted.order, wanted.fault_override);
+    sources(
+        wanted.tapes,
+        wanted.events,
+        wanted.order,
+        wanted.fault_override,
+        wanted.turns_await_jobs,
+    );
     checks = await probe();
     const manifest: Manifest = {
         schema: "sim-run-manifest/v2",

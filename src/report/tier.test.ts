@@ -112,6 +112,7 @@ const identity = (commit = "abc") => ({
     bedrock: "r",
     tools: "t",
     price_table: "p",
+    turns_await_jobs: false,
 });
 
 /** A fault witness as the proxy reports it, fired with one injection and one observation. */
@@ -1517,6 +1518,15 @@ describe("tier report", () => {
                 expect.stringMatching(new RegExp(`^runs differ in ${field}: `)),
             );
         }
+    });
+
+    test("runs whose turns waited for background work stay apart from runs whose turns ran on schedule", () => {
+        const a = fixture(undefined, { host: "pi" });
+        const b = fixture(undefined, { host: "opencode" });
+        b.identity.turns_await_jobs = true;
+        expect(tierInput(prereg, [a, b]).incomplete).toContain(
+            "runs differ in turns_await_jobs: false, true",
+        );
     });
 
     test("tape sources are part of the compared identity", () => {

@@ -865,6 +865,27 @@ describe("tape and pairing", () => {
         ).not.toThrow();
     });
 
+    test("a replay source run under another turn scheduling rule is refused", () => {
+        const root = dir();
+        writeFileSync(join(root, "tape.jsonl"), "");
+        writeFileSync(join(root, "pairing.jsonl"), "");
+        const source = (m: object) =>
+            writeFileSync(
+                join(root, "manifest.json"),
+                JSON.stringify({ seed: 101, scenario_hash: "abc", ...m }),
+            );
+        const run = { seed: 101, scenario_hash: "abc", turns_await_jobs: false };
+        source({ turns_await_jobs: true });
+        expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).toThrow("turns_await_jobs");
+        source({});
+        expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).toThrow("turns_await_jobs");
+        expect(() =>
+            checkTapeSources([join(root, "tape.jsonl")], { ...run, turns_await_jobs: true }),
+        ).not.toThrow();
+        source({ turns_await_jobs: false });
+        expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).not.toThrow();
+    });
+
     test("a replay source under another fault override is refused", () => {
         const root = dir();
         writeFileSync(join(root, "tape.jsonl"), "");

@@ -29,7 +29,8 @@ replaces the pre-registered user-sim model for a variant run. The manifest
 records every one of these values, and a digest of each tape and the
 pairing log beside it (`tape_sha256`). Each tape must come from a finished
 run (its journal holds `EndRun`) of the same seed, scenario,
-pre-registration, and fault override that ran every arm of this run over
+pre-registration, fault override, and `turns_await_jobs` (a source
+manifest from before that field counts as `true`) that ran every arm of this run over
 at least its events, with a pairing record per arm and user turn and a tape
 entry for each recorded reactive turn (`checkTapeSources`); a resume checks
 the sources again against the manifest's event count, order, and override. An argument outside this list, an option without a value, an

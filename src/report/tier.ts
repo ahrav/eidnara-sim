@@ -72,6 +72,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         bedrock?: unknown;
         toolchain?: unknown;
         price_table?: unknown;
+        turns_await_jobs?: boolean;
     } & Omit<
         RunIdentity,
         | "distortions"
@@ -90,6 +91,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         | "bedrock"
         | "tools"
         | "price_table"
+        | "turns_await_jobs"
     > & { side_model?: string | null; user_sim_model?: string };
     const pinned = (v: unknown) =>
         v === undefined || v === null
@@ -185,6 +187,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             bedrock: pinned(manifest.bedrock),
             tools: pinned(manifest.toolchain),
             price_table: pinned(manifest.price_table),
+            turns_await_jobs: manifest.turns_await_jobs ?? true,
         },
         witnesses: reports === null ? null : [...witnesses.values()],
         pairing,
