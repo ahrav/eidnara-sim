@@ -156,9 +156,13 @@ a pre-registered arm (`arms.run`) that has no `EndArm` entry, each run whose man
 `events` stops short of its scenario's events, each manifest setting
 (`eidnara_commit`, `models`, `context_limit`, the preflight's clock
 `distortions`, its host versions, the scenario's generator, random
-schema, corpus inputs digest, and embedding model, the tapes it
-replayed, the preflight's toolchain probes, and the `grader` digests of
-the grades the report uses) the runs disagree on, each run whose used
+schema, corpus inputs digest, and embedding model, the digests the run
+recorded of the tapes and pairing logs it replayed (`tape_sha256`), the
+preflight's toolchain probes, the `grader` digests of the grades the
+report uses, and the manifest's pinned execution identities: the Eidnara
+working tree, the harness commit and working tree, and digests of the
+corpus checkouts, the executables, the Bedrock route, the named tools,
+and the price table) the runs disagree on, each run whose used
 grades come from more than one grader, each run that lacks one metric of a
 run-level family (the run then leaves every metric of that family, so the
 family's metrics come from one set of runs), each run with
