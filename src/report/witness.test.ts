@@ -439,6 +439,15 @@ describe("property witness evidence", () => {
         expect(one("P03", both("r")).status).toBe("witnessed");
         expect(one("P03", both("q")).status).toBe("witnessed");
         expect(one("P03", both("x")).status).toBe("violated");
+        const otherContext = made({
+            tapes: [join(source, "tape.jsonl"), join(later, "tape.jsonl")],
+            pairing: [
+                turn("host", "b"),
+                { ...diverged("r"), recorded_context_sha256: "c" },
+                turn("eidnara", "b"),
+            ],
+        });
+        expect(one("P03", otherContext).status).toBe("violated");
         // The run recorded each source's digest, over the tape and its pairing log, at its
         // start; a source changed since is no corroboration.
         writeFileSync(join(source, "tape.jsonl"), "");
@@ -457,7 +466,7 @@ describe("property witness evidence", () => {
         rmSync(join(source, "pairing.jsonl"));
         expect(one("P03", run("r"))).toMatchObject({
             status: "violated",
-            detail: expect.stringContaining("source digest"),
+            detail: expect.stringContaining("cites no source row"),
         });
     });
 

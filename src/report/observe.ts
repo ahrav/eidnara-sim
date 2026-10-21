@@ -109,16 +109,24 @@ export const controlArmsOf = (g: GradedRun) =>
         .filter((a) => a.arm.includes("~") && a.journal.some((e) => e.kind === "EndArm"))
         .map((a) => a.arm);
 
-/** Whether every turn that ended `ok` has a call record, the capture the F7 scan reads. */
+/**
+ * Whether every turn that ended `ok` has a call record, the capture the F7 scan reads; a turn
+ * the user-sim left undelivered reached no host, so it needs none.
+ */
 function callsCoverTurns(arm: ArmLogs): boolean {
     const called = new Set(
         arm.calls
             .filter((c) => c.component === "agent" && typeof c.response_text === "string")
             .map((c) => c.turn),
     );
+    const undelivered = new Set(
+        arm.journal
+            .filter((e) => e.kind === "UserTurn" && e.delivered === false)
+            .map((e) => String(e.event)),
+    );
     return arm.journal
         .filter((e) => e.kind === "EndTurn" && e.outcome === "ok")
-        .every((e) => called.has(String(e.event)));
+        .every((e) => called.has(String(e.event)) || undelivered.has(String(e.event)));
 }
 
 /** The prefix that keeps one seed's items apart across the tier's hosts: `<host>/<seed>`. */
