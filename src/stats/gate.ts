@@ -330,11 +330,7 @@ function bound(f: Family, metric: string, s: Stats, obs: Observation): Judgement
                 : mean((obs.items ?? []).map((x) => x.treatment)) < margin
                   ? (obs.items ?? []).filter((x) => x.treatment === 0).map((x) => x.item)
                   : []
-            : (obs.runs ?? [])
-                  .filter((r) =>
-                      f.direction === "zero-tolerance" ? r.treatment !== 0 : r.treatment > margin,
-                  )
-                  .map((r) => r.run);
+            : (obs.runs ?? []).filter((r) => r.treatment > margin).map((r) => r.run);
     return bad.length === 0
         ? ["within-bound", true]
         : [`failed-gate(${metric}, ${bad.join(" ")})`, false, bad];
@@ -630,7 +626,15 @@ function check(p: Preregistration, input: TierInput): void {
         if (f.outcome === "binary" && !own.every((x) => isBit(x.control) && isBit(x.treatment))) {
             throw new StatsRefusal(`${o.metric}: a binary outcome is 0 or 1 in both arms`);
         }
-        if (f.outcome === "count" && !own.every((x) => x.control >= 0 && x.treatment >= 0)) {
+        // A run-level bound compares each run's value to the margin and computes no statistic,
+        // so a treatment-minus-control count below zero is an observation there.
+        const runBound =
+            o.unit === "run" && (f.direction === "threshold" || f.direction === "zero-tolerance");
+        if (
+            f.outcome === "count" &&
+            !runBound &&
+            !own.every((x) => x.control >= 0 && x.treatment >= 0)
+        ) {
             throw new StatsRefusal(`${o.metric}: a count is at least 0 in both arms`);
         }
         if (

@@ -8,7 +8,7 @@ import { recoveries } from "../oracle/recovery";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
-import { excludedFromFaultMetrics, type WitnessReport } from "../proxy/inject";
+import { excludedFromFaultMetrics, isWitnessReport, type WitnessReport } from "../proxy/inject";
 import { readJsonl } from "../run/journal";
 import type { Scenario } from "../scenario/compile";
 import { evaluateTier, falsificationSet, type TierInput } from "../stats/gate";
@@ -62,7 +62,16 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             toolchain?: unknown[];
         };
         tapes?: string[];
+        tape_sha256?: string[];
         order: string[];
+        eidnara_worktree?: string;
+        sim_commit?: string;
+        sim_worktree?: string;
+        corpus?: unknown;
+        binaries?: unknown;
+        bedrock?: unknown;
+        toolchain?: unknown;
+        price_table?: unknown;
     } & Omit<
         RunIdentity,
         | "distortions"
@@ -73,7 +82,21 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         | "toolchain"
         | "side_model"
         | "user_sim_model"
+        | "eidnara_worktree"
+        | "sim_commit"
+        | "sim_worktree"
+        | "corpus"
+        | "binaries"
+        | "bedrock"
+        | "tools"
+        | "price_table"
     > & { side_model?: string | null; user_sim_model?: string };
+    const pinned = (v: unknown) =>
+        v === undefined || v === null
+            ? "unrecorded"
+            : typeof v === "string"
+              ? v
+              : sha256Hex(canonicalJson(v));
     const current = preregistrationHash(prereg);
     if (manifest.prereg_sha256 !== current) {
         throw new Error(
@@ -98,8 +121,13 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     const { eidnara_commit, models, context_limit, events, side_model, user_sim_model } = manifest;
     const witnesses = new Map<string, WitnessReport>();
     const faults = join(dir, "faults.jsonl");
-    const lines = readJsonl<WitnessReport[]>(faults);
-    const reports = lines.length ? lines : null;
+    const lines = readJsonl<unknown>(faults);
+    for (const [i, batch] of lines.entries()) {
+        if (!Array.isArray(batch) || !batch.every(isWitnessReport)) {
+            throw new Error(`${faults}: line ${i + 1} is not a batch of fault witnesses`);
+        }
+    }
+    const reports = lines.length ? (lines as WitnessReport[][]) : null;
     for (const w of (reports ?? []).flat()) {
         const key = `${w.arm}/${w.fault}`;
         if (witnesses.get(key)?.status !== "fired") witnesses.set(key, w);
@@ -145,11 +173,18 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
                 manifest.fault_override == null
                     ? null
                     : sha256Hex(canonicalJson(manifest.fault_override)),
-            tapes: (manifest.tapes ?? []).map((t) =>
-                existsSync(t) ? sha256Hex(readFileSync(t, "utf8")) : `missing:${t}`,
-            ),
+            // The digests the run recorded of the tapes and pairing logs it consumed.
+            tapes: manifest.tape_sha256 ?? (manifest.tapes ?? []).map((t) => `unrecorded:${t}`),
             toolchain: (manifest.preflight?.toolchain ?? []).map((t) => canonicalJson(t)),
             grader: [...new Set(grades.map((g) => g.grader ?? "unrecorded"))].sort(),
+            eidnara_worktree: pinned(manifest.eidnara_worktree),
+            sim_commit: pinned(manifest.sim_commit),
+            sim_worktree: pinned(manifest.sim_worktree),
+            corpus: pinned(manifest.corpus),
+            binaries: pinned(manifest.binaries),
+            bedrock: pinned(manifest.bedrock),
+            tools: pinned(manifest.toolchain),
+            price_table: pinned(manifest.price_table),
         },
         witnesses: reports === null ? null : [...witnesses.values()],
         pairing,

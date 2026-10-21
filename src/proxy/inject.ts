@@ -20,6 +20,25 @@ export interface WitnessReport extends Witness {
     status: "fired" | "untriggered";
 }
 
+/**
+ * Whether `value` is a witness as `report()` writes it: every field of its type, sequence numbers
+ * as non-negative safe integers, and `fired` exactly when an injection and an observation exist.
+ */
+export function isWitnessReport(value: unknown): value is WitnessReport {
+    const w = value as Partial<Record<keyof WitnessReport, unknown>> | null;
+    const seqs = (x: unknown) =>
+        Array.isArray(x) && x.every((n) => Number.isSafeInteger(n) && (n as number) >= 0);
+    if (typeof w !== "object" || w === null) return false;
+    if (typeof w.arm !== "string" || typeof w.fault !== "string" || typeof w.type !== "string") {
+        return false;
+    }
+    if (typeof w.armed !== "boolean" || typeof w.proxy_retried !== "boolean") return false;
+    if (!seqs(w.injected_seq) || !seqs(w.host_observed_seq)) return false;
+    const fired =
+        (w.injected_seq as number[]).length > 0 && (w.host_observed_seq as number[]).length > 0;
+    return w.status === (fired ? "fired" : "untriggered");
+}
+
 interface Armed {
     arm: string;
     fault: ProxyFault;

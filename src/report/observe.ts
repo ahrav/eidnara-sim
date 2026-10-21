@@ -55,6 +55,19 @@ export interface RunIdentity {
     toolchain: string[];
     /** The `grader` digests of the grades the report uses, sorted; one for a run graded by one grader. */
     grader: string[];
+    /**
+     * The manifest's other pinned execution identities, each a string (an object as the digest
+     * of its canonical JSON) or `unrecorded`: the Eidnara and harness trees, the corpus
+     * checkouts, the executables, the Bedrock route, the named tools, and the price table.
+     */
+    eidnara_worktree: string;
+    sim_commit: string;
+    sim_worktree: string;
+    corpus: string;
+    binaries: string;
+    bedrock: string;
+    tools: string;
+    price_table: string;
 }
 
 const ALIASES: Record<string, string> = {
@@ -231,7 +244,7 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: t
         delta: false,
     },
     "P13.fold_fidelity_score": {
-        value: graded("P13.fold_fidelity_score", (v) => (100 * total(v)) / v.length),
+        value: graded("P13.fold_fidelity_score", (v) => total(v) / v.length),
         delta: false,
     },
     "P14.post_compaction_correction_count": {
@@ -563,6 +576,14 @@ function incomplete(
         "tapes",
         "toolchain",
         "grader",
+        "eidnara_worktree",
+        "sim_commit",
+        "sim_worktree",
+        "corpus",
+        "binaries",
+        "bedrock",
+        "tools",
+        "price_table",
     ];
     // The grades a run's report uses come from one grader implementation.
     const mixed = runs.flatMap((g) =>
