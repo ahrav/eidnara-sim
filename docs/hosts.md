@@ -62,6 +62,10 @@ state names it for the next reap, and a driver that finishes before it ever
 reset or resumed adds the failure to the record on disk, leaving the
 identities the killed harness wrote in place; the daemon's
 output reaches `<arm>/daemon.log` as it is written.
+`stop` first waits for a host `openSession` or a daemon start or restart still
+in flight, so a process spawned moments before a stop is closed rather than
+leaked, and ends a counterfactual deletion child before the store goes;
+concurrent closes of one host share a single shutdown.
 
 `DaemonStack` starts the daemon through the v1 `HermeticHostStack` with the
 interposer environment, restarts it with SIGKILL against the same store, and
@@ -75,6 +79,13 @@ the live stream after it keeps the order of arrival; the log opens with `O_NOFOL
 regular file, so a symlink or FIFO left there fails the append without
 blocking, and the first such failure surfaces at stop together with a failed
 SIGKILL fallback.
+`crash` kills the daemon by SIGKILL and leaves the store as the kill left
+it; the next `restart` starts the replacement without a second kill, so a
+caller can inspect the store in between.
+The run's resource sampler takes a sample when each daemon process is up and
+before a fault takes one down; a final sample that cannot be written fails
+the arm's finish after the arm is shut down, so the run is not complete
+evidence.
 
 The sandbox has its own mount, pid, and System V IPC namespaces. `closeSession`
 keeps its host handle until the whole teardown succeeds, so a failed close
@@ -116,21 +127,35 @@ Both waits are bounded by the turn's remaining time (the state check gets at
 least 1 s), and a refused `get_state` counts as unsettled, so the turn goes
 through the abort and drain below. A prompt Pi refuses in preflight starts no
 turn, so its error is returned at once. After a Pi turn fails, the host
-aborts it and, alongside the abort, waits up to 30 s for its `agent_end`; a turn still running then
-stops the run, so a late end cannot finish the next turn. OpenCode turns race the deadline,
+aborts it and, alongside the abort, waits up to 30 s for its `agent_end`
+(an end the turn's own waiter saw before the failure counts, and the drain
+waiter is armed before that check so no end falls between); a turn still
+running then stops the run, so a late end cannot finish the next turn. OpenCode turns race the deadline,
 abort the session (waiting at most 30 s for the abort call), and wait 30 s for
 the call to drain; a call still running then stops the run, and so does an
 abort call still pending after 30 s, since it would cancel the next turn,
 an OpenCode session setup (listing or creating the session) still pending
 after 120 s,
-and so does an abort the server does not confirm with `true`. A
+and so does a deadline abort the server does not confirm with `true`. A
+scheduled interrupt's abort the server refuses or fails leaves the turn to run
+on under its deadline, reported as it ends. A
 prompt request that fails before the server answers is aborted the same way,
 and an abort that fails stops the run, since the turn's completion cannot be
-established. A Pi `agent_end` seen before the prompt response fails settles
+established. A Pi interrupt sends `abort` and reads the turn's own `agent_end`
+within the drain wait, whatever the abort's answer; the turn is `interrupted`
+only when the last assistant message stopped with `aborted`. A prompt the host
+refused, a prompt request that failed before Pi accepted it or the OpenCode
+server answered, and a turn whose deadline the user-sim call or the message
+listing spent before the prompt report `undelivered`, and the runner journals
+that turn's `UserTurn` as not delivered. The runner passes each turn the part of
+its deadline the user-sim call left (`deadline_ms`). A Pi `agent_end` seen before the prompt response fails settles
 that turn with its result.
 Every deadline timer is cleared once its race settles. An OpenCode prompt that returns before the session's last
 assistant step finishes (`finish` other than `stop` or `length`) is a
-failed turn; a prompt sent in that state ends its conversation on an
+failed turn, and the session is aborted first (an abort still unanswered
+after the abort wait stops the run) so the step runs into no later turn. A
+prompt that returns with no assistant message of its own is a failed turn
+too. A prompt sent in that state ends its conversation on an
 assistant message, which Bedrock refuses as a prefill.
 An `apply_diff` event writes its file inside the
 workspace and commits that path alone, so the agent's own uncommitted edits
@@ -254,7 +279,9 @@ store sits under the user's home.
 
 ## Resume
 
-The driver keeps `<arm>/state.json` current with the model index and the
+The driver keeps `<arm>/state.json` current with the model index, the
+daemon restarts whose `StoreChecked` entry the journal may still lack (each
+with its plugin-log mark), and the
 pid and start time of the daemon and of the host while a session is open,
 replacing the file whole so a kill mid-write leaves the previous state. Pi's
 pid is recorded as soon as its process exists, before the readiness wait, and
@@ -280,8 +307,10 @@ already found; a resume stops on a ballast whose length or blocks changed, or
 that is a link (a sparse replacement, a punched hole, or a look-alike
 elsewhere all count), or on a recorded gap, since neither may heal.
 A new harness process calls `reap()` and then `resume(open)` on an arm that
-has `StartArm` and no `EndArm`; an arm whose every event is journaled is only
-reaped and finished. `reap` requires the state, stops each recorded process, host first,
+has `StartArm` and no `EndArm`; an arm whose every event is journaled resumes
+with `resume(null)`, which restores its daemon, store, and owed store checks
+without opening a session, and then finishes, so its final store check reads
+the store the killed harness left. `reap` requires the state, stops each recorded process, host first,
 and then refuses an arm whose `finish` failed earlier (the state records the
 failure, so a resume cannot heal it, while the reap still releases what it
 can),
@@ -289,7 +318,7 @@ whose start time still matches, then unmounts a store left mounted; every
 step runs and the first failure surfaces afterwards (a process that outlives
 SIGTERM and SIGKILL stops the resume with `HarnessFailure`),
 before the scheduler arms any proxy fault again. `resume` restores the host model index (the daemon keeps the arm's first
-model, as it did before the kill), mounts the
+model, as it did before the kill) and the owed store checks, mounts the
 existing store image (a missing image or `state.json` stops the resume,
 since only `reset` formats one and the state names what to stop), starts the daemon against the existing store, and, when
 the next event is inside a session, opens that session again. Pi reopens the
@@ -319,19 +348,20 @@ missing.
 
 The scheduler opens an outage window before a daemon fault and closes it at
 the next event. The harness owns every daemon restart, through the hermetic
-host stack's `restartHost`, which sends SIGKILL and starts the fixture
-against the same store (OQ-10).
+host stack's `crashHost`, which sends SIGKILL, and `restartHost`, which
+starts the fixture against the same store (OQ-10); the driver inspects the
+store between the two.
 
 | Fault | Mechanism | Evidence |
 |---|---|---|
-| `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness`, and the store check right after the restart (`docs/oracles.md`); the end of the turn in progress at the restart, or else the next turn, journals a second check as `StoreChecked` |
+| `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness`, and the store check between the SIGKILL and the replacement's start (`docs/oracles.md`); the first turn boundary, session end, or finish at which the plugin log shows a pass the replacement served (`served_from=transform` past the log's length at the restart), or a later daemon fault before it kills the daemon, journals a second check as `StoreChecked` |
 | `daemon_restart` | At `session_start`, SIGKILL and restart | As above |
-| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again, whether or not that start succeeds, and requires the store to report no free space afterwards; the store is writable to the host, so `session_end` requires the ballast to be the regular file it created with its length and blocks unchanged, its only name (a second hard link would keep the blocks allocated after the unlink), and the store to still report no free space, and stops the run otherwise; the fault replaces whatever the host left at the ballast's name with a fresh regular file before allocating | `avail_kb: 0`; any other value stops the run |
+| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast (the arm's `finish` removes a ballast no `session_end` cleared, under the same checks, before it unmounts the store); a resume that finds the ballast removes it for the daemon's start and fills the store again, whether or not that start succeeds, and requires the store to report no free space afterwards; the store is writable to the host, so `session_end` requires the ballast to be the regular file it created with its length and blocks unchanged, its only name (a second hard link would keep the blocks allocated after the unlink), and the store to still report no free space, and stops the run otherwise; the fault replaces whatever the host left at the ballast's name with a fresh regular file before allocating | `avail_kb: 0`; any other value stops the run |
 | `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
 | `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry, and `clock_advanced_ms` |
-| `host_upgrade` | Later sessions run the next pinned version of the arm's host, `config.upgrade.pi_install` or `config.upgrade.opencode_binary` (Pi 0.87.1 and OpenCode 1.18.23 in `sim.config.json`); the daemon's harness closures keep the pinned versions; preflight records each configured version, which the fault's evidence reports, and probes the next OpenCode binary's time interception as `opencode-upgrade`; without a configured version the fault is skipped | `from`, `to`, both `--version` strings, and `takes_effect` |
-| `two_hosts_one_daemon` | At its `session_start`, a second host client opens session `<session>-b` in the same workspace on the arm's daemon and runs one fixed turn, with the proxy's scope on `<session>-b`; it stays attached while the primary session opens and runs, and closes at the primary's `session_end`, so both clients are registered on the daemon together; `state.json` holds its pid for a resumed arm to reap, and a run stopped inside that session closes it without reopening it on resume; daemon calls made for the second client after its turn carry the primary session's scope | The second session, its host pid, the daemon pid, the turn's outcome, and `attached_until` |
+| `host_upgrade` | Later sessions run the next pinned version of the arm's host, `config.upgrade.pi_install` or `config.upgrade.opencode_binary` (Pi 0.87.1 and OpenCode 1.18.23 in `sim.config.json`); the daemon's harness closures keep the pinned versions; preflight records each configured version and its transcript store paths, refusing a target that resolves to the current version, which the fault's evidence reports and the next `session_end` checks again for the upgraded host, requiring the store to have changed during that session (symlinks in the store are skipped), with `transcripts.json` recording that result so a resume repeats a failed check and accepts only the upgraded host's own fresh check once upgraded, and `state.json` keeping the session's opening mark across a stop, and probes the next OpenCode binary's time interception as `opencode-upgrade`; without a configured version the fault is skipped | `from`, `to`, both `--version` strings, and `takes_effect` |
+| `two_hosts_one_daemon` | At its `session_start`, a second host client opens session `<session>-b` in the same workspace on the arm's daemon and runs one fixed turn, with the proxy's scope on `<session>-b` and its tool runs in `tools.jsonl` under turn `<session>-b`; after the turn the proxy's scope is the primary session with no turn; it stays attached while the primary session opens and runs, and closes at the primary's `session_end`, which first requires its host process to be running, so both clients are registered on the daemon together; `state.json` holds its pid for a resumed arm to reap, and keeps it when the close fails; a run stopped inside that session reaps it and attaches a fresh second client when that session next opens on resume (`state.json` names the session, with or without a live pid, and keeps naming it across further stops until the client is attached or the session ends), its fixed turn already run; daemon calls made for the second client after its turn carry the primary session's scope | The second session, its host pid, the daemon pid, the turn's outcome, and `attached_until` |
 
 `daemon_restart`, `plugin_reload`, `model_switch`, `store_full`,
 `host_upgrade`, `two_hosts_one_daemon`, and `apply_diff` fire between

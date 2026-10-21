@@ -113,6 +113,8 @@ export interface ToolRun {
     scenario_ms: number;
     /** The host's id for the run, when it reports a start before the end; a later report with the same id replaces the earlier one. */
     call?: string;
+    /** Set on a run reported after its turn, at recovery time; the recorder attributes it to no turn. */
+    recovered?: true;
 }
 
 const TARGET_KEYS = ["path", "filePath", "pattern", "file_path"];
@@ -135,6 +137,8 @@ export function toolCommand(tool: string, args: Record<string, unknown> | undefi
 
 export interface PromptResult {
     error?: string;
+    /** The host never sent the text: the turn failed before its prompt. */
+    undelivered?: true;
     /** The user aborted the turn through the host's abort path. */
     interrupted?: boolean;
 }
@@ -143,7 +147,42 @@ export const eidnaraOn = (arm: ArmName) => arm !== "host";
 
 /** An A/A control arm `host~aa` runs as `host` under its own label. */
 export const armBase = (label: string) => label.split("~")[0] as ArmName;
+/** A control label: a run arm, a tilde, and a tag; nothing a path could carry. */
+export const CONTROL_LABEL = /^[a-z-]+~[a-z0-9]+$/;
+
+/**
+ * Admits a manifest order of pre-registered arms and A/A controls: a control's label matches
+ * `CONTROL_LABEL`, its arm is in `pairs` and runs right before it, and each arm has at most one.
+ */
+export function requireOrder(
+    order: readonly string[],
+    arms: readonly string[],
+    pairs: readonly (readonly string[])[],
+): void {
+    for (const arm of order) {
+        const base = armBase(arm);
+        const known =
+            arms.includes(base) &&
+            (arm === base || (CONTROL_LABEL.test(arm) && pairs.some(([x]) => x === base)));
+        if (!known) throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
+    }
+    const controls = order.filter((arm) => arm !== armBase(arm));
+    for (const control of controls) {
+        const base = armBase(control);
+        if (!order.includes(base)) throw new Error(`manifest arm ${control} runs without ${base}`);
+        if (order.indexOf(control) !== order.indexOf(base) + 1) {
+            throw new Error(`manifest arm ${control} runs apart from ${base}`);
+        }
+        if (controls.filter((c) => armBase(c) === base).length > 1) {
+            throw new Error(`manifest order runs two A/A controls of ${base}`);
+        }
+    }
+}
 const modelRef = (model: string) => `amazon-bedrock/${model}`;
+
+export function piModels(ctx: Pick<HostContext, "model" | "sideModel">): string[] {
+    return [...new Set([ctx.model, ...(ctx.sideModel ? [ctx.sideModel] : [])])];
+}
 
 function eidnaraUserConfig(connectionFile: string, model: string): Record<string, unknown> {
     return {
@@ -181,8 +220,8 @@ export class DaemonStack {
 
     constructor(private readonly ctx: DaemonContext) {}
 
-    pid(): number | null {
-        return this.stack?.child?.pid ?? null;
+    pid(stack: Untyped = this.stack): number | null {
+        return stack?.child?.pid ?? null;
     }
 
     /** The harness runtime the daemon executes lives beside the arm, outside every path the host can write. */
@@ -280,9 +319,22 @@ export class DaemonStack {
         child?.stderr?.on("data", sink);
     }
 
-    /** The old generation's last bytes stream while it is crashed; the new one is attached once started. */
-    async restart(): Promise<void> {
+    /** Set between `crash` and the `restart` that starts the replacement. */
+    private crashed = false;
+
+    /**
+     * Kills the daemon by SIGKILL; the store stays as the kill left it until `restart` starts
+     * the replacement. The dead generation's last bytes stream to the log while it dies.
+     */
+    async crash(): Promise<void> {
         await this.stack.crashHost();
+        this.crashed = true;
+    }
+
+    /** Starts the replacement daemon, killing the current one first unless `crash` already did. */
+    async restart(): Promise<void> {
+        if (!this.crashed) await this.stack.crashHost();
+        this.crashed = false;
         // A start that fails still captured the new generation's output; it reaches the log too.
         try {
             await this.stack.startHost();
@@ -411,7 +463,17 @@ export abstract class SimHost {
 
     abstract openSession(cwd: string, session: string, connection: string | null): Promise<void>;
     abstract prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult>;
-    abstract closeSession(): Promise<void>;
+    private closing: Promise<void> | null = null;
+
+    /** Closes the session; concurrent callers share one in-progress close. */
+    closeSession(): Promise<void> {
+        this.closing ??= this.shutdownSession().finally(() => {
+            this.closing = null;
+        });
+        return this.closing;
+    }
+
+    protected abstract shutdownSession(): Promise<void>;
     abstract transcriptEnv(): Record<string, string>;
     abstract hostPid(): number | null;
 
@@ -493,7 +555,7 @@ export class PiSimHost extends SimHost {
             packages: [],
             defaultProvider: "amazon-bedrock",
             defaultModel: this.ctx.model,
-            enabledModels: [modelRef(this.ctx.model)],
+            enabledModels: piModels(this.ctx).map(modelRef),
             compaction: { enabled: this.ctx.arm === "host" || this.ctx.arm === "eidnara-kl" },
             retry: { enabled: true },
             defaultThinkingLevel: "off",
@@ -501,17 +563,17 @@ export class PiSimHost extends SimHost {
             enableInstallTelemetry: false,
         };
         this.writeControlFile(join(agentDir, "settings.json"), JSON.stringify(settings, null, 2));
-        const model = {
-            id: this.ctx.model,
-            name: this.ctx.model,
+        const models = piModels(this.ctx).map((id) => ({
+            id,
+            name: id,
             api: "bedrock-converse-stream",
             reasoning: false,
             input: ["text"],
             contextWindow: this.ctx.contextLimit,
             maxTokens: 8192,
             cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-        };
-        const providers = { "amazon-bedrock": { baseUrl: this.ctx.proxyHttp2, models: [model] } };
+        }));
+        const providers = { "amazon-bedrock": { baseUrl: this.ctx.proxyHttp2, models } };
         this.writeControlFile(
             join(agentDir, "models.json"),
             JSON.stringify({ providers }, null, 2),
@@ -625,6 +687,8 @@ export class PiSimHost extends SimHost {
     }
 
     async prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
+        if (!this.rpc)
+            return { error: "Pi process is gone; the prompt was never sent", undelivered: true };
         const deadline = Date.now() + timeoutMs;
         const watch = { activity: 0, last: undefined as Untyped, promised: 0 };
         const off = this.rpc.onEvent((e: Untyped) => {
@@ -642,28 +706,44 @@ export class PiSimHost extends SimHost {
         });
         const waiting = new AbortController();
         const end = this.agentEnd(timeoutMs, waiting.signal);
+        let ended = false;
+        end.then(
+            () => {
+                ended = true;
+            },
+            () => undefined,
+        );
         let settling = false;
+        let accepted = false;
         try {
             const response = await this.rpc.sendCommand("prompt", { message: text }, { timeoutMs });
             if (response.success === false) {
                 waiting.abort();
-                return { error: JSON.stringify(response).slice(0, 2000) };
+                return { error: JSON.stringify(response).slice(0, 2000), undelivered: true };
             }
+            accepted = true;
             const first =
                 interruptMs === undefined ? await end : await withDeadline(end, interruptMs);
             if (first === null) {
-                // The user's abort ends the turn through Pi's abort path; its agent_end follows.
-                waiting.abort();
-                const drained = this.agentEnd(this.drainMs);
+                // The user's abort ends the turn through Pi's abort path. The turn's own waiter
+                // reads the ending, whether the abort landed, failed, or stalls, within the drain
+                // wait; an abort that reached Pi after the agent had finished leaves a stop
+                // reason other than `aborted`, and the turn reports as it ended.
                 this.rpc
                     .sendCommand("abort", {}, { timeoutMs: this.drainMs })
                     .catch(() => undefined);
-                await drained.catch((reason: unknown) => {
+                const ending = await withDeadline(end, this.drainMs).catch(() => null);
+                if (ending === null) {
+                    waiting.abort();
                     throw new Error(
-                        `Pi turn still running ${this.drainMs} ms after the user's abort (${String(reason)})`,
+                        `Pi turn still running ${this.drainMs} ms after the user's abort`,
                     );
-                });
-                return { interrupted: true };
+                }
+                const messages = (ending.messages ?? []) as Array<Record<string, Untyped>>;
+                const last = messages.filter((m) => m.role === "assistant").at(-1);
+                if (last?.stopReason === "aborted") return { interrupted: true };
+                settling = true;
+                return turnResult((await this.settle(watch, deadline)) ?? ending);
             }
             settling = true;
             return turnResult(await this.settle(watch, deadline));
@@ -677,7 +757,13 @@ export class PiSimHost extends SimHost {
                     // A settle that fails here takes the abort-and-drain path below.
                 }
             }
-            const drained = this.agentEnd(this.drainMs);
+            // The drain waiter is armed before one event-loop tick passes, so no agent_end falls
+            // between listeners. An end the turn's own waiter saw (a same-tick end included)
+            // settles the drain at once unless a settle was tried, since a failed settle leaves
+            // Pi possibly still running.
+            const fresh = this.agentEnd(this.drainMs);
+            await Bun.sleep(0);
+            const drained = ended && !settling ? Promise.resolve() : fresh;
             // The abort runs alongside the drain, so an abort that never answers cannot delay it.
             this.rpc.sendCommand("abort", {}, { timeoutMs: this.drainMs }).catch(() => undefined);
             // A turn that outlives the abort would end during the next turn and be taken for it.
@@ -686,7 +772,9 @@ export class PiSimHost extends SimHost {
                     `Pi turn still running ${this.drainMs} ms after abort (${String(reason)})`,
                 );
             });
-            return { error: String(caught).slice(0, 2000) };
+            // A prompt the command never accepted was never received.
+            const receipt = accepted ? {} : { undelivered: true as const };
+            return { error: String(caught).slice(0, 2000), ...receipt };
         } finally {
             off();
         }
@@ -719,7 +807,7 @@ export class PiSimHost extends SimHost {
     }
 
     // The handle is cleared only after the whole teardown succeeds, so a failed close can be retried.
-    async closeSession(): Promise<void> {
+    protected async shutdownSession(): Promise<void> {
         const rpc = this.rpc;
         if (!rpc) return;
         rpc.child.stdin?.end();
@@ -938,6 +1026,7 @@ export class OpencodeSimHost extends SimHost {
         return listed.data as Array<{ info: Untyped; parts: Untyped[] }>;
     }
 
+    /** Logs the tools of the turn's own messages, listed within `deadlineMs`, and returns those messages. */
     private async logTurnTools(
         seen: Set<string>,
         startScenario: number,
@@ -954,7 +1043,7 @@ export class OpencodeSimHost extends SimHost {
                 this.logTool(part.tool, part.state?.input, exit, ms, callId(part));
             }
         }
-        return listed;
+        return fresh;
     }
 
     /**
@@ -978,7 +1067,13 @@ export class OpencodeSimHost extends SimHost {
             for (const part of m.parts.filter((p) => p.type === "tool")) {
                 const command = toolCommand(part.tool, part.state?.input);
                 const exit = EXIT[part.state?.status] ?? null;
-                this.ctx.onTool?.({ command, exit, scenario_ms: now, call: callId(part) });
+                this.ctx.onTool?.({
+                    command,
+                    exit,
+                    scenario_ms: now,
+                    call: callId(part),
+                    recovered: true,
+                });
             }
         }
     }
@@ -1001,6 +1096,12 @@ export class OpencodeSimHost extends SimHost {
         const remaining = () => Math.max(0, deadline - Date.now());
         /** Kept back from the turn so the post-turn tool listing fits inside the same deadline. */
         const reserve = Math.min(1_000, Math.floor(timeoutMs / 4));
+        if (timeoutMs <= 0) {
+            return {
+                error: `turn deadline ${timeoutMs} ms spent before the prompt`,
+                undelivered: true,
+            };
+        }
         let seen: Set<string>;
         try {
             const listed = await this.messages(timeoutMs);
@@ -1009,13 +1110,16 @@ export class OpencodeSimHost extends SimHost {
             this.unlogged = null;
             seen = new Set(listed.map((m) => String(m.info?.id)));
         } catch (caught) {
-            return { error: `tool capture: ${String(caught)}`.slice(0, 2000) };
+            return { error: `tool capture: ${String(caught)}`.slice(0, 2000), undelivered: true };
         }
         const startScenario = this.ctx.now?.() ?? 0;
         if (remaining() <= reserve) {
-            return { error: `turn deadline of ${timeoutMs} ms passed during the message listing` };
+            return {
+                error: `turn deadline of ${timeoutMs} ms passed during the message listing`,
+                undelivered: true,
+            };
         }
-        const outcome = await this.turn(text, remaining() - reserve, interruptMs);
+        const outcome = await this.turn(text, remaining() - reserve, interruptMs, timeoutMs);
         let listed: Array<{ info: Untyped; parts: Untyped[] }>;
         try {
             if (remaining() === 0) throw new Error("turn deadline passed before the tool listing");
@@ -1023,21 +1127,48 @@ export class OpencodeSimHost extends SimHost {
         } catch (caught) {
             this.unlogged = seen;
             const gap = `tool capture: ${String(caught)}`;
-            return { error: (outcome.error ? `${outcome.error} | ${gap}` : gap).slice(0, 2000) };
+            return {
+                ...outcome,
+                error: (outcome.error ? `${outcome.error} | ${gap}` : gap).slice(0, 2000),
+            };
         }
         if (outcome.error || outcome.interrupted) return outcome;
         const last = listed.filter((m) => m.info?.role === "assistant").at(-1);
         if (last?.info?.error) return { error: JSON.stringify(last.info.error).slice(0, 2000) };
-        const finish = last?.info?.finish;
-        return !last || finish === "stop" || finish === "length"
-            ? outcome
-            : { error: `the turn returned before its last assistant step finished (${finish})` };
+        if (!last) return { error: "the turn returned without an assistant message of its own" };
+        const finish = last.info?.finish;
+        if (finish === "stop" || finish === "length") return outcome;
+        // The step is still running; aborting it keeps it out of the next turn's transcript. An
+        // abort still unanswered after `abortWaitMs` stops the run, since it would cancel the
+        // next turn instead.
+        const aborted = await withDeadline(
+            this.client.session.abort({ path: { id: this.sid } }).then(
+                () => true,
+                () => true,
+            ),
+            this.abortWaitMs,
+        );
+        if (aborted === null) {
+            throw new Error(
+                `OpenCode abort still pending ${this.abortWaitMs} ms after an unfinished step`,
+            );
+        }
+        return { error: `the turn returned before its last assistant step finished (${finish})` };
     }
 
+    /**
+     * Sends the prompt and waits for it under `timeoutMs`. A scheduled interrupt asks OpenCode to
+     * abort: an abort answered true is the interrupt; an abort answered false or with an error
+     * leaves the turn to run on under its deadline and report as it ends; an abort still
+     * unanswered after `abortWaitMs` stops the run, since an abort in flight when the next turn
+     * starts would cancel that turn instead. `wholeMs` is the turn's whole deadline, named in a
+     * deadline error.
+     */
     private async turn(
         text: string,
         timeoutMs: number,
         interruptMs?: number,
+        wholeMs = timeoutMs,
     ): Promise<PromptResult> {
         const model = { providerID: "amazon-bedrock", modelID: this.ctx.model };
         const call = this.client.session.prompt({
@@ -1048,14 +1179,12 @@ export class OpencodeSimHost extends SimHost {
             (result: Untyped) => ({ result }),
             (caught: unknown) => ({ caught }),
         );
+        const turnEnd = Date.now() + timeoutMs;
         const wait = Math.min(timeoutMs, interruptMs ?? timeoutMs);
-        const first = await withDeadline(settled, wait);
-        if (first === null) {
-            const abort = this.client.session.abort({ path: { id: this.sid } });
-            // An abort still in flight when the next turn starts would cancel that turn instead.
-            const answered = await withDeadline(
-                abort.then(
-                    (r: Untyped) => r?.data === true,
+        const abort = async (): Promise<boolean> => {
+            const answered = await withDeadline<boolean>(
+                this.client.session.abort({ path: { id: this.sid } }).then(
+                    (r: Untyped) => r?.data === true && !r?.error,
                     () => false,
                 ),
                 this.abortWaitMs,
@@ -1065,25 +1194,35 @@ export class OpencodeSimHost extends SimHost {
                     `OpenCode abort still pending ${this.abortWaitMs} ms after the deadline`,
                 );
             }
-            if (!answered) throw new Error("OpenCode turn not aborted after its deadline");
+            return answered;
+        };
+        let first = await withDeadline(settled, wait);
+        if (first === null && wait < timeoutMs) {
+            if (await abort()) {
+                const drained = await withDeadline(settled, 30_000);
+                if (drained === null)
+                    throw new Error("OpenCode turn still running 30 s after abort");
+                return { interrupted: true };
+            }
+            first = await withDeadline(settled, Math.max(0, turnEnd - Date.now()));
+        }
+        if (first === null) {
+            if (!(await abort())) throw new Error("OpenCode turn not aborted after its deadline");
             const drained = await withDeadline(settled, 30_000);
             if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
-            if (wait < timeoutMs) return { interrupted: true };
-            return { error: `turn deadline ${timeoutMs} ms` };
+            return { error: `turn deadline ${wholeMs} ms` };
         }
         if ("caught" in first) {
             // The request failed with the server's answer unknown, so the turn is aborted before the next one.
-            const abort = this.client.session.abort({ path: { id: this.sid } }).then(
-                (r: Untyped) => r?.data === true,
-                () => false,
-            );
             const tail = String(this.oc?.stderr?.() ?? "").slice(-600);
             const cause = String(first.caught);
             const error = (tail ? `${cause} | serve stderr: ${tail}` : cause).slice(0, 2000);
-            if (!(await withDeadline(abort, this.abortWaitMs))) {
+            if (!(await abort())) {
                 throw new Error(`OpenCode turn not aborted after a rejected prompt (${error})`);
             }
-            return { error };
+            // A rejected prompt call never got an acknowledgement, so the text's receipt is
+            // unknown and the turn counts as undelivered.
+            return { error, undelivered: true };
         }
         const { result } = first;
         if (result.error) return { error: JSON.stringify(result.error).slice(0, 2000) };
@@ -1094,7 +1233,7 @@ export class OpencodeSimHost extends SimHost {
     // The handles are cleared only after the whole teardown succeeds, so a failed close can be retried.
     // The launcher's exit, confirmed through its launch identity, settles the close; the kill
     // step's own report counts only while that confirmation is missing.
-    async closeSession(): Promise<void> {
+    protected async shutdownSession(): Promise<void> {
         const oc = this.oc;
         if (!oc) return;
         const launched = this.launched ?? { pid: this.hostPid(), start: null };

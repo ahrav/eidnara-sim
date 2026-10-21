@@ -74,10 +74,75 @@ describe("pre-registration validator", () => {
         prereg.grading.p13_reduction_ratio = { min: "0.5", max: "0.2" };
         prereg.grading.p11_false_positive_weight = "0";
         prereg.grading.judge.human_sample_percent = 140;
+        prereg.oracles.cost_ratio_max = "0";
         expect(validatePreregistration(prereg)).toEqual([
             "grading.p13_reduction_ratio: min must be below max",
             "grading.p11_false_positive_weight: must be positive",
             "grading.judge.human_sample_percent: at most 100",
+            "oracles.cost_ratio_max: must be positive and finite",
+        ]);
+        prereg.oracles.cost_ratio_max = `1${"0".repeat(400)}`;
+        expect(validatePreregistration(prereg)).toContain(
+            "oracles.cost_ratio_max: must be positive and finite",
+        );
+        prereg.oracles.hang_quiet_ms = prereg.liveness_bounds.turn_deadline_ms;
+        expect(validatePreregistration(prereg)).toContain(
+            "oracles.hang_quiet_ms: must be below liveness_bounds.turn_deadline_ms",
+        );
+    });
+
+    test("refuses judge settings outside the consumed eval-core bounds", () => {
+        const prereg = load("S") as any;
+        prereg.grading.judge.calibration_min_pairs = 1;
+        prereg.grading.judge.human_sample_percent = 1;
+        prereg.grading.judge.arm_identification_ceiling_percent = 100;
+        expect(validatePreregistration(prereg)).toEqual([
+            "grading.judge.calibration_min_pairs: at least 20",
+            "grading.judge.human_sample_percent: at least 10",
+            "grading.judge.arm_identification_ceiling_percent: at most 60",
+        ]);
+    });
+
+    test("refuses judge thresholds the campaign cannot satisfy", () => {
+        const prereg = load("S") as any;
+        prereg.grading.judge.calibration_min_pairs =
+            prereg.stopping_rule.paired_items_per_probe_type + 1;
+        prereg.grading.judge.arm_identification_ceiling_percent = 49;
+        expect(validatePreregistration(prereg)).toEqual([
+            "grading.judge.calibration_min_pairs: at most stopping_rule.paired_items_per_probe_type (24)",
+            "grading.judge.arm_identification_ceiling_percent: at least 50",
+        ]);
+    });
+
+    test("refuses a cross-judge that is the primary judge", () => {
+        const prereg = load("S") as any;
+        prereg.grading.judge.cross_judge = prereg.grading.judge.model;
+        expect(validatePreregistration(prereg)).toEqual([
+            "grading.judge.cross_judge: must differ from grading.judge.model",
+        ]);
+    });
+
+    test("refuses a P11 weight that Number cannot represent", () => {
+        const prereg = load("S") as any;
+        prereg.grading.p11_false_positive_weight = `1${"0".repeat(400)}`;
+        expect(validatePreregistration(prereg)).toEqual([
+            "grading.p11_false_positive_weight: must be a finite number",
+        ]);
+    });
+
+    test("refuses an interrupt delay that reaches the turn deadline", () => {
+        const prereg = load("S") as any;
+        prereg.user_sim.interrupt_after_ms.max = prereg.liveness_bounds.turn_deadline_ms;
+        expect(validatePreregistration(prereg)).toEqual([
+            "user_sim.interrupt_after_ms: max must be below liveness_bounds.turn_deadline_ms",
+        ]);
+    });
+
+    test("refuses a normalisation rule the user-sim does not know", () => {
+        const prereg = load("S") as any;
+        prereg.divergence_policy.normalisation.push("colours");
+        expect(validatePreregistration(prereg)).toEqual([
+            "divergence_policy.normalisation: expected iso-8601-timestamps, durations, pids, temp-paths, run-ids",
         ]);
     });
 

@@ -1,18 +1,24 @@
 import { spawn, spawnSync } from "node:child_process";
 import {
     chmodSync,
+    closeSync,
     constants,
     copyFileSync,
     existsSync,
+    fstatSync,
     lstatSync,
     mkdirSync,
+    openSync,
     readdirSync,
     readFileSync,
+    readlinkSync,
+    readSync,
     realpathSync,
     renameSync,
     rmSync,
     statSync,
     writeFileSync,
+    writeSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { GitBound, git } from "../git";
@@ -38,14 +44,27 @@ import {
     type ToolRun,
 } from "./arms";
 import { entriesOf, SnapshotRecorder } from "./snapshot";
-import { checkStore, type Deletion, deleteFactNotes, memoryNotes } from "./storecheck";
+import {
+    checkStore,
+    type Deletion,
+    type DeletionPlan,
+    deleteFactNotes,
+    kernelObjects,
+    memoryNotes,
+} from "./storecheck";
 
 interface ArmState {
     model: number;
     /** True once a host_upgrade moved later sessions to the configured next host version. */
     upgraded?: boolean;
-    /** The second host client a two_hosts_one_daemon fault attached, while it runs. */
-    second?: { pid: number; start: string | null } | null;
+    /** The second host client a two_hosts_one_daemon fault attached, with its session, while it runs. */
+    second?: { pid: number; start: string | null; session?: string } | null;
+    /** A session owed a second client again, kept until that client is attached. */
+    second_owed?: string | null;
+    /** The transcript store's newest mtime when an upgraded host's first session opened. */
+    transcript_mark?: number | null;
+    /** The session whose second client exited before its end; the arm stays failed. */
+    second_exited?: string | null;
     daemon: { pid: number; start: string | null } | null;
     host: { pid: number; start: string | null } | null;
     /** The store_full ballast while the fault is active: its length, the blocks it holds, and its fault. */
@@ -58,6 +77,8 @@ interface ArmState {
     failed: string | null;
     /** The latest model switch: its fault and the index it left, so an unobserved one rolls back. */
     switched?: { fault: string; from: number } | null;
+    /** Daemon restarts whose store check the journal may still lack, each with its plugin-log mark. */
+    store_faults: Record<string, number>;
 }
 
 export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm"> {
@@ -79,8 +100,13 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm
     hostFactory?: (ctx: HostContext) => SimHost;
     daemonFactory?: (ctx: DaemonContext) => DaemonStack;
     /** The host's pinned and `config.upgrade` versions, as the run's preflight recorded them. */
-    hostVersions?: { from: string; to: string | null };
+    hostVersions?: { from: string; to: string | null; upgradeTranscriptPaths?: string[] };
     onDaemonExit: (detail: Record<string, unknown>) => void;
+    /**
+     * Called when a daemon process is up (at reset, resume, and after a fault's restart) and
+     * before a fault takes one down, so each daemon lifetime has a first and a last sample.
+     */
+    sampleDaemon?: () => void;
 }
 
 const GIT_ENV = {
@@ -104,6 +130,50 @@ function writeWhole(path: string, text: string): void {
     rmSync(staged, { force: true });
     writeFileSync(staged, text, { flag: "wx" });
     renameSync(staged, path);
+}
+
+/**
+ * Copies one final store file from `within/name` to `to`. The store tree is the evaluated
+ * host's to write, so the source opens without following a link, and the opened file must be a
+ * single-link regular file whose kernel path is `within/name`; the destination is created
+ * exclusively without following a link. An absent source copies nothing.
+ */
+function archiveStoreFile(within: string, name: string, to: string): void {
+    const from = join(within, name);
+    const { O_EXCL, O_CREAT, O_NOFOLLOW, O_NONBLOCK, O_RDONLY, O_WRONLY } = constants;
+    let source: number;
+    try {
+        source = openSync(from, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+    } catch (caught) {
+        const code = (caught as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTDIR") return;
+        if (code === "ELOOP") throw new HarnessFailure(`final store file ${from} is a symlink`);
+        throw caught;
+    }
+    try {
+        const st = fstatSync(source);
+        if (!st.isFile() || st.nlink !== 1) {
+            throw new HarnessFailure(`final store file ${from} is not a single-link regular file`);
+        }
+        const opened = readlinkSync(`/proc/self/fd/${source}`);
+        if (opened !== from) {
+            throw new HarnessFailure(`final store file ${from} resolves to ${opened}`);
+        }
+        const target = openSync(to, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o644);
+        try {
+            const buf = Buffer.alloc(1 << 20);
+            for (let at = 0; ; ) {
+                const n = readSync(source, buf, 0, buf.length, at);
+                if (n === 0) break;
+                for (let done = 0; done < n; ) done += writeSync(target, buf, done, n - done);
+                at += n;
+            }
+        } finally {
+            closeSync(target);
+        }
+    } finally {
+        closeSync(source);
+    }
 }
 
 /** `path` resolves to `parent/name` through real directories only; a planted symlink stops the run. */
@@ -139,6 +209,10 @@ const BETWEEN_SESSIONS = new Set([
     "host_upgrade",
     "two_hosts_one_daemon",
 ]);
+/** A transform pass the daemon answered, as the plugin logs it. */
+const SERVED_PASS = /rust pass: .*served_from=transform/;
+/** How much of the plugin log one pass check reads at a time. */
+const LOG_CHUNK_BYTES = 64 * 1024;
 
 const SUPPORTED = new Set([
     "daemon_sigkill_mid_fold",
@@ -149,6 +223,11 @@ const SUPPORTED = new Set([
     "host_upgrade",
     "two_hosts_one_daemon",
 ]);
+
+export function driverSupports(f: Pick<FaultEpisode, "seam" | "type">): boolean {
+    if (f.seam.layer !== "scheduler") return true;
+    return SUPPORTED.has(f.type);
+}
 
 /** Entries a walk of the workspace `.git` visits at most; a wider tree stops the run. */
 export const GIT_DIR_ENTRY_CAP = 200_000;
@@ -161,6 +240,44 @@ const IDENTITY = {
 };
 
 const SECOND_CLIENT_PROMPT = "List the top-level files in this repository and stop.";
+
+/**
+ * Creates `path` as an empty regular file when absent and leaves an existing regular file as it
+ * is. The path lies in the evaluated agent's writable tree, so a symlink there is refused rather
+ * than followed, and nothing is created outside the run directory on the agent's behalf.
+ */
+export function createNoFollow(path: string): void {
+    // Nonblocking, so a FIFO planted at the path returns at once and fails the check below.
+    const flags =
+        constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_APPEND |
+        constants.O_NOFOLLOW |
+        constants.O_NONBLOCK;
+    let fd: number;
+    try {
+        fd = openSync(path, flags, 0o644);
+    } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === "ELOOP") {
+            throw new Error(`${path} is a symlink; the plugin log must be a regular file`);
+        }
+        if (code === "ENXIO") {
+            throw new Error(`${path} is a FIFO; the plugin log must be a regular file`);
+        }
+        throw err;
+    }
+    try {
+        const st = fstatSync(fd);
+        if (!st.isFile() || st.nlink !== 1) {
+            throw new Error(
+                `${path} is not a single-link regular file; the plugin log must be one`,
+            );
+        }
+    } finally {
+        closeSync(fd);
+    }
+}
 
 export class HostDriver implements ArmDriver {
     host: SimHost | null = null;
@@ -177,12 +294,36 @@ export class HostDriver implements ArmDriver {
     /** True once this process has reset or resumed the arm, so its in-memory state is the arm's. */
     private live = false;
     private sessionProject: string | null = null;
+    /** Host-reported tool runs carry the active user turn id, or null between turns and for runs recovered from an earlier turn. */
+    private turn: string | null = null;
     private transcriptsChecked = false;
     private readonly snapshots: SnapshotRecorder;
     private upgraded = false;
     private second: SimHost | null = null;
-    /** Daemon restarts that the end of the current or next turn owes a store check. */
-    private storeFaults: string[] = [];
+    /** The session the second client is attached to, kept in `state.json` for a resume. */
+    private secondSession: string | null = null;
+    /** A session a stopped run had a second client on, owed one again when it reopens. */
+    private secondOwed: string | null = null;
+    /** The session whose second client exited before the primary session's end. */
+    private secondExited: string | null = null;
+    /** The transcript store's newest mtime when an upgraded host's first session opened. */
+    private storeMarkAtOpen: number | null = null;
+    /** A host open or daemon start or restart in flight, which `stop` awaits before closing either. */
+    private inflight: Promise<void> | null = null;
+    private stopping = false;
+    /** The deletion child a counterfactual fault runs, which `stop` ends before the store goes. */
+    private deleting: ReturnType<typeof Bun.spawn> | null = null;
+    /**
+     * Daemon restarts owed a store check, each with the plugin log's length between the kill and
+     * the replacement's start. The check runs at the end of the first turn whose log, past that
+     * mark, shows a pass the daemon served (`served_from=transform`): the wire contract's first
+     * pass after the crash.
+     */
+    private storeFaults = new Map<string, number>();
+    /** Checks taken and returned, kept in the recorded state until the next event confirms the journal has them. */
+    private settledFaults = new Map<string, number>();
+    /** A daemon restart in progress; the turn it interrupts ends after it and fails with it. */
+    private restarting: Promise<unknown> = Promise.resolve();
 
     constructor(private readonly o: DriverOptions) {
         this.snapshots = new SnapshotRecorder(
@@ -261,10 +402,13 @@ export class HostDriver implements ArmDriver {
     private newHost(primary = true): SimHost {
         const make = this.o.hostFactory ?? makeHost;
         const { keep } = this;
-        const up = this.upgraded ? (this.o.config.upgrade ?? {}) : {};
-        const config = { ...this.o.config, ...up };
+        // An upgrade moves only this host's binary to the configured next version.
+        const field = this.o.host === "pi" ? "pi_install" : "opencode_binary";
+        const next = this.upgraded ? this.o.config.upgrade?.[field] : undefined;
+        const config = next ? { ...this.o.config, [field]: next } : this.o.config;
         const onSpawn = () => this.recordState();
-        const onTool = (run: ToolRun) => this.snapshots.addTools([run]);
+        const onTool = (run: ToolRun) =>
+            this.snapshots.addTools([run], run.recovered ? null : this.turn);
         return make({
             ...this.o,
             config,
@@ -345,8 +489,7 @@ export class HostDriver implements ArmDriver {
 
     /** Provider faults belong to the proxy and the sleep to the clock; the rest need a mechanism here. */
     supports(f: FaultEpisode): boolean {
-        if (f.seam.layer !== "scheduler") return true;
-        return SUPPORTED.has(f.type);
+        return driverSupports(f);
     }
 
     /** The daemon's directories are host-writable, so every daemon start and restart rechecks them. */
@@ -390,11 +533,18 @@ export class HostDriver implements ArmDriver {
         if (host && host.start === null) {
             throw new HarnessFailure(`host launch ${host.pid} has no start identity`);
         }
-        const second = this.second?.hostIdentity() ?? null;
+        const identity = this.second?.hostIdentity() ?? null;
+        const second =
+            identity && this.secondSession
+                ? { ...identity, session: this.secondSession }
+                : identity;
         const state: ArmState = {
             model: this.model,
             upgraded: this.upgraded,
             second,
+            second_owed: this.secondOwed ?? this.secondSession,
+            transcript_mark: this.storeMarkAtOpen,
+            second_exited: this.secondExited,
             daemon,
             switched: this.switched,
             host,
@@ -402,6 +552,7 @@ export class HostDriver implements ArmDriver {
             refilling: this.refilling,
             git: this.gitRun,
             failed: this.failed,
+            store_faults: Object.fromEntries([...this.settledFaults, ...this.storeFaults]),
         };
         mkdirSync(this.armDir, { recursive: true });
         writeWhole(this.stateFile, JSON.stringify(state));
@@ -432,6 +583,7 @@ export class HostDriver implements ArmDriver {
     }
 
     private async startArm(fresh: boolean, state: ArmState | null = null): Promise<void> {
+        this.stopping = false;
         mkdirSync(this.storeRoot, { recursive: true, mode: 0o700 });
         if (this.o.loopStore && eidnaraOn(armBase(this.o.arm))) this.mountStore(fresh);
         const filled = state?.ballast != null;
@@ -455,9 +607,11 @@ export class HostDriver implements ArmDriver {
                     logFile: join(this.armDir, "daemon.log"),
                     model: this.o.sideModel ?? (this.o.models[0] as string),
                 });
-                await this.daemon.start();
+                await this.track(this.daemon.start());
                 this.noteDaemon();
                 this.recordState();
+                this.o.sampleDaemon?.();
+                createNoFollow(join(this.o.armRoot, "eidnara.log"));
             }
         } finally {
             if (filled) {
@@ -470,8 +624,24 @@ export class HostDriver implements ArmDriver {
             this.refilling = false;
             this.recordState();
         }
+        // A stop that landed during the start owns the daemon it captured; the arm starts no
+        // host behind it.
+        if (this.stopping) return;
         this.host = this.newHost();
         this.recordState();
+    }
+
+    /** Runs a host open or daemon start or restart so that `stop` waits for it to settle. */
+    private async track<T>(pending: Promise<T>): Promise<T> {
+        this.inflight = pending.then(
+            () => undefined,
+            () => undefined,
+        );
+        try {
+            return await pending;
+        } finally {
+            this.inflight = null;
+        }
     }
 
     /** The ballast's length and allocated blocks both have to match; a sparse replacement or a punched hole fails. */
@@ -499,6 +669,10 @@ export class HostDriver implements ArmDriver {
         this.upgraded = false;
         this.snapshots.clear();
         this.transcriptsChecked = false;
+        this.secondSession = null;
+        this.secondOwed = null;
+        this.secondExited = null;
+        this.storeMarkAtOpen = null;
         this.ballastShape = null;
         this.refilling = false;
         this.gitRun = null;
@@ -557,20 +731,38 @@ export class HostDriver implements ArmDriver {
         this.upgraded = state.upgraded ?? false;
         this.switched = undone ? null : (state.switched ?? null);
         this.live = true;
+        this.storeFaults = new Map(Object.entries(state.store_faults ?? {}));
         const checked = join(this.armDir, "transcripts.json");
         if (existsSync(checked)) {
-            const { missing } = this.readRecord<{ missing: string[] }>(checked);
-            if (missing.length > 0) {
-                throw new HarnessFailure(`transcript store missing: ${missing.join(", ")}`);
+            const record = this.readRecord<{
+                missing: string[];
+                fresh?: boolean | null;
+                templates?: string[];
+            }>(checked);
+            if (record.missing.length > 0) {
+                throw new HarnessFailure(`transcript store missing: ${record.missing.join(", ")}`);
             }
-            this.transcriptsChecked = true;
+            // An upgraded arm accepts only the record of the upgraded host's own fresh check, of
+            // the store templates that host writes.
+            this.transcriptsChecked =
+                (this.upgraded ? record.fresh === true : record.fresh !== false) &&
+                JSON.stringify(record.templates ?? this.o.transcriptPaths) ===
+                    JSON.stringify(this.transcriptPaths());
         }
+        this.secondOwed = state.second?.session ?? state.second_owed ?? null;
+        this.storeMarkAtOpen = state.transcript_mark ?? null;
+        this.secondExited = state.second_exited ?? null;
         await this.reapStale();
+        if (this.secondExited !== null) {
+            throw new HarnessFailure(
+                `the second client exited before the primary session's session_end in ${this.secondExited}`,
+            );
+        }
         // A fault the journal never observed ended with the killed harness; its ballast goes with it.
         const lost =
             state.ballast?.fault !== undefined && interrupted.includes(state.ballast.fault);
         await this.startArm(false, lost ? { ...state, ballast: null, refilling: false } : state);
-        if (open) await this.event(open);
+        if (open && !this.stopping) await this.event(open);
     }
 
     /**
@@ -684,10 +876,20 @@ export class HostDriver implements ArmDriver {
     }
 
     private async openSession(e: ScenarioEvent, host: SimHost): Promise<void> {
+        // A second client the stopped run had on this session is attached again before the
+        // primary reopens, so the session keeps both clients on the daemon; its fixed turn ran.
+        if (this.secondOwed === e.session && this.daemon && !this.second)
+            await this.attachSecond(e);
+        this.secondOwed = null;
         this.sessionProject = this.project(e);
         const connection = this.daemon?.connectionFile ?? null;
         const dir = this.workspaceDir(this.sessionProject);
-        await host.openSession(dir, e.session, connection);
+        // The mark from a session a stop interrupted stays, so the reopened session's check
+        // measures the whole session.
+        if (this.upgraded && !this.transcriptsChecked && this.storeMarkAtOpen === null) {
+            this.storeMarkAtOpen = this.storeMark(host);
+        }
+        await this.track(host.openSession(dir, e.session, connection));
         this.recordState();
         this.snapshots.sessionStart(e.session, this.sessionProject, dir);
         this.recordState();
@@ -695,6 +897,10 @@ export class HostDriver implements ArmDriver {
 
     async event(e: ScenarioEvent): Promise<TurnOutcome> {
         const host = this.requireHost();
+        // The scheduler journals the previous event's store checks before it sends the next event,
+        // so the recorded obligations drop them here, not when the checks are returned.
+        this.settledFaults.clear();
+        this.recordState();
         if (e.kind === "session_start") {
             try {
                 await this.openSession(e, host);
@@ -706,8 +912,9 @@ export class HostDriver implements ArmDriver {
             return {};
         }
         if (e.kind === "session_end") {
+            this.requireSecondAttached();
             const project = this.project(e);
-            this.snapshots.logTurnTools(host.drainTools(), null);
+            host.drainTools();
             this.snapshots.sessionEnd(e.session, project, this.workspace(project));
             await host.closeSession();
             await this.closeSecond();
@@ -716,7 +923,10 @@ export class HostDriver implements ArmDriver {
             this.recordState();
             this.checkDaemon(e);
             if (!this.transcriptsChecked) this.checkTranscripts(host);
-            return {};
+            // The session's background passes have settled by now, so a check they earned runs
+            // here, after the state write, so the recorded obligation outlives the journal append.
+            const stores = this.owedStores();
+            return stores ? { stores } : {};
         }
         if (e.kind === "apply_diff") {
             if (this.sessionProject !== null) {
@@ -727,6 +937,7 @@ export class HostDriver implements ArmDriver {
             this.applyDiff(e);
             return {};
         }
+        const entered = Date.now();
         const project = this.project(e);
         const dir = this.workspaceDir(project);
         let before: string | null = "";
@@ -741,30 +952,51 @@ export class HostDriver implements ArmDriver {
             }
         }
         const interruptMs = typeof e.interrupt_ms === "number" ? e.interrupt_ms : undefined;
+        // A pass served between turns earned its check before this turn's own passes.
+        const owedBefore = this.owedStores();
         // One turn reports a gone daemon once, however many checks find it gone.
         let reported = false;
         const check = () => {
             if (reported) return;
             reported = this.checkDaemon(e);
         };
+        // A turn that spent part of its deadline before the prompt passes the rest along; one
+        // that spent all of it fails here, so the agent never runs past the deadline.
+        const deadline =
+            typeof e.deadline_ms === "number"
+                ? Math.min(this.o.turnDeadlineMs, e.deadline_ms - (Date.now() - entered))
+                : this.o.turnDeadlineMs;
+        if (deadline <= 0) {
+            const spent: TurnOutcome = {
+                failed: `turn deadline ${this.o.turnDeadlineMs} ms spent before the prompt`,
+                undelivered: true,
+            };
+            if (owedBefore) spent.stores = owedBefore;
+            return spent;
+        }
         let result: PromptResult;
+        this.turn = e.id;
+        const started = performance.now();
         try {
-            result = await host.prompt(String(e.text), this.o.turnDeadlineMs, interruptMs);
+            result = await host.prompt(String(e.text), deadline, interruptMs);
         } catch (caught) {
+            this.turn = null;
             // A daemon gone during the turn is the cause of a lost connection; it is reported first.
             check();
             throw caught;
         }
+        // Wall time of the host's prompt call alone, the turn latency the report reads.
+        const prompt_ms = Math.round(performance.now() - started);
         check();
         const tools = host.drainTools();
-        this.snapshots.logTurnTools(tools, e.id);
-        const outcome: TurnOutcome = result.interrupted ? { user: { interrupted: true } } : {};
+        this.turn = null;
+        const outcome: TurnOutcome = {
+            prompt_ms,
+            ...(result.interrupted ? { user: { interrupted: true } } : {}),
+        };
+        if (result.undelivered) outcome.undelivered = true;
+        if (owedBefore) outcome.stores = owedBefore;
         if (result.error) outcome.failed = result.error;
-        if (this.storeFaults.length > 0 && this.daemon) {
-            const store = checkStore(this.storeDb);
-            outcome.stores = this.storeFaults.map((fault) => ({ fault, store }));
-            this.storeFaults = [];
-        }
         if (e.probe && before === null) {
             const reason = `snapshot before the turn: ${beforeFailed}`;
             outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
@@ -798,6 +1030,10 @@ export class HostDriver implements ArmDriver {
             }
             check();
         }
+        // After the turn and, for a probe, its settled background jobs: the check this turn earned.
+        await this.restarting;
+        const owedAfter = this.owedStores();
+        if (owedAfter) outcome.stores = [...(outcome.stores ?? []), ...owedAfter];
         return outcome;
     }
 
@@ -960,9 +1196,29 @@ export class HostDriver implements ArmDriver {
         }
     }
 
+    /** The transcript store templates of the host version now running. */
+    private transcriptPaths(): string[] {
+        const upgraded = this.o.hostVersions?.upgradeTranscriptPaths;
+        return this.upgraded && upgraded ? upgraded : this.o.transcriptPaths;
+    }
+
+    /** The newest modification time under the store paths, so a new transcript shows as a change. */
+    private storeMark(host: SimHost): number {
+        const env = host.transcriptEnv();
+        // Symlinks count as nothing: the host writes into this tree, and a link could lead out of it.
+        const newest = (path: string): number => {
+            const st = lstatSync(path, { throwIfNoEntry: false });
+            if (!st || st.isSymbolicLink()) return 0;
+            if (!st.isDirectory()) return st.mtimeMs;
+            return Math.max(st.mtimeMs, ...readdirSync(path).map((f) => newest(join(path, f))));
+        };
+        return Math.max(0, ...this.transcriptPaths().map((t) => newest(expandTemplate(t, env))));
+    }
+
     private checkTranscripts(host: SimHost): void {
         const env = host.transcriptEnv();
-        const paths = this.o.transcriptPaths.map((t) => expandTemplate(t, env));
+        const templates = this.transcriptPaths();
+        const paths = templates.map((t) => expandTemplate(t, env));
         // A link anywhere below the arm root, or a node of the wrong kind where the store should
         // be, is the host's placeholder, so the store counts as missing.
         const root = realpathSync(this.o.armRoot);
@@ -979,10 +1235,19 @@ export class HostDriver implements ArmDriver {
             if (stat === undefined) return false;
             return transcriptKind(template) === "file" ? stat.isFile() : stat.isDirectory();
         };
-        const missing = paths.filter((p, i) => !present(this.o.transcriptPaths[i] as string, p));
-        const record = { checked_after: "first session_end", paths, missing };
+        const missing = paths.filter((p, i) => !present(templates[i] as string, p));
+        const after = this.upgraded ? "first session_end after host_upgrade" : "first session_end";
+        // An upgraded host shares its store path with the version before it, so the check also
+        // requires the session that just ended to have changed the store.
+        const fresh =
+            this.storeMarkAtOpen === null ? null : this.storeMark(host) > this.storeMarkAtOpen;
+        const record = { checked_after: after, templates, paths, missing, fresh };
         writeWhole(join(this.armDir, "transcripts.json"), JSON.stringify(record));
         if (missing.length > 0) throw new Error(`transcript store missing: ${missing.join(", ")}`);
+        if (fresh === false) {
+            throw new Error(`no new transcript in ${paths.join(", ")} after the upgraded session`);
+        }
+        this.storeMarkAtOpen = null;
         this.transcriptsChecked = true;
     }
 
@@ -998,20 +1263,11 @@ export class HostDriver implements ArmDriver {
             if (!this.daemonAlive()) {
                 throw new HarnessFailure(`${f.type} ${f.id}: daemon already gone before the fault`);
             }
-            const before = this.daemonPid();
             this.checkDaemonDirs();
-            await this.daemon.restart();
-            this.noteDaemon();
-            this.storeFaults.push(f.id);
-            this.recordState();
-            const after = this.daemonPid();
-            return {
-                signal: "SIGKILL",
-                pid_before: before,
-                pid_after: after,
-                restarted_by: "harness",
-                store: checkStore(this.storeDb),
-            };
+            const restart = this.restartDaemon(this.daemon, f.id);
+            restart.catch(() => undefined);
+            this.restarting = restart;
+            return restart;
         }
         if (f.type === "store_full") {
             const evidence = this.fillStore();
@@ -1040,6 +1296,7 @@ export class HostDriver implements ArmDriver {
         const from_version = this.o.hostVersions?.from ?? null;
         const to_version = this.o.hostVersions?.to ?? null;
         this.upgraded = true;
+        this.transcriptsChecked = false;
         this.host = this.newHost();
         this.recordState();
         return {
@@ -1059,8 +1316,45 @@ export class HostDriver implements ArmDriver {
             second.drainTools();
             await second.closeSession();
             this.second = null;
+            this.secondSession = null;
         } finally {
             if (record) this.recordState();
+        }
+    }
+
+    /** Opens the second client on the session's workspace and records it with its session. */
+    private async attachSecond(at: ScenarioEvent): Promise<SimHost> {
+        const second = this.newHost(false);
+        this.second = second;
+        this.secondSession = at.session;
+        await this.track(
+            second.openSession(
+                this.workspaceDir(this.project(at)),
+                `${at.session}-b`,
+                this.daemon?.connectionFile ?? null,
+            ),
+        );
+        // A stop in progress owns the second client's close; a client the arm no longer holds
+        // is closed here.
+        if (this.second !== second) await second.closeSession();
+        if (this.stopping || this.second !== second) {
+            throw new HarnessFailure("the arm stopped while the second client opened");
+        }
+        this.recordState();
+        return second;
+    }
+
+    /** A second client's host process must still run at the primary session's `session_end`. */
+    private requireSecondAttached(): void {
+        if (!this.second) return;
+        const pid = this.second.hostPid();
+        if (pid === null || !running(pid)) {
+            // The violation is recorded before the throw, so a resumed arm fails the same way.
+            this.secondExited = this.secondSession;
+            this.recordState();
+            throw new HarnessFailure(
+                `the second client exited before the primary session's session_end (pid ${pid})`,
+            );
         }
     }
 
@@ -1069,20 +1363,9 @@ export class HostDriver implements ArmDriver {
         if (at?.kind !== "session_start") {
             throw new HarnessFailure("two_hosts_one_daemon fires at a session_start");
         }
-        const second = this.newHost(false);
         const session = `${at.session}-b`;
-        this.second = second;
         try {
-            await second.openSession(
-                this.workspaceDir(this.project(at)),
-                session,
-                this.daemon.connectionFile,
-            );
-            if (this.second !== second) {
-                await second.closeSession();
-                throw new HarnessFailure("the arm stopped while the second client opened");
-            }
-            this.recordState();
+            const second = await this.attachSecond(at);
             const result = await second.prompt(SECOND_CLIENT_PROMPT, this.o.turnDeadlineMs);
             return {
                 second_session: session,
@@ -1092,7 +1375,8 @@ export class HostDriver implements ArmDriver {
                 attached_until: "the primary session's session_end, or the run's stop",
             };
         } catch (caught) {
-            await this.closeSecond().catch(() => undefined);
+            // A stop in progress owns the second client's close.
+            if (!this.stopping) await this.closeSecond().catch(() => undefined);
             throw caught;
         }
     }
@@ -1100,11 +1384,25 @@ export class HostDriver implements ArmDriver {
     async deleteFact(
         statement: string,
         others: readonly string[] = [],
+        plan: DeletionPlan = {},
     ): Promise<Deletion | { skipped: string }> {
         if (!this.daemon) return { skipped: "arm runs no daemon" };
         if (!existsSync(this.storeDb)) return { skipped: "no store yet" };
         try {
-            return await deleteFactNotes(this.storeDb, statement, others);
+            const onSpawn = (child: ReturnType<typeof Bun.spawn>) => {
+                this.deleting = child;
+                void child.exited.finally(() => {
+                    if (this.deleting === child) this.deleting = null;
+                });
+            };
+            return await deleteFactNotes(
+                this.storeDb,
+                statement,
+                others,
+                onSpawn,
+                this.dataDir,
+                plan,
+            );
         } catch (caught) {
             return { skipped: `deletion failed: ${String(caught).slice(0, 300)}` };
         }
@@ -1112,6 +1410,112 @@ export class HostDriver implements ArmDriver {
 
     get storeDb(): string {
         return join(this.dataDir, "eidnara", "context", "store.db");
+    }
+
+    private async restartDaemon(
+        daemon: DaemonStack,
+        fault: string,
+    ): Promise<Record<string, unknown>> {
+        const before = this.daemonPid();
+        // An earlier restart's check that a served pass has earned is taken from this daemon.
+        const stores = this.owedStores();
+        this.o.sampleDaemon?.();
+        await daemon.crash();
+        const store = checkStore(this.storeDb);
+        // Marked before the start, so a pass the replacement serves while its start settles counts.
+        const mark = this.pluginLogLength();
+        await daemon.restart();
+        this.noteDaemon();
+        this.storeFaults.set(fault, mark);
+        this.recordState();
+        this.o.sampleDaemon?.();
+        return {
+            signal: "SIGKILL",
+            pid_before: before,
+            pid_after: this.daemonPid(),
+            restarted_by: "harness",
+            store,
+            ...(stores ? { stores } : {}),
+        };
+    }
+
+    /** The store checks whose restart the plugin log now shows a served pass after, if any. */
+    private owedStores(): TurnOutcome["stores"] {
+        const passed = [...this.storeFaults].filter(([, mark]) => this.passedSince(mark));
+        if (passed.length === 0 || !this.daemon) return undefined;
+        const store = checkStore(this.storeDb);
+        for (const [fault, mark] of passed) {
+            this.storeFaults.delete(fault);
+            this.settledFaults.set(fault, mark);
+        }
+        return passed.map(([fault]) => ({ fault, store }));
+    }
+
+    private get pluginLog(): string {
+        return join(this.o.armRoot, "eidnara.log");
+    }
+
+    private pluginLogLength(): number {
+        return existsSync(this.pluginLog) ? statSync(this.pluginLog).size : 0;
+    }
+
+    /**
+     * Whether the plugin log, past `mark`, records a pass the daemon served. The suffix is read
+     * in bounded chunks; the unfinished last line of one chunk heads the next, so a record split
+     * across chunks is still read whole, and a line longer than a chunk is dropped unmatched.
+     */
+    private passedSince(mark: number): boolean {
+        // The agent can write the arm root, so the log opens without following a link and is
+        // read only up to the size of the single-link regular file the descriptor holds.
+        let fd: number;
+        try {
+            fd = openSync(
+                this.pluginLog,
+                constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+            );
+        } catch (caught) {
+            const code = (caught as NodeJS.ErrnoException).code;
+            if (code === "ENOENT") return false;
+            if (code === "ELOOP") {
+                throw new HarnessFailure(`plugin log ${this.pluginLog} is a symlink`);
+            }
+            throw caught;
+        }
+        try {
+            const st = fstatSync(fd);
+            if (!st.isFile() || st.nlink !== 1) {
+                throw new HarnessFailure(
+                    `plugin log ${this.pluginLog} is not a single-link regular file`,
+                );
+            }
+            const chunk = Buffer.alloc(LOG_CHUNK_BYTES);
+            let carry = "";
+            let position = mark;
+            for (;;) {
+                const n =
+                    position >= st.size
+                        ? 0
+                        : readSync(
+                              fd,
+                              chunk,
+                              0,
+                              Math.min(chunk.length, st.size - position),
+                              position,
+                          );
+                if (n === 0) return SERVED_PASS.test(carry);
+                position += n;
+                const text = carry + chunk.subarray(0, n).toString("utf8");
+                const cut = text.lastIndexOf("\n");
+                if (cut < 0) {
+                    carry = text.length > LOG_CHUNK_BYTES ? "" : text;
+                    continue;
+                }
+                if (SERVED_PASS.test(text.slice(0, cut))) return true;
+                carry = text.slice(cut + 1);
+            }
+        } finally {
+            closeSync(fd);
+        }
     }
 
     private mountStore(fresh: boolean): void {
@@ -1187,10 +1591,15 @@ export class HostDriver implements ArmDriver {
         this.removeBallast();
     }
 
-    /** A failed finish is recorded, so a resume of an otherwise exhausted arm cannot heal it. */
-    async finish(): Promise<void> {
+    /**
+     * Settles the store checks the arm still owes, then stops everything it runs. A failed finish
+     * is recorded, so a resume of an otherwise exhausted arm cannot heal it.
+     */
+    async finish(): Promise<TurnOutcome> {
         try {
+            const stores = this.owedStores();
             await this.stop(true);
+            return stores ? { stores } : {};
         } catch (caught) {
             this.failed = String(caught);
             try {
@@ -1217,6 +1626,15 @@ export class HostDriver implements ArmDriver {
      * the failure's state names it and a later stop can try again.
      */
     async stop(checkFinalStore = false): Promise<void> {
+        // A host open or daemon start in flight settles first, so the stop closes what it opened.
+        this.stopping = true;
+        await this.inflight;
+        await this.restarting.catch(() => undefined);
+        const deleting = this.deleting;
+        if (deleting) {
+            deleting.kill();
+            await deleting.exited;
+        }
         let failure: unknown = null;
         try {
             await this.host?.closeSession();
@@ -1240,6 +1658,29 @@ export class HostDriver implements ArmDriver {
                 writeWhole(join(this.armDir, "store-check.json"), `${JSON.stringify(check)}\n`);
                 const notes = memoryNotes(this.storeDb);
                 writeWhole(join(this.armDir, "memory.json"), `${JSON.stringify(notes)}\n`);
+                // Eidnara keeps its memories in the Kernel registry; the stopped daemon's stores
+                // are kept beside the arm, since the loop-mounted store is unmounted next.
+                // A fresh directory replaces any earlier archive, a planted link included, so
+                // the copies land only inside the arm directory.
+                const kept = join(this.armDir, "final-store");
+                rmSync(kept, { recursive: true, force: true });
+                mkdirSync(kept, { mode: 0o700 });
+                if (existsSync(this.dataDir)) {
+                    const context = join(realpathSync(this.dataDir), "eidnara", "context");
+                    for (const [within, name] of [
+                        [context, "store.db"],
+                        [join(context, "kernel"), "kernel.sqlite"],
+                    ] as const) {
+                        for (const suffix of ["", "-wal", "-shm"]) {
+                            archiveStoreFile(within, name + suffix, join(kept, name + suffix));
+                        }
+                    }
+                }
+                const objects = kernelObjects(join(kept, "kernel.sqlite"));
+                writeWhole(
+                    join(this.armDir, "kernel-objects.json"),
+                    `${JSON.stringify(objects)}\n`,
+                );
             }
         } catch (caught) {
             failure ??= caught;
@@ -1248,6 +1689,15 @@ export class HostDriver implements ArmDriver {
             this.unmount(this.dataDir);
         } catch (caught) {
             failure ??= caught;
+        }
+        // At the run's end a fill a session_end never cleared comes off, whole, before the mount
+        // does; an aborting stop keeps the recorded ballast so a resume refills it.
+        if (checkFinalStore) {
+            try {
+                this.clearStoreFill();
+            } catch (caught) {
+                failure ??= caught;
+            }
         }
         if (this.storeMount) {
             try {

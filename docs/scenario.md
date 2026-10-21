@@ -5,8 +5,10 @@ scenario to `runs/scenarios/<tier>-<seed>.json`; a `--embedder local` compile
 defaults to `runs/scenarios/<tier>-<seed>.local.json`, so a stand-in never
 replaces a Titan scenario. The inputs are the seed, the
 tier's pre-registration in `prereg/<tier>.json`, the corpus under `corpus/`,
-and the generator version `sim-scenario/v1`. The same inputs produce the same
-bytes in any process. The compiler scores cue and probe pairs with
+and the generator version `sim-scenario/v2`. The same inputs produce the same
+bytes in any process, and a run reuses a cached `scenario.json` only when its
+top-level `schema`, generator version, pre-registration hash, and corpus
+inputs hash match the current inputs. The compiler scores cue and probe pairs with
 `amazon.titan-embed-text-v2:0`, the model the pre-registration names, through
 the AWS profile in `sim.config.json`, and caches each vector in
 `embeddings.jsonl` beside the output. It refuses any other embedder.
@@ -30,7 +32,7 @@ The scenario file is canonical JSON with these sections:
 
 | Section | Contents |
 |---|---|
-| `manifest` | Seed, tier, generator and random-schema versions, the sha256 of `corpus/manifest.json`, the embedding model, the similarity thresholds, the gap scale factors, and the probe count per type |
+| `manifest` | Seed, tier, generator and random-schema versions, one sha256 over the bytes of every corpus file the compiler parsed (`manifest.json`, `fact-bank.json`, `repos.json`, `distributions.json`, and the two `tool-outputs` files, read once), the sha256 of the pre-registration, the embedding model, the similarity thresholds, the gap scale factors, and the probe count per type |
 | `projects` | Each repository in `corpus/repos.json` and its twin |
 | `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, statement, and the cue texts that carry it |
@@ -103,8 +105,8 @@ the earlier one and supersedes it.
 | P10 | anchor | Later, unrelated task; the value must not appear |
 | P11 | the P1 fact | A session of the twin project after the conveyance; the check forbids the convention |
 | P12 | tool error | A real error from `corpus/tool-outputs/error-codes.jsonl`; the check requires the exception name |
-| P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe, and `check.turns` gives the range's first and past-the-end turn indices. A session rule holds "until I say otherwise", so a later instance in the same session supersedes it |
-| P14 | none | The last third of a forced p90 session, split into one window of at least ten turns per item (`window_from_turn` to `window_to_turn`), measured from user-sim labels |
+| P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe, and `check.turns` gives the turn after the cue and the turn after the probe, so the range holds exactly the folds the probe turn's snapshot can carry. A session rule holds "until I say otherwise", so a later instance in the same session supersedes it |
+| P14 | none | The last third of a forced p90 session, split into one window of at least ten turns per item (`window_from_turn` to `window_to_turn`), measured from user-sim labels; the item's `event` is the session's last user turn, where its snapshot is taken |
 
 Conveyance manners follow the fixed weights 35/20/15/10/10/10 for correction,
 hand-applied diff, tool error, rejected approach, direct statement, and stated
@@ -200,15 +202,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `6101c747` | 0.263 | 0.5194 |
-| S | 102 | `43767c60` | 0.2647 | 0.4867 |
-| M | 201 | `a38b8bdb` | 0.2543 | 0.4992 |
-| M | 202 | `0cc2cac8` | 0.2532 | 0.4997 |
-| M | 203 | `09954908` | 0.2548 | 0.4843 |
-| L | 301 | `9fb0af32` | 0.2648 | 0.5092 |
-| L | 302 | `932c57a0` | 0.2555 | 0.4957 |
-| L | 303 | `1ef68f7b` | 0.256 | 0.5083 |
-| XL | 401 | `961790c7` | 0.2574 | 0.4962 |
+| S | 101 | `d4ebd629` | 0.263 | 0.5194 |
+| S | 102 | `cd2c6eb7` | 0.2647 | 0.4867 |
+| M | 201 | `86e4e453` | 0.2543 | 0.4992 |
+| M | 202 | `e853ac37` | 0.2532 | 0.4997 |
+| M | 203 | `c21a502f` | 0.2548 | 0.4843 |
+| L | 301 | `1998ee5b` | 0.2648 | 0.5092 |
+| L | 302 | `69e5a762` | 0.2555 | 0.4957 |
+| L | 303 | `a6a569c2` | 0.256 | 0.5083 |
+| XL | 401 | `9015c261` | 0.2574 | 0.4962 |
 
 ## Known limits
 

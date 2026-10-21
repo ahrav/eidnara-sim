@@ -14,8 +14,21 @@ v2 harness before any harness code existed.
 The same-config paired run shares `scenario_hash` and arm config and differs
 only in user-sim seed, and the report names its disagreement rate.
 
-No harness code, test, or run exists yet. The surface lands in M6
-(#1031).
+M6 (#1031, with the A/A control from #17) runs a control arm `<arm>~aa` right
+after its arm under the same scenario, behaviour plan, and tape, so matching
+contexts replay the same user-sim reply and the pair measures the noise the
+agent adds on its own, with the user-sim's reply held fixed;
+`scripts/aa-report.ts` names one aggregate `disagreement_rate` per arm and
+control pair, pooled over every paired non-P7 item verdict across probe
+types; its bootstrap differences and intervals are per metric.
+
+Contract versus code: the catalog guarantee says the pair differs only in
+user-sim seed, so the report would measure the simulator's own noise under
+independent seeds. The implementation shares one seed and one tape between the
+arm and its control, so a run of the user-sim with a second seed is not what
+the report measures. Which quantity the noise floor should name is a design
+decision for the pre-registration (needs human input); the record keeps the
+guarantee as written until it is taken.
 
 ## Failure scenario
 

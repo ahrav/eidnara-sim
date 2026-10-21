@@ -19,6 +19,7 @@
       "id": "s-P6-b",
       "item": "P6-b",
       "arm": "eidnara",
+      "session": "s-1",
       "turn": "e-1",
       "turn_outcome": "ok",
       "artefacts": [
@@ -56,13 +57,19 @@
           "class": "proxy-call",
           "calls": [
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 1,
+              "arm": "eidnara",
+              "session": "s-1",
               "component": "agent",
               "turn": "e-1",
               "scenario_ms": 0,
               "input_tokens": 1000,
               "output_tokens": 100,
-              "response_text": "Where did we stop?"
+              "response_text": "Where did we stop?",
+              "status": 200,
+              "error": null
             }
           ]
         }
@@ -74,7 +81,14 @@
     "metrics": {
       "P6.pass": false,
       "P6.reread_files": 1,
-      "P6.ran_tests": true
-    }
+      "P6.ran_tests": true,
+      "P6.rediscovery_tokens": 1100
+    },
+    "inputs": [
+      "c1",
+      "d1",
+      "p1",
+      "prior"
+    ]
   }
 }

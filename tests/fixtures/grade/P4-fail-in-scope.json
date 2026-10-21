@@ -23,6 +23,7 @@
       "id": "s-P4-c",
       "item": "P4-c",
       "arm": "eidnara",
+      "session": "s-1",
       "turn": "e-1",
       "turn_outcome": "ok",
       "artefacts": [
@@ -37,11 +38,14 @@
   ],
   "expect": {
     "verdict": "fail",
-    "reason": "kept the superseded rule",
+    "reason": "missing the expected rule; kept the superseded rule",
     "metrics": {
       "P4.pass": false,
-      "P4.collapsed": false,
-      "P4.harm": false
-    }
+      "P4.harm": false,
+      "P4.collapsed": false
+    },
+    "inputs": [
+      "d1"
+    ]
   }
 }

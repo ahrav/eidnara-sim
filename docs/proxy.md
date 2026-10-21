@@ -14,11 +14,9 @@ with its own fields (for example `originalStatusCode`),
 any other throw as an `error` with its code and message, so the host's SDK
 raises the same failure, and an error before any answer carries the same
 fields in its JSON body. String header values are cut to the format's
-32,767-byte limit on a code point boundary. `Gateway.stop()`
-closes every connection, then stops both listeners, and waits up to five
-seconds in all for in-flight requests, counted from the moment their headers
-arrive, to write their records; the
-run then calls `RecordWriter.close()` to release the journal descriptor. A
+32,767-byte limit on a code point boundary. `Gateway.stop()` drains the
+requests in flight as the end of this document describes; the run then calls
+`RecordWriter.close()` to release the journal descriptor. A
 throw from the `observe` callback lands in `Gateway.failures` and leaves the
 answer untouched. Each call draws its backoff jitter from its own
 generator seeded from the run's `rng` at receipt, so concurrent calls keep one
@@ -34,14 +32,18 @@ resolves without a link, so a symlink in any component or anything other than
 a regular file is refused. A fresh journal is created exclusively, so an
 existing path is refused; `resume: true`, which the run's call log and the
 grader's judge log pass, reopens an existing journal, drops a line a kill cut
-mid-append, and continues the sequence after the last complete record. A
+mid-append, and continues the sequence after the last complete record; it
+refuses a last complete line that is not a valid record. The run's call index
+reads every complete line of a resumed call log and refuses one with a missing
+field or a `seq` other than its position. A
 record enters memory only after its line reached the file. A
 failed append is truncated back to the bytes that reached the file, and when
 that truncation fails too the writer refuses every later record, so the
 journal never carries a partial line followed by a whole one.
 Requests the gateway rejects (an unknown route, a method other than `POST`, an
 `Expect` header other than `100-continue`, a body that is not a JSON object, a
-body over 32 MiB, a malformed path, an upload the client abandoned) and requests whose handling throws, including a
+body over 32 MiB, a malformed path, an upload the client abandoned, which is
+recorded with status 0 and `the client left after <n> bytes of the body`) and requests whose handling throws, including a
 throw from the scheduler's `scope()` or clock callback, still get a record. The gateway retains at most 32 MiB of a request body and counts the
 rest. The writer refuses a record that lacks any field below.
 
@@ -59,6 +61,7 @@ rest. The writer refuses a record that lacks any field below.
 | `proxy_retries` | Retries the proxy itself made upstream |
 | `fault_ref` | The injected fault episode, or `null` |
 | `stripped` | Request fields the proxy removed, keyed by path; present only when it removed one |
+| `arrival` | The request's arrival ordinal within its proxy process, assigned at the first byte; a resume replays records by this ordinal, falling back to `started_wall_ms` then `seq` for records written before it existed |
 
 ## Component tags
 
@@ -77,8 +80,8 @@ the gateway refuses is `rejected`.
 when the gateway classifies a call, before it forwards or faults the call, so
 a call that upstream refuses is observed too. The run uses the
 `history_summarizer` event to fire the mid-fold SIGKILL (OQ-8, observation
-half) and every background component's event to register a job that holds
-the clock until the call's record is written.
+half) and every classified call's event to register a job that holds the
+clock until the call's record is written.
 
 ## Sampling fields
 
@@ -110,17 +113,19 @@ sequence.
 Pi reaches the proxy over HTTP/2 and OpenCode over HTTP/1.1. The HTTP/2
 server reports each session error, frame error, GOAWAY, and stream reset
 on the host side through the `downstream` option, and the run appends
-them to `downstream.jsonl` with `h2_session`, the connection's number in
-the run, and the arm, session, and turn in scope when the stream opened or
-the connection event fired. A
+them to `downstream.jsonl` (opened once at run start without following
+symlinks) with `h2_session`, the connection's number in
+the gateway process, `gateway`, which names that process so a resumed
+run's connection numbers stay distinct, and the arm, session, and turn in
+scope when the stream opened or the connection event fired. A
 host turn that ends with a socket error while its call record shows a
 complete upstream stream reads its connection's events there.
 
 ## Fault injection
 
 `FaultInjector` holds the scenario's proxy-sink episodes. The scheduler calls
-`reset()` at each arm's start, which clears armed and pending episodes, empties
-the witnesses, returns each episode's own generator (seeded from the injector's generator and
+`reset()` at each arm's start, which clears armed and pending episodes, keeps
+the witnesses, which are per arm, returns each episode's own generator (seeded from the injector's generator and
 the episode id) to its seed so every arm draws the same intermittent masks, and ignores calls whose first bytes arrived before the reset, both when they
 ask for a fault and when their records are observed; a call received before
 a fault was armed takes nothing from that fault, and a call received before
@@ -132,8 +137,8 @@ is the receipt order whatever the uploads' completion order)
 failure record names its owner),
 and its first-byte latency runs from that receipt; among requests received in
 one epoch, fault selection follows classification, which needs the body, so
-it runs in body-completion order; `arm(id)` when an episode's trigger event occurs; and
-`disarm(id)` at the end of an episode's session. While armed, an episode replaces agent
+it runs in body-completion order; `arm(id, arm)` when an episode's trigger event occurs; and
+`disarm(id, arm)` at the end of an episode's session. While armed, an episode replaces agent
 calls' answers by strategy:
 
 | Strategy | Calls faulted |
@@ -165,15 +170,60 @@ timeout instead of the delayed answer.
 
 ## Witnesses
 
-For each episode, `FaultInjector.report()` returns whether it was armed, the
-`seq` of every injected record, the `seq` of the first later agent call that
-started within the window after each injection (host-observed; a faulted
-retry under a persistent or burst episode counts; an agent call that starts
-after the window closes the injection's wait), and whether the proxy
-retried. An episode is `fired` only with both an injected record
+For each episode and arm, `FaultInjector.report(arm)` returns whether it was armed there, the
+`seq` of every injected record, the `seq` of the first later agent call to
+arrive after each injection, when it arrived within the window
+(host-observed; a faulted retry under a persistent or burst episode counts; a
+pending injection waits for that call's record however late it completes,
+even when a later-arrived call completes first; the window opens at the
+injected request's first byte on the monotonic clock, and a first later call
+that arrives after the window ends the injection's wait unwitnessed), and
+whether the proxy retried. An episode is `fired` only with both an injected record
 and a host-observed call (SIM-P31); otherwise it is `untriggered`, and
 `excludedFromFaultMetrics` reports that the run leaves fault metrics
-(SIM-P32).
+(SIM-P32). Witness state is keyed by arm and episode: the scheduler arms a
+fault for the arm it is running, `take` injects only faults armed for the
+calling arm, and an observation counts only for the arm that made the call,
+so one arm's injection and retry cannot stand in for another arm's.
+A multi-call episode whose restored injections already reach its
+count is not injected again. `FaultInjector.restoreRecord(record)` rebuilds
+both sequences from the call records an earlier invocation of the same run
+persisted, fed in `restoreOrder`: arrival order, with request start and then
+`seq` for records written without an arrival ordinal. Each restored injection
+is witnessed by the first later agent call of its arm that started within the
+window on the wall clock both records carry. The run collects only the fields
+the witnesses need while its call index reads the log, so the records' text
+stays on disk. A resumed run therefore reports a fault that fired before a
+hard kill (its `armed` bit also comes from the journal's `FaultFired` entries
+through `armedBefore`, so an armed episode whose target never called the proxy
+still reports `armed: true`), and arming an episode after a restore continues a burst or intermittent window from the injections
+already made; an intermittent window's unsuccessful attempts and its RNG
+position are not persisted, so a resumed window grants its remaining
+attempts from the injections alone.
+
+A call's record is written when its response ends; a harness killed while a
+response streams leaves no record for that attempt, and the resumed run
+marks the open turn interrupted rather than reissuing it.
+
+`Gateway.stop()` destroys every connection (the HTTP/1 sockets it tracked,
+so a client mid-upload cannot hold the close, and every HTTP/2 session)
+before it closes the listeners, since under Bun `closeAllConnections()` after
+`close()` leaves them open. It aborts every request in flight, so an upload
+still streaming yields its rejected record, and waits up to `drainMs` (ten
+seconds by default) in all for the requests in flight, counted from their
+first byte, to write their records, returning as soon as they have. A request
+still active when the wait ends is recorded in `gateway.failures` alongside
+any handler failure, and a handler that settles after `stop` returned writes
+no record and adds a failure of its own. A second `stop` returns at once.
+Request bodies are buffered up to 32 MiB; bytes past the limit are counted
+and dropped, and the request is answered 413 with one record. The
+`arrival` hook sees each request at its first byte and may return a function
+that runs once the call is classified or rejected, or once the client
+abandons the upload; the run holds the clock with it for every request. The run's scope (arm, session, turn) is read at the
+request's first byte and kept for the call's record. The `observe` hook sees
+each classified call as it starts and may return a function, which the gateway calls once that call's
+record is written or its write failed; the run uses it to end the background
+job the call registered.
 
 ## Tests
 
@@ -182,4 +232,5 @@ strategy on both routes against a scripted upstream and a host stand-in that
 issues one call at a time with its own timeout. Each case checks that the host saw the
 fault, that every injected record has `proxy_retries` 0, and that the host's
 next call started within the window. The tests also cover records, tags,
-rejected requests, untriggered witnesses, and the seeded backoff sequence.
+rejected requests, untriggered witnesses, witnesses restored from persisted
+records, the drain on `stop`, and the seeded backoff sequence.

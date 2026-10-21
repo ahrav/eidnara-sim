@@ -19,6 +19,7 @@
       "id": "s-P12-a",
       "item": "P12-a",
       "arm": "eidnara",
+      "session": "s-1",
       "turn": "e-1",
       "turn_outcome": "ok",
       "artefacts": [
@@ -35,6 +36,9 @@
     "verdict": "pass",
     "metrics": {
       "P12.pass": true
-    }
+    },
+    "inputs": [
+      "d1"
+    ]
   }
 }

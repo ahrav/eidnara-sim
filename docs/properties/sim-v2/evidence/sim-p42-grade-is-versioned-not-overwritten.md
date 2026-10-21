@@ -14,9 +14,6 @@ v2 harness before any harness code existed.
 For an item and arm, grade versions are strictly increasing, the report names
 the version used, and no journal entry rewrites an earlier version.
 
-No harness code, test, or run exists yet. The surface lands in M5
-(#1029).
-
 M5 (#1029) appends grades to a JSONL log in which a regrade takes the next version for its item and arm, and refuses an append out of order; a test checks both. A P7 grade's versions also follow the arm it was judged against, so the host answer to one P7 item, judged once per memory arm, keeps one version line per opponent and no pairing overwrites another; a test checks it.
 
 ## Failure scenario

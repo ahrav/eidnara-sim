@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
     appendFileSync,
@@ -20,19 +20,22 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { SEGMENTS_DDL } from "../../tests/segments";
 import { loadConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
 import { ArtefactReader } from "../grade/artefacts";
 import { gradeItem } from "../grade/probes";
 import { diffPaths } from "../grade/text";
+import { readJsonl } from "../run/journal";
 import { sandboxAvailable, writeLauncher } from "../run/launcher";
 import { processStart, running } from "../run/procs";
 import { HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import { type FaultType, SEAMS } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
 import type { DaemonStack, HostContext, PromptResult, SimHost } from "./arms";
-import { type DriverOptions, expandTemplate, HostDriver } from "./driver";
+import { createNoFollow, type DriverOptions, expandTemplate, HostDriver } from "./driver";
 import { SnapshotRecorder } from "./snapshot";
+import type { StoreCheck } from "./storecheck";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -79,15 +82,23 @@ class FakeHost {
         private readonly transcripts: string,
     ) {}
     async openSession(cwd: string, session: string, connection: string | null = null) {
+        this.opening = true;
+        await this.gate;
+        this.opening = false;
         this.opened.push(`${session}@${cwd}`);
         this.connections.push(connection);
         this.onSpawn();
     }
+    gate: Promise<void> = Promise.resolve();
+    opening = false;
+    closedWhileOpening = 0;
     failNext = false;
     interrupts: (number | undefined)[] = [];
-    async prompt(_text: string, _timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
+    deadlines: number[] = [];
+    async prompt(_text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
         this.onPrompt();
         this.interrupts.push(interruptMs);
+        this.deadlines.push(timeoutMs);
         if (interruptMs !== undefined) return { interrupted: true };
         if (!this.failNext) return {};
         this.failNext = false;
@@ -96,6 +107,7 @@ class FakeHost {
     failClose = false;
     onClose: () => void = () => undefined;
     async closeSession() {
+        if (this.opening) this.closedWhileOpening++;
         this.closed++;
         this.onClose();
         if (this.failClose) throw new Error("host survived");
@@ -116,6 +128,15 @@ class FakeHost {
         return drained;
     }
 }
+
+/**
+ * Fake daemon pids start at Linux's PID_MAX_LIMIT (2^22), which no process can hold, so the
+ * reaper's liveness checks and signals for a recorded fake pid find nothing on any machine.
+ */
+const PID = 4_194_304;
+
+/** The driver sees a fake daemon pid as a live process with a fixed start; real pids read /proc. */
+const procStart = (pid: number) => (pid >= PID ? "fake" : processStart(pid));
 
 function fixture(
     arm: DriverOptions["arm"],
@@ -149,6 +170,7 @@ function fixture(
             return h as unknown as SimHost;
         },
         onDaemonExit: (d) => void exits.push(d),
+        procStart,
         ...extra,
     };
     const driver = new HostDriver(o);
@@ -159,13 +181,47 @@ function fakeDaemon(pid: number | null) {
     const d = {
         current: pid,
         pid: () => d.current,
+        crash: async () => undefined,
+        gate: Promise.resolve() as Promise<void>,
+        restarting: false,
+        stoppedWhileRestarting: 0,
+        stops: 0,
         restart: async () => {
+            d.restarting = true;
+            await d.gate;
+            d.restarting = false;
             d.current = (d.current ?? 0) + 1;
         },
-        stop: async () => undefined,
+        stop: async () => {
+            if (d.restarting) d.stoppedWhileRestarting++;
+            if (d.starting) d.stoppedWhileStarting++;
+            d.stops++;
+        },
         connectionFile: "/run/conn",
+        starting: false,
+        stoppedWhileStarting: 0,
+        start: async () => {
+            d.starting = true;
+            await d.gate;
+            d.starting = false;
+            d.current = d.current ?? PID + 10;
+        },
     };
     return d;
+}
+
+const PASS =
+    "[2026-10-16T12:00:00.000Z] [eidnara][s-1] rust pass: decision=SOFT+ reason=none served_from=transform in=3 out=3";
+function statSize(driver: HostDriver): number {
+    const path = join((driver as unknown as { o: DriverOptions }).o.armRoot, "eidnara.log");
+    return existsSync(path) ? statSync(path).size : 0;
+}
+
+/** Appends one line to the arm's plugin log, as the host's plugin would. */
+function pluginLog(driver: HostDriver, line: string): void {
+    const path = join((driver as unknown as { o: DriverOptions }).o.armRoot, "eidnara.log");
+    mkdirSync(dirname(path), { recursive: true });
+    appendFileSync(path, `${line}\n`);
 }
 
 const episode = (type: FaultType) => ({
@@ -513,6 +569,18 @@ describe("HostDriver lifecycle", () => {
         expect(hosts.at(-1)?.opened).toEqual([]);
     });
 
+    test("the state file is replaced whole, with no staged copy left behind", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        writeFileSync(join(armDir, "state.json"), '{"model": 1, "daemon": null, "ho');
+        await driver.fault(episode("model_switch"));
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.model).toBe(1);
+        expect(readdirSync(armDir).filter((f) => f.startsWith("state.json"))).toEqual([
+            "state.json",
+        ]);
+    });
+
     test("the host pid is on record before the session's start tree is taken", async () => {
         const { driver, armDir, hosts } = fixture("host", { p: gitRepo() });
         await driver.reset();
@@ -580,7 +648,7 @@ describe("HostDriver lifecycle", () => {
         let stopped = 0;
         driver.host = host as unknown as SimHost;
         driver.daemon = {
-            ...fakeDaemon(10),
+            ...fakeDaemon(PID + 10),
             stop: async () => void stopped++,
         } as unknown as DaemonStack;
         await expect(driver.stop()).rejects.toThrow("host survived");
@@ -603,6 +671,55 @@ describe("HostDriver lifecycle", () => {
         expect(listed.missing).toEqual([missing]);
     });
 
+    test("a turn's remaining deadline bounds the host prompt under the pre-registered one", async () => {
+        const { driver } = fixture("host");
+        const host = new FakeHost({} as HostContext, "/x");
+        driver.host = host as unknown as SimHost;
+        // The wall clock stands still, so the work before each prompt spends none of its
+        // deadline and every bound the host sees is exact; the probe-snapshot test below spends
+        // real time against a deadline.
+        setSystemTime(new Date());
+        let spent: Awaited<ReturnType<HostDriver["event"]>>;
+        try {
+            await driver.event(ev("user_turn", { id: "e-1", text: "go", deadline_ms: 400 }));
+            await driver.event(ev("user_turn", { id: "e-2", text: "go" }));
+            await driver.event(ev("user_turn", { id: "e-3", text: "go", deadline_ms: 5_000 }));
+            await driver.event(ev("user_turn", { id: "e-4", text: "go", deadline_ms: 30 }));
+            spent = await driver.event(ev("user_turn", { id: "e-5", text: "go", deadline_ms: 0 }));
+        } finally {
+            setSystemTime();
+        }
+        expect(host.deadlines).toEqual([400, 1_000, 1_000, 30]);
+        expect(spent.failed).toContain("turn deadline");
+        expect(spent.undelivered).toBe(true);
+    });
+
+    test("a probe's pre-turn snapshot spends the turn's shared deadline", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const host = new FakeHost({} as HostContext, "/x");
+        driver.host = host as unknown as SimHost;
+        const snapshots = (driver as unknown as { snapshots: { tree: (d: string) => string } })
+            .snapshots;
+        const tree = snapshots.tree.bind(snapshots);
+        snapshots.tree = (d: string) => {
+            const until = Date.now() + 300;
+            while (Date.now() < until) {}
+            return tree(d);
+        };
+        await driver.event(ev("session_start", { session: "s-0" }));
+        await driver.event(
+            ev("user_turn", {
+                id: "e-8",
+                session: "s-0",
+                text: "go",
+                probe: "q-1",
+                deadline_ms: 900,
+            }),
+        );
+        expect(host.deadlines[0]).toBeLessThan(700);
+    });
+
     test("a scheduled interrupt reaches the host's prompt and the turn reports it", async () => {
         const { driver } = fixture("host");
         const host = new FakeHost({} as HostContext, "/x");
@@ -621,7 +738,7 @@ describe("HostDriver lifecycle", () => {
 
     test("a daemon gone after a turn is reported once with the turn id", async () => {
         const { driver, hosts, exits } = fixture("eidnara");
-        const daemon = fakeDaemon(10);
+        const daemon = fakeDaemon(PID + 10);
         const host = new FakeHost({} as HostContext, "/nonexistent");
         host.onPrompt = () => {
             daemon.current = null;
@@ -640,7 +757,7 @@ describe("HostDriver lifecycle", () => {
 
     test("a daemon gone while a probe turn settles and snapshots is reported with that turn", async () => {
         const { driver, exits } = fixture("host", { p: gitRepo() });
-        const daemon = fakeDaemon(10);
+        const daemon = fakeDaemon(PID + 10);
         const o = (driver as unknown as { o: DriverOptions }).o;
         o.settle = async () => {
             daemon.current = null;
@@ -752,7 +869,7 @@ touch ${escaped}
 
     test("a daemon gone by session_end is reported with the session_end id", async () => {
         const { driver, exits, transcripts } = fixture("eidnara");
-        const daemon = fakeDaemon(10);
+        const daemon = fakeDaemon(PID + 10);
         const host = new FakeHost({} as HostContext, transcripts);
         mkdirSync(join(transcripts, "sessions"), { recursive: true });
         host.onClose = () => {
@@ -768,7 +885,10 @@ touch ${escaped}
         "a daemon restart refuses a runtime directory the host replaced with a symlink",
         async () => {
             const daemonFactory = () =>
-                ({ ...fakeDaemon(10), start: async () => undefined }) as unknown as DaemonStack;
+                ({
+                    ...fakeDaemon(PID + 10),
+                    start: async () => undefined,
+                }) as unknown as DaemonStack;
             const { driver, root } = fixture("eidnara", {}, { daemonFactory });
             try {
                 await driver.reset();
@@ -971,7 +1091,10 @@ touch ${escaped}
         "a link the host left at the arm root's runtime name does not block a restart",
         async () => {
             const daemonFactory = () =>
-                ({ ...fakeDaemon(10), start: async () => undefined }) as unknown as DaemonStack;
+                ({
+                    ...fakeDaemon(PID + 10),
+                    start: async () => undefined,
+                }) as unknown as DaemonStack;
             const { driver, root } = fixture("eidnara", {}, { daemonFactory });
             try {
                 await driver.reset();
@@ -1036,14 +1159,14 @@ touch ${escaped}
         const starts = new Map<number, string>();
         const procStart = (pid: number) => starts.get(pid) ?? processStart(pid);
         const { driver, armDir } = fixture("eidnara", {}, { procStart });
-        starts.set(10, "first");
-        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        starts.set(PID + 10, "first");
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
         const inner = driver as unknown as { noteDaemon(): void; recordState(): void };
         inner.noteDaemon();
-        starts.set(10, "reused");
+        starts.set(PID + 10, "reused");
         inner.recordState();
         const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
-        expect(state.daemon).toEqual({ pid: 10, start: "first" });
+        expect(state.daemon).toEqual({ pid: PID + 10, start: "first" });
     });
 
     test("a model switch the journal lost is rolled back on resume", async () => {
@@ -1402,7 +1525,7 @@ describe("HostDriver faults", () => {
         "store_full fills the loop store and leaves its image sparse once the ballast goes",
         async () => {
             const { driver, armDir } = fixture("eidnara");
-            driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+            driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
             const inner = driver as unknown as {
                 mountStore(f: boolean): void;
                 clearStoreFill(): void;
@@ -1421,34 +1544,124 @@ describe("HostDriver faults", () => {
 
     test("store_full without a loop-mounted store is skipped for the missing store", async () => {
         const { driver } = fixture("eidnara");
-        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
         expect(await driver.fault(episode("store_full"))).toEqual({
             skipped: "arm runs no loop-mounted store",
         });
     });
 
-    test("a daemon fault restarts through the stack and reports both pids", async () => {
+    test("a daemon fault samples the outgoing daemon, restarts through the stack, reports both pids, and samples the new one", async () => {
         const { driver } = fixture("eidnara");
-        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const seen: number[] = [];
+        (driver as unknown as { o: DriverOptions }).o.sampleDaemon = () =>
+            void seen.push(driver.daemonPid() ?? -1);
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
         expect(await driver.fault(episode("daemon_restart"))).toEqual({
             signal: "SIGKILL",
-            pid_before: 10,
-            pid_after: 11,
+            pid_before: PID + 10,
+            pid_after: PID + 11,
             restarted_by: "harness",
-            store: { integrity: "missing", segments: 0, overlaps: [], ranges: [] },
+            store: { format: 2, integrity: "missing", segments: 0, overlaps: [], ranges: [] },
         });
+        expect(seen).toEqual([PID + 10, PID + 11]);
+    });
+
+    test("the store a daemon kill leaves is inspected before the replacement starts", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(PID + 10);
+        mkdirSync(dirname(driver.storeDb), { recursive: true });
+        const db = new Database(driver.storeDb);
+        db.run(SEGMENTS_DDL);
+        db.run(
+            "insert into history_segments (session_id, sequence, start_message, end_message) values ('s', 1, 0, 9)",
+        );
+        db.close();
+        const phases: string[] = [];
+        daemon.crash = async () => {
+            phases.push(`crash:${daemon.current}`);
+            daemon.current = null;
+        };
+        daemon.restart = async () => {
+            phases.push("start");
+            new Database(driver.storeDb).run("delete from history_segments");
+            daemon.current = PID + 11;
+        };
+        driver.daemon = daemon as unknown as DaemonStack;
+        const evidence = await driver.fault(episode("daemon_sigkill_mid_fold"));
+        expect(phases).toEqual([`crash:${PID + 10}`, "start"]);
+        expect(evidence.pid_after).toBe(PID + 11);
+        expect((evidence.store as StoreCheck).ranges.map((r) => r.slice(0, 4))).toEqual([
+            ["s", 1, 0, 9],
+        ]);
+    });
+
+    test("a mid-fold kill's turn carries the store check once the replacement served a pass", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(PID + 10);
+        daemon.restart = async () => {
+            await Bun.sleep(100);
+            daemon.current = PID + 11;
+        };
+        driver.daemon = daemon as unknown as DaemonStack;
+        const host = new FakeHost({} as HostContext, "/x");
+        driver.host = host as unknown as SimHost;
+        const kill = driver.fault(episode("daemon_sigkill_mid_fold"));
+        host.prompt = async () => {
+            await kill;
+            pluginLog(driver, PASS);
+            return {};
+        };
+        const outcome = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(outcome.stores?.map((s) => s.fault)).toEqual(["f-daemon_sigkill_mid_fold"]);
+        expect((await kill).pid_after).toBe(PID + 11);
+    });
+
+    test("a restart that fails during the interrupted turn fails that turn", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(PID + 10);
+        daemon.restart = async () => {
+            await Bun.sleep(50);
+            throw new Error("fixture did not start");
+        };
+        driver.daemon = daemon as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        const kill = driver.fault(episode("daemon_sigkill_mid_fold"));
+        kill.catch(() => undefined);
+        await expect(driver.event(ev("user_turn", { id: "e-1", text: "go" }))).rejects.toThrow(
+            "fixture did not start",
+        );
+        await expect(kill).rejects.toThrow("fixture did not start");
+    });
+
+    test("a store check owed by a daemon restart survives a harness restart", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        await driver.fault(episode("daemon_restart"));
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(Object.keys(state.store_faults)).toEqual(["f-daemon_restart"]);
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.resume(null);
+        fresh.daemon = fakeDaemon(PID + 12) as unknown as DaemonStack;
+        pluginLog(fresh, PASS);
+        const outcome = await fresh.event(ev("user_turn", { id: "e-1", text: "go", project: "p" }));
+        expect(outcome.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+        const recorded = () => JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(Object.keys(recorded().store_faults)).toEqual(["f-daemon_restart"]);
+        await fresh.event(ev("user_turn", { id: "e-2", text: "go", project: "p" }));
+        expect(recorded().store_faults).toEqual({});
     });
 
     test("the turn ending after daemon restarts carries a store check for each of them", async () => {
         const { driver } = fixture("eidnara");
-        (driver as unknown as { o: DriverOptions }).o.procStart = () => "start";
-        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
         driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
         await driver.fault(episode("daemon_restart"));
         await driver.fault(episode("daemon_sigkill_mid_fold"));
+        pluginLog(driver, PASS);
         const first = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
         const second = await driver.event(ev("user_turn", { id: "e-2", text: "go" }));
-        const store = { integrity: "missing", segments: 0, overlaps: [], ranges: [] };
+        const store = { format: 2, integrity: "missing", segments: 0, overlaps: [], ranges: [] };
         expect(first.stores).toEqual([
             { fault: "f-daemon_restart", store },
             { fault: "f-daemon_sigkill_mid_fold", store },
@@ -1456,22 +1669,237 @@ describe("HostDriver faults", () => {
         expect(second.stores).toBeUndefined();
     });
 
+    test("a plugin log the agent replaced with a link is refused, not read through", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        await driver.fault(episode("daemon_restart"));
+        const forged = join(tmp(), "forged.log");
+        writeFileSync(forged, `${PASS}\n`);
+        const path = join((driver as unknown as { o: DriverOptions }).o.armRoot, "eidnara.log");
+        mkdirSync(dirname(path), { recursive: true });
+        rmSync(path, { force: true });
+        symlinkSync(forged, path);
+        await expect(driver.event(ev("user_turn", { id: "e-1", text: "go" }))).rejects.toThrow(
+            /plugin log .* is a symlink/,
+        );
+    });
+
+    test("a pass the replacement serves while its start is still settling counts", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(PID + 10);
+        daemon.restart = async () => {
+            daemon.current = PID + 11;
+            pluginLog(driver, PASS);
+        };
+        driver.daemon = daemon as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        await driver.fault(episode("daemon_restart"));
+        const outcome = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(outcome.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+    });
+
+    test("a pass a background call serves after the last turn is checked at session end or finish", async () => {
+        const { driver, transcripts } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        mkdirSync(join(transcripts, "sessions"), { recursive: true });
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        await driver.fault(episode("daemon_restart"));
+        await driver.event(ev("session_start"));
+        const turn = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(turn.stores).toBeUndefined();
+        pluginLog(driver, PASS);
+        const end = await driver.event(ev("session_end", { id: "e-2" }));
+        expect(end.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+        // The recorded obligation outlives the session end until the scheduler has journaled it.
+        const recorded = () => JSON.parse(readFileSync(join(driver.armDir, "state.json"), "utf8"));
+        expect(Object.keys(recorded().store_faults)).toEqual(["f-daemon_restart"]);
+        await driver.event(ev("session_start", { id: "e-3", session: "s-0001" }));
+        await driver.fault(episode("daemon_sigkill_mid_fold"));
+        await driver.event(ev("user_turn", { id: "e-4", text: "go", session: "s-0001" }));
+        pluginLog(driver, PASS);
+        const last = await driver.finish();
+        expect(last.stores?.map((s) => s.fault)).toEqual(["f-daemon_sigkill_mid_fold"]);
+    });
+
+    test("a restart settles the check an earlier restart's served pass earned, before it kills the daemon", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        await driver.fault(episode("daemon_restart"));
+        pluginLog(driver, PASS);
+        const second = await driver.fault(episode("daemon_sigkill_mid_fold"));
+        expect((second.stores as { fault: string }[]).map((s) => s.fault)).toEqual([
+            "f-daemon_restart",
+        ]);
+        // The settled check stays recorded until the next event, after the scheduler journaled it.
+        const recorded = () =>
+            Object.keys(
+                JSON.parse(readFileSync(join(driver.armDir, "state.json"), "utf8")).store_faults,
+            );
+        expect(recorded().sort()).toEqual(["f-daemon_restart", "f-daemon_sigkill_mid_fold"]);
+        const turn = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(turn.stores).toBeUndefined();
+        expect(recorded()).toEqual(["f-daemon_sigkill_mid_fold"]);
+    });
+
+    test("a pass served between turns is checked before the next turn's own passes", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        const host = new FakeHost({} as HostContext, "/x");
+        driver.host = host as unknown as SimHost;
+        mkdirSync(dirname(driver.storeDb), { recursive: true });
+        const db = new Database(driver.storeDb);
+        db.run(SEGMENTS_DDL);
+        db.run(
+            "insert into history_segments (session_id, sequence, start_message, end_message) values ('s', 1, 0, 9)",
+        );
+        db.close();
+        await driver.fault(episode("daemon_restart"));
+        pluginLog(driver, PASS);
+        // The next turn's own pass compacts the store; the check must predate it.
+        host.onPrompt = () => new Database(driver.storeDb).run("delete from history_segments");
+        const outcome = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(outcome.stores?.map((s) => [s.fault, s.store.segments])).toEqual([
+            ["f-daemon_restart", 1],
+        ]);
+    });
+
+    test("a probe turn checks the store after its background jobs settle", async () => {
+        const { driver, hosts } = fixture("host", { p: gitRepo() });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.settle = async () => pluginLog(driver, PASS);
+        await driver.reset();
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        hosts.at(-1);
+        await driver.fault(episode("daemon_restart"));
+        await driver.event(ev("session_start", { session: "s-0" }));
+        const outcome = await driver.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(outcome.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+    });
+
+    test("a fault whose id is an object prototype key still owes and settles its check", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        await driver.fault({ ...episode("daemon_restart"), id: "__proto__" });
+        const state = JSON.parse(readFileSync(join(driver.armDir, "state.json"), "utf8"));
+        expect(Object.keys(state.store_faults)).toEqual(["__proto__"]);
+        pluginLog(driver, PASS);
+        const outcome = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(outcome.stores?.map((s) => s.fault)).toEqual(["__proto__"]);
+    });
+
+    test("a served pass is found past a long plugin log and across a chunk boundary", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        await driver.fault(episode("daemon_restart"));
+        // Raw passes fill well past one 64 KiB chunk; the served pass straddles a chunk edge.
+        const raw =
+            "[2026-10-16T12:00:01.000Z] [eidnara][s-1] rust pass: decision=declined:invocation_budget served_from=raw";
+        for (let i = 0; i < 700; i++) pluginLog(driver, raw);
+        const padding = "x".repeat(
+            ((64 * 1024 - (statSize(driver) % (64 * 1024))) % (64 * 1024)) - 40,
+        );
+        pluginLog(driver, `[2026-10-16T12:00:02.000Z] ${padding}`);
+        pluginLog(driver, PASS);
+        const outcome = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(outcome.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+    });
+
+    test("the store check waits for the first pass the replacement daemon serves", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        pluginLog(driver, PASS);
+        await driver.fault(episode("daemon_restart"));
+        pluginLog(
+            driver,
+            "[2026-10-16T12:00:01.000Z] [eidnara][s-1] rust pass: decision=error reason=none served_from=raw",
+        );
+        const raw = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(raw.stores).toBeUndefined();
+        pluginLog(
+            driver,
+            "[2026-10-16T12:00:02.000Z] [eidnara][s-1] rust pass: decision=declined:invocation_budget reason=none served_from=raw",
+        );
+        const declined = await driver.event(ev("user_turn", { id: "e-2", text: "go" }));
+        expect(declined.stores).toBeUndefined();
+        pluginLog(driver, PASS);
+        const folded = await driver.event(ev("user_turn", { id: "e-3", text: "go" }));
+        expect(folded.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+        const after = await driver.event(ev("user_turn", { id: "e-4", text: "go" }));
+        expect(after.stores).toBeUndefined();
+    });
+
+    test("the final store check replaces a symlink at its path without writing through it", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        mkdirSync(dirname(driver.storeDb), { recursive: true });
+        new Database(driver.storeDb).run(SEGMENTS_DDL);
+        const target = join(armDir, "elsewhere.json");
+        writeFileSync(target, "untouched\n");
+        mkdirSync(armDir, { recursive: true });
+        symlinkSync(target, join(armDir, "store-check.json"));
+        await driver.finish();
+        expect(readFileSync(target, "utf8")).toBe("untouched\n");
+        expect(lstatSync(join(armDir, "store-check.json")).isSymbolicLink()).toBe(false);
+        expect(JSON.parse(readFileSync(join(armDir, "store-check.json"), "utf8")).integrity).toBe(
+            "ok",
+        );
+    });
+
+    test("the final store archive replaces a planted final-store link and copies only the store's own files", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        mkdirSync(dirname(driver.storeDb), { recursive: true });
+        new Database(driver.storeDb).run(SEGMENTS_DDL);
+        const outside = tmp();
+        writeFileSync(join(outside, "store.db"), "untouched\n");
+        mkdirSync(armDir, { recursive: true });
+        symlinkSync(outside, join(armDir, "final-store"));
+        await driver.finish();
+        expect(readFileSync(join(outside, "store.db"), "utf8")).toBe("untouched\n");
+        const kept = join(armDir, "final-store");
+        expect(lstatSync(kept).isDirectory()).toBe(true);
+        expect(readFileSync(join(kept, "store.db"))).toEqual(readFileSync(driver.storeDb));
+    });
+
+    test("a final store file the host replaced with a link is refused, and nothing is copied through it", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        mkdirSync(dirname(driver.storeDb), { recursive: true });
+        new Database(driver.storeDb).run(SEGMENTS_DDL);
+        const secret = join(tmp(), "secret");
+        writeFileSync(secret, "harness only\n");
+        symlinkSync(secret, `${driver.storeDb}-shm`);
+        await expect(driver.finish()).rejects.toThrow(/is a symlink/);
+        expect(existsSync(join(armDir, "final-store", "store.db-shm"))).toBe(false);
+    });
+
     test("finish stops the daemon and writes the final store check", async () => {
         const { driver } = fixture("eidnara");
-        const daemon = fakeDaemon(10);
+        const daemon = fakeDaemon(PID + 10);
         let stopped = false;
         daemon.stop = async () => {
             stopped = true;
         };
         driver.daemon = daemon as unknown as DaemonStack;
         mkdirSync(dirname(driver.storeDb), { recursive: true });
-        new Database(driver.storeDb).run(
-            "create table history_segments (session_id text, sequence integer, start_message integer, end_message integer)",
-        );
+        new Database(driver.storeDb).run(SEGMENTS_DDL);
         await driver.finish();
         expect(stopped).toBe(true);
         const check = JSON.parse(readFileSync(join(driver.armDir, "store-check.json"), "utf8"));
-        expect(check).toEqual({ integrity: "ok", segments: 0, overlaps: [], ranges: [] });
+        expect(check).toEqual({
+            format: 2,
+            integrity: "ok",
+            segments: 0,
+            overlaps: [],
+            ranges: [],
+        });
     });
 
     test("an A/A control label runs as its arm: the host sees the base arm and no store", async () => {
@@ -1511,17 +1939,49 @@ describe("HostDriver faults", () => {
         await resumed.stop();
     });
 
+    test("a host upgrade asks for the upgraded version's transcript store at its next session end", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.hostVersions = {
+            from: "0.80.2",
+            to: "0.87.1",
+            upgradeTranscriptPaths: ["$PI_CODING_AGENT_DIR/sessions-next"],
+        };
+        o.config = { ...o.config, upgrade: { pi_install: "/next/pi" } };
+        const inner = driver as unknown as { transcriptsChecked: boolean };
+        await driver.reset();
+        inner.transcriptsChecked = true;
+        await driver.fault(episode("host_upgrade"));
+        expect(inner.transcriptsChecked).toBe(false);
+        writeFileSync(
+            join(armDir, "transcripts.json"),
+            JSON.stringify({
+                checked_after: "first session_end",
+                templates: ["$PI_CODING_AGENT_DIR/sessions"],
+                paths: ["/t/sessions"],
+                missing: [],
+            }),
+        );
+        const resumed = new HostDriver(o);
+        await resumed.resume(null);
+        expect((resumed as unknown as { transcriptsChecked: boolean }).transcriptsChecked).toBe(
+            false,
+        );
+        await resumed.stop();
+    });
+
     test("a second host client runs one turn on the arm's daemon at the session's start", async () => {
         const { driver, hosts } = fixture("eidnara", { p: "/repo" });
-        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
         const at = ev("session_start", { project: "p" });
         const evidence = await driver.fault(episode("two_hosts_one_daemon"), at);
         expect(evidence).toMatchObject({
             second_session: "s-0000-b",
-            daemon_pid: 10,
+            daemon_pid: PID + 10,
             outcome: "ok",
         });
         const second = hosts.at(-1) as FakeHost;
+        second.pid = process.pid;
         expect(second.opened).toEqual([`s-0000-b@${driver.workspace("p")}`]);
         expect(second.connections).toEqual([driver.daemon.connectionFile]);
         expect(second.closed).toBe(0);
@@ -1556,9 +2016,322 @@ describe("HostDriver faults", () => {
         expect(driver.daemonPid()).toBe(gone);
     });
 
+    test("a second client that exits before the primary's session_end fails the arm", async () => {
+        const { driver, hosts, armDir } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        const at = ev("session_start", { project: "p" });
+        await driver.fault(episode("two_hosts_one_daemon"), at);
+        const second = hosts.at(-1) as FakeHost;
+        const inner = driver as unknown as Record<string, unknown> & { newHost(): SimHost };
+        driver.host = inner.newHost();
+        const noop = () => undefined;
+        inner.snapshots = { sessionStart: noop, sessionEnd: noop, addTools: noop };
+        inner.transcriptsChecked = true;
+        await driver.event(at);
+        second.pid = Bun.spawnSync(["true"]).pid;
+        await expect(driver.event(ev("session_end", { project: "p" }))).rejects.toThrow(
+            "second client exited before the primary session's session_end",
+        );
+        await driver.stop().catch(() => undefined);
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.daemonFactory = () => fakeDaemon(PID + 10) as unknown as DaemonStack;
+        const orphan = Bun.spawn(["sleep", "300"]);
+        const start = readFileSync(`/proc/${orphan.pid}/stat`, "utf8")
+            .split(") ")[1]
+            ?.split(" ")[19];
+        const recorded = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        writeFileSync(
+            join(armDir, "state.json"),
+            JSON.stringify({ ...recorded, daemon: { pid: orphan.pid, start } }),
+        );
+        await expect(new HostDriver(o).resume(null)).rejects.toThrow(
+            "second client exited before the primary session's session_end",
+        );
+        await orphan.exited;
+        expect(orphan.signalCode).toBe("SIGTERM");
+    });
+
+    test("stopping while the second client opens waits for the open, then closes it", async () => {
+        const { driver, hosts } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((r) => {
+            release = r;
+        });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        const factory = o.hostFactory as (ctx: HostContext) => SimHost;
+        o.hostFactory = (ctx) => {
+            const h = factory(ctx) as unknown as FakeHost;
+            h.gate = gate;
+            h.pid = process.pid;
+            return h as unknown as SimHost;
+        };
+        const fault = driver.fault(
+            episode("two_hosts_one_daemon"),
+            ev("session_start", { project: "p" }),
+        );
+        fault.catch(() => undefined);
+        await Bun.sleep(5);
+        const second = hosts.at(-1) as FakeHost;
+        expect(second.opening).toBe(true);
+        let stopped = false;
+        const stop = driver.stop().then(() => {
+            stopped = true;
+        });
+        await Bun.sleep(20);
+        expect([stopped, second.closedWhileOpening]).toEqual([false, 0]);
+        release();
+        await stop;
+        await expect(fault).rejects.toThrow("the arm stopped while the second client opened");
+        expect([second.closed, second.closedWhileOpening]).toEqual([1, 0]);
+    });
+
+    test("stopping while the daemon restarts waits for the restart, then stops it", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(PID + 10);
+        let release: () => void = () => undefined;
+        daemon.gate = new Promise<void>((r) => {
+            release = r;
+        });
+        driver.daemon = daemon as unknown as DaemonStack;
+        const fault = driver.fault(episode("daemon_restart"));
+        fault.catch(() => undefined);
+        await Bun.sleep(5);
+        expect(daemon.restarting).toBe(true);
+        let stopped = false;
+        const stop = driver.stop().then(() => {
+            stopped = true;
+        });
+        await Bun.sleep(20);
+        expect([stopped, daemon.stoppedWhileRestarting]).toEqual([false, 0]);
+        release();
+        await stop;
+        await fault;
+        expect([daemon.stops, daemon.stoppedWhileRestarting]).toEqual([1, 0]);
+    });
+
+    test("stopping while the daemon starts waits for the start, then stops it", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(null);
+        let release: () => void = () => undefined;
+        daemon.gate = new Promise<void>((r) => {
+            release = r;
+        });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.daemonFactory = () => daemon as unknown as DaemonStack;
+        const reset = driver.reset();
+        reset.catch(() => undefined);
+        await Bun.sleep(20);
+        expect(daemon.starting).toBe(true);
+        let stopped = false;
+        const stop = driver.stop().then(() => {
+            stopped = true;
+        });
+        await Bun.sleep(20);
+        expect([stopped, daemon.stoppedWhileStarting]).toEqual([false, 0]);
+        release();
+        await stop;
+        await reset;
+        expect([daemon.stops, daemon.stoppedWhileStarting]).toEqual([1, 0]);
+        expect(driver.host).toBeNull();
+    });
+
+    test("a stop whose daemon refuses to die keeps the replacement daemon's pid in the arm state", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        const daemon = fakeDaemon(PID + 10);
+        let release: () => void = () => undefined;
+        daemon.gate = new Promise<void>((r) => {
+            release = r;
+        });
+        daemon.stop = async () => {
+            throw new Error("daemon survived SIGKILL");
+        };
+        driver.daemon = daemon as unknown as DaemonStack;
+        const fault = driver.fault(episode("daemon_restart"));
+        fault.catch(() => undefined);
+        await Bun.sleep(5);
+        const stop = driver.stop();
+        stop.catch(() => undefined);
+        release();
+        await expect(stop).rejects.toThrow("daemon survived SIGKILL");
+        await fault.catch(() => undefined);
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.daemon?.pid).toBe(PID + 11);
+    });
+
+    test("a fresh driver's stop leaves a recorded arm state for reapStale to read", async () => {
+        const { driver, armDir } = fixture("host");
+        mkdirSync(armDir, { recursive: true });
+        const recorded = { model: 0, daemon: { pid: 4242, start: "7" }, host: null, second: null };
+        writeFileSync(join(armDir, "state.json"), JSON.stringify(recorded));
+        await driver.stop();
+        expect(JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"))).toEqual(recorded);
+    });
+
+    test("a second client that lost its process still leaves its session owed after a stop", async () => {
+        const { driver, hosts, armDir } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        const at = ev("session_start", { project: "p" });
+        await driver.fault(episode("two_hosts_one_daemon"), at);
+        const second = hosts.at(-1) as FakeHost;
+        second.pid = null;
+        await driver.stop();
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.second_owed).toBe("s-0000");
+    });
+
+    test("a resume into a session whose second client was recorded reattaches one", async () => {
+        const { driver, hosts, armDir } = fixture("eidnara", { p: "/repo" });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        const dead = Bun.spawnSync(["true"]).pid;
+        // A daemon pid no live process holds, so each resume's reap has nothing to stop.
+        o.daemonFactory = () => fakeDaemon(dead) as unknown as DaemonStack;
+        const factory = o.hostFactory as (ctx: HostContext) => SimHost;
+        // Each host runs as a live child of its own, so the arm records its launch identity and
+        // a resume's reap stops it.
+        const live: ReturnType<typeof Bun.spawn>[] = [];
+        o.hostFactory = (ctx) => {
+            const h = factory(ctx) as unknown as FakeHost;
+            const child = Bun.spawn(["sleep", "300"]);
+            live.push(child);
+            h.pid = child.pid;
+            return h as unknown as SimHost;
+        };
+        mkdirSync(join(armDir, "r"), { recursive: true });
+        writeFileSync(
+            join(armDir, "state.json"),
+            JSON.stringify({
+                model: 0,
+                daemon: null,
+                host: null,
+                second: { pid: dead, start: null, session: "s-0000" },
+                ballast: null,
+                refilling: false,
+                git: null,
+                failed: null,
+                store_faults: {},
+            }),
+        );
+        const inner = driver as unknown as Record<string, unknown>;
+        const noop = () => undefined;
+        inner.snapshots = { sessionStart: noop, sessionEnd: noop, addTools: noop };
+        await driver.resume(null);
+        expect(hosts.map((h) => h.opened[0])).not.toContain(`s-0000-b@${driver.workspace("p")}`);
+        await driver.stop();
+        const again = new HostDriver(o);
+        (again as unknown as Record<string, unknown>).snapshots = inner.snapshots;
+        await again.resume(null);
+        await again.event(ev("session_start", { project: "p" }));
+        expect(hosts.map((h) => h.opened[0])).toContain(`s-0000-b@${driver.workspace("p")}`);
+        await again.stop();
+        hosts.length = 0;
+        await driver.resume(null);
+        await driver.event(ev("session_start", { project: "p" }));
+        expect(hosts.map((h) => h.opened[0])).toContain(`s-0000-b@${driver.workspace("p")}`);
+        expect(inner.second).not.toBeNull();
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.second).not.toBeNull();
+        await driver.stop();
+        for (const child of live) child.kill();
+    });
+
+    test("the first session after a host upgrade must leave a new transcript in the store", async () => {
+        const { driver, transcripts } = fixture("host", { p: gitRepo() });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.hostVersions = {
+            from: "0.80.2",
+            to: "0.87.1",
+            upgradeTranscriptPaths: o.transcriptPaths,
+        };
+        o.config = { ...o.config, upgrade: { pi_install: "/next/pi" } };
+        await driver.reset();
+        const sessions = join(transcripts, "sessions");
+        mkdirSync(sessions, { recursive: true });
+        writeFileSync(join(sessions, "old.jsonl"), "{}");
+        await driver.event(ev("session_end"));
+        await driver.fault(episode("host_upgrade"));
+        const preUpgrade = new HostDriver(o);
+        await preUpgrade.resume(null);
+        expect((preUpgrade as unknown as { transcriptsChecked: boolean }).transcriptsChecked).toBe(
+            false,
+        );
+        await preUpgrade.stop();
+        await driver.event(ev("session_start"));
+        await expect(driver.event(ev("session_end"))).rejects.toThrow("no new transcript");
+        const resumed = new HostDriver(o);
+        await resumed.resume(null);
+        expect((resumed as unknown as { transcriptsChecked: boolean }).transcriptsChecked).toBe(
+            false,
+        );
+        await resumed.stop();
+        await driver.event(ev("session_start"));
+        await Bun.sleep(20);
+        writeFileSync(join(sessions, "new.jsonl"), "{}");
+        await driver.stop();
+        const reopened = new HostDriver(o);
+        await reopened.resume(ev("session_start"));
+        await reopened.event(ev("session_end"));
+        await reopened.stop();
+        await driver.resume(null);
+        await driver.event(ev("session_start"));
+        await Bun.sleep(20);
+        writeFileSync(join(sessions, "again.jsonl"), "{}");
+        await driver.event(ev("session_end"));
+        symlinkSync("/", join(sessions, "escape"));
+        await driver.fault(episode("host_upgrade"));
+        await driver.event(ev("session_start"));
+        await Bun.sleep(20);
+        writeFileSync(join(sessions, "newer.jsonl"), "{}");
+        await driver.event(ev("session_end"));
+    });
+
+    test("the store checks a daemon restart owes survive a resume through the arm state", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        await driver.fault(episode("daemon_restart"));
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(Object.keys(state.store_faults)).toEqual(["f-daemon_restart"]);
+        const plain = fixture("host", { p: gitRepo() });
+        await plain.driver.reset();
+        const written = JSON.parse(readFileSync(join(plain.armDir, "state.json"), "utf8"));
+        writeFileSync(
+            join(plain.armDir, "state.json"),
+            JSON.stringify({ ...written, store_faults: { "f-daemon_restart": 0 } }),
+        );
+        const fresh = new HostDriver((plain.driver as unknown as { o: DriverOptions }).o);
+        await fresh.resume(null);
+        const owed = (fresh as unknown as { storeFaults: Map<string, number> }).storeFaults;
+        expect([...owed.keys()]).toEqual(["f-daemon_restart"]);
+        await fresh.stop();
+    });
+
+    test("a second client whose close fails keeps its pid in the arm state", async () => {
+        const { driver, hosts, armDir } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        const at = ev("session_start", { project: "p" });
+        await driver.fault(episode("two_hosts_one_daemon"), at);
+        const second = hosts.at(-1) as FakeHost;
+        second.pid = process.pid;
+        second.failClose = true;
+        const inner = driver as unknown as Record<string, unknown> & { newHost(): SimHost };
+        driver.host = inner.newHost();
+        const noop = () => undefined;
+        inner.snapshots = { sessionStart: noop, sessionEnd: noop, addTools: noop };
+        inner.transcriptsChecked = true;
+        await driver.event(at);
+        await expect(driver.event(ev("session_end", { project: "p" }))).rejects.toThrow(
+            "host survived",
+        );
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.second?.pid).toBe(process.pid);
+        await expect(driver.stop()).rejects.toThrow("host survived");
+        const after = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(after.second?.pid).toBe(process.pid);
+    });
+
     test("a model switch moves later sessions to the next model and keeps the daemon", async () => {
         const { driver } = fixture("eidnara");
-        const daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
         driver.daemon = daemon;
         expect(await driver.fault(episode("model_switch"))).toEqual({ model: "model-b" });
         expect(driver.host?.ctx.model).toBe("model-b");
@@ -1572,7 +2345,7 @@ describe("HostDriver faults", () => {
         await driver.reset();
         await driver.event(ev("session_start"));
         await expect(driver.fault(episode("model_switch"))).rejects.toThrow("between sessions");
-        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
         await expect(driver.fault(episode("daemon_restart"))).rejects.toThrow("between sessions");
         await expect(driver.fault(episode("provider_429"))).rejects.toThrow("no mechanism");
     });
@@ -1589,7 +2362,7 @@ describe("HostDriver faults", () => {
 
     test.skipIf(!sudo)("store_full replaces a ballast link the host planted", async () => {
         const { driver } = fixture("eidnara");
-        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
         const inner = driver as unknown as { mountStore(f: boolean): void };
         inner.mountStore(true);
         const victim = join(tmp(), "victim");
@@ -1609,7 +2382,7 @@ describe("HostDriver faults", () => {
         async () => {
             const { driver, transcripts } = fixture("eidnara");
             mkdirSync(join(transcripts, "sessions"), { recursive: true });
-            driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+            driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
             driver.host = new FakeHost({} as HostContext, transcripts) as unknown as SimHost;
             const inner = driver as unknown as { mountStore(f: boolean): void };
             inner.mountStore(true);
@@ -1634,7 +2407,7 @@ describe("HostDriver faults", () => {
         "a directory left at the ballast's name is replaced by the fill",
         async () => {
             const { driver } = fixture("eidnara");
-            driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+            driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
             const inner = driver as unknown as { mountStore(f: boolean): void };
             inner.mountStore(true);
             try {
@@ -1653,7 +2426,7 @@ describe("HostDriver faults", () => {
         async () => {
             const { driver, transcripts } = fixture("eidnara");
             mkdirSync(join(transcripts, "sessions"), { recursive: true });
-            driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+            driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
             driver.host = new FakeHost({} as HostContext, transcripts) as unknown as SimHost;
             const inner = driver as unknown as { mountStore(f: boolean): void };
             inner.mountStore(true);
@@ -1701,7 +2474,7 @@ describe("HostDriver faults", () => {
     test.skipIf(!sudo)("space freed during the episode stops the run at session_end", async () => {
         const { driver, transcripts } = fixture("eidnara");
         mkdirSync(join(transcripts, "sessions"), { recursive: true });
-        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
         driver.host = new FakeHost({} as HostContext, transcripts) as unknown as SimHost;
         const inner = driver as unknown as { mountStore(f: boolean): void };
         inner.mountStore(true);
@@ -1721,7 +2494,7 @@ describe("HostDriver faults", () => {
         async () => {
             const { driver, transcripts } = fixture("eidnara");
             mkdirSync(join(transcripts, "sessions"), { recursive: true });
-            driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+            driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
             driver.host = new FakeHost({} as HostContext, transcripts) as unknown as SimHost;
             const inner = driver as unknown as { mountStore(f: boolean): void };
             inner.mountStore(true);
@@ -1826,7 +2599,7 @@ describe("HostDriver faults", () => {
         async () => {
             const { driver, transcripts } = fixture("eidnara");
             mkdirSync(join(transcripts, "sessions"), { recursive: true });
-            driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+            driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
             driver.host = new FakeHost({} as HostContext, transcripts) as unknown as SimHost;
             const inner = driver as unknown as { mountStore(f: boolean): void };
             inner.mountStore(true);
@@ -1933,6 +2706,33 @@ describe("probe snapshots", () => {
         ).rejects.toThrow("harness killed");
         const rebuilt = new SnapshotRecorder(armDir, "host", () => []);
         expect(rebuilt.sessionCommands()).toEqual([run]);
+    });
+
+    test("tools.jsonl attributes each run to the turn in progress, and to no turn at session end", async () => {
+        const { driver, hosts, armDir, transcripts } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        mkdirSync(join(transcripts, "sessions"), { recursive: true });
+        const host = hosts.at(-1) as FakeHost;
+        await driver.event(ev("session_start", { session: "s-0" }));
+        const mid = { command: "cargo build", exit: 0, scenario_ms: 3 };
+        const drained = { command: "cargo test", exit: null, scenario_ms: 5 };
+        host.onPrompt = () => {
+            host.ctx.onTool?.(mid);
+            host.tools.push(drained);
+        };
+        await driver.event(ev("user_turn", { id: "e-1", session: "s-0", text: "go" }));
+        host.onPrompt = () => {};
+        host.tools.push({ command: "ls", exit: null, scenario_ms: 9 });
+        await driver.event(ev("session_end", { session: "s-0" }));
+        const lines = readFileSync(join(armDir, "tools.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l));
+        expect(lines).toEqual([
+            { turn: "e-1", ...mid },
+            { turn: "e-1", ...drained },
+            { turn: null, command: "ls", exit: null, scenario_ms: 9 },
+        ]);
     });
 
     test("an embedded repository inside an already-indexed directory, or empty, is found; an ignored one is not", () => {
@@ -2094,6 +2894,12 @@ describe("probe snapshots", () => {
             await Bun.sleep(20);
             calls.push({
                 seq: 0,
+                arm: "host",
+                session: "s-0",
+                status: 200,
+                error: null,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 component: "history_summarizer",
                 turn: "e-1",
                 scenario_ms: 5,
@@ -2159,6 +2965,12 @@ describe("probe snapshots", () => {
         const calls = [
             {
                 seq: 0,
+                arm: "host",
+                session: "s-1",
+                status: 200,
+                error: null,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 component: "agent",
                 turn: "e-9",
                 scenario_ms: 0,
@@ -2247,12 +3059,27 @@ describe("probe snapshots", () => {
     });
 });
 
+test("a recorder rebuilt after a harness kill drops a tools.jsonl line the kill cut", () => {
+    const armDir = tmp();
+    const path = join(armDir, "tools.jsonl");
+    writeFileSync(
+        path,
+        `${JSON.stringify({ turn: "e-1", command: "ls", exit: 0, scenario_ms: 1 })}\n{"turn": "e-2", "comm`,
+    );
+    const resumed = new SnapshotRecorder(armDir, "eidnara", () => []);
+    resumed.addTools([{ command: "cargo build", exit: 0, scenario_ms: 3 }], "e-2");
+    expect(readJsonl<{ command: string }>(path).map((e) => e.command)).toEqual([
+        "ls",
+        "cargo build",
+    ]);
+});
+
 test("a recorder rebuilt after a harness kill keeps the open session's start tree and commands", () => {
     const repo = gitRepo();
     const armDir = tmp();
     const first = new SnapshotRecorder(armDir, "eidnara", () => []);
     first.sessionStart("s-1", "p", repo);
-    first.addTools([{ command: "cargo build", exit: 0, scenario_ms: 1 }]);
+    first.addTools([{ command: "cargo build", exit: 0, scenario_ms: 1 }], "e-1");
     writeFileSync(join(repo, "new.rs"), "fn x() {}\n");
     const resumed = new SnapshotRecorder(armDir, "eidnara", () => []);
     resumed.sessionStart("s-1", "p", repo);
@@ -2355,14 +3182,14 @@ test("the workspace walk checks its deadline once per directory, so a forest of 
 test("a tool run reported at its start is on record, and its end report replaces it", () => {
     const armDir = tmp();
     const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
-    recorder.addTools([{ command: "cargo build", exit: null, scenario_ms: 1, call: "t1" }]);
-    recorder.addTools([{ command: "ls", exit: 0, scenario_ms: 2 }]);
+    recorder.addTools([{ command: "cargo build", exit: null, scenario_ms: 1, call: "t1" }], "e-1");
+    recorder.addTools([{ command: "ls", exit: 0, scenario_ms: 2 }], "e-1");
     const killed = new SnapshotRecorder(armDir, "eidnara", () => []);
     expect(killed.sessionCommands()).toEqual([
         { command: "cargo build", exit: null, scenario_ms: 1, call: "t1" },
         { command: "ls", exit: 0, scenario_ms: 2 },
     ]);
-    recorder.addTools([{ command: "cargo build", exit: 1, scenario_ms: 9, call: "t1" }]);
+    recorder.addTools([{ command: "cargo build", exit: 1, scenario_ms: 9, call: "t1" }], "e-1");
     const ended = new SnapshotRecorder(armDir, "eidnara", () => []);
     expect(ended.sessionCommands()).toEqual([
         { command: "cargo build", exit: 1, scenario_ms: 1, call: "t1" },
@@ -2441,9 +3268,9 @@ test("an embedded repository whose name is pathspec magic removes only itself fr
 test("tool reports append to the command log instead of rewriting the recorder state", () => {
     const armDir = tmp();
     const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
-    recorder.addTools([{ command: "a", exit: 0, scenario_ms: 1 }]);
+    recorder.addTools([{ command: "a", exit: 0, scenario_ms: 1 }], null);
     const stateBefore = statSync(join(armDir, "snapshot-state.json"), { throwIfNoEntry: false });
-    recorder.addTools([{ command: "b", exit: 0, scenario_ms: 2 }]);
+    recorder.addTools([{ command: "b", exit: 0, scenario_ms: 2 }], null);
     const stateAfter = statSync(join(armDir, "snapshot-state.json"), { throwIfNoEntry: false });
     expect(stateAfter?.mtimeMs ?? null).toBe(stateBefore?.mtimeMs ?? null);
     const lines = readFileSync(join(armDir, "commands.jsonl"), "utf8").trim().split("\n");
@@ -2719,4 +3546,53 @@ test("snapshot git that outlives its bound fails the probe turn instead of hangi
     );
     expect(next.failed).toBeUndefined();
     expect(next.snapshot).toBe("host:q-2:e-2");
+});
+
+test("a fresh recorder creates an empty tools.jsonl, so a run with no tool runs still has the ledger", () => {
+    const armDir = tmp();
+    new SnapshotRecorder(armDir, "eidnara", () => []);
+    expect(readFileSync(join(armDir, "tools.jsonl"), "utf8")).toBe("");
+});
+
+test("clearing a recorder leaves an empty tools.jsonl in place", () => {
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.addTools([{ command: "ls", exit: 0, scenario_ms: 1 }], "e-1");
+    recorder.clear();
+    expect(readFileSync(join(armDir, "tools.jsonl"), "utf8")).toBe("");
+});
+
+test("a tool run recovered from an earlier turn is logged with no turn, whatever turn is in progress", async () => {
+    const { driver, hosts, armDir, transcripts } = fixture("host", { p: gitRepo() });
+    await driver.reset();
+    mkdirSync(join(transcripts, "sessions"), { recursive: true });
+    const host = hosts.at(-1) as FakeHost;
+    await driver.event(ev("session_start", { session: "s-0" }));
+    host.onPrompt = () => {
+        host.ctx.onTool?.({ command: "cargo build", exit: 0, scenario_ms: 3, recovered: true });
+        host.ctx.onTool?.({ command: "ls", exit: 0, scenario_ms: 4 });
+    };
+    await driver.event(ev("user_turn", { id: "e-1", session: "s-0", text: "go" }));
+    const lines = readFileSync(join(armDir, "tools.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l));
+    expect(lines.map((l) => [l.command, l.turn])).toEqual([
+        ["cargo build", null],
+        ["ls", "e-1"],
+    ]);
+});
+
+test("the plugin log is created without following a symlink the agent left at its path", () => {
+    const dir = tmp();
+    const target = join(dir, "elsewhere", "eidnara.log");
+    symlinkSync(target, join(dir, "eidnara.log"));
+    expect(() => createNoFollow(join(dir, "eidnara.log"))).toThrow(/eidnara\.log is a symlink/);
+    expect(existsSync(target)).toBe(false);
+    createNoFollow(join(dir, "plain.log"));
+    expect(lstatSync(join(dir, "plain.log")).isFile()).toBe(true);
+    createNoFollow(join(dir, "plain.log"));
+    // A FIFO at the path fails at once instead of blocking the open on a reader.
+    expect(Bun.spawnSync(["mkfifo", join(dir, "fifo.log")]).exitCode).toBe(0);
+    expect(() => createNoFollow(join(dir, "fifo.log"))).toThrow(/fifo\.log is a FIFO/);
 });

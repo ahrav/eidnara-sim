@@ -39,7 +39,12 @@ const runRoot = () => {
 describe("time injection", () => {
     test("the offset file puts the process clock at base plus scenario time", () => {
         const file = join(mkdtempSync(join(tmpdir(), "ft-")), "offset");
-        writeOffset(file, 10_000_000, 3_600_000, 10_000_000);
+        const written = writeOffset(file, 10_000_000, 3_600_000, 10_000_000);
+        expect(written.offset_s).toBe(3_600);
+        // The transition is bounded: the new offset is readable from no earlier than offset_wall_ms
+        // and the old one from no later than offset_settled_ms, both taken around the rename.
+        expect(written.offset_wall_ms).toBeGreaterThan(0);
+        expect(written.offset_settled_ms).toBeGreaterThanOrEqual(written.offset_wall_ms);
         expect(readOffsetSeconds(file)).toBe(3_600);
         writeOffset(file, 0, 0, 5_000);
         expect(readFileSync(file, "utf8")).toBe("-5\n");
@@ -368,8 +373,28 @@ describe("clock hook", () => {
             order: ["a"],
             drivers: { a: driver },
             settleMs: 0,
-            onClock: (arm, ms) => void calls.push([arm, ms]),
+            onClock: (arm, ms) => {
+                calls.push([arm, ms]);
+                return {
+                    offset_s: ms / 1000 + 7,
+                    offset_wall_ms: 1_000 + ms,
+                    offset_settled_ms: 1_000 + ms,
+                };
+            },
         }).run();
+        // The arm's start and every published jump write a ClockOffset; a jump's follows its
+        // AdvanceClock, so the journal holds every jump a process could have read.
+        const offsets = j.entries.filter((e) => typeof e.offset_s === "number");
+        expect(offsets.map((e) => [e.kind, e.scenario_ms, e.offset_s, e.offset_wall_ms])).toEqual(
+            calls.map(([, ms]) => ["ClockOffset", ms, ms / 1000 + 7, 1_000 + ms]),
+        );
+        for (const offset of offsets.slice(1)) {
+            const before = j.entries[j.entries.indexOf(offset) - 1];
+            expect([before?.kind, before?.scenario_ms]).toEqual([
+                "AdvanceClock",
+                offset.scenario_ms,
+            ]);
+        }
         expect(calls[0]).toEqual(["a", 0]);
         expect(calls[1]).toEqual(["a", 5_000]);
         expect(calls.at(-1)?.[1] ?? 0).toBeGreaterThanOrEqual(9_000);
@@ -377,6 +402,10 @@ describe("clock hook", () => {
             .filter((e) => e.kind === "AdvanceClock")
             .map((e) => ["a", e.scenario_ms]);
         expect(calls.slice(1)).toEqual(jumps as [string, number][]);
+        // The offsets are journal entries a later process reads back.
+        j.close();
+        const reread = new Journal(j.path);
+        expect(reread.entries.filter((e) => e.kind === "ClockOffset")).toHaveLength(calls.length);
     });
 });
 
@@ -429,7 +458,7 @@ describe("ResourceSampler", () => {
         expect(events).toEqual([true, false]);
     });
 
-    test("start() takes the baseline sample at once", () => {
+    test("start() takes the baseline sample at once, and stop() a final one", () => {
         const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
         const sampler = new ResourceSampler({
             path,
@@ -441,8 +470,9 @@ describe("ResourceSampler", () => {
             onBusy: () => undefined,
         });
         sampler.start();
-        sampler.stop();
         expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(1);
+        sampler.stop();
+        expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(2);
     });
 
     test("treeBytes counts regular files under the store and does not follow symlinks", () => {
@@ -522,6 +552,90 @@ describe("ResourceSampler", () => {
         expect(lines).toHaveLength(3);
         expect(lines[0]).toMatchObject({ scenario_ms: 42, pid: process.pid });
         expect(lines[0].rss).toBeGreaterThan(0);
+        expect(Number(lines[0].start)).toBeGreaterThan(0);
+        sampler.start();
+        sampler.stop();
+        // `start` takes a sample immediately, and `stop` on a running sampler takes a final one.
+        expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(5);
+        sampler.stop();
+        expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(5);
         expect(lines[0].store_bytes).toBeGreaterThan(0);
+    });
+
+    test("a busy callback that throws inside an interval sample still reaches onError once", async () => {
+        const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
+        const errors: string[] = [];
+        const sampler = new ResourceSampler({
+            path,
+            intervalMs: 20,
+            busyFraction: -1,
+            pid: () => process.pid,
+            storeDir: import.meta.dir,
+            scenarioMs: () => 0,
+            onBusy: () => {
+                throw new Error("journal closed");
+            },
+            onError: (caught) => void errors.push((caught as Error).message),
+        });
+        sampler.start();
+        await Bun.sleep(120);
+        expect(errors).toEqual(["journal closed"]);
+        expect(() => sampler.stop()).not.toThrow();
+    });
+
+    test("a cut final sample is dropped when the sampler reopens its file", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
+        writeFileSync(path, '{"wall_ms":1}\n{"wall_ms":2,"sce');
+        const sampler = new ResourceSampler({
+            path,
+            intervalMs: 60_000,
+            busyFraction: 0.2,
+            pid: () => process.pid,
+            storeDir: import.meta.dir,
+            scenarioMs: () => 0,
+            onBusy: () => undefined,
+        });
+        sampler.sample();
+        const lines = readFileSync(path, "utf8").trim().split("\n");
+        expect(lines).toHaveLength(2);
+        expect(() => lines.map((l) => JSON.parse(l))).not.toThrow();
+    });
+
+    test("an interval sample that fails reports through onError and stops the timer", async () => {
+        const dir = mkdtempSync(join(tmpdir(), "samp-"));
+        const errors: string[] = [];
+        const sampler = new ResourceSampler({
+            path: join(dir, "resources.jsonl"),
+            intervalMs: 20,
+            busyFraction: 0.2,
+            pid: () => process.pid,
+            storeDir: import.meta.dir,
+            scenarioMs: () => 0,
+            onBusy: () => undefined,
+            onError: (caught) => void errors.push((caught as NodeJS.ErrnoException).code ?? "?"),
+        });
+        sampler.start();
+        rmSync(dir, { recursive: true, force: true });
+        await Bun.sleep(120);
+        expect(errors).toEqual(["ENOENT"]);
+        sampler.stop();
+    });
+
+    test("start takes the baseline sample at once, so the next sample yields a CPU fraction", async () => {
+        const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
+        const sampler = new ResourceSampler({
+            path,
+            intervalMs: 60_000,
+            busyFraction: 0.2,
+            pid: () => process.pid,
+            storeDir: import.meta.dir,
+            scenarioMs: () => 0,
+            onBusy: () => undefined,
+        });
+        sampler.start();
+        expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(1);
+        await Bun.sleep(20);
+        expect(sampler.sample().cpu_fraction).not.toBeNull();
+        sampler.stop();
     });
 });

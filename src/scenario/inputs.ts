@@ -12,9 +12,38 @@ import type { Embedder } from "./similarity";
 
 const read = (path: string) => readFileSync(join(CORPUS_DIR, path), "utf8");
 
+const CORPUS_INPUTS = [
+    "manifest.json",
+    "fact-bank.json",
+    "repos.json",
+    "distributions.json",
+    "tool-outputs/samples.jsonl",
+    "tool-outputs/error-codes.jsonl",
+] as const;
+type CorpusInput = (typeof CORPUS_INPUTS)[number];
+
+/** One read of every corpus file the compiler consumes, so the digest covers the bytes that were parsed. */
+function readCorpusInputs(): Record<CorpusInput, string> {
+    return Object.fromEntries(CORPUS_INPUTS.map((f) => [f, read(f)])) as Record<
+        CorpusInput,
+        string
+    >;
+}
+
+/** One digest over every corpus file the compiler reads directly, so a change to any of them recompiles. */
+export function corpusInputsSha256(
+    texts: Record<CorpusInput, string> = readCorpusInputs(),
+): string {
+    return sha256Hex(CORPUS_INPUTS.map((f) => `${f}:${sha256Hex(texts[f])}`).join("\n"));
+}
+
 function readJson(path: string): unknown {
+    return parseText(readFileSync(path, "utf8"), path);
+}
+
+function parseText(text: string, path: string): unknown {
     try {
-        return JSON.parse(readFileSync(path, "utf8"));
+        return JSON.parse(text);
     } catch (cause) {
         throw new Error(`${path}: ${cause instanceof Error ? cause.message : String(cause)}`);
     }
@@ -75,6 +104,22 @@ export function langOf(role: string): Project["lang"] {
     throw new Error(`repos.json: role ${role} has no language`);
 }
 
+export const corpusManifestHash = () => sha256Hex(read("manifest.json"));
+
+/** Every corpus file the compiler reads, hashed by its bytes as they are. */
+const DIRECT_INPUTS = [
+    "manifest.json",
+    "fact-bank.json",
+    "repos.json",
+    "distributions.json",
+    "tool-outputs/samples.jsonl",
+    "tool-outputs/error-codes.jsonl",
+];
+
+/** One digest over the bytes of every corpus file the compiler reads. */
+export const compileInputsHash = () =>
+    sha256Hex(DIRECT_INPUTS.map((f) => `${f}:${sha256Hex(read(f))}`).join("\n"));
+
 export function loadCompileInput(
     seed: number,
     tier: Tier,
@@ -84,7 +129,8 @@ export function loadCompileInput(
     verifyCorpus();
     const prereg = loadPrereg(tier);
     if (standIn) prereg.scenario.cue_probe_similarity.embedding_model = embedder.model;
-    const projects: Project[] = loadRepos().flatMap((r) => {
+    const texts = readCorpusInputs();
+    const projects: Project[] = loadRepos(texts["repos.json"]).flatMap((r) => {
         const lang = langOf(r.role);
         return [
             { id: r.id, lang, twin_of: null },
@@ -94,14 +140,14 @@ export function loadCompileInput(
     return {
         seed,
         prereg,
-        dist: loadDistributions(),
-        bank: readJson(join(CORPUS_DIR, "fact-bank.json")) as Bank,
+        dist: loadDistributions(texts["distributions.json"]),
+        bank: parseText(texts["fact-bank.json"], join(CORPUS_DIR, "fact-bank.json")) as Bank,
         projects,
-        pastes: parseJsonl(read("tool-outputs/samples.jsonl")) as CompileInput["pastes"],
+        pastes: parseJsonl(texts["tool-outputs/samples.jsonl"]) as CompileInput["pastes"],
         errorCodes: parseJsonl(
-            read("tool-outputs/error-codes.jsonl"),
+            texts["tool-outputs/error-codes.jsonl"],
         ) as CompileInput["errorCodes"],
-        corpusManifestSha256: sha256Hex(read("manifest.json")),
+        corpusInputsSha256: corpusInputsSha256(texts),
         embedder,
     };
 }

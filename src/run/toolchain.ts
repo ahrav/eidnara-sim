@@ -1,14 +1,8 @@
-import {
-    existsSync,
-    lstatSync,
-    mkdirSync,
-    readdirSync,
-    realpathSync,
-    writeFileSync,
-} from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { SimConfig } from "../config/config";
+import { writeExclusive } from "./atomic";
 import { withDeadline } from "./deadline";
 import { launch, shellQuote } from "./launcher";
 import { processStart, stopOwnedTree } from "./procs";
@@ -45,7 +39,9 @@ export function writeToolWrappers(config: SimConfig, launcher: string): void {
     mkdirSync(dir, { recursive: true });
     for (const tool of config.toolchain.wall_clock_tools) {
         const script = `#!/bin/sh\nunset LD_PRELOAD\nexec ${shellQuote(locate(config, tool))} "$@"\n`;
-        writeFileSync(join(dir, tool), script, { mode: 0o755 });
+        const path = join(dir, tool);
+        rmSync(path, { force: true });
+        writeExclusive(path, script, 0o755);
     }
 }
 

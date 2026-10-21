@@ -15,7 +15,13 @@ export class Clock {
         private scenario: number,
         private readonly journal: Journal,
         private readonly wall: () => number = () => Math.round(performance.now()),
-        private readonly onAdvance: (scenarioMs: number) => void = () => undefined,
+        /**
+         * Publishes a jump after it is journaled; a returned record (the offset the arm's
+         * processes now read) is journaled next on a `ClockOffset` entry at the jump's time.
+         */
+        private readonly onAdvance: (
+            scenarioMs: number,
+        ) => Record<string, unknown> | undefined | void = () => undefined,
     ) {}
 
     now(): number {
@@ -85,6 +91,9 @@ export class Clock {
             busy: [],
         });
         this.scenario = target;
-        this.onAdvance(target);
+        const published = this.onAdvance(target);
+        if (published && Object.keys(published).length > 0) {
+            this.journal.append({ ...published, kind: "ClockOffset", arm, scenario_ms: target });
+        }
     }
 }

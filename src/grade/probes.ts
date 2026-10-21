@@ -1,16 +1,47 @@
-import { appendFileSync, existsSync, readFileSync, truncateSync } from "node:fs";
+import {
+    closeSync,
+    constants,
+    fstatSync,
+    ftruncateSync,
+    openSync,
+    readFileSync,
+    rmSync,
+    writeSync,
+} from "node:fs";
+import { join } from "node:path";
+import { sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
-import { requireAppendable } from "../run/journal";
 import type { ProbeItem } from "../scenario/compile";
 import {
     type Artefact,
     ArtefactReader,
     assertArtefactsOnly,
     type CallView,
+    type Command,
+    completed,
+    type Field,
     GradeRefused,
+    num,
+    oneOf,
+    optional,
     type Snapshot,
+    str,
+    text,
 } from "./artefacts";
-import { abstains, addedLines, carries, diffPaths, matchesAll, matchesAny } from "./text";
+import {
+    abstains,
+    addedLines,
+    carries,
+    type DiffFile,
+    diffFiles,
+    diffPaths,
+    heredocAt,
+    literalQuotes,
+    matchesAll,
+    matchesAny,
+    pattern,
+    survivingPaths,
+} from "./text";
 
 export type Rules = Preregistration["grading"];
 export type Verdict = "pass" | "fail" | "excluded";
@@ -18,14 +49,22 @@ export type Verdict = "pass" | "fail" | "excluded";
 export interface Check {
     must?: string[];
     must_not?: string[];
+    paths_must?: string[];
+    paths_must_not?: string[];
+    first_line_must?: string[];
+    first_line_must_not?: string[];
+    quote_style_must?: "double" | "single";
     commands_must?: string[];
+    commands_must_not?: string[];
     answer?: string;
+    answer_must_not?: string | string[];
     abstain?: boolean;
     /** A directory prefix ending in `/`; the diff-channel keys read only files under it. */
     scope?: string;
     /** Which side of a P4 scoped update the item probes: inside the narrowed scope or outside it. */
     side?: "in" | "out";
     window_from_turn?: number;
+    window_to_turn?: number;
     turns?: [number, number];
 }
 
@@ -43,6 +82,8 @@ export interface GradeRecord extends Outcome {
     snapshot: string;
     inputs: string[];
     later_attempts_logged: number;
+    /** The digest of the grader's source files that produced the record. */
+    grader?: string;
     pair?: string;
     /**
      * The arm a pairwise (P7) grade was judged against. One host answer is judged once per
@@ -53,7 +94,7 @@ export interface GradeRecord extends Outcome {
 
 export type GradeKey = Pick<GradeRecord, "item" | "arm" | "against">;
 
-const keyOf = (g: GradeKey) => `${g.item}/${g.arm}/${g.against ?? ""}`;
+const keyOf = (g: GradeKey) => `${g.item}/${g.arm}${g.against ? ` vs ${g.against}` : ""}`;
 
 /** Verdict counts by arm and probe type, with a pairwise grade's opponent in its row name. */
 export function verdictCounts(grades: GradeRecord[]): Record<string, Record<string, number>> {
@@ -67,24 +108,80 @@ export function verdictCounts(grades: GradeRecord[]): Record<string, Record<stri
     return counts;
 }
 
-const READS = /\b(cat|less|more|head|tail|sed|view|bat|grep|rg)\b|^read /;
-const TESTS = /\b(cargo test|bun test|npm test|pnpm test)\b/;
-const QUIET = /^\s*(cargo (build|check|test)|bun (test|install)|git (status|log|diff)|ls|pwd)\b/;
+const READS = /^(cat|less|more|head|tail|sed|view|bat|grep|rg|read)\b/;
+/** `cargo [+toolchain] [OPTIONS]` ahead of the subcommand: the toolchain selector and Cargo's global options. */
+const CARGO =
+    "cargo(?: \\+\\S+)?(?: (?:-[vq]+|--verbose|--quiet|--locked|--offline|--frozen|--color(?:=\\S+| \\S+)|-C ?\\S+|--config(?:=\\S+| \\S+)|-Z ?\\S+))*";
+/** `bun`, `npm`, or `pnpm` with the global options the three accept ahead of the subcommand. */
+const PM =
+    "(?:bun|npm|pnpm)(?: (?:-[sqrw]|--silent|--quiet|--bun|--offline|--prefer-offline|--workspace-root|--loglevel[= ]\\S+|--cwd[= ]\\S+|--dir[= ]\\S+|-C ?\\S+|--prefix[= ]\\S+|--filter[= ]\\S+|--config[= ]\\S+|--env-file[= ]\\S+))*";
+const TESTS = new RegExp(`^(${CARGO} (test|t)|${PM} (run )?test)\\b`);
+const QUIET = new RegExp(
+    `^\\s*(${CARGO} (build|check|test|b|c|t)|${PM} (install|i|ci|(run )?(test|build))|git (status|log|diff)|ls|pwd)\\b[^&|;\`$()\\n]*$`,
+);
 const FOLDS = ["history_summarizer", "native_compaction"];
+const USER_SIM_LABELS = [
+    "task",
+    "pushback",
+    "interrupt",
+    "redirect",
+    "abandon",
+    "clarify",
+    "paste",
+];
+
+const compiles: Field = (v) => {
+    if (!text(v)) return false;
+    const source = (v as string).startsWith("(?i)") ? (v as string).slice(4) : (v as string);
+    if (source.length === 0) return false;
+    try {
+        pattern(v as string);
+        return true;
+    } catch {
+        return false;
+    }
+};
+const patternList: Field = (v) => Array.isArray(v) && v.length > 0 && v.every(compiles);
+
+const CHECK_FIELDS: Record<keyof Check, Field> = {
+    must: patternList,
+    must_not: patternList,
+    commands_must: patternList,
+    answer: text,
+    paths_must: patternList,
+    paths_must_not: patternList,
+    first_line_must: patternList,
+    first_line_must_not: patternList,
+    quote_style_must: oneOf(["double", "single"]),
+    commands_must_not: patternList,
+    answer_must_not: (v: unknown) => compiles(v) || patternList(v),
+    abstain: (v: unknown) => v === true,
+    scope: (v: unknown) =>
+        text(v) &&
+        (v as string).endsWith("/") &&
+        (v as string)
+            .slice(0, -1)
+            .split("/")
+            .every((p) => p !== "" && p !== "." && p !== ".."),
+    side: oneOf(["in", "out"]),
+    window_from_turn: (v: unknown) => Number.isInteger(v) && (v as number) >= 0,
+    window_to_turn: (v: unknown) => Number.isInteger(v) && (v as number) >= 0,
+    turns: (v: unknown) =>
+        Array.isArray(v) &&
+        v.length === 2 &&
+        v.every((n) => Number.isInteger(n) && n >= 0) &&
+        (v[0] as number) < (v[1] as number),
+};
 
 const REQUIRED: Record<string, (keyof Check)[]> = {
-    P1: ["must"],
-    "P1-control": ["must"],
-    P2: ["must_not"],
+    P2: [],
     P3: ["must", "must_not"],
-    P4: ["must", "must_not", "side"],
-    P5: ["must_not"],
-    P6: ["must"],
+    P4: ["side"],
+    P5: [],
     P8: ["answer"],
     P9: ["abstain"],
-    P10: ["must_not"],
-    P11: ["must_not"],
-    P12: ["must"],
+    P10: ["must_not", "answer_must_not"],
+    P11: [],
     P13: ["turns"],
     P14: ["window_from_turn"],
 };
@@ -98,38 +195,445 @@ function binary(type: string, pass: boolean, extra: Outcome["metrics"] = {}, rea
     return outcome;
 }
 
+/** The reachable shell segments of the turn's commands with the heredoc bodies they consume, one per line. */
 const commandText = (r: ArtefactReader) =>
     r
         .commands()
-        .map((c) => c.command)
+        .flatMap(executedParts)
+        .map((p) => (p.body ? `${p.seg}\n${p.body.replace(/\n$/, "")}` : p.seg))
         .join("\n");
-const work = (r: ArtefactReader) => `${addedLines(r.diff())}\n${commandText(r)}`;
+/** Changed paths join the added lines so a check pattern can match a file name. */
+const changed = (r: ArtefactReader) => {
+    const patch = r.diff();
+    return `${survivingPaths(patch).join("\n")}\n${addedLines(patch)}`;
+};
 
-/** The completed fold calls in the item's range; a call that failed produced no fold the host used. */
-function foldsIn(r: ArtefactReader, turns?: [number, number]): CallView[] {
-    const folds = r.calls().filter((c) => FOLDS.includes(c.component) && !c.failed);
-    if (!turns) return folds;
-    const [lo, hi] = turns;
-    return folds.filter(
-        (c) => c.turn_index !== undefined && c.turn_index >= lo && c.turn_index < hi,
+const POSITIVE_KEYS = [
+    "must",
+    "paths_must",
+    "first_line_must",
+    "quote_style_must",
+    "commands_must",
+] as const;
+const NEGATIVE_KEYS = ["must_not", "paths_must_not", "first_line_must_not", "commands_must_not"];
+const DIFF_CHANNELS = [
+    "must",
+    "must_not",
+    "paths_must",
+    "paths_must_not",
+    "first_line_must",
+    "first_line_must_not",
+    "quote_style_must",
+];
+/** Probe types whose check must name a rule to hold, and those whose check must name one to break. */
+const NEEDS_POSITIVE = ["P1", "P1-control", "P3", "P4", "P6", "P12", "P13"];
+const NEEDS_NEGATIVE = ["P2", "P3", "P5", "P10", "P11"];
+
+/** What a check reads: the diff's surviving files, limited to `scope`, its text, and a command log. */
+interface Work {
+    files: DiffFile[];
+    text: string;
+    commands: Command[];
+}
+
+/**
+ * The work a check reads. The turn diff is read only when the check names a diff channel, and
+ * `scope` keeps the files under its prefix. `text` is the files' paths and added lines, joined by
+ * `extra` when the grader reads more than the diff.
+ */
+function workFor(
+    r: ArtefactReader,
+    c: Check,
+    commands: Command[] = [],
+    extra = (_r: ArtefactReader) => "",
+): Work {
+    const readsDiff = DIFF_CHANNELS.some((k) => c[k as keyof Check] !== undefined);
+    const all = readsDiff ? diffFiles(r.diff()) : [];
+    const files = c.scope ? all.filter((f) => f.path.startsWith(c.scope as string)) : all;
+    const lines = `${files.map((f) => f.path).join("\n")}\n${files.flatMap((f) => f.added).join("\n")}`;
+    const more = extra(r);
+    return { files, text: more ? `${lines}\n${more}` : lines, commands };
+}
+
+const invokes = (patterns: string[]) => (x: Command) =>
+    executed(x).some((seg) => startsWithAll(seg, patterns.map(anchored)));
+const invokesAny = (patterns: string[]) => (x: Command) => patterns.some((p) => invokes([p])(x));
+
+/**
+ * Every rule the check names holds in `w`: the `must` patterns over the text, `paths_must` over
+ * the paths, `first_line_must` over the first line of each created file (at least one), the quote
+ * style over every string literal of the added lines (at least one), and `commands_must` in one
+ * executed segment.
+ */
+function held(w: Work, c: Check): boolean {
+    const paths = w.files.map((f) => f.path).join("\n");
+    const created = w.files.filter((f) => f.created);
+    const quotes = literalQuotes(w.files.flatMap((f) => f.added));
+    const firstLines = c.first_line_must;
+    return (
+        matchesAll(w.text, c.must ?? []) &&
+        matchesAll(paths, c.paths_must ?? []) &&
+        (firstLines === undefined ||
+            (created.length > 0 &&
+                created.every((f) => matchesAll(f.added[0] ?? "", firstLines)))) &&
+        (c.quote_style_must === undefined ||
+            (quotes.length > 0 && quotes.every((q) => q === c.quote_style_must))) &&
+        (c.commands_must === undefined || w.commands.some(invokes(c.commands_must)))
     );
 }
 
+/** Some rule the check forbids occurs in `w`, over the same channels `held` reads. */
+function broken(w: Work, c: Check): boolean {
+    const paths = w.files.map((f) => f.path).join("\n");
+    const created = w.files.filter((f) => f.created);
+    return (
+        matchesAny(w.text, c.must_not ?? []) ||
+        matchesAny(paths, c.paths_must_not ?? []) ||
+        created.some((f) => matchesAny(f.added[0] ?? "", c.first_line_must_not ?? [])) ||
+        w.commands.some(invokesAny(c.commands_must_not ?? []))
+    );
+}
+
+/** P6 requires the read and the prior-session path to occur in the same executed shell segment. */
+/**
+ * Segments known to have run: every unconditional segment, and a `&&` continuation when the
+ * command exited 0. A `||` continuation is left out, because its execution cannot be read from
+ * the exit code.
+ */
+/**
+ * Operator-separated segments with the operator that led to each. Quoted text, a parenthesised
+ * or braced group, a word-initial comment, and a heredoc body stay out of the operator scan, so
+ * only top-level commands become segments.
+ */
+interface Segment {
+    op: string;
+    seg: string;
+    /** Heredoc bodies the segment's commands consume, kept apart from the command words. */
+    body: string;
+}
+function splitShell(command: string): Segment[] {
+    const out: Segment[] = [];
+    let quote = "";
+    let depth = 0;
+    let seg = "";
+    let op = ";";
+    const pending: { delim: string; stripTabs: boolean }[] = [];
+    const push = (next: string) => {
+        out.push({ op, seg: seg.trim(), body: "" });
+        seg = "";
+        op = next;
+    };
+    /** Consumes heredoc bodies after a newline, attaching their lines to the segment that opened them. */
+    const skipBodies = (from: number): number => {
+        let i = from;
+        const owner = out.at(-1);
+        while (pending.length > 0 && i < command.length) {
+            const end = command.indexOf("\n", i);
+            const raw = command.slice(i, end < 0 ? command.length : end);
+            const head = pending[0] as { delim: string; stripTabs: boolean };
+            const line = head.stripTabs ? raw.replace(/^\t+/, "") : raw;
+            if (line === head.delim) pending.shift();
+            else if (owner) owner.body += `${raw}\n`;
+            i = end < 0 ? command.length : end + 1;
+        }
+        return i;
+    };
+    for (let i = 0; i < command.length; i++) {
+        const ch = command[i] as string;
+        if (quote) {
+            seg += ch;
+            if (ch === quote) quote = "";
+            else if (ch === "\\" && quote === '"') seg += command[++i] ?? "";
+            continue;
+        }
+        if (ch === "'" || ch === '"') {
+            quote = ch;
+            seg += ch;
+        } else if (ch === "\\" && command[i + 1] === "\n") i++;
+        else if (ch === "\\") seg += ch + (command[++i] ?? "");
+        else if (ch === "(" || ch === "{") {
+            depth++;
+            seg += ch;
+        } else if (ch === ")" || ch === "}") {
+            depth = Math.max(0, depth - 1);
+            seg += ch;
+        } else if (depth > 0) seg += ch;
+        else if (ch === "#" && (seg.length === 0 || /[\s;&|(]$/.test(seg))) {
+            const end = command.indexOf("\n", i);
+            i = end < 0 ? command.length : end - 1;
+        } else if (command.startsWith("<<<", i)) {
+            seg += "<<<";
+            i += 2;
+        } else if (command.startsWith("<<", i)) {
+            const opened = heredocAt(command.slice(i));
+            if (opened) {
+                pending.push({ delim: opened.delim, stripTabs: opened.stripTabs });
+                seg += command.slice(i, i + opened.length);
+                i += opened.length - 1;
+            } else seg += ch;
+        } else if (command.startsWith("&&", i) || command.startsWith("||", i)) {
+            push(command.slice(i, i + 2));
+            i++;
+        } else if (ch === "&" && command[i - 1] !== ">" && command[i + 1] !== ">") push("&");
+        else if (ch === ";" || ch === "|") push(ch);
+        else if (ch === "\n") {
+            push("\n");
+            if (pending.length > 0) i = skipBodies(i + 1) - 1;
+        } else seg += ch;
+    }
+    out.push({ op, seg: seg.trim(), body: "" });
+    return out.filter((x) => x.seg.length > 0);
+}
+
+/** The exit code belongs to the last list of a command, so only an `&&` segment there is established by it. */
+/** A `{ ...; }` group or `( ... )` subshell: its bracket and body, with any trailing redirections. */
+const GROUP = /^([{(])\s*([\s\S]*?)\s*([)}])(?:\s[^{}()]*)?$/;
+const groupBody = (seg: string): { brace: boolean; body: string } | null => {
+    const m = GROUP.exec(unprefixed(seg));
+    if (!m) return null;
+    const brace = m[1] === "{";
+    if (brace !== (m[3] === "}")) return null;
+    return { brace, body: m[2] as string };
+};
+/**
+ * The parts of a command list that are sure to run: every part guarded by `;`, `&`, or a newline,
+ * an `&&` continuation whose whole guard chain is `true` or `:`, and a `||` continuation whose
+ * whole guard chain is `false`; a continuation after any other command depends on a status the
+ * text does not carry.
+ */
+const sureParts = (parts: Segment[]): boolean[] => {
+    const sure: boolean[] = [];
+    let chainSure = true;
+    for (const [i, p] of parts.entries()) {
+        const guard = p.op;
+        if (/^[;&\n]$/.test(guard)) chainSure = true;
+        else if (guard === "&&")
+            chainSure = chainSure && /^(true|:)$/.test(unprefixed(parts[i - 1]?.seg ?? ""));
+        else if (guard === "||")
+            chainSure = chainSure && /^false$/.test(unprefixed(parts[i - 1]?.seg ?? ""));
+        sure.push(guard === "|" ? (sure[i - 1] ?? true) : chainSure);
+    }
+    return sure;
+};
+/**
+ * Whether segment `i` ends the current shell: a sure, foreground `exit` or command-bearing
+ * `exec`, or a `{ ...; }` group run in the current shell whose body does so. A pipeline member,
+ * a background job, and a `( ... )` subshell end their own process only.
+ */
+const terminalAt = (parts: Segment[], i: number, sure: boolean): boolean => {
+    const own = (parts[i] as Segment).op;
+    const next = parts[i + 1]?.op ?? ";";
+    if (own === "|" || next === "|" || next === "&" || !sure) return false;
+    return terminates((parts[i] as Segment).seg);
+};
+const terminates = (segment: string): boolean => {
+    if (/^exit\b|^exec\s+[^\s<>&\d]/.test(unprefixed(segment))) return true;
+    const group = groupBody(segment);
+    if (!group?.brace) return false;
+    const inner = splitShell(group.body);
+    const sure = sureParts(inner);
+    return inner.some((_p, i) => terminalAt(inner, i, sure[i] as boolean));
+};
+/**
+ * The reachable parts of one command list given its exit status: a number, null for a command
+ * cut off before it finished, or undefined for a completed group whose own status is unrecorded.
+ */
+const reachableParts = (command: string, exit: number | null | undefined): Segment[] => {
+    const parts = splitShell(command);
+    let guard = ";";
+    const guarded = parts.map((p) => {
+        guard = p.op === "|" ? guard : p.op;
+        return { ...p, op: guard };
+    });
+    const sure = sureParts(parts);
+    const lastList = guarded.reduce((n, p, i) => (/^[;&\n]$/.test(p.op) ? i : n), 0);
+    const mixed = guarded.slice(lastList).some((p) => p.op === "||");
+    const firstListEnd = guarded.findIndex((p, i) => i > 0 && /^[;&\n]$/.test(p.op));
+    const exitAt = guarded.findIndex((_p, i) => terminalAt(parts, i, sure[i] as boolean));
+    const afterExit = exitAt < 0 ? guarded.length : exitAt + 1;
+    const unfinished = exit === null && firstListEnd >= 0 ? firstListEnd : guarded.length;
+    const reached = Math.min(afterExit, unfinished);
+    return guarded
+        .slice(0, reached)
+        .filter(
+            (p, i) =>
+                (sure[i] as boolean) || (p.op === "&&" && exit === 0 && i >= lastList && !mixed),
+        );
+};
+/** A group or subshell part opens into its body's reachable parts; the body's own status is unknown. */
+const flattened = (p: Segment): Segment[] => {
+    const group = groupBody(p.seg);
+    if (!group) return [p];
+    return reachableParts(group.body, undefined).flatMap(flattened);
+};
+const executedParts = (x: Command): Segment[] =>
+    reachableParts(x.command, x.exit).flatMap(flattened);
+const executed = (x: Command): string[] => executedParts(x).map((p) => unprefixed(p.seg));
+/** Shell words of a segment, with quotes grouping and removed. */
+const shellWords = (segment: string): string[] => {
+    const words: string[] = [];
+    let word = "";
+    let quote = "";
+    let open = false;
+    let escaped = false;
+    for (const ch of segment) {
+        if (escaped) {
+            word += ch;
+            escaped = false;
+        } else if (quote) {
+            if (ch === quote) quote = "";
+            else word += ch;
+        } else if (ch === "\\") {
+            escaped = true;
+        } else if (ch === "'" || ch === '"') {
+            quote = ch;
+            open = true;
+        } else if (/\s/.test(ch)) {
+            if (word.length > 0 || open) words.push(word);
+            word = "";
+            open = false;
+        } else word += ch;
+    }
+    if (word.length > 0 || open) words.push(word);
+    return words;
+};
+/** Options whose value is the next word, so that word is neither pattern nor file, per command. */
+const VALUE_OPTIONS: Record<string, RegExp> = {
+    grep: /^(-[ABCmdD]|--(max-count|after-context|before-context|context|include|exclude|exclude-dir|devices|directories|label))$/,
+    rg: /^(-[ABCmdgtTEjMr]|--(max-count|after-context|before-context|context|glob|iglob|type|type-not|max-depth|threads|color|colour|encoding|pre|sort|sortr|replace|max-columns|max-filesize|path-separator|context-separator|field-context-separator|field-match-separator|dfa-size-limit|regex-size-limit|type-add|type-clear|ignore-file))$/,
+};
+/**
+ * A read segment's file operands. For grep and rg the pattern is the first non-option word unless
+ * an option supplies it (`-e`, `--regexp`, `-f`, `--file`), in which case every positional word is a file.
+ */
+const operands = (segment: string): string[] => {
+    const raw = shellWords(segment);
+    if (raw[0] === "read") return inputTargets(raw);
+    const words = unredirectedWords(raw);
+    if (!/^(grep|rg|sed)$/.test(words[0] as string)) return words.slice(1);
+    const scriptOptions =
+        words[0] === "sed" ? /^(-e|-f|--expression|--file)$/ : /^(-e|-f|--regexp|--file)$/;
+    const attached =
+        words[0] === "sed" ? /^(-e.|-f.|--expression=|--file=)/ : /^(-e.|-f.|--regexp=|--file=)/;
+    const files: string[] = [];
+    let supplied = false;
+    for (let i = 1; i < words.length; i++) {
+        const w = words[i] as string;
+        if (scriptOptions.test(w)) {
+            supplied = true;
+            i++;
+        } else if (attached.test(w)) supplied = true;
+        else if (VALUE_OPTIONS[words[0] as string]?.test(w)) i++;
+        else if (!w.startsWith("-")) files.push(w);
+    }
+    if (!supplied) files.shift();
+    return files;
+};
+/** Redirection operators split from the word they are attached to. */
+const splitRedirections = (raw: string[]): string[] =>
+    raw.flatMap((w) => {
+        const at = w.search(/(?<=[^<>&])\d*&?[<>]/);
+        return at > 0 ? [w.slice(0, at), w.slice(at)] : [w];
+    });
+/** The targets of `<` input redirections, which the shell opens for the command; the `read` builtin's words are variable names. */
+const inputTargets = (raw: string[]): string[] => {
+    const words = splitRedirections(raw);
+    const out: string[] = [];
+    for (let i = 0; i < words.length; i++) {
+        const w = words[i] as string;
+        if (/^\d*<<<?-?$/.test(w)) i++;
+        else if (/^\d*<<<?-?./.test(w)) continue;
+        else if (/^\d*<$/.test(w)) out.push(words[++i] ?? "");
+        else if (/^\d*<./.test(w)) out.push(w.replace(/^\d*</, ""));
+    }
+    return out.filter((w) => w.length > 0);
+};
+/**
+ * Shell words with output redirections removed (operator and target), heredoc and here-string
+ * operators removed with their delimiter or value, and `<` input redirections reduced to their
+ * target, which the command reads.
+ */
+const unredirectedWords = (raw: string[]): string[] => {
+    const words = splitRedirections(raw);
+    const out: string[] = [];
+    for (let i = 0; i < words.length; i++) {
+        const w = words[i] as string;
+        if (/^\d*&?>>?$/.test(w)) i++;
+        else if (/^\d*&?>>?./.test(w)) continue;
+        else if (/^\d*<<<?-?$/.test(w)) i++;
+        else if (/^\d*<<<?-?./.test(w)) continue;
+        else if (/^\d*<$/.test(w)) continue;
+        else if (/^\d*<./.test(w)) out.push(w.replace(/^\d*</, ""));
+        else out.push(w);
+    }
+    return out;
+};
+/** The command after any leading `NAME=value` assignments. */
+const unprefixed = (seg: string): string => {
+    let rest = seg.trimStart();
+    for (;;) {
+        const m = /^[A-Za-z_]\w*=/.exec(rest);
+        if (!m) return rest;
+        let i = m[0].length;
+        let quote = "";
+        /** Open `$(`, `${`, and backtick substitutions, inside which whitespace belongs to the value. */
+        const nest: string[] = [];
+        while (i < rest.length) {
+            const ch = rest[i] as string;
+            if (quote) {
+                if (ch === quote) quote = "";
+            } else if (nest.at(-1) === "`") {
+                if (ch === "`") nest.pop();
+            } else if (ch === "'" || ch === '"') quote = ch;
+            else if (ch === "\\") i++;
+            else if (ch === "`") nest.push("`");
+            else if (ch === "$" && (rest[i + 1] === "(" || rest[i + 1] === "{")) {
+                nest.push(rest[i + 1] === "(" ? ")" : "}");
+                i++;
+            } else if (nest.length > 0 && ch === nest.at(-1)) nest.pop();
+            else if (nest.length === 0 && /\s/.test(ch)) break;
+            i++;
+        }
+        if (i >= rest.length) return rest;
+        rest = rest.slice(i).trimStart();
+    }
+};
+const anchored = (p: string) => (p.startsWith("(?i)") ? `(?i)^(?:${p.slice(4)})` : `^(?:${p})`);
+/** Match from the segment's first character; the `m` flag of `pattern` would let `^` match an inner line. */
+const startsWithAll = (seg: string, sources: string[]) =>
+    sources.every((src) => {
+        const re = pattern(src);
+        return new RegExp(re.source, re.flags.replace("m", "")).test(seg);
+    });
+const namesPath = (words: string[], path: string) =>
+    words.some((w) => w === path || w === `./${path}`);
+const ranTests = (x: Command) => executed(x).some((s) => TESTS.test(s));
+
+function foldsIn(r: ArtefactReader, turns?: [number, number]): CallView[] {
+    const folds = r.calls().filter((c) => FOLDS.includes(c.component) && completed(c));
+    if (!turns) return folds;
+    const [lo, hi] = turns;
+    const unindexed = folds.find((c) => c.turn_index === undefined);
+    if (unindexed) {
+        throw new GradeRefused(`fold call without a turn index at seq ${unindexed.seq}`);
+    }
+    return folds.filter((c) => (c.turn_index as number) >= lo && (c.turn_index as number) < hi);
+}
+
 function p4(r: ArtefactReader, c: Check): Outcome {
-    const added = addedLines(r.diff());
-    const kept = matchesAll(added, c.must ?? []);
-    const wrong = matchesAny(added, c.must_not ?? []);
+    const w = workFor(r, c, c.commands_must || c.commands_must_not ? r.commands() : []);
+    const kept = held(w, c);
+    const wrong = broken(w, c);
     const collapsed = wrong && c.side === "out";
-    const reason = !wrong
-        ? "missing the expected rule"
-        : collapsed
-          ? "collapsed a still-valid fact"
-          : "kept the superseded rule";
+    const reasons = [
+        kept ? "" : "missing the expected rule",
+        wrong ? (collapsed ? "collapsed a still-valid fact" : "kept the superseded rule") : "",
+    ].filter(Boolean);
     return binary(
         "P4",
         kept && !wrong,
         { "P4.harm": collapsed, "P4.collapsed": collapsed },
-        reason,
+        reasons.join("; "),
     );
 }
 
@@ -137,12 +641,17 @@ function p6(r: ArtefactReader, c: Check): Outcome {
     const prior = diffPaths(r.diff("prior-session"));
     const commands = r.commands();
     const reread = prior.filter((p) =>
-        commands.some((x) => READS.test(x.command) && x.command.includes(p)),
+        commands.some((x) => executed(x).some((s) => READS.test(s) && namesPath(operands(s), p))),
     );
-    const tokens = r.turnCalls().reduce((n, x) => n + x.input_tokens + x.output_tokens, 0);
-    return binary("P6", matchesAll(work(r), c.must ?? []), {
+    const turnCalls = r.turnCalls();
+    if (turnCalls.length === 0) {
+        throw new GradeRefused("P6 snapshot has no agent call for its turn to sum tokens over");
+    }
+    const tokens = turnCalls.reduce((n, x) => n + x.input_tokens + x.output_tokens, 0);
+    const w = workFor(r, c, commands, commandText);
+    return binary("P6", held(w, c) && !broken(w, c), {
         "P6.reread_files": reread.length,
-        "P6.ran_tests": commands.some((x) => TESTS.test(x.command)),
+        "P6.ran_tests": commands.some(ranTests),
         "P6.rediscovery_tokens": tokens,
     });
 }
@@ -156,17 +665,16 @@ function p13(r: ArtefactReader, c: Check, rules: Rules): Outcome {
     const commands = r.commands("session");
     const after = commands.filter((x) => x.scenario_ms >= boundary);
     const before = new Set(commands.filter((x) => x.scenario_ms < boundary).map((x) => x.command));
-    const kept = c.commands_must
-        ? after.some((x) => matchesAll(x.command, c.commands_must ?? []))
-        : matchesAll(addedLines(r.diff()), c.must ?? []);
+    const w = workFor(r, c, after);
+    const kept = held(w, c) && !broken(w, c);
     const min = Number(rules.p13_reduction_ratio.min);
     const max = Number(rules.p13_reduction_ratio.max);
-    const measured = folds.filter((x) => x.input_tokens > 0);
-    const ratioOk = measured.every((x) => {
-        const ratio = x.output_tokens / x.input_tokens;
-        return ratio >= min && ratio <= max;
+    const ratioOk = folds.every((x) => {
+        const input = x.input_tokens + x.cache_read_tokens + x.cache_write_tokens;
+        const ratio = x.output_tokens / input;
+        return input > 0 && ratio >= min && ratio <= max;
     });
-    const repeated = after.some((x) => before.has(x.command) && !QUIET.test(x.command));
+    const repeated = after.some((x) => before.has(x.command) && !QUIET.test(unprefixed(x.command)));
     const parts = [kept, ratioOk, !repeated];
     const score = parts.filter(Boolean).length / parts.length;
     return {
@@ -186,16 +694,33 @@ function p14(r: ArtefactReader, c: Check): Outcome {
     if (folds.length === 0) {
         return { verdict: "excluded", reason: "no compaction in the session", metrics: {} };
     }
-    const boundary = Math.min(...folds.map((x) => x.scenario_ms));
-    const userSim = r.calls().filter((x) => x.component === "user-sim");
+    const boundary = Math.min(...folds.map((x) => x.seq));
+    const userSim = r.calls().filter((x) => x.component === "user-sim" && completed(x));
     if (userSim.length === 0 || userSim.some((x) => !x.label || x.turn_index === undefined)) {
         return { verdict: "excluded", reason: "no labelled user-sim turns", metrics: {} };
     }
+    const unknown = userSim.find((x) => !USER_SIM_LABELS.includes(x.label ?? ""));
+    if (unknown) {
+        const reason = `unknown user-sim label ${unknown.label}`;
+        return { verdict: "excluded", reason, metrics: {} };
+    }
+    const turns = new Set<number>();
+    for (const x of userSim) {
+        if (turns.has(x.turn_index as number)) {
+            throw new GradeRefused(`two user-sim calls for turn ${x.turn_index} in one snapshot`);
+        }
+        turns.add(x.turn_index as number);
+    }
     const from = c.window_from_turn ?? 0;
-    const pushback = userSim.filter(
-        (x) => x.label === "pushback" && x.scenario_ms >= boundary && (x.turn_index ?? -1) >= from,
+    const to = c.window_to_turn ?? Number.POSITIVE_INFINITY;
+    const observed = userSim.filter(
+        (x) => x.seq > boundary && (x.turn_index ?? -1) >= from && (x.turn_index ?? -1) < to,
     );
-    const count = pushback.length;
+    if (observed.length === 0) {
+        const reason = "no user-sim turn after compaction in the window";
+        return { verdict: "excluded", reason, metrics: {} };
+    }
+    const count = observed.filter((x) => x.label === "pushback").length;
     const outcome: Outcome = {
         verdict: count === 0 ? "pass" : "fail",
         metrics: { "P14.post_compaction_correction_count": count },
@@ -204,73 +729,100 @@ function p14(r: ArtefactReader, c: Check): Outcome {
     return outcome;
 }
 
+/** The turn's work as a check reads it; the command log joins when the check names commands. */
+const turnWork = (r: ArtefactReader, c: Check) =>
+    workFor(r, c, c.commands_must || c.commands_must_not ? r.commands() : []);
+const applied = (r: ArtefactReader, c: Check) => {
+    const w = turnWork(r, c);
+    return held(w, c) && !broken(w, c);
+};
+
 type Grader = (r: ArtefactReader, check: Check, rules: Rules, probe: ProbeItem) => Outcome;
 
 const GRADERS: Record<string, Grader> = {
-    P1: (r, c) =>
-        binary("P1", matchesAll(addedLines(r.diff()), c.must ?? []), {}, "rule not applied"),
-    "P1-control": (r, c) =>
-        binary(
-            "P1-control",
-            matchesAll(addedLines(r.diff()), c.must ?? []),
-            {},
-            "rule not applied",
-        ),
+    P1: (r, c) => binary("P1", applied(r, c), {}, "rule not applied"),
+    "P1-control": (r, c) => binary("P1-control", applied(r, c), {}, "rule not applied"),
     P2: (r, c) => {
-        const over = matchesAny(addedLines(r.diff()), c.must_not ?? []);
+        const over = broken(turnWork(r, c), c);
         return binary("P2", !over, { "P2.harm": over }, "applied the rule outside its scope");
     },
     P3: (r, c) => {
-        const added = addedLines(r.diff());
-        const authoritative = matchesAll(added, c.must ?? []);
-        const stale = matchesAny(added, c.must_not ?? []);
+        const w = turnWork(r, c);
+        const authoritative = held(w, c);
+        const stale = broken(w, c);
         const reliance = stale ? "stale" : authoritative ? "authoritative" : "neither";
         const extra = { "P3.reliance": reliance, "P3.harm": stale };
         return binary("P3", authoritative && !stale, extra, `relied on ${reliance}`);
     },
     P4: p4,
     P5: (r, c) =>
-        binary("P5", !matchesAny(work(r), c.must_not ?? []), {}, "reused the rejected approach"),
+        binary(
+            "P5",
+            !broken(workFor(r, c, r.commands(), commandText), c),
+            {},
+            "reused the rejected approach",
+        ),
     P6: p6,
-    P8: (r, c) =>
-        binary("P8", carries(r.answer(), c.answer ?? "\u0000"), {}, "answer lacks the value"),
-    P9: (r, _c, _rules, p) =>
-        binary("P9", abstains(r.answer(), p.text ?? ""), {}, "answered instead of abstaining"),
+    P8: (r, c) => {
+        const hit = carries(r.answer(), c.answer ?? "\u0000");
+        return binary("P8", hit, { "P8.cross_session_pass_rate": hit }, "answer lacks the value");
+    },
+    P9: (r, _c, _rules, p) => {
+        const hit = abstains(r.answer(), p.text ?? "");
+        const extra = { "P9.cross_session_pass_rate": hit };
+        return binary("P9", hit, extra, "answered instead of abstaining");
+    },
     P10: (r, c) => {
-        const leaked = matchesAny(`${addedLines(r.diff())}\n${r.answer()}`, c.must_not ?? []);
+        const fold = (p: string) => (p.startsWith("(?i)") ? p : `(?i)${p}`);
+        const inDiff = matchesAny(changed(r), (c.must_not ?? []).map(fold));
+        const answerPatterns = [c.answer_must_not ?? []].flat();
+        const inAnswer =
+            answerPatterns.length > 0 && matchesAny(r.answer(), answerPatterns.map(fold));
+        const leaked = inDiff || inAnswer;
         return binary("P10", !leaked, { "P10.harm": leaked }, "anchor value leaked");
     },
     P11: (r, c, rules) => {
-        const injected = matchesAny(addedLines(r.diff()), c.must_not ?? []);
+        const injected = broken(turnWork(r, c), c);
         const weighted = injected ? -Number(rules.p11_false_positive_weight) : 1;
         const extra = { "P11.harm": injected, "P11.weighted_score": weighted };
         return binary("P11", !injected, extra, "injected the other project's rule");
     },
-    P12: (r, c) =>
-        binary(
-            "P12",
-            matchesAll(addedLines(r.diff()), c.must ?? []),
-            {},
-            "fix omits the error code",
-        ),
+    P12: (r, c) => binary("P12", applied(r, c), {}, "fix omits the error code"),
     P13: p13,
     P14: p14,
 };
 
-function graderFor(probe: ProbeItem): Grader {
-    const grader = GRADERS[probe.type];
+export function graderFor(probe: ProbeItem): Grader {
+    const grader = Object.hasOwn(GRADERS, probe.type) ? GRADERS[probe.type] : undefined;
     if (!grader) throw new GradeRefused(`no programmatic grader for ${probe.type}`);
     const check = (probe.check ?? {}) as Record<string, unknown>;
-    if (probe.type === "P13" && !check.must && !check.commands_must) {
+    if (NEEDS_POSITIVE.includes(probe.type) && POSITIVE_KEYS.every((k) => check[k] === undefined)) {
         throw new GradeRefused(
-            `P13 item ${probe.id} has neither check.must nor check.commands_must`,
+            `${probe.type} item ${probe.id} names no rule to hold (${POSITIVE_KEYS.join(", ")})`,
+        );
+    }
+    if (NEEDS_NEGATIVE.includes(probe.type) && NEGATIVE_KEYS.every((k) => check[k] === undefined)) {
+        throw new GradeRefused(
+            `${probe.type} item ${probe.id} names no rule to break (${NEGATIVE_KEYS.join(", ")})`,
         );
     }
     for (const key of REQUIRED[probe.type] ?? []) {
-        const value = check[key];
-        if (value === undefined || (Array.isArray(value) && value.length === 0)) {
+        if (check[key] === undefined) {
             throw new GradeRefused(`${probe.type} item ${probe.id} has no check.${key}`);
         }
+    }
+    for (const [key, shape] of Object.entries(CHECK_FIELDS) as [keyof Check, Field][]) {
+        if (!optional(shape)(check[key])) {
+            throw new GradeRefused(`${probe.type} item ${probe.id} has a malformed check.${key}`);
+        }
+    }
+    const unknown = Object.keys(check).find((k) => !(k in CHECK_FIELDS));
+    if (unknown) {
+        throw new GradeRefused(`${probe.type} item ${probe.id} has an unknown check.${unknown}`);
+    }
+    const { window_from_turn: from, window_to_turn: to } = check as Check;
+    if (to !== undefined && to <= (from ?? 0)) {
+        throw new GradeRefused(`${probe.type} item ${probe.id} has an empty P14 window`);
     }
     return grader;
 }
@@ -284,7 +836,7 @@ const CALLS: Evidence = ["proxy-call", null];
  * The artefacts a probe item's grader reads as evidence. A grader reading a missing one would
  * grade an empty default, so a snapshot without it is refused. P6 items open a later session
  * of a project the agent already worked in, so their prior-session diff is always expected;
- * a P13 item reads the turn diff unless its check names commands instead; a P7 item's answer
+ * a P13 item reads the turn diff when its check names a diff channel; a P7 item's answer
  * is the last agent call of its turn.
  */
 function evidenceFor(probe: ProbeItem): Evidence[] {
@@ -294,16 +846,17 @@ function evidenceFor(probe: ProbeItem): Evidence[] {
             return [TURN_DIFF, TURN_COMMANDS];
         case "P6":
             return [TURN_DIFF, ["diff", "prior-session"], TURN_COMMANDS, CALLS];
+        case "P7":
         case "P8":
         case "P9":
         case "P14":
             return [CALLS];
-        case "P7":
-            return [CALLS];
         case "P10":
             return [TURN_DIFF, CALLS];
-        case "P13":
-            return [["command-log", "session"], CALLS, ...(check.commands_must ? [] : [TURN_DIFF])];
+        case "P13": {
+            const diff = DIFF_CHANNELS.some((k) => check[k as keyof Check] !== undefined);
+            return [["command-log", "session"], CALLS, ...(diff ? [TURN_DIFF] : [])];
+        }
         default:
             return [TURN_DIFF];
     }
@@ -331,12 +884,36 @@ export function gradeItem(
 ): GradeRecord | null {
     const first = snapshots[0];
     if (!first) throw new GradeRefused(`item ${probe.id} has no snapshot`);
+    const bad = snapshots.findIndex((s) => typeof s !== "object" || s === null);
+    if (bad >= 0)
+        throw new GradeRefused(`item ${probe.id}: snapshots[${bad}] is missing or malformed`);
     if (snapshots.some((s) => s.item !== probe.id || s.arm !== first.arm)) {
         throw new GradeRefused(`snapshots for ${probe.id} mix items or arms`);
     }
-    assertArtefactsOnly(first);
-    const grader = graderFor(probe);
+    const seenIds = new Set<string>();
+    for (const s of snapshots) {
+        if (seenIds.has(s.id))
+            throw new GradeRefused(`item ${probe.id} lists snapshot ${s.id} twice`);
+        seenIds.add(s.id);
+    }
+    for (const s of snapshots) {
+        assertArtefactsOnly(s);
+        if (probe.event && s.turn !== probe.event) {
+            throw new GradeRefused(
+                `snapshot ${s.id} is of turn ${s.turn}, not the probe's event ${probe.event}`,
+            );
+        }
+        if (s.session !== probe.session) {
+            throw new GradeRefused(
+                `snapshot ${s.id} is of session ${s.session}, not the probe's ${probe.session}`,
+            );
+        }
+    }
     if (first.turn_outcome === "failed") return null;
+    if (first.turn_outcome !== "ok") {
+        throw new GradeRefused(`snapshot ${first.id} has turn_outcome ${first.turn_outcome}`);
+    }
+    const grader = graderFor(probe);
     requireEvidence(probe, first);
     const reader = new ArtefactReader(first);
     const outcome = grader(reader, (probe.check ?? {}) as Check, rules, probe);
@@ -356,67 +933,328 @@ export function gradeItem(
     };
 }
 
-/**
- * The log's single writer holds the run lease, so the records read at construction plus the
- * ones appended since are the file's content; each version lookup reads that memory.
- */
-export class GradeLog {
-    private readonly records: GradeRecord[] = [];
-    private readonly newest = new Map<string, number>();
+const VERDICTS: Verdict[] = ["pass", "fail", "excluded"];
+const digest = (v: unknown) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v);
+const LOCK_WAIT_MS = 2000;
+const LOCK_POLL_MS = 10;
 
-    /** A log reopened over a line cut by a kill mid-append keeps its newline-terminated prefix. */
+function isGradeRecord(value: unknown): value is GradeRecord {
+    if (typeof value !== "object" || value === null) return false;
+    const g = value as Record<string, unknown>;
+    const strings =
+        ["item", "arm", "snapshot"].every((k) => text(g[k])) && typeof g.probe_type === "string";
+    const known = g.probe_type === "P7" || Object.hasOwn(GRADERS, g.probe_type as string);
+    const version = typeof g.version === "number" && Number.isInteger(g.version) && g.version >= 1;
+    const verdict = VERDICTS.includes(g.verdict as Verdict);
+    const metricValue = (v: unknown) => typeof v === "boolean" || str(v) || num(v);
+    const metrics =
+        typeof g.metrics === "object" &&
+        g.metrics !== null &&
+        !Array.isArray(g.metrics) &&
+        Object.values(g.metrics).every(metricValue);
+    const inputs =
+        Array.isArray(g.inputs) &&
+        g.inputs.length > 0 &&
+        g.inputs.every(text) &&
+        new Set(g.inputs).size === g.inputs.length;
+    const attempts =
+        Number.isInteger(g.later_attempts_logged) && (g.later_attempts_logged as number) >= 0;
+    const paired = g.probe_type === "P1" || g.probe_type === "P1-control";
+    const pair = paired ? text(g.pair) : g.pair === undefined;
+    const against = g.probe_type === "P7" ? text(g.against) : g.against === undefined;
+    const graded = metrics && (g.verdict === "excluded" || metricsAgree(g));
+    const optionals = optional(str)(g.reason) && optional(digest)(g.grader);
+    return (
+        strings &&
+        known &&
+        version &&
+        verdict &&
+        metrics &&
+        inputs &&
+        attempts &&
+        optionals &&
+        pair &&
+        against &&
+        graded
+    );
+}
+
+type Metrics = Record<string, unknown>;
+const bool = (v: unknown) => typeof v === "boolean";
+const count = (v: unknown) => Number.isInteger(v) && (v as number) >= 0;
+/** The metrics each grader writes, with the shape every value takes. */
+const METRIC_FIELDS: Record<string, Record<string, (v: unknown) => boolean>> = {
+    P2: { "P2.harm": bool },
+    P3: { "P3.reliance": oneOf(["stale", "authoritative", "neither"]), "P3.harm": bool },
+    P4: { "P4.harm": bool, "P4.collapsed": bool },
+    P6: { "P6.reread_files": count, "P6.ran_tests": bool, "P6.rediscovery_tokens": count },
+    P8: { "P8.cross_session_pass_rate": bool },
+    P9: { "P9.cross_session_pass_rate": bool },
+    P10: { "P10.harm": bool },
+    P11: { "P11.harm": bool, "P11.weighted_score": num },
+    P13: {
+        "P13.fold_fidelity_score": num,
+        "P13.rule_kept": bool,
+        "P13.ratio_in_bounds": bool,
+        "P13.repeated_action": bool,
+        "P13.folds": (v) => count(v) && (v as number) >= 1,
+    },
+    P14: { "P14.post_compaction_correction_count": count },
+    P7: {
+        judge_model: str,
+        judge_prompt_digest: str,
+        judge_rubric_digest: str,
+        calibration_digest: str,
+        calibration: str,
+        permutation: str,
+        permutation_counts: str,
+        cross_judge: str,
+        gate_eligible: bool,
+        verdict_a_then_b: str,
+        verdict_b_then_a: str,
+        length_a: count,
+        length_b: count,
+        longer_recalled_alone: (v) => bool(v) || v === "n/a",
+    },
+};
+/** Relationships between a type's metrics and its verdict beyond each value's shape. */
+const METRIC_RULES: Record<string, (m: Metrics, pass: boolean) => boolean> = {
+    P2: (m, pass) => m["P2.harm"] === !pass,
+    P3: (m, pass) =>
+        m["P3.harm"] === (m["P3.reliance"] === "stale") &&
+        pass === (m["P3.reliance"] === "authoritative"),
+    P4: (m, pass) => m["P4.harm"] === m["P4.collapsed"] && !(pass && m["P4.collapsed"] === true),
+    P8: (m, pass) => m["P8.cross_session_pass_rate"] === pass,
+    P9: (m, pass) => m["P9.cross_session_pass_rate"] === pass,
+    P10: (m, pass) => m["P10.harm"] === !pass,
+    P11: (m, pass) =>
+        m["P11.harm"] === !pass &&
+        (pass ? m["P11.weighted_score"] === 1 : (m["P11.weighted_score"] as number) < 0),
+    P13: (m, pass) => {
+        const parts = [m["P13.rule_kept"], m["P13.ratio_in_bounds"], !m["P13.repeated_action"]];
+        const score = parts.filter(Boolean).length / parts.length;
+        return m["P13.fold_fidelity_score"] === score && pass === (score === 1);
+    },
+    P14: (m, pass) => pass === (m["P14.post_compaction_correction_count"] === 0),
+};
+
+/**
+ * A graded record carries exactly its type's registered metrics, each of its shape, in agreement
+ * with the verdict: `<type>.pass` for the binary graders, the fold score for P13, the correction
+ * count for P14, and the harm, reliance, and weight companions as their graders write them.
+ */
+function metricsAgree(g: Record<string, unknown>): boolean {
+    const m = g.metrics as Metrics;
+    const type = g.probe_type as string;
+    const pass = g.verdict === "pass";
+    const fields = METRIC_FIELDS[type] ?? {};
+    const primary = type === "P13" || type === "P14" ? [] : [`${type}.pass`];
+    const expected = new Set([...primary, ...Object.keys(fields)]);
+    if (Object.keys(m).length !== expected.size || [...expected].some((k) => !(k in m))) {
+        return false;
+    }
+    if (primary.length > 0 && m[`${type}.pass`] !== pass) return false;
+    if (Object.entries(fields).some(([k, ok]) => !ok(m[k]))) return false;
+    return (METRIC_RULES[type] ?? (() => true))(m, pass);
+}
+
+/** The field a regrade changed among those fixed for an item, arm, and opponent, or null. */
+function identityChange(previous: GradeRecord, next: GradeRecord): string | null {
+    for (const field of ["snapshot", "probe_type", "pair", "against"] as const) {
+        if (previous[field] !== next[field]) return field;
+    }
+    return null;
+}
+
+function newest(grades: GradeRecord[]): GradeRecord[] {
+    const byKey = new Map<string, GradeRecord>();
+    for (const g of grades) {
+        const key = keyOf(g);
+        if ((byKey.get(key)?.version ?? 0) < g.version) byKey.set(key, g);
+    }
+    return [...byKey.values()];
+}
+/**
+ * A digest over the grader's own source files, so a grade carries the implementation that made
+ * it and a rerun under another one grades again.
+ */
+export const graderDigest = (): string =>
+    sha256Hex(
+        ["artefacts.ts", "judge.ts", "probes.ts", "text.ts", "../../scripts/grade-run.ts"]
+            .map((f) => readFileSync(join(import.meta.dir, f), "utf8"))
+            .join("\n"),
+    );
+
+export class GradeLog {
+    /** A log path that names a link or a non-regular file is refused when the log is opened. */
     constructor(private readonly path: string) {
-        requireAppendable(path);
-        if (!existsSync(path)) return;
-        const text = readFileSync(path, "utf8");
-        const complete = text.slice(0, text.lastIndexOf("\n") + 1);
-        if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
-        for (const line of complete.split("\n").filter(Boolean)) {
-            const g = JSON.parse(line) as GradeRecord;
-            const key = keyOf(g);
-            const expected = (this.newest.get(key) ?? 0) + 1;
-            if (!Number.isSafeInteger(g.version) || g.version !== expected) {
-                throw new Error(
-                    `grades.jsonl holds version ${String(g.version)} of ${key} where version ${expected} belongs`,
-                );
+        const fd = this.open(constants.O_RDONLY);
+        if (fd !== null) closeSync(fd);
+    }
+
+    /** The log opened without following a link and checked to be a regular file; null when absent. */
+    private open(flags: number): number | null {
+        let fd: number;
+        try {
+            fd = openSync(this.path, flags | constants.O_NOFOLLOW);
+        } catch (e) {
+            const code = (e as NodeJS.ErrnoException).code;
+            if (code === "ENOENT") return null;
+            if (code === "ELOOP") {
+                throw new GradeRefused(`grade log ${this.path} is a link, not a regular file`);
             }
-            this.remember(g);
+            throw e;
+        }
+        try {
+            const stat = fstatSync(fd);
+            if (!stat.isFile() || stat.nlink !== 1) {
+                throw new GradeRefused(`grade log ${this.path} is a link, not a regular file`);
+            }
+        } catch (e) {
+            closeSync(fd);
+            throw e;
+        }
+        return fd;
+    }
+
+    /** Earlier records stay readable after an interrupted append: only newline-terminated lines count. */
+    private completeFrom(fd: number): string {
+        const text = readFileSync(fd, "utf8");
+        return text.slice(0, text.lastIndexOf("\n") + 1);
+    }
+
+    private complete(): string {
+        const fd = this.open(constants.O_RDONLY);
+        if (fd === null) return "";
+        try {
+            return this.completeFrom(fd);
+        } finally {
+            closeSync(fd);
         }
     }
 
-    private remember(g: GradeRecord): void {
-        this.records.push(g);
-        const key = keyOf(g);
-        this.newest.set(key, Math.max(this.newest.get(key) ?? 0, g.version));
-    }
-
+    /** Every complete record; one a kill cut short at the end of the file is left out. */
     all(): GradeRecord[] {
-        return [...this.records];
+        const lines = this.complete().split("\n").filter(Boolean);
+        const seen = new Map<string, GradeRecord>();
+        return lines.map((l, i) => {
+            let parsed: unknown;
+            try {
+                parsed = JSON.parse(l);
+            } catch {
+                throw new GradeRefused(`grade log ${this.path}: line ${i + 1} is corrupt`);
+            }
+            if (!isGradeRecord(parsed)) {
+                throw new GradeRefused(
+                    `grade log ${this.path}: line ${i + 1} is not a grade record`,
+                );
+            }
+            const key = keyOf(parsed);
+            const previous = seen.get(key);
+            if (parsed.version !== (previous?.version ?? 0) + 1) {
+                throw new GradeRefused(
+                    `grade log ${this.path}: line ${i + 1} has version ${parsed.version} after version ${previous?.version ?? 0} of ${key}`,
+                );
+            }
+            const changedField = previous && identityChange(previous, parsed);
+            if (changedField) {
+                throw new GradeRefused(
+                    `grade log ${this.path}: line ${i + 1} changes ${changedField} of ${key}`,
+                );
+            }
+            seen.set(key, parsed);
+            return parsed;
+        });
     }
 
     latest(): GradeRecord[] {
-        const newest = new Map<string, GradeRecord>();
-        for (const g of this.records) {
-            const key = keyOf(g);
-            if ((newest.get(key)?.version ?? 0) < g.version) newest.set(key, g);
-        }
-        return [...newest.values()];
+        return newest(this.all());
     }
 
     nextVersion(key: GradeKey): number {
-        return (this.newest.get(keyOf(key)) ?? 0) + 1;
+        const mine = this.all().filter((g) => keyOf(g) === keyOf(key));
+        return mine.length === 0 ? 1 : Math.max(...mine.map((g) => g.version)) + 1;
+    }
+
+    /**
+     * Runs `fn` while holding the log's lock file (`<path>.lock`, created exclusively), so one
+     * writer at a time reads, validates, truncates, and writes. A lock still held after the wait
+     * is refused rather than broken; a writer that died leaves its lock file for the operator.
+     */
+    private locked<T>(fn: () => T): T {
+        const lock = `${this.path}.lock`;
+        const deadline = Date.now() + LOCK_WAIT_MS;
+        let fd: number;
+        for (;;) {
+            try {
+                fd = openSync(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL);
+                break;
+            } catch (e) {
+                if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+                if (Date.now() >= deadline) {
+                    throw new GradeRefused(
+                        `grade log ${this.path} is locked by another writer (${lock})`,
+                    );
+                }
+                Bun.sleepSync(LOCK_POLL_MS);
+            }
+        }
+        try {
+            writeSync(fd, `${process.pid}\n`);
+            return fn();
+        } finally {
+            closeSync(fd);
+            rmSync(lock, { force: true });
+        }
     }
 
     append(record: GradeRecord): void {
-        const expected = this.nextVersion(record);
-        if (record.version !== expected) {
-            const against = record.against ? ` vs ${record.against}` : "";
-            throw new GradeRefused(
-                `grade ${record.item}/${record.arm}${against} v${record.version} expected v${expected}`,
-            );
+        this.appendAll([record]);
+    }
+
+    /**
+     * Appends the records in one write under the lock, each checked as a grade record whose
+     * version follows its key's last one (earlier records of the batch included) and keeps that
+     * key's identity. A kill leaves a prefix of the batch, and the next read drops a cut last line.
+     */
+    appendAll(records: GradeRecord[]): void {
+        for (const record of records) {
+            if (!isGradeRecord(record)) {
+                throw new GradeRefused(`grade ${keyOf(record)} is not a grade record`);
+            }
         }
-        appendFileSync(this.path, `${JSON.stringify(record)}\n`);
-        this.remember(record);
+        if (records.length === 0) return;
+        this.locked(() => this.appendLocked(records));
+    }
+
+    private appendLocked(records: GradeRecord[]): void {
+        const last = new Map<string, GradeRecord>();
+        for (const g of this.all()) last.set(keyOf(g), g);
+        for (const record of records) {
+            const key = keyOf(record);
+            const previous = last.get(key);
+            const expected = (previous?.version ?? 0) + 1;
+            if (record.version !== expected) {
+                throw new GradeRefused(`grade ${key} v${record.version} expected v${expected}`);
+            }
+            const changedField = previous && identityChange(previous, record);
+            if (changedField) {
+                throw new GradeRefused(`grade ${key} v${record.version} changes ${changedField}`);
+            }
+            last.set(key, record);
+        }
+        const fd = this.open(constants.O_RDWR | constants.O_CREAT) as number;
+        try {
+            const kept = Buffer.byteLength(this.completeFrom(fd));
+            ftruncateSync(fd, kept);
+            const line = Buffer.from(records.map((r) => `${JSON.stringify(r)}\n`).join(""));
+            let written = 0;
+            while (written < line.length) {
+                written += writeSync(fd, line, written, line.length - written, kept + written);
+            }
+        } finally {
+            closeSync(fd);
+        }
     }
 }
 
@@ -427,7 +1265,7 @@ export function deltaMem(
 ): { delta: number; n: number } | null {
     const graded = (a: string) =>
         new Map(
-            grades
+            newest(grades)
                 .filter((g) => g.probe_type === "P3" && g.arm === a && g.verdict !== "excluded")
                 .map((g) => [g.item, g.verdict === "pass"]),
         );

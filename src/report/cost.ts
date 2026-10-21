@@ -1,17 +1,12 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
 import { HARNESS } from "../oracle/oracles";
+import type { CallRecord } from "../proxy/records";
+import { readJsonl } from "../run/journal";
+import type { Price } from "../run/price";
 import { notesOf } from "./intrusive";
-
-export interface Price {
-    input: number;
-    output: number;
-    cache_read: number;
-    cache_write: number;
-}
-
-/** Default rates in USD per million tokens, applied to every model. */
-export const V1_PRICE: Price = { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 };
 
 export interface ComponentCost {
     component: string;
@@ -23,15 +18,22 @@ export interface ComponentCost {
     usd: number;
 }
 
-export const PRICE_TABLE = "v1";
-
 export interface CostPanel {
     arm: string;
     price_table: string;
     components: ComponentCost[];
+    /** The arm's token totals summed over its calls directly, for SIM-P38's conservation check. */
+    tokens: { input: number; output: number; cache_read: number; cache_write: number };
     usd: number;
     harness_usd: number;
-    passes: number;
+    /**
+     * Passing P1 to P12 items at their latest version; an item judged in several pairs (the host
+     * arm's P7 against each memory arm) passes when its latest grade in every pair passes. `null`
+     * until `grade-summary.json` shows a grading pass that finished with no judge error over the
+     * journal as it stands, since a prefix of `grades.jsonl`, or a pass over a run later resumed,
+     * would count as a verified total.
+     */
+    passes: number | null;
     usd_per_pass: number | null;
     memory_writes: number | null;
     writes_with_zero_reads: number | null;
@@ -39,14 +41,14 @@ export interface CostPanel {
 
 const USEFUL = /^P(?:[1-9]|1[0-2])$/;
 
-export function costPanel(
-    run: RunLogs,
-    arm: ArmLogs,
-    grades: GradeRecord[],
-    price: Price = V1_PRICE,
-): CostPanel {
+type Tokens = Pick<
+    CallRecord,
+    "component" | "input_tokens" | "output_tokens" | "cache_read_tokens" | "cache_write_tokens"
+>;
+
+function componentCosts(calls: readonly Tokens[], price: Price): ComponentCost[] {
     const byComponent = new Map<string, ComponentCost>();
-    for (const c of arm.calls) {
+    for (const c of calls) {
         const row = byComponent.get(c.component) ?? {
             component: c.component,
             calls: 0,
@@ -69,21 +71,101 @@ export function costPanel(
             1e6;
         byComponent.set(c.component, row);
     }
-    const components = [...byComponent.values()].sort((a, b) => b.usd - a.usd);
+    return [...byComponent.values()].sort((a, b) => b.usd - a.usd);
+}
+
+/**
+ * The run's P7 judge spend from `judge-calls.jsonl`, which the grader writes under its own arm
+ * `judge`; a judge call compares two arms, so it belongs to the run. `null` when none was written,
+ * the run recorded no price table, or grading did not finish (a request in flight at a kill may
+ * be billed with no record).
+ */
+export function judgeCost(run: RunLogs): ComponentCost | null {
+    const path = join(run.dir, "judge-calls.jsonl");
+    if (run.price === null || !existsSync(path) || !gradingComplete(run)) return null;
+    const calls = readJsonl<Tokens>(path);
+    return componentCosts(calls, run.price.rates).find((c) => c.component === "judge") ?? null;
+}
+
+/**
+ * Whether `scripts/grade-run.ts` finished over this run's journal, as it stands, with every judge
+ * call answered and every useful item graded: a run resumed after grading has a later
+ * `journal_seq` than the summary names, and a skipped item (no journaled snapshot, a P7 pair
+ * without two completed snapshots) leaves the pass count short.
+ */
+function gradingComplete(run: RunLogs): boolean {
+    const path = join(run.dir, "grade-summary.json");
+    if (!existsSync(path)) return false;
+    const summary = JSON.parse(readFileSync(path, "utf8")) as {
+        judge_errors?: number;
+        journal_seq?: number;
+        skipped?: Record<string, Record<string, number>>;
+    };
+    const covered = Object.values(summary.skipped ?? {}).every(
+        (reasons) =>
+            typeof reasons === "object" &&
+            reasons !== null &&
+            Object.entries(reasons).every(([why, n]) => COVERED_SKIPS.has(why) || n === 0),
+    );
+    return summary.judge_errors === 0 && summary.journal_seq === run.journal_seq && covered;
+}
+
+/**
+ * The grader's skip reasons that leave no useful item ungraded: P14 items have no probe turn, and
+ * an item graded by an earlier pass of the same grader keeps that grade in the summary.
+ */
+const COVERED_SKIPS = new Set(["P14 has no probe turn", "already graded"]);
+
+/**
+ * The arm's cost at the price table its run recorded; `null` for a run that recorded none, and
+ * for an arm with an interrupted turn (`ItemState` `failed(interrupted)` naming its `event`),
+ * whose provider request may have been billed with no `CallRecord` to price.
+ */
+export function costPanel(run: RunLogs, arm: ArmLogs, grades: GradeRecord[]): CostPanel | null {
+    if (run.price === null) return null;
+    const interrupted = arm.journal.some(
+        (e) =>
+            e.kind === "ItemState" &&
+            e.state === "failed(interrupted)" &&
+            typeof e.event === "string",
+    );
+    if (interrupted) return null;
+    const components = componentCosts(arm.calls, run.price.rates);
     const sum = (rows: ComponentCost[]) => rows.reduce((s, c) => s + c.usd, 0);
     const usd = sum(components.filter((c) => !HARNESS.has(c.component)));
-    const passes = grades.filter(
-        (g) => g.arm === arm.arm && g.verdict === "pass" && USEFUL.test(g.probe_type),
-    ).length;
+    const total = (field: keyof Tokens & `${string}_tokens`) =>
+        arm.calls.reduce((n, c) => n + c[field], 0);
+    const latest = new Map<string, GradeRecord>();
+    for (const g of grades) {
+        if (g.arm !== arm.arm) continue;
+        const key = `${g.item}\u0000${g.against ?? ""}`;
+        const seen = latest.get(key);
+        if (seen === undefined || g.version > seen.version) latest.set(key, g);
+    }
+    const byItem = new Map<string, GradeRecord[]>();
+    for (const g of latest.values()) byItem.set(g.item, [...(byItem.get(g.item) ?? []), g]);
+    const passes = gradingComplete(run)
+        ? [...byItem.values()].filter(
+              (gs) =>
+                  gs.every((g) => g.verdict === "pass") &&
+                  USEFUL.test((gs[0] as GradeRecord).probe_type),
+          ).length
+        : null;
     const notes = notesOf(run.dir, arm.arm);
     return {
         arm: arm.arm,
-        price_table: PRICE_TABLE,
+        price_table: run.price.version,
         components,
+        tokens: {
+            input: total("input_tokens"),
+            output: total("output_tokens"),
+            cache_read: total("cache_read_tokens"),
+            cache_write: total("cache_write_tokens"),
+        },
         usd,
         harness_usd: sum(components.filter((c) => HARNESS.has(c.component))),
         passes,
-        usd_per_pass: passes === 0 ? null : usd / passes,
+        usd_per_pass: passes === null || passes === 0 ? null : usd / passes,
         memory_writes: notes?.length ?? null,
         writes_with_zero_reads: notes ? notes.filter((n) => n.deliveries === 0).length : null,
     };

@@ -70,7 +70,7 @@ export const SEAMS = {
     laptop_sleep: {
         layer: "clock",
         legal_outcomes: [
-            "one event-free clock jump spanning the idle gap before the session (SIM-P18)",
+            "one event-free clock jump across the idle gap onto the session's first event (SIM-P18)",
             "missed: a job carried the clock past the session's start, so no jump and no firing",
         ],
         in_flight_fate: "none: fires while idle",

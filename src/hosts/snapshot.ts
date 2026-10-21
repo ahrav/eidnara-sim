@@ -192,12 +192,12 @@ export class SnapshotRecorder {
         return join(this.gitDir, `${project}${suffix}.index`);
     }
 
-    /**
-     * `dropCutLine` truncates `snapshots.jsonl` to its newline-terminated prefix: a line cut by
-     * a kill mid-append is discarded and the next record starts at a line boundary.
-     */
+    /** Drops a line a kill cut from `snapshots.jsonl` and `tools.jsonl`, and creates `tools.jsonl` so a run with no tool runs still has its ledger. */
     private dropCutLine(): void {
         keepCompleteLines(join(this.armDir, "snapshots.jsonl"));
+        const tools = join(this.armDir, "tools.jsonl");
+        keepCompleteLines(tools);
+        if (!existsSync(tools)) appendFileSync(tools, "");
     }
 
     /**
@@ -252,7 +252,7 @@ export class SnapshotRecorder {
         rmSync(this.stateFile, { force: true });
         rmSync(this.gitDir, { recursive: true, force: true });
         rmSync(join(this.armDir, "snapshots.jsonl"), { force: true });
-        rmSync(join(this.armDir, "tools.jsonl"), { force: true });
+        writeFileSync(join(this.armDir, "tools.jsonl"), "");
     }
 
     /**
@@ -535,11 +535,14 @@ export class SnapshotRecorder {
     }
 
     /**
-     * Adds tool runs; a run whose `call` id matches an earlier record replaces that record and
-     * keeps its recorded start time, the moment the run began.
+     * Adds tool runs: each is appended to `tools.jsonl` with the turn it belongs to, and a run
+     * whose `call` id matches an earlier record replaces that record in the session's commands
+     * and keeps its recorded start time, the moment the run began.
      */
-    addTools(tools: Command[]): void {
+    addTools(tools: Command[], turn: string | null): void {
         if (tools.length === 0) return;
+        const toolLines = tools.map((t) => `${JSON.stringify({ turn, ...t })}\n`).join("");
+        appendFileSync(join(this.armDir, "tools.jsonl"), toolLines);
         const lines: string[] = [];
         for (const run of tools) {
             const at = run.call ? this.commandAt.get(run.call) : undefined;
@@ -549,13 +552,6 @@ export class SnapshotRecorder {
             lines.push(JSON.stringify(placed));
         }
         appendFileSync(this.commandsFile, `${lines.join("\n")}\n`);
-    }
-
-    /** Appends a turn's finished tool runs to `tools.jsonl`, each tagged with the turn id (null at a session end). */
-    logTurnTools(tools: Command[], turn: string | null): void {
-        if (tools.length === 0) return;
-        const lines = tools.map((t) => `${JSON.stringify({ turn, ...t })}\n`).join("");
-        appendFileSync(join(this.armDir, "tools.jsonl"), lines);
     }
 
     capture(

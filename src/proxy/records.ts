@@ -49,11 +49,25 @@ export interface CallRecord {
     error: string | null;
     /** Request fields the proxy removed before forwarding, keyed by field path. */
     stripped?: Record<string, unknown>;
-    /** The response text the proxy relayed for agent, user-sim, and judge calls, first 262,144 characters. */
+    /**
+     * The response text the proxy relayed for agent, user-sim, and judge calls, first
+     * `RESPONSE_TEXT_LIMIT` characters, empty when the response carried no text; absent on other
+     * components, on a call that failed before any assistant text, and on records from before the
+     * capture.
+     */
     response_text?: string;
     /** Set when the relayed text ran past that cap, so `response_text` is a prefix. */
     response_text_truncated?: true;
+    /** The request's arrival ordinal within its proxy process, so restores can order same-ms calls. */
+    arrival?: number;
+    /** SHA-256 of the whole relayed text, present with `response_text`. */
+    response_sha256?: string;
+    /** The last 6,000 characters of the relayed text, present when `response_text` cut it. */
+    response_tail?: string;
 }
+
+/** Characters of relayed response text a record keeps; a text this long may have been cut. */
+export const RESPONSE_TEXT_LIMIT = 262_144;
 
 const NUMBERS = [
     "seq",
@@ -69,7 +83,8 @@ const NUMBERS = [
 ] as const;
 const NULLABLE = ["session", "turn", "finish_reason", "fault_ref", "error"] as const;
 
-export function recordProblems(value: Record<string, unknown>): string[] {
+export function recordProblems(input: Partial<CallRecord> | Record<string, unknown>): string[] {
+    const value: Record<string, unknown> = { ...input };
     const problems: string[] = [];
     for (const k of NUMBERS) if (!Number.isFinite(value[k])) problems.push(`${k} missing`);
     for (const k of NULLABLE) {
@@ -86,6 +101,13 @@ export function recordProblems(value: Record<string, unknown>): string[] {
     }
     if (value.first_byte_ms !== null && !Number.isFinite(value.first_byte_ms)) {
         problems.push("first_byte_ms missing");
+    }
+    const arrival = value.arrival;
+    if (arrival !== undefined && (!Number.isInteger(arrival) || (arrival as number) < 0)) {
+        problems.push("arrival invalid");
+    }
+    for (const k of ["response_sha256", "response_tail"] as const) {
+        if (value[k] !== undefined && typeof value[k] !== "string") problems.push(`${k} invalid`);
     }
     return problems;
 }
@@ -156,7 +178,8 @@ export class RecordWriter {
      * `resume` reopens an existing journal: a line a kill cut mid-append is dropped and the
      * sequence continues after the last complete record. `retain` keeps every record in
      * `records` for callers that read them back in memory; a run-long writer passes false,
-     * since its records live on disk and in the call index.
+     * since its records live on disk and in the call index. The record file exists from
+     * construction, so a run with no calls still has a `calls.jsonl`.
      */
     constructor(path: string | null, options: { resume?: boolean; retain?: boolean } = {}) {
         this.retain = options.retain ?? true;
@@ -167,7 +190,22 @@ export class RecordWriter {
         if (this.bytes === 0) return;
         const last = lastLine(path, this.bytes);
         if (last === null) return;
-        const record = JSON.parse(last) as CallRecord;
+        const corrupt = (why: string) => {
+            this.close();
+            return new Error(`${path} last record is corrupt: ${why}`);
+        };
+        let value: unknown;
+        try {
+            value = JSON.parse(last);
+        } catch {
+            throw corrupt("not JSON");
+        }
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            throw corrupt("not an object");
+        }
+        const problems = recordProblems(value as Record<string, unknown>);
+        if (problems.length > 0) throw corrupt(problems.join(", "));
+        const record = value as CallRecord;
         this.seq = record.seq + 1;
         this.lastWall = record.wall_ms;
     }

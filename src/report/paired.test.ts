@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { GradeRecord, Verdict } from "../grade/probes";
-import { armOrder, referenceArm } from "../run/run";
+import { armOrder, referenceArm, requireAdmittedOrder } from "../run/run";
 import { bootstrapMean, disagreementRate, pairedDiffs } from "./paired";
 
 const grade = (
@@ -82,6 +82,36 @@ describe("A/A pairing", () => {
         expect(clustered.covers_zero).toBe(true);
     });
 
+    test("the disagreement rate compares verdicts, whatever other metric ends in .pass", () => {
+        const extra = (arm: string, retry: number): GradeRecord => ({
+            ...grade(arm, "q-1", "pass"),
+            metrics: { "P3.pass": true, "P3.retry.pass": retry },
+        });
+        const grades = [
+            extra("host", 0),
+            extra("host~aa", 1),
+            grade("host", "q-2", "pass"),
+            grade("host~aa", "q-2", "fail"),
+        ];
+        expect(disagreementRate(grades, "host", "host~aa")).toBe(0.5);
+    });
+
+    test("a persisted order is admitted only as armOrder would schedule it", () => {
+        expect(() =>
+            requireAdmittedOrder({ tier: "S", seed: 101 }, ["host", "host~aa"]),
+        ).not.toThrow();
+        for (const order of [
+            ["eidnara", "host", "host~aa"],
+            ["host~aa"],
+            ["host", "host~aa", "host~bb"],
+        ]) {
+            expect(() => requireAdmittedOrder({ tier: "S", seed: 101 }, order)).toThrow();
+        }
+        expect(() => requireAdmittedOrder({ tier: "L", seed: 301 }, ["host", "host~aa"])).toThrow(
+            "not in the L order",
+        );
+    });
+
     test("an A/A control runs beside its pre-registered pair, once, and diverges from its own arm", () => {
         expect(armOrder({ tier: "S", seed: 101, arms: ["host", "host~aa"] })).toEqual([
             "host",
@@ -98,6 +128,9 @@ describe("A/A pairing", () => {
             armOrder({ tier: "S", seed: 101, arms: ["host", "host~aa", "host~aa"] }),
         ).toThrow("twice");
         expect(() =>
+            armOrder({ tier: "S", seed: 101, arms: ["host", "host~aa", "host~bb"] }),
+        ).toThrow("one A/A control");
+        expect(() =>
             armOrder({ tier: "S", seed: 101, arms: ["eidnara-kl", "eidnara-kl~x"] }),
         ).toThrow("not in the S order");
         expect(() => armOrder({ tier: "L", seed: 301, arms: ["host", "host~aa"] })).toThrow(
@@ -105,5 +138,17 @@ describe("A/A pairing", () => {
         );
         const ref = referenceArm(["eidnara", "eidnara~aa", "host", "host~aa"]);
         expect(["eidnara~aa", "host", "host~aa"].map(ref)).toEqual(["eidnara", "eidnara", "host"]);
+        const cfAfter = referenceArm(["host", "eidnara", "eidnara-cf", "eidnara-kl"]);
+        expect(["eidnara", "eidnara-cf", "eidnara-kl"].map(cfAfter)).toEqual([
+            "host",
+            "eidnara",
+            "host",
+        ]);
+        const cfFirst = referenceArm(["eidnara-kl", "eidnara-cf", "eidnara", "host"]);
+        expect(["eidnara-cf", "eidnara", "host"].map(cfFirst)).toEqual([
+            "eidnara-kl",
+            "eidnara-cf",
+            "eidnara-kl",
+        ]);
     });
 });

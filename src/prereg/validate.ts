@@ -13,6 +13,7 @@ import {
     MIN_FORCED_P90_SESSIONS,
     MIN_PAIRED_RUNS_FOR_RUN_GATE,
     MULTIPLICITY,
+    NORMALISATION_RULES,
     needsPairedRuns,
     OUTCOMES,
     PREREG_SCHEMA,
@@ -110,7 +111,7 @@ const INTERVALS_FOR: Record<string, readonly string[]> = {
     slope: ["slope-paired-bootstrap"],
 };
 /** The divergence normalisers OQ-3 fixes (#1024). */
-const NORMALISERS = ["iso-8601-timestamps", "durations", "pids", "temp-paths", "run-ids"];
+const NORMALISERS: readonly string[] = NORMALISATION_RULES;
 
 const FAMILY_SHAPE: Shape = {
     id: text,
@@ -452,11 +453,36 @@ function checkGrading(p: Preregistration, errors: string[]): void {
     if (Number(g.p13_reduction_ratio.min) >= Number(g.p13_reduction_ratio.max)) {
         errors.push("grading.p13_reduction_ratio: min must be below max");
     }
-    if (Number(g.p11_false_positive_weight) <= 0) {
+    const weight = Number(g.p11_false_positive_weight);
+    if (!Number.isFinite(weight)) {
+        errors.push("grading.p11_false_positive_weight: must be a finite number");
+    } else if (weight <= 0) {
         errors.push("grading.p11_false_positive_weight: must be positive");
     }
-    for (const field of ["human_sample_percent", "arm_identification_ceiling_percent"] as const) {
-        if (g.judge[field] > 100) errors.push(`grading.judge.${field}: at most 100`);
+    const judge = g.judge;
+    if (judge.cross_judge === judge.model) {
+        errors.push("grading.judge.cross_judge: must differ from grading.judge.model");
+    }
+    if (judge.calibration_min_pairs < 20) {
+        errors.push("grading.judge.calibration_min_pairs: at least 20");
+    }
+    const pairs = p.stopping_rule.paired_items_per_probe_type;
+    if (judge.calibration_min_pairs > pairs) {
+        errors.push(
+            `grading.judge.calibration_min_pairs: at most stopping_rule.paired_items_per_probe_type (${pairs})`,
+        );
+    }
+    if (judge.arm_identification_ceiling_percent < 50) {
+        errors.push("grading.judge.arm_identification_ceiling_percent: at least 50");
+    }
+    if (judge.human_sample_percent < 10) {
+        errors.push("grading.judge.human_sample_percent: at least 10");
+    }
+    if (judge.human_sample_percent > 100) {
+        errors.push("grading.judge.human_sample_percent: at most 100");
+    }
+    if (judge.arm_identification_ceiling_percent > 60) {
+        errors.push("grading.judge.arm_identification_ceiling_percent: at most 60");
     }
 }
 
@@ -470,6 +496,18 @@ function checkUserSim(p: Preregistration, errors: string[]): void {
     }
     if (u.interrupt_after_ms.min > u.interrupt_after_ms.max) {
         errors.push("user_sim.interrupt_after_ms: min must not exceed max");
+    }
+    const ratio = Number(p.oracles.cost_ratio_max);
+    if (!(ratio > 0 && Number.isFinite(ratio))) {
+        errors.push("oracles.cost_ratio_max: must be positive and finite");
+    }
+    if (p.oracles.hang_quiet_ms >= p.liveness_bounds.turn_deadline_ms) {
+        errors.push("oracles.hang_quiet_ms: must be below liveness_bounds.turn_deadline_ms");
+    }
+    if (u.interrupt_after_ms.max >= p.liveness_bounds.turn_deadline_ms) {
+        errors.push(
+            "user_sim.interrupt_after_ms: max must be below liveness_bounds.turn_deadline_ms",
+        );
     }
 }
 

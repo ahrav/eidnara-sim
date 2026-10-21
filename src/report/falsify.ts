@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { type Entry, readJsonl } from "../run/journal";
+import { readJsonl } from "../run/journal";
 import type { FALSIFICATION } from "../stats/gate";
 import type { PairingRecord } from "../usersim/usersim";
 import type { GradedRun } from "./observe";
@@ -48,11 +48,11 @@ export function falsificationPairs(
     const path = join(g.run.dir, "pairing.jsonl");
     const pairing = readJsonl<PairingRecord>(path);
     const pushback = (a: string) => {
-        const cut = new Map(
-            pairing
-                .filter((r) => r.kind === "divergedAt" && r.arm === treatment)
-                .map((r) => [r.session, r.index]),
-        );
+        const cut = new Map<string, number>();
+        for (const r of pairing) {
+            if (r.kind !== "divergedAt" || (r.arm !== control && r.arm !== treatment)) continue;
+            cut.set(r.session, Math.min(cut.get(r.session) ?? Infinity, r.index));
+        }
         const turns = pairing.filter(
             (r) =>
                 r.kind === "turn" &&
@@ -75,16 +75,14 @@ export function falsificationPairs(
     };
     const gaps = (a: string) => {
         const journal = arm(a)?.journal ?? [];
-        const jumps = journal.flatMap((e, i) =>
-            e.kind === "AdvanceClock" && e.next_event && i > 0
-                ? [
-                      {
-                          next: String(e.next_event),
-                          gap: e.wall_ms - (journal[i - 1] as Entry).wall_ms,
-                      },
-                  ]
-                : [],
-        );
+        let completed: number | null = null;
+        const jumps: { next: string; gap: number }[] = [];
+        for (const e of journal) {
+            if (e.kind === "AdvanceClock" && e.next_event && completed !== null) {
+                jumps.push({ next: String(e.next_event), gap: e.wall_ms - completed });
+            }
+            if (e.kind === "Event") completed = e.wall_ms;
+        }
         return byKey(
             jumps,
             (j) => j.next,

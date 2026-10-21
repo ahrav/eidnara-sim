@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
     closeSync,
     constants,
@@ -24,26 +24,34 @@ import {
 import { hostname } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 
-export type EntryKind =
-    | "StartRun"
-    | "ResumeRun"
-    | "StartArm"
-    | "BeginTurn"
-    | "EndTurn"
-    | "RegisterJob"
-    | "EndJob"
-    | "AdvanceClock"
-    | "Event"
-    | "FaultFired"
-    | "FaultObserved"
-    | "ItemState"
-    | "SnapshotArtefacts"
-    | "StoreChecked"
-    | "UserTurn"
-    | "UserSimRates"
-    | "CounterfactualDeletion"
-    | "EndArm"
-    | "EndRun";
+/** Every entry kind a journal holds; `readJournal` refuses any other. */
+const ENTRY_KINDS = [
+    "Preflight",
+    "StartRun",
+    "ResumeRun",
+    "StartArm",
+    "BeginTurn",
+    "EndTurn",
+    "RegisterJob",
+    "EndJob",
+    "AdvanceClock",
+    "ClockOffset",
+    "Event",
+    "FaultFired",
+    "FaultObserved",
+    "ItemState",
+    "SnapshotArtefacts",
+    "StoreChecked",
+    "UserTurn",
+    "UserSimRates",
+    "CounterfactualSample",
+    "DeleteMemoryObject",
+    "CounterfactualDeletion",
+    "EndArm",
+    "EndRun",
+] as const;
+
+export type EntryKind = (typeof ENTRY_KINDS)[number];
 
 export interface NewEntry {
     kind: EntryKind;
@@ -57,27 +65,7 @@ export interface Entry extends NewEntry {
     wall_ms: number;
 }
 
-const KINDS: ReadonlySet<string> = new Set<EntryKind>([
-    "StartRun",
-    "ResumeRun",
-    "StartArm",
-    "BeginTurn",
-    "EndTurn",
-    "RegisterJob",
-    "EndJob",
-    "AdvanceClock",
-    "Event",
-    "FaultFired",
-    "FaultObserved",
-    "ItemState",
-    "SnapshotArtefacts",
-    "StoreChecked",
-    "UserTurn",
-    "UserSimRates",
-    "CounterfactualDeletion",
-    "EndArm",
-    "EndRun",
-]);
+const KINDS: ReadonlySet<string> = new Set<string>(ENTRY_KINDS);
 
 function shaped(e: Entry): boolean {
     return (
@@ -134,6 +122,15 @@ function readTrimmed(path: string): string | null {
  * or containers that share a hostname on one shared directory stay distinct; the hostname
  * stands in where the file is absent.
  */
+/**
+ * A staging name beside `path` that no other process, on this host or another sharing the
+ * directory, is writing: host, pid, and a random nonce. An exclusive create at it refuses a
+ * planted symlink, and a leftover from a killed process collides with nothing.
+ */
+export function stagingPath(path: string): string {
+    return `${path}.${hostname()}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+}
+
 export function leaseHost(): string {
     const id = readTrimmed("/etc/machine-id");
     return id ? id : `hostname:${hostname()}`;
@@ -501,6 +498,25 @@ export function releaseLease(runDir: string, lease: Lease): void {
 }
 
 /**
+ * Whether the directory's highest lease is unreleased and names a live process on this host or
+ * any process on another host, the same holder `takeLease` refuses to take over from.
+ */
+export function leaseHeld(runDir: string): boolean {
+    const pinned = new PinnedDir(runDir);
+    try {
+        const top = leaseNumbers(pinned.at(".")).at(-1);
+        if (top === undefined) return false;
+        const held = readLease(pinned.at(`lease.${top}.json`));
+        const mine = ownIdentity();
+        return (
+            held !== null && !held.released && (held.host !== mine.host || holderAlive(held, mine))
+        );
+    } finally {
+        pinned.close();
+    }
+}
+
+/**
  * Reads a JSONL log the harness appends to: every line but the last must parse, and a cut
  * last line, which a kill mid-write leaves, is dropped. The path must be a regular file or
  * absent; an absent file reads as empty. Journals read through `readJournal`, which also
@@ -586,6 +602,81 @@ export function readJournal(source: string | number): Entry[] & { bytes?: number
         entries.bytes = (entries.bytes ?? 0) + raw.length + 1;
     });
     return entries;
+}
+
+/**
+ * `requireComplete` admits a run whose journal records every scheduled event ended once per
+ * arm in the compiled order, an `EndArm` per arm, and one arm-less `EndRun` after every
+ * `EndArm` as the journal's last entry, no arm's entry after its `EndArm`, and the manifest's arm
+ * order matching the journaled `StartRun`. The check indexes
+ * the scheduled events once, so it costs one pass over the journal per arm. The error names the
+ * arm and its event counts (SIM-P67).
+ */
+export function requireComplete(entries: Entry[], arms: string[], scheduled: string[]): void {
+    const started = entries.find((e) => e.kind === "StartRun");
+    const journaled = Array.isArray(started?.order) ? started.order : null;
+    const malformed = arms.some((a) => typeof a !== "string") || new Set(arms).size !== arms.length;
+    if (malformed || !journaled || JSON.stringify(journaled) !== JSON.stringify(arms)) {
+        throw new Error(
+            `manifest order ${JSON.stringify(arms)} differs from the journaled order ${JSON.stringify(journaled)}`,
+        );
+    }
+    const planned = new Set(scheduled);
+    const endRuns = entries.map((e, i) => [e, i] as const).filter(([e]) => e.kind === "EndRun");
+    for (const arm of arms) {
+        const ended: string[] = [];
+        let closedAt = -1;
+        for (const [i, e] of entries.entries()) {
+            if (e.arm !== arm) continue;
+            if (e.kind === "Event") ended.push(String(e.event));
+            if (e.kind === "EndArm" && closedAt === -1) closedAt = i;
+        }
+        const once = new Set(ended);
+        const missing = scheduled.filter((id) => !once.has(id));
+        const seen = new Set<string>();
+        const stray: string[] = [];
+        for (const id of ended) {
+            if (!planned.has(id) || seen.has(id)) stray.push(id);
+            seen.add(id);
+        }
+        const misordered = ended.findIndex((id, i) => id !== scheduled[i]);
+        if (closedAt === -1 || missing.length > 0 || stray.length > 0 || misordered !== -1) {
+            const marker = closedAt !== -1 ? "EndArm present" : "no EndArm";
+            const count = `${scheduled.length - missing.length} of ${scheduled.length} events ended`;
+            const extra = stray.length > 0 ? `, unexpected or repeated: ${stray.join(", ")}` : "";
+            const order =
+                misordered !== -1 && missing.length === 0 && stray.length === 0
+                    ? `, out of order from ${ended[misordered]}`
+                    : "";
+            throw new Error(`arm ${arm} is incomplete: ${count}, ${marker}${extra}${order}`);
+        }
+        if (endRuns.some(([, i]) => i < closedAt)) {
+            throw new Error(`run is incomplete: EndRun before arm ${arm}'s EndArm`);
+        }
+        const late = entries.findIndex(
+            (e, i) => i > closedAt && e.arm === arm && e.kind !== "EndRun",
+        );
+        if (late !== -1) {
+            throw new Error(
+                `arm ${arm} has ${entries[late]?.kind} at entry ${late + 1} after its EndArm`,
+            );
+        }
+    }
+    if (endRuns.length === 0) {
+        throw new Error("run is incomplete: the journal has no EndRun");
+    }
+    if (endRuns.length > 1) {
+        throw new Error(`run is incomplete: ${endRuns.length} EndRun entries`);
+    }
+    const [closer, at] = endRuns[0] as readonly [Entry, number];
+    if (closer.arm !== null && closer.arm !== undefined) {
+        throw new Error(`run is incomplete: EndRun names arm ${String(closer.arm)}`);
+    }
+    if (at !== entries.length - 1) {
+        throw new Error(
+            `run is sealed at entry ${at + 1}, but ${entries.length - 1 - at} entries follow EndRun`,
+        );
+    }
 }
 
 export class Journal {

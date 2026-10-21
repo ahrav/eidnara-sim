@@ -5,10 +5,11 @@ Scope: the v2 live-slice harness in this tree, specified by
 follow `docs/properties/METHOD.md`. The spec names its full catalog at
 `research/sim-design/property-catalog-sim-v2.md` (2026-10-12 revision); that
 file is unavailable, so these records are reconstructed from the condensed
-index in the spec body. Every record is PROPOSED with `Confidence: low`. A
-record whose surface has landed says `Exercised: partial` and names the tests
-that cover it; the rest say `Exercised: not yet` because no harness surface
-exists to verify against. No run has exercised any record.
+index in the spec body. Every record is PROPOSED. Each record's `Exercised`
+and `Confidence` lines are its own: a record whose surface has landed says
+`Exercised: partial` or `yes` and names the tests that cover it, and most of
+the rest read `not yet` and `low`, because no harness surface existed to
+verify against when they were written.
 
 Stable ids: `SIM-P01` to `SIM-P77` carry the spec's proposed records, and
 `SIM-L01` to `SIM-L03` carry the liveness bounds OQ-6 asked for and M0
@@ -144,8 +145,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - M6 (#1031) unit tests replay one- and two-arm runs with
+identical text; the `usersim-1` smoke run (S seed 101, 45 events) found no
+mismatch before divergence; no full-tier run yet
 Guarantee: SIM-P02: For arms A and B of one run and every `event_idx <
 divergence_idx(A, B)`, the delivered user text, pasted bytes, and fault
 parameters are byte-identical.
@@ -157,10 +159,12 @@ stale context hash serves the wrong tape entry.
 Required faults and enabling state: two arms of one seed; a tape recorded by the
 first arm; at least one paste and one scheduled fault before divergence.
 Confidence: low -
-[evidence](evidence/sim-p02-paired-arms-share-event-prefix.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+[evidence](evidence/sim-p02-paired-arms-share-event-prefix.md). M6 (#1031) keys
+replies by the session's chained digests and compares delivered-text hashes
+before the divergence index; verified in `src/usersim/usersim.test.ts` and the
+`usersim-1` smoke run.
+Existing check: `pairingMismatches` and `scripts/pairing-check.ts` compare
+delivered-text hashes before the recorded divergence index
 Impact: A measured effect is confounded with different user input.
 Open questions:
 - OQ-3 policy half is resolved in the M0 pre-registration: the divergence hash
@@ -172,8 +176,12 @@ Open questions:
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - M6 (#1031) tests prove the `divergedAt` record is on disk
+before the diverging arm's own live call and before its turn record; arms run
+one after another, so the ordering against the reference arm's later inputs that
+the guarantee names is not what the test proves, and the record carries the
+arm's context hash beside the two digests (see the evidence); no full-tier run
+yet
 Guarantee: SIM-P03: If the agent-visible context hash differs at `event_idx`
 between two arms, a divergence record with that index and both hashes exists
 before the next `IssueUserText` for either arm.
@@ -185,10 +193,12 @@ Fault/timing angle: the divergence check runs between `EndTurn` and the next
 Required faults and enabling state: two arms whose agent outputs differ after
 normalisation.
 Confidence: low -
-[evidence](evidence/sim-p03-divergence-is-recorded-never-hidden.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+[evidence](evidence/sim-p03-divergence-is-recorded-never-hidden.md). M6 (#1031)
+appends `divergedAt` before the turn's text is sent; verified in
+`src/usersim/usersim.test.ts`. The record lives in `pairing.jsonl`, not the
+journal (see the evidence).
+Existing check: `src/usersim/usersim.test.ts` asserts the record is on disk
+before the live call
 Impact: A diverged pair is analysed as paired and the report overstates pairing.
 Open questions:
 - Same as SIM-P02: the hash input is pre-registered in `divergence_policy`; the
@@ -199,8 +209,8 @@ Open questions:
 Type: reachability
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - the `usersim-1` smoke run diverged in three of ten
+sessions; no full-tier campaign yet
 Guarantee: SIM-P04: At least one arm pair diverges before the last event of its
 run.
 Check: `sometimes` - count pairs whose divergence index is below the run's last
@@ -210,8 +220,8 @@ Fault/timing angle: none.
 Required faults and enabling state: live models at production temperature; a run
 long enough for outputs to differ.
 Confidence: low - [evidence](evidence/sim-p04-divergence-occurs-in-campaign.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
+M6 (#1031) recorded divergence in a 45-event smoke run; a full-tier campaign has
+not run.
 Existing check: none
 Impact: The replay-to-live transition is never exercised and its defects stay
 hidden.
@@ -347,8 +357,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - M6 (#1031) tests check the S seed 101 plan against every
+band; `usersim-1`, cut at 45 events, was flagged; no full-tier run yet
 Guarantee: SIM-P10: Pushback, interrupt, redirect, and abandon rates over the
 run fall inside pre-registered tolerance bands around the fitted targets, and
 the realised rates are journaled.
@@ -361,9 +371,10 @@ Required faults and enabling state: a full run with user-sim labels on every
 turn.
 Confidence: low -
 [evidence](evidence/sim-p10-user-sim-event-mix-matches-distribution-bounds.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+M6 (#1031) samples labels from the pre-registered rates and journals
+`UserSimRates` per arm; verified in `src/usersim/usersim.test.ts`.
+Existing check: `realisedRates` journals each arm's rates and the ones outside
+their band; `scripts/pairing-check.ts` fails a flagged or missing summary
 Impact: Results generalise to a user population the corpus does not describe.
 Open questions: None.
 
@@ -398,10 +409,13 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: partial - unit tests in src/run/scheduler.test.ts rebuild the busy
-set from the journal, assert it is empty at every `AdvanceClock`, and bound
-every `scenario_ms` change by the wall time that passed while busy; no campaign
-run yet
+Exercised: partial - `src/run/scheduler.test.ts` (Clock refuses to advance
+while busy; `invariants()` rebuilds the busy set from the journal and asserts
+it is empty at every `AdvanceClock`; `wallRate()` bounds every `scenario_ms`
+change while busy by the wall time that passed) and the live witness
+(`tests/witness-faults.ts`, `checkJournal` `advance_while_busy`) establish the
+jump clause; the wall-speed clause has the unit bound only, with no live
+check yet; see `evidence/sim-p12-clock-advances-only-when-idle.md`
 Guarantee: SIM-P12: Every `AdvanceClock` entry is preceded by `busy_set` empty
 at the same sequence, and between a `BeginTurn` or `RegisterJob` and the
 matching `EndTurn` or `EndJob` `scenario_ms` grows only at wall-clock rate, by
@@ -414,14 +428,15 @@ Fault/timing angle: a background job registered from a proxy observation can
 arrive after the scheduler decided to jump.
 Required faults and enabling state: a turn followed by a fold or memory-capture
 job that outlives the turn.
-Confidence: low - [evidence](evidence/sim-p12-clock-advances-only-when-idle.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
-tests verify the record, and a default tier run reaches it.
-Existing check: src/run/scheduler.test.ts `invariants()` and `wallRate()` - busy
-set rebuilt from turn and job entries, empty at every `AdvanceClock`; while idle
-`scenario_ms` holds except across `AdvanceClock`, and while busy it advances by
-at most the elapsed `wall_ms`, a bound that holds under a steady system clock
-during the test
+Confidence: medium - [evidence](evidence/sim-p12-clock-advances-only-when-idle.md).
+M4 (#1028) implements the surface; the unit tests and the live witness named
+under Existing check construct the record, and a default tier run reaches it.
+Existing check: `src/run/scheduler.test.ts` (`Clock` refuses `advanceTo` while
+busy; `invariants()` asserts an empty busy set at every `AdvanceClock`;
+`wallRate()` holds `scenario_ms` while idle except across `AdvanceClock` and
+bounds its growth while busy by the elapsed `wall_ms`, under a steady system
+clock during the test), `src/run/journal-check.ts` `advance_while_busy` (run
+by `tests/witness-faults.ts`)
 Impact: A fold or capture job sees a simulated gap mid-execution and its timing
 metrics are invalid.
 Open questions:
@@ -438,9 +453,10 @@ Open questions:
 Type: reachability
 Reachability: default-production
 Status: active
-Exercised: partial - the unit test "a background job registered after a turn
-ends holds the clock until it ends" constructs a job alone in the busy set; no
-campaign run yet
+Exercised: yes - `src/run/scheduler.test.ts` ("a background job registered
+after a turn ends holds the clock until it ends", which constructs a job alone
+in the busy set) and the live witness (`checkJournal` `jobs_held_after_turn`,
+required non-empty); see `evidence/sim-p13-background-job-holds-clock.md`
 Guarantee: SIM-P13: A background job is in `busy_set` while no turn is in
 `busy_set`.
 Check: `sometimes` - observe at least one journal state where the busy set holds
@@ -449,11 +465,12 @@ does the job hold the clock on its own.
 Fault/timing angle: none.
 Required faults and enabling state: a fold or memory-capture job that outlives
 its triggering turn.
-Confidence: low - [evidence](evidence/sim-p13-background-job-holds-clock.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
-tests verify the record, and a default tier run reaches it.
-Existing check: src/run/scheduler.test.ts - a job registered after `EndTurn`
-holds the clock with no turn busy
+Confidence: medium - [evidence](evidence/sim-p13-background-job-holds-clock.md).
+M4 (#1028) implements the surface; the unit tests and the live witness named
+under Existing check construct the record, and a default tier run reaches it.
+Existing check: `src/run/scheduler.test.ts` ("a background job registered after a
+turn ends holds the clock until it ends"), `src/run/journal-check.ts`
+`jobs_held_after_turn`, required non-empty by `tests/witness-faults.ts`
 Impact: The job-holds-clock branch is never exercised and SIM-P12's job half is
 untested.
 Open questions: None.
@@ -463,9 +480,10 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: partial - the unit test "arms run in order from one event list"
-asserts every `AdvanceClock` lands on the earliest later event; no campaign run
-yet
+Exercised: yes - `src/run/scheduler.test.ts` ("arms run in order from one event
+list" asserts every `AdvanceClock` lands on the earliest later event) and the
+live witness (`checkJournal` `off_schedule_jumps`); see
+`evidence/sim-p14-idle-jump-lands-on-next-event.md`
 Guarantee: SIM-P14: After `AdvanceClock`, `scenario_ms` equals the earliest
 scheduled event time greater than the previous value.
 Check: `always` - for each `AdvanceClock`, assert the new `scenario_ms` equals
@@ -473,11 +491,13 @@ the minimum scheduled event time above the old value; a jump past an event skips
 it.
 Fault/timing angle: a laptop-sleep fault inserts a jump of its own duration.
 Required faults and enabling state: a scenario with idle gaps between events.
-Confidence: low - [evidence](evidence/sim-p14-idle-jump-lands-on-next-event.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
-tests verify the record, and a default tier run reaches it.
-Existing check: src/run/scheduler.test.ts - every `AdvanceClock` target equals
-the earliest event time after `from_ms`, with the expected jump count
+Confidence: medium - [evidence](evidence/sim-p14-idle-jump-lands-on-next-event.md).
+M4 (#1028) implements the surface; the unit tests and the live witness named
+under Existing check construct the record, and a default tier run reaches it.
+Existing check: `src/run/scheduler.test.ts` (every `AdvanceClock` target equals
+the earliest event time after `from_ms`, with the expected jump count),
+`src/run/journal-check.ts` `off_schedule_jumps` and `jump_origin_mismatch`
+(run by `tests/witness-faults.ts`)
 Impact: Events are skipped or issued late and the scenario differs from its
 compiled plan.
 Open questions: None.
@@ -512,8 +532,10 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: yes - `src/run/time.test.ts` (per-binary interception) and the run
+command's `Preflight` journal entry before `StartRun`, which the live witness
+requires with every binary intercepted; see
+`evidence/sim-p16-faketime-verified-per-binary-before-start.md`
 Guarantee: SIM-P16: `StartRun` is preceded by a journaled interception test per
 host binary (Pi, OpenCode, daemon) that read a faked time; a failure records the
 binary wall-clock-only or refuses the run.
@@ -524,16 +546,18 @@ Fault/timing angle: the setuid sandbox boundary strips `LD_*`, so injection must
 follow privilege drop.
 Required faults and enabling state: the real sandbox launcher, the interposer on
 a kept mount, and each host binary.
-Confidence: low -
-[evidence](evidence/sim-p16-faketime-verified-per-binary-before-start.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: medium - [evidence](evidence/sim-p16-faketime-verified-per-binary-before-start.md).
+M4 (#1028) implements the surface; the unit tests and the live witness named
+under Existing check construct the record, and a default tier run reaches it.
+OQ-9 (whether the Bun-compiled OpenCode binary reads time through libc) is
+closed: the 2026-10-16 live witness's `Preflight` entries record OpenCode
+1.18.22 as intercepted.
+Existing check: `src/run/time.test.ts` (per-binary interception), the
+`Preflight` journal entry `src/run/run.ts` writes before `StartRun`, required
+by `tests/witness-faults.ts` with `pi`, `opencode`, and `daemon` intercepted
 Impact: A binary silently runs on wall time and every scenario-time claim about
 it is false.
-Open questions:
-- OQ-9: whether the Bun-compiled OpenCode binary reads time through libc.
-  Unresolved, needs the per-binary interception test at the first S `StartRun`.
+Open questions: None.
 
 ### sim-p17-long-idle-gaps-reached
 
@@ -562,8 +586,11 @@ Open questions: None.
 Type: safety
 Reachability: explicit-config-only
 Status: active
-Exercised: partial - the unit test "a laptop sleep is one event-free jump across
-the gap" constructs a scheduled sleep; no campaign run yet
+Exercised: partial - `src/run/scheduler.test.ts` (one fault-tagged jump onto
+the session's first event with no event inside) and the live witness
+(`checkJournal` `events_inside_sleep`, `repeated_sleeps`, one tagged jump per
+arm and sleep); the 2026-10-16 witness run predates the current jump shape;
+see `evidence/sim-p18-sleep-fault-is-event-free-jump.md`
 Guarantee: SIM-P18: A laptop-sleep fault produces exactly one `AdvanceClock`,
 carrying the fault id, that spans the idle gap before its session with
 `busy_set` empty and no events inside the gap; when a job kept the clock busy
@@ -575,13 +602,14 @@ that `seq`, and no event with `scenario_ms` inside the gap, or one
 `ItemState missed` and nothing else about the fault.
 Fault/timing angle: a sleep scheduled while a job is busy must wait for the job.
 Required faults and enabling state: a scheduled laptop-sleep fault.
-Confidence: low -
-[evidence](evidence/sim-p18-sleep-fault-is-event-free-jump.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; the M4 unit tests verify
-the record, and reached only when the tier schedules faults or the
-counterfactual arm.
-Existing check: src/run/scheduler.test.ts - one `AdvanceClock` carrying the
-fault id lands on the session's first event with the fault fired right after
+Confidence: low - [evidence](evidence/sim-p18-sleep-fault-is-event-free-jump.md).
+M4 (#1028) implements the surface; the unit tests and the live witness named
+under Existing check construct the record, and the 2026-10-16 live witness predates the current sleep-jump shape, so a new run must confirm it; reached only when the tier schedules faults or the counterfactual arm.
+Existing check: `src/run/scheduler.test.ts` ("a laptop sleep is one event-free
+jump": one `AdvanceClock` carrying the fault id lands on the session's first
+event with the fault fired right after), `src/run/journal-check.ts`
+`events_inside_sleep`, `repeated_sleeps`, `sleep_jump_faults`, required per arm
+and sleep by `tests/witness-faults.ts`
 Impact: The sleep fault tests a different condition than the one scheduled.
 Open questions: None.
 
@@ -615,8 +643,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - M6 (#1031) tests replay one- and two-arm runs with zero
+live calls; no full-tier replay yet
 Guarantee: SIM-P20: A sibling arm in `replaying` mode receives the tape's text
 for `event_idx` when its context hash equals the tape's recorded hash, and no
 user-sim model call is made for that event.
@@ -627,10 +655,11 @@ Fault/timing angle: the hash comparison races the agent's final output flush.
 Required faults and enabling state: two arms of one seed with matching outputs
 at least once.
 Confidence: low -
-[evidence](evidence/sim-p20-tape-replays-while-context-matches.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+[evidence](evidence/sim-p20-tape-replays-while-context-matches.md). M6 (#1031)
+keys replies by the session's chained digests and the scripted text; verified in
+`src/usersim/usersim.test.ts`.
+Existing check: `src/usersim/usersim.test.ts` replays recorded runs and counts
+live calls
 Impact: Paired arms receive different user text before divergence.
 Open questions:
 - OQ-3: see SIM-P02.
@@ -640,8 +669,8 @@ Open questions:
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - M6 (#1031) tests check that a replay with one changed
+output records one divergence and goes live after it; no full-tier run yet
 Guarantee: SIM-P21: The first user-sim model call for a sibling arm at
 `event_idx` has a divergence record with index at most `event_idx`.
 Check: `always` - for each sibling arm's first user-sim call, assert a
@@ -650,10 +679,11 @@ pairing.
 Fault/timing angle: none.
 Required faults and enabling state: a sibling arm that diverges.
 Confidence: low -
-[evidence](evidence/sim-p21-tape-goes-live-only-after-divergence.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+[evidence](evidence/sim-p21-tape-goes-live-only-after-divergence.md). M6 (#1031)
+gives a context that left the reference's no taped reply to find, so the first
+live call follows the `divergedAt`; verified in `src/usersim/usersim.test.ts`.
+Existing check: `src/usersim/usersim.test.ts` checks the record order and the
+live-call count
 Impact: Paired arms receive different user text before divergence.
 Open questions: None.
 
@@ -662,8 +692,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - M6 (#1031) tests check that fact-bearing script text stays
+out of the persona prompt and that an abandon skips fillers only; no full-tier
+run yet
 Guarantee: SIM-P22: For every ledger fact, exactly one conveyance event with the
 compiled manner and session is journaled as delivered; reversal facts have
 exactly two, the statement and the reversal.
@@ -676,9 +707,10 @@ Required faults and enabling state: the conveyance plan with every manner,
 including stated-then-reversed facts.
 Confidence: low -
 [evidence](evidence/sim-p22-each-ledger-fact-conveyed-once-in-assigned-manner.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+M6 (#1031) delivers conveyance, update, and reversal turns with their compiled
+text; verified in `src/usersim/usersim.test.ts`.
+Existing check: `scripts/pairing-check.ts` fails a run that leaves a non-filler
+turn unsent
 Impact: Recall is measured on facts conveyed a different number of times than
 planned.
 Open questions: None.
@@ -711,18 +743,21 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - M6 (#1031) records the corpus id and byte length on each
+paste turn's record and checks the delivered text against the compiled text;
+`usersim-1` passed; no full-tier run yet
 Guarantee: SIM-P24: A paste turn's record names its corpus item id and byte
 length, and the bytes delivered equal the corpus bytes.
 Check: `always` - for each paste turn, assert the record names a corpus id and
 length and the delivered bytes equal the corpus item's bytes.
 Fault/timing angle: none.
 Required faults and enabling state: a scenario with paste turns.
-Confidence: low - [evidence](evidence/sim-p24-paste-turn-provenance.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: low - [evidence](evidence/sim-p24-paste-turn-provenance.md). M6
+(#1031) carries `paste.sample_id` and `paste.bytes` on the turn record and
+`scripts/pairing-check.ts` checks each paste turn against the compiled text and
+the corpus item.
+Existing check: `scripts/pairing-check.ts` checks each paste turn's text hash
+and corpus provenance
 Impact: A paste carries unlicensed or altered content.
 Open questions: None.
 
@@ -731,8 +766,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - M6 (#1031) journals a labelled `UserTurn` per turn and
+lists labels in probe snapshots; compiled P14 items are still skipped by the
+grader; no full-tier run yet
 Guarantee: SIM-P25: Every user-sim turn carries a label in task, pushback,
 interrupt, redirect, abandon, clarify, or paste, and P14 derives from labels
 only.
@@ -740,10 +776,12 @@ Check: `always` - assert every user-sim turn has exactly one label from the
 fixed set and that P14's inputs are labels only.
 Fault/timing angle: none.
 Required faults and enabling state: a run with user-sim turns.
-Confidence: low - [evidence](evidence/sim-p25-pushback-label-per-turn.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: low - [evidence](evidence/sim-p25-pushback-label-per-turn.md). M6
+(#1031) journals one labelled `UserTurn` per turn ahead of its `EndTurn`;
+verified in `src/run/scheduler.test.ts`. P14 grading of compiled items is a gap
+(see the evidence).
+Existing check: `src/run/scheduler.test.ts` checks the label and the order;
+`scripts/grade-run.ts` still skips compiled P14 items
 Impact: P14 reads transcript text and grades by self-report.
 Open questions: None.
 
@@ -1045,18 +1083,23 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/oracle/oracles.test.ts` ("token ledger") constructs
+`agent`, `memory_capture`, and `title` calls plus the three harness
+components, each with all four token fields; the other components share the
+same code path but are not constructed; pricing and the price table version
+land with M7 (#1032)
 Guarantee: SIM-P38: Per-arm total tokens equal the sum of per-component tokens,
 and per-component cost uses the journaled price table version.
 Check: `always` - assert per-arm token totals equal the per-component sum and
 each cost cites the journaled price table version.
 Fault/timing angle: none.
 Required faults and enabling state: a run with every component active.
-Confidence: low - [evidence](evidence/sim-p38-cost-conserves-by-component.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: medium - [evidence](evidence/sim-p38-cost-conserves-by-component.md).
+M5 (#1030) implements the token half in `ledger` (`src/oracle/oracles.ts`);
+the price table half has no implementation yet.
+Existing check: `src/oracle/oracles.test.ts` (token ledger) covers the four
+token fields per component, the harness-call exclusion, and the per-arm sum;
+status unaudited
 Impact: Cost ratios are computed on tokens that do not add up.
 Open questions: None.
 
@@ -1065,8 +1108,10 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - `src/oracle/oracles.test.ts` constructs the deadline
+turns, a completed call with no follow-up, a sub-second call followed by
+silence, and a persistence call inside the window, on fixtures and constructed
+logs; no tier run has exercised it yet
 Guarantee: SIM-P39: A turn is `hang` iff its wall duration exceeds 5 minutes
 with no call record from the agent's component in that window, or a completed
 model call is followed by no persistence or tool execution within the bound; the
@@ -1076,11 +1121,19 @@ windows and assert the `hang` label matches the definition in both directions.
 Fault/timing angle: the observed Pi hang had a completed model call.
 Required faults and enabling state: a turn with a completed call and no
 follow-up.
-Confidence: low -
-[evidence](evidence/sim-p39-hang-is-derived-from-call-silence.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: medium -
+[evidence](evidence/sim-p39-hang-is-derived-from-call-silence.md). M5 (#1030)
+implements the oracle in `f4` (`src/oracle/oracles.ts`) over the recorded
+journal, call records, and tool runs; it reads the turn after the fact rather
+than labelling it `failed(hang)` as it ends, a deadline turn counts only with
+no agent call or a five-minute gap in its activity, and in a completed turn a
+tool start within a second of the call's end counts as progress however long
+the tool runs. A default tier run reaches it; none has run yet.
+Existing check: `src/oracle/oracles.test.ts` (oracle fixtures, oracle edge
+cases, round four) covers the deadline wording of both hosts, a deadline turn
+active throughout and one with a silent window, the completed call with no
+follow-up, the turn-start silence, the sub-second call, the persistence call,
+and the recorded tool start; status unaudited
 Impact: The intermittent Pi hang goes undetected or a slow turn is mislabelled.
 Open questions: None.
 
@@ -1091,8 +1144,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on
+recorded fixtures in `src/grade/probes.test.ts`; run and report wiring lands in
+later units
 Guarantee: SIM-P40: Each grade record lists its input artefact ids, every id is
 of class diff, command-log, test-result, workspace-state, or proxy-call, and
 classes transcript and agent self-report never appear.
@@ -1102,9 +1156,12 @@ Fault/timing angle: none.
 Required faults and enabling state: grades for every programmatic probe type.
 Confidence: low -
 [evidence](evidence/sim-p40-grade-inputs-are-artefacts-only.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+reconstructed from the condensed index in spec #1007; the M5 grading unit
+(#1029) implements the grader and run and report wiring is still absent, and a
+default tier run reaches it.
+Existing check: `src/grade/probes.test.ts`, grading harness: a snapshot carrying
+a transcript artefact is refused, and every fixture grade lists exactly the
+artefact ids its grader read; status unaudited
 Impact: A system that restates a rule and then violates it scores as compliant.
 Open questions: None.
 
@@ -1113,8 +1170,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on
+recorded fixtures in `src/grade/probes.test.ts`; run and report wiring lands in
+later units
 Guarantee: SIM-P41: `SnapshotArtefacts` appears exactly once per item and arm,
 at the first `EndTurn` of the probe task, and grades reference that snapshot id.
 Check: `always` - count `SnapshotArtefacts` per item and arm, assert exactly one
@@ -1124,9 +1182,11 @@ retry.
 Required faults and enabling state: a probe turn followed by pushback.
 Confidence: low -
 [evidence](evidence/sim-p41-first-attempt-snapshot-set-once.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+reconstructed from the condensed index in spec #1007; the M5 grading unit
+(#1029) implements the grader and run and report wiring is still absent, and a
+default tier run reaches it.
+Existing check: `src/grade/probes.test.ts`, grading harness: only the first
+attempt is graded and later snapshots are counted; status unaudited
 Impact: A later corrected attempt is graded as the first.
 Open questions: None.
 
@@ -1135,8 +1195,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on
+recorded fixtures in `src/grade/probes.test.ts`; run and report wiring lands in
+later units
 Guarantee: SIM-P42: For an item and arm, grade versions are strictly increasing,
 the report names the version used, and no journal entry rewrites an earlier
 version.
@@ -1146,9 +1207,12 @@ Fault/timing angle: none.
 Required faults and enabling state: a regrade after a grader fix.
 Confidence: low -
 [evidence](evidence/sim-p42-grade-is-versioned-not-overwritten.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+reconstructed from the condensed index in spec #1007; the M5 grading unit
+(#1029) implements the grader and run and report wiring is still absent, and a
+default tier run reaches it.
+Existing check: `src/grade/probes.test.ts`, grading harness: grade versions for
+one item and arm strictly increase and an out-of-order version is refused;
+status unaudited
 Impact: A report silently uses a different grade than the one recorded.
 Open questions: None.
 
@@ -1230,8 +1294,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on
+recorded fixtures in `src/grade/probes.test.ts`; run and report wiring lands in
+later units
 Guarantee: SIM-P46: An item whose probe turn ended `failed` has no grade version
 and is counted in dependability metrics; recall and harm rates name their
 excluded-failed count.
@@ -1241,9 +1306,11 @@ Fault/timing angle: provider faults fail turns.
 Required faults and enabling state: a provider fault during a probe turn.
 Confidence: low -
 [evidence](evidence/sim-p46-failed-turn-item-is-not-a-grade.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+reconstructed from the condensed index in spec #1007; the M5 grading unit
+(#1029) implements the grader and run and report wiring is still absent, and a
+default tier run reaches it.
+Existing check: `src/grade/probes.test.ts`, grading harness: a probe turn that
+failed has no grade, before any grader is selected; status unaudited
 Impact: An arm is penalised in recall for provider faults it did not cause, or
 failures vanish.
 Open questions:
@@ -1255,8 +1322,10 @@ Open questions:
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises item-level P13
+grading on recorded fixtures in `src/grade/probes.test.ts`; one record per fold
+and run wiring
+remain open
 Guarantee: SIM-P47: Every observed fold or host compaction event, a
 `history_summarizer` or `native_compaction` call followed by a context-size
 drop, yields one P13 record naming the event.
@@ -1265,9 +1334,14 @@ P13 record cites it.
 Fault/timing angle: a fold killed mid-way yields a partial event.
 Required faults and enabling state: a p90 session.
 Confidence: low - [evidence](evidence/sim-p47-fold-event-yields-p13-record.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+PROPOSED:
+reconstructed from the condensed index in spec #1007; the M5 grading unit
+(#1029) implements the grader and run and report wiring is still absent, and a
+default tier run reaches it.
+Existing check: `src/grade/probes.test.ts`, recorded fixtures: the P13 fixtures
+grade one record per item from the folds in its range and count them in
+`P13.folds`; one record per fold, naming the fold event, remains untested;
+status unaudited
 Impact: Fold fidelity is measured on a subset of folds.
 Open questions: None.
 
@@ -1276,27 +1350,34 @@ Open questions: None.
 Type: reachability
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the live S run `recovery-3` at a 30000-token context
+limit produced folds (`tests/fixtures/recovery/recovery-3-eidnara.json`); no
+retained run records the default limit, and no check counts them
 Guarantee: SIM-P48: A fold or host compaction occurs at least once per campaign.
 Check: `sometimes` - observe at least one fold or compaction event; without one
 P13 and SIM-P47 are vacuous.
 Fault/timing angle: none.
-Required faults and enabling state: forced p90 sessions.
-Confidence: low - [evidence](evidence/sim-p48-fold-observed-in-campaign.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
+Required faults and enabling state: sessions past the fold threshold, by forced
+p90 sessions or a lowered context limit.
+Confidence: medium - [evidence](evidence/sim-p48-fold-observed-in-campaign.md).
+Verified from the recorded fixture's `history_summarizer` call records and
+final store.
+PROPOSED: reconstructed from the condensed index in spec #1007; one live S run
+has since reached it at a lowered context limit.
 Existing check: none
 Impact: Fold fidelity is never measured.
-Open questions: None.
+Open questions:
+- Does a run at the default context limit fold? No retained artifact records
+  one; unresolved, needs a default-limit S run.
 
 ### sim-p49-p1-control-instance-paired
 
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M2 (#1026); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on
+recorded fixtures in `src/grade/probes.test.ts`; run and report wiring lands in
+later units
 Guarantee: SIM-P49: Every P1 item has a no-cue control instance with the same
 task, and the report pairs them.
 Check: `always` - for each P1 item, assert a control instance with the same task
@@ -1304,9 +1385,12 @@ exists and the report pairs them.
 Fault/timing angle: none.
 Required faults and enabling state: a probe plan with P1 items.
 Confidence: low - [evidence](evidence/sim-p49-p1-control-instance-paired.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+PROPOSED:
+reconstructed from the condensed index in spec #1007; the M5 grading unit
+(#1029) implements the grader and run and report wiring is still absent, and a
+default tier run reaches it.
+Existing check: `src/grade/probes.test.ts`, grading harness: P1 and its control
+are paired by fact under separate metrics; status unaudited
 Impact: P1 compliance cannot be separated from the task's base rate.
 Open questions: None.
 
@@ -1317,7 +1401,8 @@ Reachability: default-production
 Status: active
 Exercised: partial - `src/prereg/validate.test.ts` removes
 `grading.p11_false_positive_weight` from each tier file and the validator
-refuses it by name; the P11 score formula lands in M5 (#1029)
+refuses it by name; the M5 grading unit (#1029) exercises the P11 score on
+recorded fixtures in `src/grade/probes.test.ts`
 Guarantee: SIM-P50: The P11 harm score weights a false positive at twice a hit,
 and the weight is in the pre-registration record.
 Check: `always` - assert the P11 score formula uses the pre-registered weight of
@@ -1326,11 +1411,13 @@ Fault/timing angle: none.
 Required faults and enabling state: P11 items.
 Confidence: low -
 [evidence](evidence/sim-p50-p11-false-positive-weight-applied.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; only the validator exists
-to verify against, and a default tier run reaches it.
+reconstructed from the condensed index in spec #1007; the M5 grading unit
+(#1029) implements the grader, and a default tier run reaches it.
 Existing check: `src/prereg/validate.test.ts`: the validator requires
 `grading.p11_false_positive_weight` to be a positive decimal in every tier file
-(each carries `"2"`) and refuses its removal or a non-positive value by name; the score formula has no check; status
+(each carries `"2"`) and refuses its removal or a non-positive or non-finite
+value by name; `src/grade/probes.test.ts`, grading harness: P11 scores a hit +1
+and a false-positive injection minus the pre-registered weight; status
 unaudited
 Impact: Wrong-project injection is under-penalised.
 Open questions:
@@ -1348,8 +1435,9 @@ Open questions:
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs excluded and
+fault-asymmetric ids, counts them, and refuses a missing journal sequence; no
+tier run or report path has reached the gate
 Guarantee: SIM-P51: `EvaluateGate` input set equals `CompletedPairs(tier)` at
 `journal_seq_at_eval`, and the verdict carries excluded-pair count and ids.
 Check: `always` - recompute completed pairs at the recorded `seq` and compare to
@@ -1357,10 +1445,15 @@ the gate's input set; assert excluded count and ids are present.
 Fault/timing angle: a gate evaluated while items are in flight.
 Required faults and enabling state: a tier with an in-flight item at evaluation.
 Confidence: low -
-[evidence](evidence/sim-p51-gate-reads-completed-pairs-only.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+[evidence](evidence/sim-p51-gate-reads-completed-pairs-only.md). Reconstructed
+from spec #1007. The M7 gate (`src/stats/gate.ts`) drops excluded and
+fault-asymmetric ids, counts exclusions per arm and asymmetric pairs per
+metric, and requires the journal sequence; its tests exercise that. The report path that supplies the completed pairs is
+#1033 work, and no tier run has reached the gate.
+Existing check: `src/stats/gate.test.ts`: excluded and fault-asymmetric pairs
+leave the analysis, exclusions are counted per arm and asymmetric pairs per
+metric, and an evaluation without a journal sequence is refused; status
+unaudited
 Impact: A gate passes on a selected subset of pairs.
 Open questions: None.
 
@@ -1371,7 +1464,9 @@ Reachability: default-production
 Status: active
 Exercised: partial - `src/prereg/validate.test.ts` constructs reports that
 `checkReport` refuses for a missing family, another hash, or a verdict without
-`n` and MDE; the verdict emitter and the `StartRun` journal land in M7 (#1032)
+`n` and MDE, and `src/stats/gate.test.ts` constructs verdicts carrying the
+digest, MDE, margin, n, and resolution ratio; the comparison with the StartRun
+journal hash and a tier run are unreached
 Guarantee: SIM-P52: A verdict records MDE, n, and the pre-registration hash
 journaled at `StartRun`, and the hash matches the pre-registration file.
 Check: `always` - for each verdict, assert MDE and n are present and the hash
@@ -1380,12 +1475,15 @@ report with a missing family by name.
 Fault/timing angle: none.
 Required faults and enabling state: a tier report and its pre-registration file.
 Confidence: low -
-[evidence](evidence/sim-p52-gate-carries-preregistered-mde.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; only the report check
-exists to verify against, and a default tier run reaches it.
+[evidence](evidence/sim-p52-gate-carries-preregistered-mde.md). Reconstructed
+from spec #1007. The M7 gate (`src/stats/gate.ts`) puts the digest, MDE, margin,
+n, and resolution ratio into every verdict and its tests check them; no tier run
+has reached it.
 Existing check: `src/prereg/validate.test.ts`, report check: a report missing a
 family, under another pre-registration hash, or with a verdict the family's
-claim does not allow is refused by name; status unaudited
+claim does not allow is refused by name; `src/stats/gate.test.ts`: a verdict
+carries the pre-registration digest, each family's MDE and margin, n, and the
+resolution ratio; status unaudited
 Impact: A gate is passed under an analysis chosen after seeing the data.
 Open questions: None.
 
@@ -1395,8 +1493,9 @@ Type: safety
 Reachability: default-production
 Status: active
 Exercised: partial - `src/prereg/validate.test.ts` constructs a report carrying
-the token `parity`, which `checkReport` refuses; the report emitter lands in M7
-(#1032)
+the token `parity`, which `checkReport` refuses, and `src/stats/gate.test.ts`
+constructs each verdict kind and scans fixtures for the token; no tier run or
+report has reached the gate
 Guarantee: SIM-P53: The verdict vocabulary is better, worse,
 no-difference-above-X-pp-detectable-at-n, failed-gate(metric, items),
 inconclusive, insufficient-runs, passed-gate, and descriptive, and the string
@@ -1406,10 +1505,12 @@ scanned over the whole report, so `always(!X)`.
 Fault/timing angle: none.
 Required faults and enabling state: any tier report.
 Confidence: low - [evidence](evidence/sim-p53-parity-never-emitted.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; only the report
-check exists to verify against, and a default tier run reaches it.
+Reconstructed from spec #1007. The M7 gate (`src/stats/gate.ts`) emits the
+vocabulary and refuses any output holding the token; its tests scan fixture
+verdicts; no tier run has reached it.
 Existing check: `src/prereg/validate.test.ts`, report check: the token `parity`
-anywhere in a report, in any case, is refused; status unaudited
+anywhere in a report, in any case, is refused; `src/stats/gate.test.ts`: no
+fixture verdict contains the token; status unaudited
 Impact: A null at small n is read as equivalence.
 Open questions:
 - The verdict vocabulary adds four kinds to the spec index's four:
@@ -1418,14 +1519,24 @@ Open questions:
   whose interval stays inside its margin, and `descriptive` for a family the
   pre-registration does not gate. Whether the spec index should list them is a
   design decision (needs human input).
+- The M7 gate emits `within-bound` for a threshold or zero-tolerance metric
+  that meets its bound; the guarantee does not list it, and the report check's
+  `VERDICT_KINDS` (`src/prereg/report.ts`) names `passed-gate` for a satisfied
+  bound gate, so the report path maps one to the other (needs human input).
+- The gate's null verdict carries the family's scale, not always `pp`:
+  `no-difference-above-X<scale>-detectable-at-n` reads `pp` for binary
+  items, `pp-of-runs` for the sign test, and the registered MDE scale (`ms`,
+  `bytes`, `ratio`) for graded and GLM results, while the guarantee and the
+  report check's `no-difference-above-x-pp-detectable-at-n` name `pp` only
+  (needs human input).
 
 ### sim-p54-pairing-by-item-identity
 
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs two arms graded in
+different orders and pairs them by id; no tier run has reached it
 Guarantee: SIM-P54: McNemar and bootstrap pairs are keyed by `item_id` across
 arms, never by position.
 Check: `always` - assert every pair's two outcomes share `item_id`; positional
@@ -1433,9 +1544,11 @@ pairing breaks after any exclusion.
 Fault/timing angle: an exclusion in one arm shifts positions.
 Required faults and enabling state: a run with one excluded item in one arm.
 Confidence: low - [evidence](evidence/sim-p54-pairing-by-item-identity.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Reconstructed from spec #1007. `pairByItem` in `src/stats/gate.ts` joins arms by
+item id and its test feeds the arms in different orders; no tier run has reached
+it.
+Existing check: `src/stats/gate.test.ts`: pairs join by item id across arms in
+issue order whatever order each arm graded in; status unaudited
 Impact: Discordance is computed on mismatched items.
 Open questions: None.
 
@@ -1444,8 +1557,10 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs a harm and a futility
+stop with their windows from the pure `evaluateTier`; journaling the stop with
+`journal_seq_at_eval` (the #1033 report path) and the scheduler's continuation
+of issued items are unreached
 Guarantee: SIM-P55: A CUSUM early stop journals the metric, the item ids in the
 stopping window, and `journal_seq_at_eval`, and items already issued continue to
 terminal state.
@@ -1455,9 +1570,13 @@ never stop early.
 Fault/timing angle: a stop arrives while items are in flight.
 Required faults and enabling state: a harm or futility signal in a sequence.
 Confidence: low - [evidence](evidence/sim-p55-early-stop-records-cause.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Reconstructed from spec #1007. The M7 gate (`src/stats/gate.ts`) records a
+stop's kind, metric, signal index, window, and the journal sequence, and
+withholds the pass; its tests check a harm and a futility stop. Issued items
+continuing to terminal state is the scheduler's part and is unexercised.
+Existing check: `src/stats/gate.test.ts`: a harm and a futility CUSUM stop each
+record their kind, metric, signal index, and exact window and withhold the
+pass; status unaudited
 Impact: An early stop hides its cause or abandons issued items.
 Open questions: None.
 
@@ -1469,7 +1588,8 @@ Status: active
 Exercised: partial - `src/prereg/validate.test.ts` constructs a run-level gate
 below six paired runs, which the validator refuses, and a report verdict below
 the family's floor, which `checkReport` refuses unless it reads
-`insufficient-runs`; the verdict emitter lands in M7 (#1032)
+`insufficient-runs`; `src/stats/gate.test.ts` constructs four, six, and
+floor-of-eight run counts; no tier run has reached it
 Guarantee: SIM-P56: A dependability verdict on failed turns or hangs is emitted
 only with at least six paired runs; below that the verdict is
 `insufficient-runs(k)`.
@@ -1482,12 +1602,15 @@ Fault/timing angle: none.
 Required faults and enabling state: a tier with fewer than six paired runs.
 Confidence: low -
 [evidence](evidence/sim-p56-failed-turn-claim-needs-six-paired-runs.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; only the
-validator and report check exist to verify against, and a default tier run
-reaches it.
+Reconstructed from spec #1007. The validator refuses a floor below six and the
+M7 gate (`src/stats/gate.ts`) answers `insufficient-runs(k)` below the family's
+floor; tests cover both. No tier run has reached it.
 Existing check: `src/prereg/validate.test.ts`: the validator refuses a run-level
 gate with a paired interval below six paired runs, and the report check refuses
-any verdict but `insufficient-runs` below the family's floor; status unaudited
+any verdict but `insufficient-runs` below the family's floor;
+`src/stats/gate.test.ts`: four runs give `insufficient-runs(4)`, six runs a
+sign-test verdict, and six runs against a registered floor of eight
+`insufficient-runs(6)`; status unaudited
 Impact: A run-level claim is made from one or two runs.
 Open questions:
 - The S tier gates failed turns, internal-string hits, and p95 latency delta as
@@ -1535,8 +1658,8 @@ Open questions:
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs a harm metric whose
+Holm-adjusted verdict is `worse`; no tier run has reached it
 Guarantee: SIM-P58: "Memory made it worse" is set iff some harm metric has
 `eidnara < host` with the paired CI excluding zero, and the metric and CI are
 named.
@@ -1545,9 +1668,12 @@ in both directions and names metric and CI.
 Fault/timing angle: none.
 Required faults and enabling state: harm family results.
 Confidence: low - [evidence](evidence/sim-p58-harm-metric-direction.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Reconstructed from spec #1007. The M7 gate (`src/stats/gate.ts`) names the
+Holm-adjusted `worse` harm metrics with their intervals and its test checks one;
+the guarantee's sign disagrees with the registered metric scale, see the open
+question. No tier run has reached it.
+Existing check: `src/stats/gate.test.ts`: `memory_made_it_worse` names exactly
+the harm metrics whose Holm-adjusted verdict is `worse`; status unaudited
 Impact: Harm is reported in the wrong direction or not at all.
 Open questions:
 - The comparator's sign. The frozen pre-registration fixes the convention: the
@@ -1558,6 +1684,13 @@ Open questions:
   host`, which reads correctly only for a metric that scores higher when memory
   does better. The record keeps the spec's wording (METHOD rule 3); the spec
   text needs a correction in the eidnara tracker (needs human input).
+- The guarantee's condition is "the paired CI excludes zero"; the spec's
+  gates line makes the "memory made it worse" family Holm-corrected, and the
+  implementation follows the latter: a metric whose interval excludes zero
+  but whose Holm-adjusted p exceeds alpha is omitted (six 0-to-1
+  discordances in 40 items give an interval near [3, 29] pp, raw p 0.031,
+  Holm p 0.156). Which condition the property means needs stating (needs
+  human input).
 
 ### sim-p59-internal-string-scan-on-user-visible-only
 
@@ -1634,20 +1767,24 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: partial - the SIGKILL resume tests cover the `BeginTurn` half; the
-`call_id` half waits for a proxy-billing driver
+Exercised: partial - `src/run/scheduler.test.ts` (resume reissues no completed
+event) and the live witness `resume` run (no turn rebilled, call `seq`
+contiguous) cover the reissue half; call records carry no `call_id`, so the
+repeated-`call_id` half is not yet representable; see
+`evidence/sim-p62-resume-does-not-reissue-completed-items.md`
 Guarantee: SIM-P62: After `ResumeRun`, no `BeginTurn` appears for an item
 already terminal, and no call record repeats a pre-interrupt `call_id`.
 Check: `always` - after resume, assert no `BeginTurn` for terminal items and no
 duplicate `call_id`.
 Fault/timing angle: an interrupt between `EndTurn` and its journal entry.
 Required faults and enabling state: a harness kill at varied points.
-Confidence: low -
-[evidence](evidence/sim-p62-resume-does-not-reissue-completed-items.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
-tests verify the `BeginTurn` half, and a default tier run reaches it.
-Existing check: src/run/scheduler.test.ts - each arm's events appear once after
-resume and the fixture's per-event billing log has no duplicate
+Confidence: low - [evidence](evidence/sim-p62-resume-does-not-reissue-completed-items.md).
+M4 (#1028) implements the surface; the unit tests and the live witness named
+under Existing check construct the record, and the repeated-`call_id` half has no check yet; a default tier run reaches it.
+Existing check: `src/run/scheduler.test.ts` (each arm's events appear once
+after resume and the fixture's per-event billing log has no duplicate),
+`tests/witness-faults.ts` `resume` (no turn rebilled, contiguous call `seq`);
+none for the repeated-`call_id` half
 Impact: Completed items are re-billed and double-counted.
 Open questions: None.
 
@@ -1656,8 +1793,10 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: partial - the SIGKILL resume tests kill before and after the fixture
-bills the in-flight turn; no campaign run yet
+Exercised: yes - `src/run/scheduler.test.ts` (one `failed(interrupted)` marker
+and `Event` per interrupted turn, idempotent across a second resume) and the
+live witness `resume` run (exactly one of each for `e-000007`); see
+`evidence/sim-p63-in-flight-item-resolved-once-on-resume.md`
 Guarantee: SIM-P63: An item `issued` but not `attempted` at interrupt becomes
 exactly one of `failed(interrupted)` or `reissued(marker)`, and its
 pre-interrupt calls are billed once.
@@ -1665,13 +1804,14 @@ Check: `always` - for each in-flight item at interrupt, assert exactly one
 resolution and single billing of its calls.
 Fault/timing angle: the interrupt lands mid-turn.
 Required faults and enabling state: a harness kill while an item is issued.
-Confidence: low -
-[evidence](evidence/sim-p63-in-flight-item-resolved-once-on-resume.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
-tests verify the recovery-state half, and a default tier run reaches it.
-Existing check: src/run/scheduler.test.ts - one `ItemState failed(interrupted)`
+Confidence: medium - [evidence](evidence/sim-p63-in-flight-item-resolved-once-on-resume.md).
+M4 (#1028) implements the surface; the unit tests and the live witness named
+under Existing check construct the record, and a default tier run reaches it.
+Existing check: `src/run/scheduler.test.ts` (one `ItemState failed(interrupted)`
 and one `Event` for the in-flight turn, billed nowhere when killed before the
-attempt
+attempt; "a second resume does not repeat an earlier resume's recovery
+entries"), `tests/witness-faults.ts` `resume` (exactly one `ItemState
+failed(interrupted)` and one `Event` for `e-000007`)
 Impact: An interrupted item is counted twice or vanishes.
 Open questions:
 - OQ-1 is resolved in the M0 pre-registration: an in-flight item at interrupt is
@@ -1683,19 +1823,21 @@ Open questions:
 Type: reachability
 Reachability: default-production
 Status: active
-Exercised: partial - the SIGKILL resume tests kill mid-turn; no campaign run yet
+Exercised: yes - the live witness `resume` run kills the harness while
+`e-000007` has `BeginTurn` and no `EndTurn` (`mid_turn` required); see
+`evidence/sim-p64-interrupt-mid-turn-exercised.md`
 Guarantee: SIM-P64: A harness kill lands while an item is `issued` at least once
 per campaign.
 Check: `sometimes` - observe at least one interrupt with an issued item; only
 then does SIM-P63 run.
 Fault/timing angle: none.
-Required faults and enabling state: the harness kill every campaign schedules.
-Confidence: low - [evidence](evidence/sim-p64-interrupt-mid-turn-exercised.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
-tests construct the interrupt path; a campaign check of its occurrence is
-still to come, and a default tier run reaches it.
-Existing check: src/run/scheduler.test.ts - a kill lands while a `BeginTurn` is
-open
+Required faults and enabling state: a scheduled harness kill.
+Confidence: medium - [evidence](evidence/sim-p64-interrupt-mid-turn-exercised.md).
+M4 (#1028) implements the surface; the unit tests and the live witness named
+under Existing check construct the record, and a default tier run reaches it.
+Existing check: `src/run/scheduler.test.ts` (a kill lands while a `BeginTurn`
+is open), `tests/witness-faults.ts` `resume` (SIGKILL while `e-000007` has
+`BeginTurn` and no `EndTurn`, `mid_turn` required)
 Impact: The in-flight resolution path is never exercised.
 Open questions: None.
 
