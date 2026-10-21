@@ -112,6 +112,7 @@ const identity = (commit = "abc") => ({
     bedrock: "r",
     tools: "t",
     price_table: "p",
+    turns_await_jobs: false,
 });
 
 /** A fault witness as the proxy reports it, fired with one injection and one observation. */
@@ -1458,6 +1459,14 @@ describe("tier report", () => {
         writeFileSync(join(dir, "scenario.json"), canonicalJson({ ...body, scenario_hash }));
         completeRun(dir);
         expect(loadGraded(dir, prereg).identity.scenario_provenance).toBe("g/1/c/emb");
+        // A manifest without turns_await_jobs ran every turn after its jobs; null is refused.
+        expect(loadGraded(dir, prereg).identity.turns_await_jobs).toBe(true);
+        const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({ ...manifest, turns_await_jobs: null }),
+        );
+        expect(() => loadGraded(dir, prereg)).toThrow("turns_await_jobs null is not a boolean");
     });
 
     test("every scripted user turn needs a pairing record in each analysed arm", () => {
@@ -1525,6 +1534,15 @@ describe("tier report", () => {
                 expect.stringMatching(new RegExp(`^runs differ in ${field}: `)),
             );
         }
+    });
+
+    test("runs whose turns waited for background work stay apart from runs whose turns ran on schedule", () => {
+        const a = fixture(undefined, { host: "pi" });
+        const b = fixture(undefined, { host: "opencode" });
+        b.identity.turns_await_jobs = true;
+        expect(tierInput(prereg, [a, b]).incomplete).toContain(
+            "runs differ in turns_await_jobs: false, true",
+        );
     });
 
     test("tape sources are part of the compared identity", () => {

@@ -80,6 +80,8 @@ export interface RunOptions {
     tapes?: string[];
     sideModel?: string;
     userSimModel?: string;
+    /** Every user turn waits for background work to finish, as runs before turns ran on schedule did. */
+    turnsAwaitJobs?: boolean;
 }
 
 export interface Manifest {
@@ -113,6 +115,7 @@ export interface Manifest {
     tape_sha256: string[];
     side_model: string | null;
     user_sim_model: string;
+    turns_await_jobs: boolean;
     prereg_sha256: string;
     base_wall_ms: number;
     /** The rates the cost panel prices this run's calls at, fixed when the run starts. */
@@ -400,6 +403,7 @@ function manifestProblems(m: Manifest, compiledEvents: number): string[] {
     if (m.side_model !== null && (typeof m.side_model !== "string" || m.side_model === "")) {
         problems.push("side_model is neither null nor a name");
     }
+    if (typeof m.turns_await_jobs !== "boolean") problems.push("turns_await_jobs is not a boolean");
     if (typeof m.user_sim_model !== "string" || m.user_sim_model === "") {
         problems.push("user_sim_model is not a name");
     }
@@ -1113,6 +1117,7 @@ export async function loadManifest(
         tapes: o.tapes ?? [],
         side_model: o.sideModel ?? null,
         user_sim_model: o.userSimModel ?? preregOf(o).user_sim.model,
+        turns_await_jobs: o.turnsAwaitJobs ?? false,
     };
     /** Computed once the inputs it hashes exist: before the probe on a resume, after it on a first run. */
     const digests = () => ({
@@ -1129,8 +1134,10 @@ export async function loadManifest(
         events: number,
         order: readonly string[],
         faultOverride: FaultEpisode[] | null,
+        turnsAwaitJobs: boolean,
     ) =>
         checkTapeSources(tapes, {
+            turns_await_jobs: turnsAwaitJobs,
             seed: o.seed,
             scenario_hash: scenario.scenario_hash,
             prereg_sha256: preregistrationHash(preregOf(o)),
@@ -1180,6 +1187,7 @@ export async function loadManifest(
             tapes: o.tapes !== undefined,
             side_model: o.sideModel !== undefined,
             user_sim_model: o.userSimModel !== undefined,
+            turns_await_jobs: o.turnsAwaitJobs !== undefined,
         };
         const differs = Object.entries(wanted).filter(
             ([k, v]) => given[k] !== false && !sameJson(manifest[k as keyof Manifest], v),
@@ -1227,14 +1235,26 @@ export async function loadManifest(
         requireMechanisms(manifest.fault_override ?? scenario.faults, manifest.models);
         // A resume checks the sources against the run it continues, whose event count and arm
         // order the manifest holds whether or not this invocation restates them.
-        sources(manifest.tapes, manifest.events, manifest.order, manifest.fault_override);
+        sources(
+            manifest.tapes,
+            manifest.events,
+            manifest.order,
+            manifest.fault_override,
+            manifest.turns_await_jobs,
+        );
         const preflightLog = join(o.out, "preflight.jsonl");
         dropCutTail(preflightLog);
         appendFileSync(preflightLog, `${JSON.stringify(checks)}\n`);
         return { manifest, checks };
     }
     requireMechanisms(wanted.fault_override ?? scenario.faults, wanted.models);
-    sources(wanted.tapes, wanted.events, wanted.order, wanted.fault_override);
+    sources(
+        wanted.tapes,
+        wanted.events,
+        wanted.order,
+        wanted.fault_override,
+        wanted.turns_await_jobs,
+    );
     checks = await probe();
     const manifest: Manifest = {
         schema: "sim-run-manifest/v2",
@@ -1701,6 +1721,7 @@ async function runArms(
         faults: scenario.faults,
         journal,
         order: manifest.order,
+        turnsAwaitJobs: manifest.turns_await_jobs,
         drivers: drivers as Record<string, ArmDriver>,
         proxy: injector,
         idleLimitMs: prereg.liveness_bounds.job_deadline_ms,

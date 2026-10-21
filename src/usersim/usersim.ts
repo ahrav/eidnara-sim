@@ -248,6 +248,8 @@ export function checkTapeSources(
         events?: number;
         order?: readonly string[];
         fault_override?: unknown;
+        /** Whether this run's turns wait for background work; the source must have run alike. */
+        turns_await_jobs?: boolean;
         /** The ids of this run's user turns; the source must hold a record for each per arm. */
         turns?: readonly string[];
         /** Scripted text by turn id; with it, every recorded reactive turn needs its tape entry. */
@@ -263,7 +265,17 @@ export function checkTapeSources(
             events?: unknown;
             order?: unknown;
             fault_override?: unknown;
+            turns_await_jobs?: unknown;
         };
+        // A source's replies answered turns that started under its own scheduling rule; a
+        // manifest from before the field ran every turn after its background work.
+        const sourceRule =
+            manifest.turns_await_jobs === undefined ? true : manifest.turns_await_jobs;
+        if (run.turns_await_jobs !== undefined && sourceRule !== run.turns_await_jobs) {
+            throw new HarnessFailure(
+                `replay source ${tape} ran with turns_await_jobs ${JSON.stringify(sourceRule)}`,
+            );
+        }
         // The fault schedule pins turns and so fixes the labels in every tape key.
         if (
             run.fault_override !== undefined &&

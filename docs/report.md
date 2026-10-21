@@ -162,7 +162,8 @@ preflight's toolchain probes, the `grader` digests of the grades the
 report uses, and the manifest's pinned execution identities: the Eidnara
 working tree, the harness commit and working tree, and digests of the
 corpus checkouts, the executables, the Bedrock route, the named tools,
-and the price table) the runs disagree on, each run whose used
+and the price table, and `turns_await_jobs`, with a manifest from before
+that field read as `true`) the runs disagree on, each run whose used
 grades come from more than one grader, each run that lacks one metric of a
 run-level family (the run then leaves every metric of that family, so the
 family's metrics come from one set of runs), each run with

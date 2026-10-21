@@ -68,6 +68,8 @@ export interface RunIdentity {
     bedrock: string;
     tools: string;
     price_table: string;
+    /** `manifest.turns_await_jobs`; a manifest from before the field ran every turn after its jobs. */
+    turns_await_jobs: boolean;
 }
 
 const ALIASES: Record<string, string> = {
@@ -592,6 +594,7 @@ function incomplete(
         "bedrock",
         "tools",
         "price_table",
+        "turns_await_jobs",
     ];
     // The grades a run's report uses come from one grader implementation.
     const mixed = runs.flatMap((g) =>

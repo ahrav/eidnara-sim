@@ -6,7 +6,7 @@ import { runTier } from "../src/run/run";
 
 const USAGE = `usage: --tier S --seed 101 --out <run dir> [--host pi|opencode] [--arms a,b]
     [--events N] [--faults <episodes.json>] [--context-limit N] [--models a,b]
-    [--tapes <tape.jsonl>,...] [--side-model <id>] [--user-sim-model <id>]`;
+    [--tapes <tape.jsonl>,...] [--side-model <id>] [--user-sim-model <id>] [--turns-await-jobs true|false]`;
 const arg = (name: string) => {
     const i = process.argv.indexOf(`--${name}`);
     if (i < 0) return undefined;
@@ -38,6 +38,7 @@ const KNOWN = [
     "tapes",
     "side-model",
     "user-sim-model",
+    "turns-await-jobs",
 ];
 const unknown = process.argv
     .slice(2)
@@ -51,6 +52,11 @@ const host = arg("host") ?? "pi";
 if (!TIERS.includes(tier) || !Number.isInteger(seed) || !out)
     fail("missing --tier, --seed, or --out");
 if (host !== "pi" && host !== "opencode") fail("--host must be pi or opencode");
+const awaitJobs = (value: string | undefined): boolean | undefined => {
+    if (value === undefined) return undefined;
+    if (value !== "true" && value !== "false") fail("--turns-await-jobs takes true or false");
+    return value === "true";
+};
 const faults = arg("faults");
 const parseFaults = (path: string): unknown => {
     try {
@@ -75,4 +81,5 @@ await runTier({
         .map((p) => resolve(p)),
     sideModel: arg("side-model"),
     userSimModel: arg("user-sim-model"),
+    turnsAwaitJobs: awaitJobs(arg("turns-await-jobs")),
 });

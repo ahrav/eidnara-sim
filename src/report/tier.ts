@@ -49,6 +49,17 @@ export function identityVersions(preflight: {
     ];
 }
 
+/** A manifest from before `turns_await_jobs` ran every turn after its jobs; any other value is refused. */
+function turnsAwaitJobs(value: unknown, dir: string): boolean {
+    if (value === undefined) return true;
+    if (typeof value !== "boolean") {
+        throw new Error(
+            `${dir}: manifest turns_await_jobs ${JSON.stringify(value)} is not a boolean`,
+        );
+    }
+    return value;
+}
+
 export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     const read = (name: string) => JSON.parse(readFileSync(join(dir, name), "utf8"));
     const manifest = read("manifest.json") as {
@@ -72,6 +83,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         bedrock?: unknown;
         toolchain?: unknown;
         price_table?: unknown;
+        turns_await_jobs?: unknown;
     } & Omit<
         RunIdentity,
         | "distortions"
@@ -90,6 +102,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         | "bedrock"
         | "tools"
         | "price_table"
+        | "turns_await_jobs"
     > & { side_model?: string | null; user_sim_model?: string };
     const pinned = (v: unknown) =>
         v === undefined || v === null
@@ -185,6 +198,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             bedrock: pinned(manifest.bedrock),
             tools: pinned(manifest.toolchain),
             price_table: pinned(manifest.price_table),
+            turns_await_jobs: turnsAwaitJobs(manifest.turns_await_jobs, dir),
         },
         witnesses: reports === null ? null : [...witnesses.values()],
         pairing,
