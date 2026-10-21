@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { heredocAt } from "../grade/text";
 import { armBase } from "../hosts/arms";
 import type { MemoryNote } from "../hosts/storecheck";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
@@ -54,7 +55,6 @@ export interface Intrusiveness {
 const GIT =
     /(^|&&|\|\||[;&|]|(?<!\$)\()[ \t]*(?:\w+=[^ \t\n]*[ \t]+)*(?:(?:sudo|env|time|nice|nohup|exec|command)(?:[ \t]+(?:-[^ \t\n]*|\w+=[^ \t\n]*))*[ \t]+)*git[ \t]+(?:-[Cc][ \t]+[^ \t\n]+[ \t]+|--[^ \t\n]+[ \t]+)*([a-z-]+)((?:[ \t]+[^ \t\n;&|)]+)*)/gm;
 const REDIRECT = /[ \t]*(?:\d*[<>]{1,2}&?\d*|&>>?)[ \t]*[^ \t\n;&|)]*/g;
-const HEREDOC_OPEN = /^<<-?[ \t]*(['"]?)(\w+)\1/;
 /** A quoted string as one shell word: its text with every shell-significant character made plain. */
 const unquote = (q: string) => q.slice(1, -1).replace(/[\s;&|()<>$#'"\\`]/g, "_") || "_";
 const SEPARATOR = /&&|\|\||[;|&\n]/g;
@@ -130,7 +130,7 @@ const checksOutPaths = (args: string[]) => {
  */
 function executable(command: string): string {
     let out = "";
-    let heredoc: string | null = null;
+    const heredocs: { delim: string; stripTabs: boolean }[] = [];
     for (let i = 0; i < command.length; ) {
         const ch = command[i] as string;
         if (ch === "\\" && command[i + 1] === "\n") {
@@ -139,13 +139,18 @@ function executable(command: string): string {
         } else if (ch === "\n") {
             out += ch;
             i++;
-            while (heredoc !== null && i < command.length) {
+            // Each heredoc the line opened takes the following lines up to its own delimiter
+            // line, matched exactly (after leading tabs for `<<-`), in the order they opened.
+            while (heredocs.length > 0 && i < command.length) {
                 const end = command.indexOf("\n", i);
-                const line = command.slice(i, end < 0 ? command.length : end);
+                const raw = command.slice(i, end < 0 ? command.length : end);
                 i = end < 0 ? command.length : end + 1;
-                if (line.trim() === heredoc) heredoc = null;
+                const head = heredocs[0] as { delim: string; stripTabs: boolean };
+                if ((head.stripTabs ? raw.replace(/^\t+/, "") : raw) === head.delim) {
+                    heredocs.shift();
+                }
             }
-            heredoc = null;
+            heredocs.length = 0;
         } else if (ch === "'" || ch === '"') {
             let j = i + 1;
             while (j < command.length && command[j] !== ch)
@@ -155,11 +160,11 @@ function executable(command: string): string {
         } else if (ch === "#" && (i === 0 || /[ \t\n;&|(]/.test(command[i - 1] as string))) {
             const end = command.indexOf("\n", i);
             i = end < 0 ? command.length : end;
-        } else if (ch === "<" && command[i + 1] === "<" && HEREDOC_OPEN.test(command.slice(i))) {
-            const m = HEREDOC_OPEN.exec(command.slice(i)) as RegExpExecArray;
-            heredoc = m[2] as string;
+        } else if (ch === "<" && command[i + 1] === "<" && heredocAt(command.slice(i))) {
+            const opened = heredocAt(command.slice(i)) as NonNullable<ReturnType<typeof heredocAt>>;
+            heredocs.push({ delim: opened.delim, stripTabs: opened.stripTabs });
             out += " ";
-            i += m[0].length;
+            i += opened.length;
         } else {
             out += ch;
             i++;

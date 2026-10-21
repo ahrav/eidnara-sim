@@ -443,7 +443,12 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     const journal = jsonl<Entry>(journalPath);
     const lastMs = new Map<string | null, number>();
     journal.forEach((e, i) => {
-        const fields: Record<string, FieldCheck> = { kind: str, arm: strOrNull, scenario_ms: num };
+        const fields: Record<string, FieldCheck> = {
+            kind: str,
+            arm: strOrNull,
+            scenario_ms: num,
+            wall_ms: num,
+        };
         if (["BeginTurn", "EndTurn", "Event"].includes(String(e.kind))) fields.event = str;
         if (e.kind === "EndTurn") fields.outcome = str;
         for (const [field, ok] of Object.entries(fields)) {

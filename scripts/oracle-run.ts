@@ -1,10 +1,11 @@
-import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { loadRun } from "../src/oracle/logs";
 import { ledger, oracleReport, runOracles } from "../src/oracle/oracles";
 import { recoveries } from "../src/oracle/recovery";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
+import { writeAtomic } from "../src/run/atomic";
 import { releaseLease, takeLease } from "../src/run/journal";
 import { loadPrereg } from "../src/scenario/inputs";
 
@@ -54,8 +55,7 @@ function oracleOne(dir: string) {
         recoveries: recoveries(run),
     };
     const out = join(dir, "oracles.json");
-    writeFileSync(`${out}.tmp`, `${JSON.stringify(result, null, 2)}\n`);
-    renameSync(`${out}.tmp`, out);
+    writeAtomic(out, `${JSON.stringify(result, null, 2)}\n`);
     return {
         dir: run.dir,
         tier: run.tier,

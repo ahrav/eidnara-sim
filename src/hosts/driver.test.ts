@@ -1654,7 +1654,6 @@ describe("HostDriver faults", () => {
 
     test("the turn ending after daemon restarts carries a store check for each of them", async () => {
         const { driver } = fixture("eidnara");
-        (driver as unknown as { o: DriverOptions }).o.procStart = () => "start";
         driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
         driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
         await driver.fault(episode("daemon_restart"));
@@ -1689,7 +1688,6 @@ describe("HostDriver faults", () => {
         await driver.reset();
         mkdirSync(join(transcripts, "sessions"), { recursive: true });
         driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
-        (driver as unknown as { o: DriverOptions }).o.procStart = () => "start";
         await driver.fault(episode("daemon_restart"));
         await driver.event(ev("session_start"));
         const turn = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
@@ -1711,7 +1709,6 @@ describe("HostDriver faults", () => {
     test("a restart settles the check an earlier restart's served pass earned, before it kills the daemon", async () => {
         const { driver } = fixture("eidnara");
         driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
-        (driver as unknown as { o: DriverOptions }).o.procStart = () => "start";
         driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
         await driver.fault(episode("daemon_restart"));
         pluginLog(driver, PASS);
@@ -1837,6 +1834,34 @@ describe("HostDriver faults", () => {
         expect(JSON.parse(readFileSync(join(armDir, "store-check.json"), "utf8")).integrity).toBe(
             "ok",
         );
+    });
+
+    test("the final store archive replaces a planted final-store link and copies only the store's own files", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        mkdirSync(dirname(driver.storeDb), { recursive: true });
+        new Database(driver.storeDb).run(SEGMENTS_DDL);
+        const outside = tmp();
+        writeFileSync(join(outside, "store.db"), "untouched\n");
+        mkdirSync(armDir, { recursive: true });
+        symlinkSync(outside, join(armDir, "final-store"));
+        await driver.finish();
+        expect(readFileSync(join(outside, "store.db"), "utf8")).toBe("untouched\n");
+        const kept = join(armDir, "final-store");
+        expect(lstatSync(kept).isDirectory()).toBe(true);
+        expect(readFileSync(join(kept, "store.db"))).toEqual(readFileSync(driver.storeDb));
+    });
+
+    test("a final store file the host replaced with a link is refused, and nothing is copied through it", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        mkdirSync(dirname(driver.storeDb), { recursive: true });
+        new Database(driver.storeDb).run(SEGMENTS_DDL);
+        const secret = join(tmp(), "secret");
+        writeFileSync(secret, "harness only\n");
+        symlinkSync(secret, `${driver.storeDb}-shm`);
+        await expect(driver.finish()).rejects.toThrow(/is a symlink/);
+        expect(existsSync(join(armDir, "final-store", "store.db-shm"))).toBe(false);
     });
 
     test("finish stops the daemon and writes the final store check", async () => {

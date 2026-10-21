@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { deleteFactNotes, factMatcher } from "../hosts/storecheck";
 import type { Scenario } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
@@ -128,6 +128,17 @@ describe("L resizing from M", () => {
             JSON.stringify({ reports: { main: 0 }, results }),
         );
         expect(gradedMainRuns(dir)).toEqual({ main: [a, b], ungraded: [b] });
+    });
+
+    test("a planned run that leaves the campaign through `..` or a symlink is refused", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-m-"));
+        const other = mkdtempSync(join(tmpdir(), "sim-other-"));
+        symlinkSync(other, join(dir, "M-202-pi"));
+        for (const leaving of [`${dir}/../${basename(other)}`, `${dir}/M-202-pi`]) {
+            const plan = [{ group: "main", dir: leaving, host: "pi", seed: 202 }];
+            writeFileSync(join(dir, "tier-plan.json"), JSON.stringify({ tier: "M", plan }));
+            expect(() => gradedMainRuns(dir)).toThrow(/plans runs outside itself/);
+        }
     });
 
     test("a main run that exited non-zero stays ungraded even when its grader exited zero", () => {

@@ -42,7 +42,10 @@ function completeRun(root: string, tier: string, prereg_sha256: string): string 
         { kind: "EndArm", arm: "eidnara", scenario_ms: 200 },
         { kind: "EndRun", arm: null, scenario_ms: 200 },
     ];
-    writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
+    writeFileSync(
+        join(dir, "journal.jsonl"),
+        journal.map((e, i) => line({ ...e, wall_ms: i })).join(""),
+    );
     const overflow = {
         seq: 0,
         arm: "eidnara",
@@ -116,6 +119,18 @@ test("oracles.json replaces a symlink left in the run directory instead of writi
     expect(readFileSync(target, "utf8")).toBe("keep me\n");
     expect(lstatSync(join(dir, "oracles.json")).isSymbolicLink()).toBe(false);
     expect(JSON.parse(readFileSync(join(dir, "oracles.json"), "utf8")).prereg_sha256).toBe(digest);
+});
+
+test("a staging link left beside oracles.json is never written through", () => {
+    const root = mkdtempSync(join(tmpdir(), "sim-oracle-run-"));
+    const digest = preregistrationHash(loadPrereg("S"));
+    const dir = completeRun(root, "S", digest);
+    const target = join(root, "elsewhere.json");
+    writeFileSync(target, "keep me\n");
+    symlinkSync(target, join(dir, "oracles.json.tmp"));
+    symlinkSync(target, join(dir, `oracles.json.${process.pid}`));
+    expect(() => oracleRun([dir])).toThrow(/exists or is a link/);
+    expect(readFileSync(target, "utf8")).toBe("keep me\n");
 });
 
 test("oracleRun refuses a run directory another process holds the lease on", () => {

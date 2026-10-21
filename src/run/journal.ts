@@ -24,44 +24,9 @@ import {
 import { hostname } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 
-export type EntryKind =
-    | "Preflight"
-    | "StartRun"
-    | "ResumeRun"
-    | "StartArm"
-    | "BeginTurn"
-    | "EndTurn"
-    | "RegisterJob"
-    | "EndJob"
-    | "AdvanceClock"
-    | "ClockOffset"
-    | "Event"
-    | "FaultFired"
-    | "FaultObserved"
-    | "ItemState"
-    | "SnapshotArtefacts"
-    | "StoreChecked"
-    | "UserTurn"
-    | "UserSimRates"
-    | "CounterfactualSample"
-    | "DeleteMemoryObject"
-    | "CounterfactualDeletion"
-    | "EndArm"
-    | "EndRun";
-
-export interface NewEntry {
-    kind: EntryKind;
-    arm: string | null;
-    scenario_ms: number;
-    [field: string]: unknown;
-}
-
-export interface Entry extends NewEntry {
-    seq: number;
-    wall_ms: number;
-}
-
-const KINDS: ReadonlySet<string> = new Set<EntryKind>([
+/** Every entry kind a journal holds; `readJournal` refuses any other. */
+const ENTRY_KINDS = [
+    "Preflight",
     "StartRun",
     "ResumeRun",
     "StartArm",
@@ -84,7 +49,23 @@ const KINDS: ReadonlySet<string> = new Set<EntryKind>([
     "CounterfactualDeletion",
     "EndArm",
     "EndRun",
-]);
+] as const;
+
+export type EntryKind = (typeof ENTRY_KINDS)[number];
+
+export interface NewEntry {
+    kind: EntryKind;
+    arm: string | null;
+    scenario_ms: number;
+    [field: string]: unknown;
+}
+
+export interface Entry extends NewEntry {
+    seq: number;
+    wall_ms: number;
+}
+
+const KINDS: ReadonlySet<string> = new Set<string>(ENTRY_KINDS);
 
 function shaped(e: Entry): boolean {
     return (
@@ -626,7 +607,8 @@ export function readJournal(source: string | number): Entry[] & { bytes?: number
 /**
  * `requireComplete` admits a run whose journal records every scheduled event ended once per
  * arm in the compiled order, an `EndArm` per arm, and one arm-less `EndRun` after every
- * `EndArm`, with the manifest's arm order matching the journaled `StartRun`. The check indexes
+ * `EndArm` as the journal's last entry, no arm's entry after its `EndArm`, and the manifest's arm
+ * order matching the journaled `StartRun`. The check indexes
  * the scheduled events once, so it costs one pass over the journal per arm. The error names the
  * arm and its event counts (SIM-P67).
  */
@@ -671,6 +653,14 @@ export function requireComplete(entries: Entry[], arms: string[], scheduled: str
         if (endRuns.some(([, i]) => i < closedAt)) {
             throw new Error(`run is incomplete: EndRun before arm ${arm}'s EndArm`);
         }
+        const late = entries.findIndex(
+            (e, i) => i > closedAt && e.arm === arm && e.kind !== "EndRun",
+        );
+        if (late !== -1) {
+            throw new Error(
+                `arm ${arm} has ${entries[late]?.kind} at entry ${late + 1} after its EndArm`,
+            );
+        }
     }
     if (endRuns.length === 0) {
         throw new Error("run is incomplete: the journal has no EndRun");
@@ -678,9 +668,14 @@ export function requireComplete(entries: Entry[], arms: string[], scheduled: str
     if (endRuns.length > 1) {
         throw new Error(`run is incomplete: ${endRuns.length} EndRun entries`);
     }
-    const [closer] = endRuns[0] as readonly [Entry, number];
+    const [closer, at] = endRuns[0] as readonly [Entry, number];
     if (closer.arm !== null && closer.arm !== undefined) {
         throw new Error(`run is incomplete: EndRun names arm ${String(closer.arm)}`);
+    }
+    if (at !== entries.length - 1) {
+        throw new Error(
+            `run is sealed at entry ${at + 1}, but ${entries.length - 1 - at} entries follow EndRun`,
+        );
     }
 }
 

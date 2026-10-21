@@ -30,8 +30,12 @@ or seed differ from what a run with a manifest ran, an unreadable
 (`scenarios-<seed>`, a run) that is a symlink, every run directory being
 checked before any run starts, or an output directory another invocation
 holds (`<dir>/lease.<n>.json`). `tier-plan.json` and `tier-result.json` are
-staged under a name created exclusively and renamed in. Every exit, a thrown setup
-error or a signal during setup included, releases that lease. SIGINT, SIGTERM, or
+staged under a name created exclusively and renamed in. `--plan-only` takes the
+same lease, since it compiles the seeds' scenarios and writes `tier-plan.json`
+into `<dir>`, and exits 0 after printing the plan, before any run starts. Every exit, a thrown setup
+error or a signal during setup included, releases that lease. A thrown error or
+unhandled rejection after the runs start stops every child first, so no run or
+grading child outlives the lease. SIGINT, SIGTERM, or
 SIGHUP to the command reaches every child it started, SIGKILLs any still
 live a minute later together with its descendants, and starts no further
 grading or report; each run tears down and stays resumable.
@@ -193,8 +197,9 @@ from its runs' first journal entries:
 | M | `usersim-luna` | One Pi run of the first seed's `host` and `eidnara` arms with `gpt-5.6-luna` as the user-sim (`--user-sim-model`) |
 | L | `concurrent` | Per host, each arm of the first seed alone in its own run (`<dir>/L-301-<host>-concurrent/<arm>`), all started together; a group some of whose runs began and not all finished is refused until its run directories are removed, so a resumed member never measures alone |
 
-M's six paired runs (three seeds on two hosts) each carry `host~aa` and
-`eidnara~aa`, which gives six repeats of each A/A pair.
+M registers five A/A repeats (`aa_controls.repeats`), so the first five of
+its six paired runs (three seeds on two hosts) carry `host~aa` and
+`eidnara~aa`, and the sixth runs only the paired arms.
 
 L starts only after `<dir>/L-resizing.json` records its paired items per
 probe type. `--resize-from <M tier dir>` computes it from the M tier's

@@ -104,6 +104,26 @@ const identity = (commit = "abc") => ({
     tapes: [] as string[],
     toolchain: ["bun 1"],
     grader: ["0".repeat(64)],
+    eidnara_worktree: "clean",
+    sim_commit: "s",
+    sim_worktree: "clean",
+    corpus: "c",
+    binaries: "b",
+    bedrock: "r",
+    tools: "t",
+    price_table: "p",
+});
+
+/** A fault witness as the proxy reports it, fired with one injection and one observation. */
+const witnessRow = (fault: string, status: "fired" | "untriggered") => ({
+    arm: "eidnara",
+    fault,
+    type: "provider_500",
+    armed: true,
+    injected_seq: [1],
+    host_observed_seq: status === "fired" ? [2] : [],
+    proxy_retried: false,
+    status,
 });
 
 function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): GradedRun {
@@ -515,7 +535,7 @@ describe("tier report", () => {
             }
         }
         expect(observation([g], "P13.fold_fidelity_score")?.runs).toEqual([
-            { run: "S-pi-101", control: 100, treatment: 100 },
+            { run: "S-pi-101", control: 1, treatment: 1 },
         ]);
     });
 
@@ -732,7 +752,7 @@ describe("tier report", () => {
         grade("eidnara", "q-13-a", 0.5);
         grade("eidnara", "q-13-b", 1, "excluded");
         expect(observation([g], "P13.fold_fidelity_score")?.runs).toEqual([
-            { run: "S-pi-101", control: 50, treatment: 50 },
+            { run: "S-pi-101", control: 0.5, treatment: 0.5 },
         ]);
     });
 
@@ -886,7 +906,7 @@ describe("tier report", () => {
         completeRun(dir);
         writeFileSync(
             join(dir, "faults.jsonl"),
-            `${JSON.stringify([{ fault: "f-x", status: "untriggered" }])}\n`,
+            `${JSON.stringify([witnessRow("f-x", "untriggered")])}\n`,
         );
         const loaded = loadGraded(dir, prereg);
         expect(loaded.scenario.faults).toEqual([fault]);
@@ -1060,7 +1080,8 @@ describe("tier report", () => {
         );
         writeFileSync(join(dir, "scenario.json"), canonicalJson({ ...body, scenario_hash }));
         completeRun(dir);
-        const line = (status: string) => JSON.stringify([{ fault: "f-1", status }]);
+        const line = (status: "fired" | "untriggered") =>
+            JSON.stringify([witnessRow("f-1", status)]);
         writeFileSync(join(dir, "faults.jsonl"), `${line("fired")}\n${line("untriggered")}\n`);
         const loaded = loadGraded(dir, prereg);
         expect(loaded.witnesses?.map((w) => [w.fault, w.status])).toEqual([["f-1", "fired"]]);
@@ -1348,6 +1369,16 @@ describe("tier report", () => {
         completeRun(dir);
         writeFileSync(join(dir, "faults.jsonl"), '[{"fault":"f-1","status":"fir');
         expect(loadGraded(dir, prereg).witnesses).toBeNull();
+        for (const bad of [
+            { ...witnessRow("f-1", "fired"), status: "fir" },
+            { ...witnessRow("f-1", "fired"), host_observed_seq: [] },
+            { ...witnessRow("f-1", "untriggered"), armed: "yes" },
+        ]) {
+            writeFileSync(join(dir, "faults.jsonl"), `${JSON.stringify([bad])}\n`);
+            expect(() => loadGraded(dir, prereg)).toThrow(
+                /line 1 is not a batch of fault witnesses/,
+            );
+        }
     });
 
     test("a failed turn counts once when a resume repeats its outcome as an Event", () => {
@@ -1466,6 +1497,26 @@ describe("tier report", () => {
             metrics: { "P7.pass": true },
         });
         expect(observation([g], "P7.pass")?.items).toEqual([]);
+    });
+
+    test("the manifest's pinned execution identities are part of the compared identity", () => {
+        for (const field of [
+            "eidnara_worktree",
+            "sim_commit",
+            "sim_worktree",
+            "corpus",
+            "binaries",
+            "bedrock",
+            "tools",
+            "price_table",
+        ] as const) {
+            const a = fixture(undefined, { host: "pi" });
+            const b = fixture(undefined, { host: "opencode" });
+            b.identity[field] = "other";
+            expect(tierInput(prereg, [a, b]).incomplete).toContainEqual(
+                expect.stringMatching(new RegExp(`^runs differ in ${field}: `)),
+            );
+        }
     });
 
     test("tape sources are part of the compared identity", () => {

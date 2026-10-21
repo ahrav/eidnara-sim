@@ -17,6 +17,15 @@ import { loadPrereg } from "../scenario/inputs";
 import { type ArmLogs, loadRun, type RunLogs } from "./logs";
 import { ledger, ORACLES, oracleReport, rssFit, runOracles } from "./oracles";
 
+/** A journal entry the harness writes carries its wall time; a fixture entry without one gets 0. */
+const stamped = (o: unknown) =>
+    o !== null &&
+    typeof o === "object" &&
+    /^[A-Z]/.test(String((o as { kind?: unknown }).kind)) &&
+    !("wall_ms" in o)
+        ? { wall_ms: 0, ...o }
+        : o;
+
 const DIR = join(import.meta.dir, "../../tests/fixtures/oracle");
 const prereg = loadPrereg("S");
 
@@ -108,7 +117,7 @@ describe("oracle report", () => {
 
     test("a run directory loads into per-arm logs", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
-        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const line = (o: unknown) => `${JSON.stringify(stamped(o))}\n`;
         const order = ["host", "eidnara"];
         const scenario = { events: [{ id: "e-1", kind: "user_turn" }] };
         const scenario_hash = scenarioHash(scenario);
@@ -294,7 +303,7 @@ describe("oracle edge cases", () => {
 
     test("a run whose journal lacks an arm's EndArm or the EndRun is refused", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
-        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const line = (o: unknown) => `${JSON.stringify(stamped(o))}\n`;
         const scenario = { events: [{ id: "e-1", kind: "session_end" }] };
         const scenario_hash = scenarioHash(scenario);
         const manifest = { tier: "S", order: ["host"], events: 1, scenario_hash };
@@ -326,7 +335,7 @@ describe("oracle edge cases", () => {
 describe("oracle evidence integrity", () => {
     test("a scenario whose digest differs from the manifest's is refused", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
-        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const line = (o: unknown) => `${JSON.stringify(stamped(o))}\n`;
         const events = [{ id: "e-1", kind: "user_turn" }];
         const scenario_hash = scenarioHash({ events });
         const manifest = { tier: "S", order: ["host"], events: 1, scenario_hash };
@@ -475,7 +484,7 @@ describe("oracle round three", () => {
 
     test("a completed arm that runs a daemon must have RSS samples", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
-        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const line = (o: unknown) => `${JSON.stringify(stamped(o))}\n`;
         const order = ["host", "eidnara"];
         const scenario = { events: [{ id: "e-1", kind: "user_turn" }] };
         const scenario_hash = scenarioHash(scenario);
@@ -585,7 +594,7 @@ describe("oracle round four", () => {
 
     test("a call record that fails the proxy's record contract refuses the run", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
-        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const line = (o: unknown) => `${JSON.stringify(stamped(o))}\n`;
         const order = ["eidnara"];
         const scenario = { events: [{ id: "e-1", kind: "user_turn" }] };
         const scenario_hash = scenarioHash(scenario);
@@ -659,7 +668,7 @@ describe("oracle round five", () => {
 
     test("a malformed newline-terminated line in an evidence file refuses the run", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
-        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const line = (o: unknown) => `${JSON.stringify(stamped(o))}\n`;
         const order = ["eidnara"];
         const scenario = { events: [{ id: "e-1", kind: "user_turn" }] };
         const scenario_hash = scenarioHash(scenario);
@@ -698,7 +707,7 @@ describe("oracle round five", () => {
 
 function completeDir(order: string[]): { dir: string; line: (o: unknown) => string } {
     const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
-    const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+    const line = (o: unknown) => `${JSON.stringify(stamped(o))}\n`;
     const scenario = { events: [{ id: "e-1", kind: "user_turn" }] };
     const scenario_hash = scenarioHash(scenario);
     const manifest = { tier: "S", order, events: 1, scenario_hash };
@@ -856,6 +865,10 @@ describe("oracle round seven", () => {
         const timed = journal.map((e) => ({ ...e, scenario_ms: 5 }));
         writeFileSync(join(dir, "journal.jsonl"), timed.map(line).join(""));
         expect(loadRun(dir, prereg).arms[0]?.journal).toHaveLength(4);
+        const unwalled = timed.map((e, i) => (i === 1 ? { ...e, wall_ms: "late" } : e));
+        writeFileSync(join(dir, "journal.jsonl"), unwalled.map(line).join(""));
+        expect(() => loadRun(dir, prereg)).toThrow(/journal\.jsonl: line 2: wall_ms missing/);
+        writeFileSync(join(dir, "journal.jsonl"), timed.map(line).join(""));
         rmSync(join(dir, "eidnara", "daemon.log"));
         expect(() => loadRun(dir, prereg)).toThrow("arm eidnara has no daemon.log");
     });
@@ -964,7 +977,8 @@ describe("oracle round ten", () => {
                 { kind: "EndRun", arm: null, scenario_ms: 9 },
             ];
             const kept = base.filter((r) => !drop.includes(String(r.kind)));
-            writeFileSync(join(dir, "journal.jsonl"), [...kept, ...extra].map(line).join(""));
+            const sealed = [...kept.slice(0, -2), ...extra, ...kept.slice(-2)];
+            writeFileSync(join(dir, "journal.jsonl"), sealed.map(line).join(""));
         };
         rows([], ["BeginTurn"]);
         expect(() => loadRun(dir, prereg)).toThrow("arm eidnara: turn e-1 has no BeginTurn");
@@ -1698,6 +1712,17 @@ describe("oracle round twenty-four", () => {
         expect(() => loadRun(dir, prereg)).toThrow(/2 EndRun entries/);
         writeFileSync(path, [...entries, { ...endRun, arm: "eidnara" }].map(line).join(""));
         expect(() => loadRun(dir, prereg)).toThrow(/EndRun names arm eidnara/);
+        const endArm = [...entries].reverse().find((e: { kind: string }) => e.kind === "EndArm");
+        const late = { ...endArm, kind: "StoreChecked" };
+        writeFileSync(path, [...entries, late, endRun].map(line).join(""));
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /arm eidnara has StoreChecked .* after its EndArm/,
+        );
+        writeFileSync(
+            path,
+            [...entries, endRun, { ...endRun, kind: "ResumeRun" }].map(line).join(""),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow(/1 entries follow EndRun/);
     });
 
     test("F6 refuses a token total beyond exact integer arithmetic", () => {

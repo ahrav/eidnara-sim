@@ -485,6 +485,15 @@ describe("recovery oracles", () => {
         expect(flagged.ranges.some((r) => r[0] === "u" || r[0] === "v")).toBe(false);
         expect(flagged.segments).toBe(flagged.ranges.length);
         expect(parseStoreCheck(flagged, "x")).toEqual(flagged);
+        for (const integrity of [
+            "",
+            "inverted range s/9",
+            `${flagged.integrity}; inverted range s/9`,
+        ]) {
+            expect(() => parseStoreCheck({ ...flagged, integrity }, "x")).toThrow(
+                "disagrees with its own ranges",
+            );
+        }
         const cleaned = new Database(path);
         cleaned.run("delete from history_segments where session_id in ('u', 'v')");
         cleaned.close();

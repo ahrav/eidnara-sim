@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { Preregistration } from "../prereg/schema";
 import { normalQuantile } from "../stats/dist";
 import type { TierInput } from "../stats/gate";
@@ -43,7 +43,21 @@ export function gradedMainRuns(
         throw new Error(`${dir} plans no ${m?.tier} paired run for ${missing.join(", ")}`);
     }
     const main = jobs.map((j) => j.dir);
-    const outside = main.filter((d) => !d.startsWith(`${dir}/`));
+    // Containment is judged on resolved paths, so `..` steps and symlinks count where they lead.
+    const real = (path: string): string => {
+        const rest: string[] = [];
+        let existing = resolve(path);
+        while (!existsSync(existing) && dirname(existing) !== existing) {
+            rest.unshift(basename(existing));
+            existing = dirname(existing);
+        }
+        return join(realpathSync(existing), ...rest);
+    };
+    const root = real(dir);
+    const outside = main.filter((d) => {
+        const rel = relative(root, real(d));
+        return rel === "" || rel === ".." || rel.startsWith("../") || isAbsolute(rel);
+    });
     if (outside.length > 0) {
         throw new Error(`${dir} plans runs outside itself: ${outside.join(", ")}`);
     }

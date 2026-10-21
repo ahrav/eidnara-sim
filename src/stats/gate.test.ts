@@ -473,6 +473,27 @@ describe("tier gate review findings", () => {
         expect(m?.resolution_ratio).toBeCloseTo(9.3386, 4);
     });
 
+    test("a run-level zero-tolerance bound fails a difference above zero and admits one below", () => {
+        const s = (diffs: number[]) =>
+            metric(
+                evaluateTier(S, {
+                    observations: [
+                        runs(
+                            "reverted_memory_edits",
+                            diffs.map((d) => [0, d] as [number, number]),
+                        ),
+                    ],
+                    excluded: [],
+                    asymmetric: [],
+                    ...seq,
+                }),
+                "intrusiveness",
+                "reverted_memory_edits",
+            );
+        expect([s([-1, 0])?.verdict, s([-1, 0])?.passed]).toEqual(["within-bound", true]);
+        expect(s([0, 1])?.passed).toBe(false);
+    });
+
     test("an observation carrying the wrong collection for its unit, or a non-finite value, is refused", () => {
         const s = (observations: Observation[]) =>
             evaluateTier(S, { observations, excluded: [], asymmetric: [], ...seq });

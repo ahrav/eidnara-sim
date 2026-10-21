@@ -395,18 +395,22 @@ export class Scheduler {
                     this.current = handle;
                     driver.bind?.(handle);
                     this.o.onArmReady?.(arm);
-                    // A resume reopens the session the next pending event belongs to; a pending
-                    // `session_end` closes nothing the killed harness still had open, and an
-                    // arm with no event left is finished without one.
+                    // A resume restores the driver's recorded daemon and owed store checks, and
+                    // reopens the session the next pending event belongs to; a pending
+                    // `session_end` closes nothing the killed harness still had open, and an arm
+                    // with no event left resumes with no session, so its finish still checks
+                    // the restored store.
                     const delivered = new Set(
                         this.o.journal.entries
                             .filter((e) => e.arm === arm && e.kind === "Event")
                             .map((e) => e.event as string),
                     );
                     const next = this.o.events.find((e) => !delivered.has(e.id));
-                    if (started && driver.resume && next) {
+                    if (started && driver.resume) {
                         const open =
-                            next.kind === "session_end" ? null : this.openStart(this.session);
+                            !next || next.kind === "session_end"
+                                ? null
+                                : this.openStart(this.session);
                         await this.untilFatal(driver.resume(open, this.interrupted));
                     }
                     if (answered.length > 0) {
@@ -601,11 +605,11 @@ export class Scheduler {
             // A fired fault's mechanism holds the clock as a turn does, from its `FaultFired`
             // until its `FaultObserved` or interruption marker; proxy faults and laptop sleeps
             // have no mechanism here, so they hold nothing.
-            const holding = [...fired].some(
+            const holding = [...fired].find(
                 (id) => !observed.has(id) && !marked.has(id) && holdsClock.has(id),
             );
             const busy =
-                holding ||
+                holding !== undefined ||
                 [...begun].some((t) => !ended.has(t)) ||
                 [...jobs].some(([, n]) => n > 0);
             if (e.kind !== "AdvanceClock") {
@@ -655,16 +659,8 @@ export class Scheduler {
                     if (turns.has(due.id) && e.outcome !== outcomes.get(due.id)) {
                         throw fail(`Event for ${e.event} contradicts its EndTurn outcome`, e);
                     }
-                    const unresolved = [...fired].find((id) => {
-                        const f = this.o.faults.find((x) => x.id === id) as FaultEpisode;
-                        const scheduler = f.seam.layer !== PROXY_LAYER && f.type !== "laptop_sleep";
-                        return scheduler && !observed.has(id) && !marked.has(id);
-                    });
-                    if (unresolved !== undefined) {
-                        throw fail(
-                            `Event for ${e.event} while fault ${unresolved} is unresolved`,
-                            e,
-                        );
+                    if (holding !== undefined) {
+                        throw fail(`Event for ${e.event} while fault ${holding} is unresolved`, e);
                     }
                     done++;
                     if (due.kind === "session_end") session = null;
@@ -808,11 +804,7 @@ export class Scheduler {
                         }
                         if (jumped.has(f.id)) throw fail(`AdvanceClock for ${f.id} repeats`, e);
                     }
-                    const inFlight = [...begun].find((t) => !ended.has(t));
-                    const working = [...jobs].find(([, n]) => n > 0);
-                    if (inFlight !== undefined || working !== undefined) {
-                        throw fail("AdvanceClock while the clock is busy", e);
-                    }
+                    if (busy) throw fail("AdvanceClock while the clock is busy", e);
                     if (!due || e.scenario_ms !== due.scenario_ms) {
                         throw fail("AdvanceClock lands away from the event due", e);
                     }
