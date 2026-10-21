@@ -1,9 +1,23 @@
-import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+    appendFileSync,
+    mkdirSync,
+    mkdtempSync,
+    rmSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { armProfile } from "../hosts/profiles";
-import { armMismatches, bootMismatches, observeArm, readPluginLog } from "./capabilities";
+import { AUDITED_EIDNARA, armProfile } from "../hosts/profiles";
+import {
+    armMismatches,
+    bootMismatches,
+    logLength,
+    observeArm,
+    readPluginLog,
+    requireAuditedVariants,
+} from "./capabilities";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -95,12 +109,17 @@ test("a fallback-search arm that answered agent calls with no transform pass is 
 });
 
 test("search results are checked against the route the arm declares", () => {
-    const root = armRoot([PI_ON, PASS], [LEGACY, FUSED, "Found 0 results"]);
+    const root = armRoot(
+        [PI_ON, PASS],
+        [LEGACY, FUSED, "Found 0 results", "Error: the memory search route answered refused"],
+    );
     const fallback = observeArm("eidnara", "pi", root, { agent: 1 });
-    expect(fallback.search).toEqual({ legacy_scan: ["disabled"], fused: 1 });
+    expect(fallback.search).toEqual({ legacy_scan: ["disabled"], fused: 2, errored: 1 });
     expect(armMismatches(fallback)).toEqual([
-        "1 eidnara_search results came from the fused route, but the arm declares legacy-scan",
+        "2 eidnara_search results came from the fused route, but the arm declares legacy-scan",
     ]);
+    const legacyOnly = observeArm("eidnara", "pi", armRoot([PI_ON, PASS], [LEGACY]), {});
+    expect(armMismatches(legacyOnly)).toEqual([]);
     const hybrid = observeArm("eidnara-hybrid", "pi", root, { agent: 1 });
     expect(armMismatches(hybrid)).toEqual([
         "1 eidnara_search results came from the legacy snapshot scan (disabled), but the arm declares the fused route",
@@ -126,4 +145,69 @@ test("a plugin log the agent replaced with a link is refused rather than read", 
     writeFileSync(join(root, "elsewhere"), `${PI_ON}\n`);
     symlinkSync(join(root, "elsewhere"), join(root, "eidnara.log"));
     expect(() => readPluginLog(join(root, "eidnara.log"))).toThrow(/cannot be read as evidence/);
+});
+
+test("a session's boots are read from the log's length when its host started", () => {
+    const root = armRoot([PI_ON]);
+    const log = join(root, "eidnara.log");
+    const mark = logLength(log);
+    appendFileSync(log, `${PASS}\n`);
+    const later = readPluginLog(log, mark);
+    expect(later.transform_passes).toBe(1);
+    expect(bootMismatches(armProfile("eidnara"), later)).toEqual([
+        "the Eidnara plugin log records no enabled boot",
+    ]);
+    expect(bootMismatches(armProfile("eidnara"), readPluginLog(log))).toEqual([]);
+});
+
+test("a Pi boot that names neither transform mode is a mismatch on every Eidnara arm", () => {
+    const odd = readPluginLog(
+        join(
+            armRoot([`${T} [eidnara][pi] registered tools: eidnara_search, eidnara_memory`]),
+            "eidnara.log",
+        ),
+    );
+    expect(odd.boots.transform_unknown).toBe(1);
+    for (const arm of ["eidnara", "eidnara-kl"]) {
+        expect(bootMismatches(armProfile(arm), odd)).toEqual([
+            "1 Pi boots registered tools in no recognised transform mode",
+        ]);
+    }
+});
+
+describe("audited daemon capabilities", () => {
+    const git = (dir: string, ...args: string[]) => {
+        const r = Bun.spawnSync(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "pipe" });
+        if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+        return r.stdout.toString().trim();
+    };
+    const commit = (dir: string, file: string, text: string) => {
+        mkdirSync(join(dir, file, ".."), { recursive: true });
+        writeFileSync(join(dir, file), text);
+        git(dir, "add", "-A");
+        git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", file);
+        return git(dir, "rev-parse", "HEAD");
+    };
+
+    test("a checkout without the audited commit is refused for every daemon arm", () => {
+        const repo = tmp();
+        git(repo, "init", "-q");
+        commit(repo, "crates/daemon/examples/direct_host_fixture.rs", "fn main() {}\n");
+        expect(() => requireAuditedVariants(repo, ["eidnara"])).toThrow(
+            new RegExp(`lacks commit ${AUDITED_EIDNARA}`),
+        );
+        expect(() => requireAuditedVariants(repo, ["host"])).not.toThrow();
+    });
+
+    test("a fixture source that changed since the audited commit is refused; other files pass", () => {
+        const repo = tmp();
+        git(repo, "init", "-q");
+        const audited = commit(repo, "crates/daemon/examples/direct_host_fixture.rs", "a\n");
+        commit(repo, "README.md", "unrelated\n");
+        expect(() => requireAuditedVariants(repo, ["eidnara", "host"], audited)).not.toThrow();
+        commit(repo, "crates/daemon/examples/direct_host_fixture.rs", "b\n");
+        expect(() => requireAuditedVariants(repo, ["eidnara-kl"], audited)).toThrow(
+            /direct-host-fixture capabilities were read at .*crates\/daemon\/examples\/direct_host_fixture.rs changed since/,
+        );
+    });
 });

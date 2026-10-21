@@ -8,7 +8,13 @@ import {
     readSync,
 } from "node:fs";
 import { join } from "node:path";
-import { type ArmProfile, armProfile } from "../hosts/profiles";
+import {
+    type ArmProfile,
+    AUDITED_EIDNARA,
+    armProfile,
+    DAEMON_VARIANTS,
+    type DaemonVariant,
+} from "../hosts/profiles";
 
 /** The model-call components only the Eidnara plugin and daemon make. */
 export const EIDNARA_COMPONENTS = [
@@ -22,12 +28,25 @@ export const EIDNARA_COMPONENTS = [
 export interface ArmObservation {
     arm: string;
     host: "pi" | "opencode";
-    /** Plugin boots by outcome; Pi's boot line also names whether the transform registered. */
-    boots: { enabled: number; transform_on: number; transform_off: number; disabled: string[] };
+    /**
+     * Plugin boots by outcome; Pi's boot line also names whether the transform registered, and a
+     * Pi boot line naming neither mode counts as `transform_unknown`.
+     */
+    boots: {
+        enabled: number;
+        transform_on: number;
+        transform_off: number;
+        transform_unknown: number;
+        disabled: string[];
+    };
     /** Plugin-log lines for a pass the daemon served through the transform. */
     transform_passes: number;
-    /** `eidnara_search` results in the host transcripts, by the route that answered them; null where the host's transcripts are not read. */
-    search: { legacy_scan: string[]; fused: number } | null;
+    /**
+     * `eidnara_search` results in the host transcripts: the legacy scan's fallback reasons, the
+     * successful results the fused route answered (every success without the fallback note), and
+     * the results that reported an error; null where the host's transcripts are not read.
+     */
+    search: { legacy_scan: string[]; fused: number; errored: number } | null;
     /** Proxy call records of the arm, by component. */
     components: Record<string, number>;
 }
@@ -37,11 +56,11 @@ const CHUNK = 1 << 20;
 const MAX_LINE = 16 << 20;
 
 /**
- * Calls `onLine` for each newline-terminated line and the unterminated tail of a regular file the
- * agent may have written: the file opens without following a link or blocking, and an absent
- * file reads as empty.
+ * Calls `onLine` for each newline-terminated line, and the unterminated tail, from byte `from` of a
+ * regular file the agent may have written: the file opens without following a link or blocking,
+ * and an absent file reads as empty.
  */
-export function eachLine(path: string, onLine: (line: string) => void): void {
+export function eachLine(path: string, onLine: (line: string) => void, from = 0): void {
     let fd: number;
     try {
         fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -55,8 +74,9 @@ export function eachLine(path: string, onLine: (line: string) => void): void {
         let pending: Buffer[] = [];
         let pendingBytes = 0;
         let skipping = false;
-        for (;;) {
-            const n = readSync(fd, buf, 0, CHUNK, null);
+        for (let offset = from; ; ) {
+            const n = readSync(fd, buf, 0, CHUNK, offset);
+            offset += n;
             if (n === 0) break;
             let chunk = buf.subarray(0, n);
             let at = chunk.indexOf(0x0a);
@@ -85,32 +105,55 @@ export function eachLine(path: string, onLine: (line: string) => void): void {
     }
 }
 
-/** Counts plugin boots by outcome and transform passes in one arm's plugin log. */
-export function readPluginLog(path: string): Pick<ArmObservation, "boots" | "transform_passes"> {
-    const boots = { enabled: 0, transform_on: 0, transform_off: 0, disabled: [] as string[] };
+/** The plugin log's length, the mark a session's own evidence starts from. */
+export function logLength(path: string): number {
+    return lstatSync(path, { throwIfNoEntry: false })?.size ?? 0;
+}
+
+/** Counts plugin boots by outcome and transform passes in one arm's plugin log, from byte `from`. */
+export function readPluginLog(
+    path: string,
+    from = 0,
+): Pick<ArmObservation, "boots" | "transform_passes"> {
+    const boots = {
+        enabled: 0,
+        transform_on: 0,
+        transform_off: 0,
+        transform_unknown: 0,
+        disabled: [] as string[],
+    };
     let transform_passes = 0;
-    eachLine(path, (line) => {
-        if (line.includes("served_from=transform")) {
-            transform_passes++;
-            return;
-        }
-        // Pi logs its tool registration once per process; OpenCode logs its conflict check.
-        if (line.includes("[eidnara][pi] registered tools:")) {
-            boots.enabled++;
-            if (line.includes("compaction-off mode")) boots.transform_off++;
-            else if (line.includes("eidnara_reduce")) boots.transform_on++;
-            return;
-        }
-        if (
-            /\[eidnara\] (no conflicts detected|configuration warning), plugin enabled/.test(line)
-        ) {
-            boots.enabled++;
-            return;
-        }
-        const disabled =
-            /\[eidnara\](?:\[pi\])? (disabled due to conflicts: .*|plugin DISABLED.*)$/.exec(line);
-        if (disabled) boots.disabled.push((disabled[1] as string).slice(0, 500));
-    });
+    eachLine(
+        path,
+        (line) => {
+            if (line.includes("served_from=transform")) {
+                transform_passes++;
+                return;
+            }
+            // Pi logs its tool registration once per process; OpenCode logs its conflict check.
+            if (line.includes("[eidnara][pi] registered tools:")) {
+                boots.enabled++;
+                if (line.includes("compaction-off mode")) boots.transform_off++;
+                else if (line.includes("eidnara_reduce")) boots.transform_on++;
+                else boots.transform_unknown++;
+                return;
+            }
+            if (
+                /\[eidnara\] (no conflicts detected|configuration warning), plugin enabled/.test(
+                    line,
+                )
+            ) {
+                boots.enabled++;
+                return;
+            }
+            const disabled =
+                /\[eidnara\](?:\[pi\])? (disabled due to conflicts: .*|plugin DISABLED.*)$/.exec(
+                    line,
+                );
+            if (disabled) boots.disabled.push((disabled[1] as string).slice(0, 500));
+        },
+        from,
+    );
     return { boots, transform_passes };
 }
 
@@ -119,7 +162,7 @@ const FALLBACK =
 
 /** The `eidnara_search` results in Pi's session transcripts under `sessionsDir`, by answering route. */
 export function readPiSearches(sessionsDir: string): NonNullable<ArmObservation["search"]> {
-    const search = { legacy_scan: [] as string[], fused: 0 };
+    const search = { legacy_scan: [] as string[], fused: 0, errored: 0 };
     const walk = (dir: string, depth: number) => {
         let names: string[];
         try {
@@ -134,7 +177,14 @@ export function readPiSearches(sessionsDir: string): NonNullable<ArmObservation[
             if (!stat?.isFile() || !name.endsWith(".jsonl")) continue;
             eachLine(path, (line) => {
                 if (!line.includes('"eidnara_search"')) return;
-                let entry: { message?: { role?: unknown; toolName?: unknown; content?: unknown } };
+                let entry: {
+                    message?: {
+                        role?: unknown;
+                        toolName?: unknown;
+                        content?: unknown;
+                        isError?: unknown;
+                    };
+                };
                 try {
                     entry = JSON.parse(line);
                 } catch {
@@ -145,9 +195,12 @@ export function readPiSearches(sessionsDir: string): NonNullable<ArmObservation[
                 const text = (Array.isArray(m.content) ? m.content : [])
                     .map((c: { text?: unknown }) => (typeof c?.text === "string" ? c.text : ""))
                     .join("\n");
+                // The plugin prepends the fallback note to every legacy-scan answer and to no
+                // answer the fused route ranked; a refusal is an error result.
                 const fallback = FALLBACK.exec(text);
                 if (fallback) search.legacy_scan.push(fallback[1] as string);
-                else if (text.includes("match=fused")) search.fused++;
+                else if (m.isError === true || text.startsWith("Error")) search.errored++;
+                else search.fused++;
             });
         }
     };
@@ -188,6 +241,11 @@ export function bootMismatches(profile: ArmProfile, o: Pick<ArmObservation, "boo
     if (profile.eidnara_compaction && boots.transform_off > 0) {
         out.push(
             `${boots.transform_off} Pi boots registered no transform, but the arm declares Eidnara compaction on`,
+        );
+    }
+    if (boots.transform_unknown > 0) {
+        out.push(
+            `${boots.transform_unknown} Pi boots registered tools in no recognised transform mode`,
         );
     }
     if (!profile.eidnara_compaction && boots.transform_on > 0) {
@@ -242,4 +300,37 @@ export function armMismatches(o: ArmObservation): string[] {
         }
     }
     return out;
+}
+
+/**
+ * The build clone's copies of every source that fixes a variant's capabilities match those at
+ * `AUDITED_EIDNARA`, for each daemon variant the arms run; otherwise the recorded capabilities may
+ * describe another daemon than the one built, and the run stops before it starts one.
+ */
+export function requireAuditedVariants(
+    checkout: string,
+    arms: readonly string[],
+    audited = AUDITED_EIDNARA,
+): void {
+    const variants = [
+        ...new Set(arms.map((a) => armProfile(a).daemon).filter((v) => v !== null)),
+    ] as DaemonVariant[];
+    if (variants.length === 0) return;
+    const git = (args: string[]) =>
+        Bun.spawnSync(["git", "-C", checkout, ...args], { stdout: "pipe", stderr: "pipe" });
+    if (git(["cat-file", "-e", `${audited}^{commit}`]).exitCode !== 0) {
+        throw new Error(
+            `${checkout} lacks commit ${audited}, whose source the daemon capabilities in src/hosts/profiles.ts were read from`,
+        );
+    }
+    for (const variant of variants) {
+        const { sources } = DAEMON_VARIANTS[variant];
+        const diff = git(["diff", "--name-only", audited, "HEAD", "--", ...sources]);
+        const changed = diff.stdout.toString().trim();
+        if (diff.exitCode !== 0 || changed !== "") {
+            throw new Error(
+                `${variant} capabilities were read at ${audited}, and ${changed || "the comparison"} ${changed ? "changed" : "failed"} since; read them again in src/hosts/profiles.ts`,
+            );
+        }
+    }
 }

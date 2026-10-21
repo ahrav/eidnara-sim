@@ -2118,7 +2118,7 @@ the capability check wrote no Eidnara `compaction.enabled`, so their
 OpenCode the plugin logged `disabled due to conflicts` and the arm ran as a
 host arm.
 Existing check: `src/run/capabilities.ts` `bootMismatches` and `armMismatches`
-(unaudited), run at each `session_end` and at the arm's finish; the arm
+(unaudited), run at each `session_end` and before `EndArm`; the arm
 configuration in `src/hosts/arms.test.ts` (unaudited).
 Impact: The knowledge-layer comparison arm is not the configuration it claims.
 Open questions: None.

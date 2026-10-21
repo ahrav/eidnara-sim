@@ -490,7 +490,9 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     };
     // A grade this grader already made from the same snapshot stands unless `regrade` asks anew;
     // a grade from another grader implementation is made again.
+    // The grader's identity is read once, before any grade, so the summary names the code that ran.
     const grader = graderDigest();
+    const graderSim = simIdentity();
     const priorKey = (item: string, arm: string, against: string | undefined, snapshot: string) =>
         `${item}/${arm}/${against ?? ""}/${snapshot}`;
     const latest = log.latest();
@@ -735,7 +737,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
         p3,
         judge_errors: judgeErrors,
         journal_seq: entries.at(-1)?.seq ?? 0,
-        grader: { digest: grader, ...simIdentity() },
+        grader: { digest: grader, ...graderSim },
     };
 }
 

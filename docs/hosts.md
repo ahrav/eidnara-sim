@@ -61,7 +61,7 @@ context window to the host (SIM-P76); with Eidnara compaction off, OpenCode's
 conflict check reports no conflict with its native compaction.
 
 Each daemon variant provides a fixed capability set, read from the Eidnara
-source at commit `08de9051a`:
+source at commit `08de9051a` (`AUDITED_EIDNARA`):
 
 | Variant | Search route | Embeddings | Memory reviewer | Side calls |
 |---|---|---|---|---|
@@ -74,30 +74,45 @@ endpoint overrides, so its model calls cannot reach the proxy and their cost
 goes unmeasured. `armOrder` refuses an arm whose profile declares a
 capability its variant lacks, naming each gap, before the run writes a
 manifest or starts preflight; `eidnara-hybrid` is refused that way for its
-side calls, and no tier pre-registers it.
+side calls, and no tier pre-registers it. Before preflight, the run also
+requires the build clone to hold `AUDITED_EIDNARA` and its copies of each
+running variant's source files (`sources` in `src/hosts/profiles.ts`) to
+match that commit's, so a build whose fixture changed stops until the
+capabilities are read again.
 
 ## Capability evidence
 
 The run checks each arm's evidence against its profile, and an arm is
 complete evidence only when the two agree:
 
-- At every `session_end` of the arm, the plugin log (`<arm>/r/eidnara.log`)
+- At every `session_end` of the arm, the part of the plugin log
+  (`<arm>/r/eidnara.log`) written since the session's host started (its
+  length at `session_start`, or at the resume that reopened the session)
   must hold an enabled boot (Pi's `registered tools:` line, OpenCode's
   `plugin enabled` line) and no `disabled due to conflicts` or `plugin
-  DISABLED` line, and Pi's boots must match the arm's Eidnara compaction
-  (`eidnara_reduce` registered when on, `compaction-off mode` when off); a
-  host-only arm must hold no boot. A mismatch fails the event, so the journal
-  records it fatal and a resume refuses the run.
-- At the arm's finish, after its host and daemon stop, the run writes
+  DISABLED` line, and each Pi boot must match the arm's Eidnara compaction
+  (`eidnara_reduce` registered when on, `compaction-off mode` when off; a
+  registration naming neither mode is a mismatch); a host-only arm must hold
+  no boot. A mismatch fails the event, so the journal records it fatal and a
+  resume refuses the run.
+- Before `EndArm`, once the arm's finish and every job it started have
+  ended, the run writes
   `<arm>/capabilities.json`: the profile, the observed boots, the number of
   `served_from=transform` passes, the routes Pi's transcripts show each
-  `eidnara_search` result came from (`null` on OpenCode, whose transcripts
-  this check does not read), and the arm's proxy calls by component. It
-  then fails the finish on any mismatch: a host-only arm with a plugin boot
+  `eidnara_search` result came from (the legacy scan when the result carries
+  the plugin's fallback note, an error when it reports one, and the fused
+  route for every other success; `null` on OpenCode, whose transcripts this
+  check does not read), and the arm's proxy calls by component. A mismatch
+  leaves `EndArm` unwritten, so the run is incomplete and a resume checks the
+  same evidence again: a host-only arm with a plugin boot
   or an Eidnara component call; an arm with Eidnara compaction on that
   answered agent calls with no transform pass; one with it off that shows a
   transform pass or a `history_summarizer` call; or a search result from a
   route other than the declared one.
+
+The plugin writes its log inside the arm root, which the agent's tools can
+write too, so the evidence holds against an agent that leaves the log alone;
+a log replaced by a link or a non-regular file is refused.
 
 `HostDriver` owns the arm's daemon and its current host. `reset` stops both,
 deletes the arm root and store, clones each scenario repository into a

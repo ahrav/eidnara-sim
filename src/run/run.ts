@@ -55,7 +55,14 @@ import {
     UserSim,
 } from "../usersim/usersim";
 import { writeAtomic } from "./atomic";
-import { armMismatches, bootMismatches, observeArm, readPluginLog } from "./capabilities";
+import {
+    armMismatches,
+    bootMismatches,
+    logLength,
+    observeArm,
+    readPluginLog,
+    requireAuditedVariants,
+} from "./capabilities";
 import { type Entry, Journal, releaseLease, requireAppendable, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { contains, realExisting } from "./paths";
@@ -1157,7 +1164,16 @@ export async function loadManifest(
     checks?: Preflight,
 ): Promise<{ manifest: Manifest; checks: Preflight }> {
     const path = join(o.out, "manifest.json");
-    const probe = async () => checks ?? (await preflight(o.config, o.out));
+    /** Preflight probes the environment once the build is known to match the audited daemon capabilities. */
+    const probe = async (order: readonly string[]) => {
+        if (checks) return checks;
+        try {
+            requireAuditedVariants(o.config.eidnara_checkout, order);
+        } catch (caught) {
+            throw new HarnessFailure((caught as Error).message);
+        }
+        return await preflight(o.config, o.out);
+    };
     const wanted = {
         tier: o.tier,
         seed: o.seed,
@@ -1258,7 +1274,7 @@ export async function loadManifest(
             const names = changed.map(([k]) => k).join(", ");
             throw new HarnessFailure(`inputs changed since the run started: ${names}`);
         }
-        checks = await probe();
+        checks = await probe(manifest.order);
         const intercepted = (p: Preflight) =>
             p.time_injection.map((t) => [t.name, t.path, t.intercepted, t.wall_clock_only]);
         if (!sameJson(intercepted(manifest.preflight), intercepted(checks))) {
@@ -1309,7 +1325,7 @@ export async function loadManifest(
         wanted.fault_override,
         wanted.turns_await_jobs,
     );
-    checks = await probe();
+    checks = await probe(wanted.order);
     const manifest: Manifest = {
         schema: "sim-run-manifest/v3",
         ...wanted,
@@ -1810,6 +1826,8 @@ async function runArms(
             if (sampler) holdForCpu(sampler, arm);
         },
         verify: async (point) => {
+            const ending = scheduler.currentArm;
+            if (point === "EndArm" && ending !== null) verifyArm(ending, join(o.out, ending, "r"));
             if (point === "EndRun") await gateway.stop();
             handlersFailed();
             if (samplerFailure !== null) throw samplerFailure;
@@ -1965,17 +1983,22 @@ async function runArms(
     }
     const userTurns = (arm: string, session?: string) =>
         deliveredTurns(journal.entries, arm, session);
-    // A plugin that disabled itself, or booted in another mode than the arm declares, stops the
-    // run at the session that shows it.
+    // Each session's own plugin boots, read from the log's length when its host started: a
+    // plugin that disabled itself, booted in another mode than the arm declares, or left no boot
+    // stops the run at the session that shows it.
+    const sessionMark = new Map<string, number>();
+    const markSession = (arm: string, armRoot: string) =>
+        sessionMark.set(arm, logLength(join(armRoot, "eidnara.log")));
     const requireBoots = (arm: string, armRoot: string) => {
-        const boots = readPluginLog(join(armRoot, "eidnara.log"));
+        const boots = readPluginLog(join(armRoot, "eidnara.log"), sessionMark.get(arm) ?? 0);
         const wrong = bootMismatches(armProfile(arm), boots);
         if (wrong.length > 0) {
             throw new HarnessFailure(`arm ${arm} capability mismatch: ${wrong.join("; ")}`);
         }
     };
-    // The arm's evidence against its profile, written whole once host and daemon have stopped; a
-    // mismatch fails the finish, so the run is not complete evidence.
+    // The arm's evidence against its profile, written whole once its finish and every job it
+    // started have ended, before `EndArm`; a mismatch leaves the arm open, so the run is not
+    // complete evidence and a resume checks the same evidence again.
     const verifyArm = (arm: string, armRoot: string) => {
         const observed = observeArm(arm, o.host, armRoot, components.get(arm) ?? {});
         const mismatches = armMismatches(observed);
@@ -2078,6 +2101,7 @@ async function runArms(
                 tracked(async () => {
                     scope.arm = arm;
                     scope.session = open?.session ?? null;
+                    if (open) markSession(arm, armRoot);
                     await driver.resume(open, interrupted);
                     sampler.start();
                 }),
@@ -2087,6 +2111,7 @@ async function runArms(
                     scope.session = e.session;
                     scope.turn = e.kind === "user_turn" ? e.id : null;
                     try {
+                        if (e.kind === "session_start") markSession(arm, armRoot);
                         if (e.kind === "session_end") {
                             agentText.delete(`${arm}/${e.session}`);
                             const out = await driver.event(e);
@@ -2191,7 +2216,6 @@ async function runArms(
                     }
                     const last = await driver.finish();
                     if (stopped) throw stopped;
-                    verifyArm(arm, armRoot);
                     return last;
                 }),
         };

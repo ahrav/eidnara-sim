@@ -21,12 +21,21 @@ export interface DaemonCapabilities {
     side_calls: "proxy" | "direct-bedrock";
 }
 
+/** The Eidnara commit whose source `DAEMON_VARIANTS` was read from. */
+export const AUDITED_EIDNARA = "08de9051a735f136ff63a9dca49eaa11493b3006";
+
+export interface VariantRecord extends DaemonCapabilities {
+    evidence: string;
+    /** The Eidnara files that fix these capabilities; a build whose copies differ from `AUDITED_EIDNARA`'s needs a fresh reading. */
+    sources: string[];
+}
+
 /**
- * What each daemon variant provides, with the Eidnara source that establishes it (eidnara commit
- * 08de9051a). Only the fixture's `--harness-runtime` redirect extension points model calls at the
- * proxy; the production launcher refuses that closure.
+ * What each daemon variant provides, with the Eidnara source that establishes it. Only the
+ * fixture's `--harness-runtime` redirect extension points model calls at the proxy; the
+ * production launcher refuses that closure.
  */
-export const DAEMON_VARIANTS: Record<DaemonVariant, DaemonCapabilities & { evidence: string }> = {
+export const DAEMON_VARIANTS: Record<DaemonVariant, VariantRecord> = {
     "direct-host-fixture": {
         search: "legacy-scan",
         embeddings: "deterministic-fixture",
@@ -34,6 +43,11 @@ export const DAEMON_VARIANTS: Record<DaemonVariant, DaemonCapabilities & { evide
         side_calls: "proxy",
         evidence:
             "crates/daemon/examples/direct_host_fixture.rs builds its Handler without set_query_route_limits or a memory reviewer host and links an 8-dimension deterministic embedding engine; packages/e2e-tests/src/bedrock-peer/harness-runtime.ts points its closures at the proxy",
+        sources: [
+            "crates/daemon/examples/direct_host_fixture.rs",
+            "packages/e2e-tests/src/bedrock-peer/harness-runtime.ts",
+            "packages/e2e-tests/src/rust-runner/hermetic-host.ts",
+        ],
     },
     "production-payload": {
         search: "fused",
@@ -42,6 +56,11 @@ export const DAEMON_VARIANTS: Record<DaemonVariant, DaemonCapabilities & { evide
         side_calls: "direct-bedrock",
         evidence:
             "eidnara-host serve (crates/daemon/src/bin/eidnara_host/serve.rs) admits only the compiled-in QUALIFIED_HARNESS_CLOSURES, runs Pi with --no-extensions and a fresh HOME (crates/host-runtime/src/model_execution/pi.rs), and refuses AWS endpoint overrides (aws_profile.rs), so its model calls cannot reach the sim proxy",
+        sources: [
+            "crates/daemon/src/bin/eidnara_host/serve.rs",
+            "crates/host-runtime/src/model_execution/pi.rs",
+            "crates/host-runtime/src/model_execution/aws_profile.rs",
+        ],
     },
 };
 
