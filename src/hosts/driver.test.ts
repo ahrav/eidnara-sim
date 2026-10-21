@@ -1669,6 +1669,22 @@ describe("HostDriver faults", () => {
         expect(second.stores).toBeUndefined();
     });
 
+    test("a plugin log the agent replaced with a link is refused, not read through", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        await driver.fault(episode("daemon_restart"));
+        const forged = join(tmp(), "forged.log");
+        writeFileSync(forged, `${PASS}\n`);
+        const path = join((driver as unknown as { o: DriverOptions }).o.armRoot, "eidnara.log");
+        mkdirSync(dirname(path), { recursive: true });
+        rmSync(path, { force: true });
+        symlinkSync(forged, path);
+        await expect(driver.event(ev("user_turn", { id: "e-1", text: "go" }))).rejects.toThrow(
+            /plugin log .* is a symlink/,
+        );
+    });
+
     test("a pass the replacement serves while its start is still settling counts", async () => {
         const { driver } = fixture("eidnara");
         const daemon = fakeDaemon(PID + 10);

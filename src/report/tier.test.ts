@@ -1482,8 +1482,16 @@ describe("tier report", () => {
 
     test("call capture must cover every completed turn for the F7 count to stand", () => {
         const g = fixture();
-        arm(g, "eidnara").calls.splice(0, 1);
+        const [dropped] = arm(g, "eidnara").calls.splice(0, 1);
         expect(observation([g], "internal_string_hits")?.runs).toEqual([]);
+        // A turn the user-sim left undelivered reached no host, so its missing call is no gap.
+        arm(g, "eidnara").journal.push({
+            kind: "UserTurn",
+            arm: "eidnara",
+            event: String(dropped?.turn),
+            delivered: false,
+        } as never);
+        expect(observation([g], "internal_string_hits")?.runs).toHaveLength(1);
     });
 
     test("a P7 judgment pairs only with gate_eligible recorded true", () => {

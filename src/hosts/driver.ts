@@ -1445,14 +1445,43 @@ export class HostDriver implements ArmDriver {
      * across chunks is still read whole, and a line longer than a chunk is dropped unmatched.
      */
     private passedSince(mark: number): boolean {
-        if (!existsSync(this.pluginLog)) return false;
-        const fd = openSync(this.pluginLog, "r");
+        // The agent can write the arm root, so the log opens without following a link and is
+        // read only up to the size of the single-link regular file the descriptor holds.
+        let fd: number;
         try {
+            fd = openSync(
+                this.pluginLog,
+                constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+            );
+        } catch (caught) {
+            const code = (caught as NodeJS.ErrnoException).code;
+            if (code === "ENOENT") return false;
+            if (code === "ELOOP") {
+                throw new HarnessFailure(`plugin log ${this.pluginLog} is a symlink`);
+            }
+            throw caught;
+        }
+        try {
+            const st = fstatSync(fd);
+            if (!st.isFile() || st.nlink !== 1) {
+                throw new HarnessFailure(
+                    `plugin log ${this.pluginLog} is not a single-link regular file`,
+                );
+            }
             const chunk = Buffer.alloc(LOG_CHUNK_BYTES);
             let carry = "";
             let position = mark;
             for (;;) {
-                const n = readSync(fd, chunk, 0, chunk.length, position);
+                const n =
+                    position >= st.size
+                        ? 0
+                        : readSync(
+                              fd,
+                              chunk,
+                              0,
+                              Math.min(chunk.length, st.size - position),
+                              position,
+                          );
                 if (n === 0) return SERVED_PASS.test(carry);
                 position += n;
                 const text = carry + chunk.subarray(0, n).toString("utf8");

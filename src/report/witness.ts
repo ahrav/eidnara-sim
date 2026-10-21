@@ -220,13 +220,11 @@ const CHECKS: Record<string, Check> = {
                 if (r.kind !== "divergedAt") return;
                 const own = turnOf(r.arm, r.event);
                 const rows = c.recorded.get(`${r.arm}/${r.event}`) ?? [];
-                const cited =
-                    rows.find(
-                        (x) =>
-                            x.digest === r.reference_digest &&
-                            (r.recorded_context_sha256 === undefined ||
-                                x.context === r.recorded_context_sha256),
-                    ) ?? rows[0];
+                // The record cites one source row: its digest and its context both match.
+                const cited = rows.find(
+                    (x) =>
+                        x.digest === r.reference_digest && x.context === r.recorded_context_sha256,
+                );
                 const other =
                     r.against === "reference"
                         ? turnOf(reference(r.arm), r.event)?.digest
@@ -240,7 +238,7 @@ const CHECKS: Record<string, Check> = {
                 );
                 if (turn >= 0 && turn < i) bad.push(`${r.arm} ${r.event}`);
                 if (r.against === "recorded" && other === undefined)
-                    bad.push(`${r.arm} ${r.event} has no source digest to compare with`);
+                    bad.push(`${r.arm} ${r.event} cites no source row with its digest and context`);
                 else if (own.digest !== r.digest || other !== r.reference_digest)
                     bad.push(`${r.arm} ${r.event} hashes differ from its turns'`);
             });
