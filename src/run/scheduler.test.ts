@@ -2807,7 +2807,7 @@ describe("Scheduler", () => {
     test("journals with a BeginTurn while a job is open or before its schedule are refused, and a driver's non-object fault evidence fails the run", async () => {
         const events = fixtureEvents(1);
         const [e0, e1] = events.map((e) => e.id) as [string, string];
-        const open = (lines: Partial<Entry>[], turnsAwaitJobs = false) => {
+        const open = (lines: Partial<Entry>[], turnsAwaitJobs = false, schedule = events) => {
             const path = join(dir(), "j.jsonl");
             const j = new Journal(path);
             j.append({
@@ -2815,13 +2815,13 @@ describe("Scheduler", () => {
                 arm: null,
                 scenario_ms: 0,
                 order: ["a"],
-                scenario: scenarioId(events, []),
+                scenario: scenarioId(schedule, []),
             });
             j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
             for (const l of lines) j.append({ arm: "a", scenario_ms: 0, ...l } as never);
             j.close();
             return new Scheduler({
-                events,
+                events: schedule,
                 faults: [],
                 journal: new Journal(path),
                 settleMs: 0,
@@ -2834,12 +2834,22 @@ describe("Scheduler", () => {
         await expect(
             open([ev, { kind: "RegisterJob", job: "j" }, { kind: "BeginTurn", event: e1 }], true),
         ).rejects.toThrow(/BeginTurn for e-000001 while job j is open/);
-        await expect(
-            open([
-                { kind: "RegisterJob", job: "j" },
-                { kind: "BeginTurn", event: e1 },
-            ]),
-        ).rejects.toThrow(/BeginTurn for e-000001 is not due/);
+        // A turn in the open session may begin beside a running job; one whose session is not
+        // the open one may not.
+        const beside: Partial<Entry>[] = [
+            ev,
+            { kind: "RegisterJob", job: "j" },
+            { kind: "BeginTurn", event: e1 },
+        ];
+        const accepted = await open(beside).then(
+            () => null,
+            (caught: unknown) => caught,
+        );
+        expect(String(accepted)).not.toMatch(/while job j is open/);
+        const elsewhere = events.map((e) => (e.id === e0 ? e : { ...e, session: "s-0001" }));
+        await expect(open(beside, false, elsewhere)).rejects.toThrow(
+            /BeginTurn for e-000001 while job j is open/,
+        );
         const late = fixtureEvents(1).map((e) =>
             e.kind === "user_turn" ? { ...e, scenario_ms: 500 } : e,
         );
@@ -6781,5 +6791,65 @@ describe("user turns at their scheduled time", () => {
     test("turnsAwaitJobs makes every turn wait for the busy set to empty", async () => {
         const order = await run(true);
         expect(order.end).toBeLessThan(order.begin);
+    });
+
+    test("a turn with a fault due waits for the busy set, so the fault never cuts background work", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const restart = episode("t", "daemon_restart", {
+            kind: "user_turn",
+            session: "s-0000",
+            n: 2,
+        });
+        const driver = fakeDriver([], 0, (e) => {
+            if (e.kind === "user_turn" && e.index === 0) {
+                driver.arm().jobStart("summary");
+                setTimeout(() => driver.arm().jobEnd("summary"), 300);
+            }
+        });
+        await new Scheduler({
+            events: events.map((e) => (e.id === "e-000002" ? { ...e, scenario_ms: 50 } : e)),
+            faults: [restart],
+            journal: j,
+            settleMs: 0,
+            jobPollMs: 5,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        const at = (pred: (e: Entry) => boolean) => j.entries.findIndex(pred);
+        const end = at((e) => e.kind === "EndJob" && e.job === "summary");
+        expect(end).toBeLessThan(at((e) => e.kind === "FaultFired"));
+        expect(end).toBeLessThan(at((e) => e.kind === "BeginTurn" && e.event === "e-000002"));
+    });
+
+    test("a job past its deadline is refused when a later turn would start on schedule", async () => {
+        const late: ScenarioEvent[] = events.map((e) =>
+            e.id === "e-000002" ? { ...e, scenario_ms: 350 } : e,
+        );
+        const driver = fakeDriver([], 0, async (e) => {
+            if (e.kind === "user_turn" && e.index === 0) {
+                driver.arm().jobStart("summary");
+                // The job outlives the refused arm, whose handle then refuses the late end.
+                setTimeout(() => {
+                    try {
+                        driver.arm().jobEnd("summary");
+                    } catch {}
+                }, 700);
+                await Bun.sleep(300);
+            }
+            if (e.kind === "user_turn" && e.index === 1) await Bun.sleep(500);
+        });
+        await expect(
+            new Scheduler({
+                events: late,
+                faults: [],
+                journal: new Journal(join(dir(), "j.jsonl")),
+                settleMs: 0,
+                jobPollMs: 5,
+                idleLimitMs: 200,
+                order: ["a"],
+                drivers: { a: driver },
+            }).run(),
+        ).rejects.toThrow(/past 200 ms: job:summary/);
+        await Bun.sleep(500);
     });
 });

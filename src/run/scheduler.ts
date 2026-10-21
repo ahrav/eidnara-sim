@@ -1319,29 +1319,43 @@ export class Scheduler {
     }
 
     /**
-     * A user turn in the session already open waits only for the clock, which runs at wall
-     * speed while background work holds it, to reach the turn's scheduled time, and for a
-     * pending mid-fold kill; background work keeps running into the turn. Every other event
-     * waits for the busy set to empty.
+     * A user turn in the session already open, with no fault due at it, waits only for the
+     * clock, which runs at wall speed while background work holds it, to reach the turn's
+     * scheduled time, and for every pending mid-fold kill; background work keeps running into
+     * the turn. Each job's deadline still counts from its `RegisterJob`, as in `idle()`. Every
+     * other event, a turn whose fault is due included, waits for the busy set to empty, so a
+     * fault's mechanism never cuts the preceding turn's background work.
      */
     private async awaitDue(e: ScenarioEvent): Promise<void> {
         const concurrent =
-            !this.o.turnsAwaitJobs && e.kind === "user_turn" && this.session === e.session;
+            !this.o.turnsAwaitJobs &&
+            e.kind === "user_turn" &&
+            this.session === e.session &&
+            this.faultsAt(e).length === 0;
         if (!concurrent) return this.quiesce();
         const limitMs = this.o.idleLimitMs ?? Number.POSITIVE_INFINITY;
         const entered = performance.now();
         for (;;) {
-            await this.pendingKill;
+            // A kill that starts while an earlier one runs is awaited too, so the turn opens
+            // with every outage window closed by its own mechanism.
+            let kill: Promise<unknown> | null;
+            do {
+                kill = this.pendingKill;
+                await kill;
+            } while (kill !== this.pendingKill);
             if (this.fatal) throw this.fatal;
             this.checkStop();
             const clock = this.clock as Clock;
             const busy = clock.busyIds();
-            if (busy.length === 0 || clock.now() >= e.scenario_ms) return;
-            if (performance.now() > entered + limitMs) {
+            const live = busy.map((id) =>
+                id.startsWith("job:") ? (this.jobStarted.get(id.slice(4)) ?? entered) : entered,
+            );
+            if (busy.length > 0 && performance.now() > Math.min(...live) + limitMs) {
                 throw new HarnessFailure(
                     `busy set held the clock past ${this.o.idleLimitMs} ms: ${busy.join(", ")}`,
                 );
             }
+            if (busy.length === 0 || clock.now() >= e.scenario_ms) return;
             await Bun.sleep(this.o.jobPollMs ?? 50);
         }
     }
