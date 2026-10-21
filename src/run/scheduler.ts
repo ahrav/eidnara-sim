@@ -541,6 +541,11 @@ export class Scheduler {
         let clockMs = 0;
         let session: string | null = null;
         const scheduled = this.o.faults.filter((f) => f.trigger.kind !== "first_summarizer_call");
+        const holdsClock = new Set<unknown>(
+            this.o.faults
+                .filter((f) => f.seam.layer !== PROXY_LAYER && f.type !== "laptop_sleep")
+                .map((f) => f.id),
+        );
         entries.forEach((e, i) => {
             if (e.kind === "StartRun" || e.kind === "ResumeRun" || e.kind === "EndRun") {
                 if (e.arm !== null || e.scenario_ms !== 0) {
@@ -593,7 +598,16 @@ export class Scheduler {
             if (open === null || e.arm !== open) {
                 throw fail(`${e.kind} for arm ${e.arm} outside its arm`, e);
             }
-            const busy = [...begun].some((t) => !ended.has(t)) || [...jobs].some(([, n]) => n > 0);
+            // A fired fault's mechanism holds the clock as a turn does, from its `FaultFired`
+            // until its `FaultObserved` or interruption marker; proxy faults and laptop sleeps
+            // have no mechanism here, so they hold nothing.
+            const holding = [...fired].some(
+                (id) => !observed.has(id) && !marked.has(id) && holdsClock.has(id),
+            );
+            const busy =
+                holding ||
+                [...begun].some((t) => !ended.has(t)) ||
+                [...jobs].some(([, n]) => n > 0);
             if (e.kind !== "AdvanceClock") {
                 if (busy ? e.scenario_ms < clockMs : e.scenario_ms !== clockMs) {
                     throw fail(`${e.kind} is stamped away from the replayed clock`, e);
