@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import {
     existsSync,
     linkSync,
@@ -36,6 +36,7 @@ import {
     requireOutsideIdentity,
     requirePinnedPath,
     requirePlainArtifacts,
+    runIdentity,
     runSteps,
     treeIdentity,
     withUserTurns,
@@ -118,6 +119,11 @@ describe("teardown", () => {
 });
 
 describe("run inputs", () => {
+    // The run identity hashes the node and git binaries, over 100 MB, so the first one a fresh
+    // CI runner computes reads them from a cold page cache and takes seconds. Computing it once
+    // here leaves each manifest test only the warm cost its own timeout is sized for.
+    beforeAll(() => void runIdentity(config, loadPrereg("S"), []), { timeout: 60_000 });
+
     test("an output directory inside the Eidnara checkout, directly or via a symlink, is refused", () => {
         const root = dir();
         const checkout = join(root, "eidnara");
