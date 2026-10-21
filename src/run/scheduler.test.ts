@@ -6871,6 +6871,32 @@ describe("user turns at their scheduled time", () => {
         expect(begin).toBeLessThan(at((e) => e.kind === "EndJob" && e.job === "summary"));
     });
 
+    test("a job that crosses its deadline while a later turn runs beside it stops the run", async () => {
+        const late: ScenarioEvent[] = events.map((e) =>
+            e.id === "e-000002" ? { ...e, scenario_ms: 100 } : e,
+        );
+        const driver = fakeDriver([], 0, async (e) => {
+            if (e.kind === "user_turn" && e.index === 0) {
+                driver.arm().jobStart("summary");
+                setTimeout(() => driver.arm().jobEnd("summary"), 260);
+            }
+            if (e.kind === "user_turn" && e.index === 1) await Bun.sleep(300);
+        });
+        await expect(
+            new Scheduler({
+                events: late,
+                faults: [],
+                journal: new Journal(join(dir(), "j.jsonl")),
+                settleMs: 0,
+                jobPollMs: 5,
+                idleLimitMs: 200,
+                order: ["a"],
+                drivers: { a: driver },
+            }).run(),
+        ).rejects.toThrow(/past 200 ms: job:summary/);
+        await Bun.sleep(100);
+    });
+
     test("a job past its deadline is refused when a later turn would start on schedule", async () => {
         const late: ScenarioEvent[] = events.map((e) =>
             e.id === "e-000002" ? { ...e, scenario_ms: 350 } : e,

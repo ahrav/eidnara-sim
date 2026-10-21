@@ -1563,9 +1563,19 @@ export class Scheduler {
                     clock.end(`job:${id}`);
                     throw caught;
                 }
+                const started = this.jobStarted.get(id);
                 this.jobStarted.delete(id);
                 clock.end(`job:${id}`, ended.scenario_ms);
                 this.jobActivity++;
+                // A job can end while a later turn runs beside it, where no wait watches its
+                // deadline; one that ends past it stops the run as a wait would have.
+                const limitMs = this.o.idleLimitMs ?? Number.POSITIVE_INFINITY;
+                if (started !== undefined && performance.now() > started + limitMs) {
+                    this.fatal ??= new HarnessFailure(
+                        `busy set held the clock past ${this.o.idleLimitMs} ms: job:${id}`,
+                    );
+                    this.fail?.(this.fatal);
+                }
             },
             observe: (component) => {
                 live();
