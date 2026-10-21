@@ -133,15 +133,25 @@ const refuse = (why: string): never => {
     console.error(`${why}\n${USAGE}`);
     return exit(2);
 };
-process.on("uncaughtException", (caught) => {
-    console.error(caught);
-    exit(1);
-});
-process.on("unhandledRejection", (caught) => {
-    console.error(caught);
-    exit(1);
-});
 let stopChildren: ((signal: NodeJS.Signals) => Promise<void>) | null = null;
+// A fatal error stops the detached run and grading children before the lease is released, so
+// no child writes a run directory after the campaign directory reads as free; a second error
+// during that stop leaves the first one's shutdown to finish.
+let dying = false;
+const fatal = (caught: unknown) => {
+    console.error(caught);
+    if (dying) return;
+    dying = true;
+    void (async () => {
+        try {
+            await stopChildren?.("SIGTERM");
+        } finally {
+            exit(1);
+        }
+    })();
+};
+process.on("uncaughtException", fatal);
+process.on("unhandledRejection", fatal);
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     process.on(signal, async () => {
         await stopChildren?.(signal);

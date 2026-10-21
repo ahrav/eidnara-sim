@@ -260,7 +260,7 @@ export function requireOutsideIdentity(out: string, root = ROOT): void {
         throw new HarnessFailure(`--out ${out} overlaps the corpus checkouts under ${repos}`);
     }
     if (within(target, real)) {
-        const r = Bun.spawnSync(["git", "-C", real, "check-ignore", "-q", target]);
+        const r = Bun.spawnSync([GIT, "-C", real, "check-ignore", "-q", target]);
         if (r.exitCode !== 0) {
             throw new HarnessFailure(`--out ${out} is inside this checkout and not ignored by git`);
         }

@@ -5,17 +5,20 @@ import {
     constants,
     copyFileSync,
     existsSync,
+    fstatSync,
     lstatSync,
     mkdirSync,
     openSync,
     readdirSync,
     readFileSync,
+    readlinkSync,
     readSync,
     realpathSync,
     renameSync,
     rmSync,
     statSync,
     writeFileSync,
+    writeSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { GitBound, git } from "../git";
@@ -127,6 +130,50 @@ function writeWhole(path: string, text: string): void {
     rmSync(staged, { force: true });
     writeFileSync(staged, text, { flag: "wx" });
     renameSync(staged, path);
+}
+
+/**
+ * Copies one final store file from `within/name` to `to`. The store tree is the evaluated
+ * host's to write, so the source opens without following a link, and the opened file must be a
+ * single-link regular file whose kernel path is `within/name`; the destination is created
+ * exclusively without following a link. An absent source copies nothing.
+ */
+function archiveStoreFile(within: string, name: string, to: string): void {
+    const from = join(within, name);
+    const { O_EXCL, O_CREAT, O_NOFOLLOW, O_NONBLOCK, O_RDONLY, O_WRONLY } = constants;
+    let source: number;
+    try {
+        source = openSync(from, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+    } catch (caught) {
+        const code = (caught as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTDIR") return;
+        if (code === "ELOOP") throw new HarnessFailure(`final store file ${from} is a symlink`);
+        throw caught;
+    }
+    try {
+        const st = fstatSync(source);
+        if (!st.isFile() || st.nlink !== 1) {
+            throw new HarnessFailure(`final store file ${from} is not a single-link regular file`);
+        }
+        const opened = readlinkSync(`/proc/self/fd/${source}`);
+        if (opened !== from) {
+            throw new HarnessFailure(`final store file ${from} resolves to ${opened}`);
+        }
+        const target = openSync(to, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o644);
+        try {
+            const buf = Buffer.alloc(1 << 20);
+            for (let at = 0; ; ) {
+                const n = readSync(source, buf, 0, buf.length, at);
+                if (n === 0) break;
+                for (let done = 0; done < n; ) done += writeSync(target, buf, done, n - done);
+                at += n;
+            }
+        } finally {
+            closeSync(target);
+        }
+    } finally {
+        closeSync(source);
+    }
 }
 
 /** `path` resolves to `parent/name` through real directories only; a planted symlink stops the run. */
@@ -1564,16 +1611,19 @@ export class HostDriver implements ArmDriver {
                 writeWhole(join(this.armDir, "memory.json"), `${JSON.stringify(notes)}\n`);
                 // Eidnara keeps its memories in the Kernel registry; the stopped daemon's stores
                 // are kept beside the arm, since the loop-mounted store is unmounted next.
+                // A fresh directory replaces any earlier archive, a planted link included, so
+                // the copies land only inside the arm directory.
                 const kept = join(this.armDir, "final-store");
-                mkdirSync(kept, { recursive: true });
-                const context = dirname(this.storeDb);
-                for (const [from, to] of [
-                    [this.storeDb, "store.db"],
-                    [join(context, "kernel", "kernel.sqlite"), "kernel.sqlite"],
-                ] as const) {
-                    for (const suffix of ["", "-wal", "-shm"]) {
-                        if (existsSync(from + suffix)) {
-                            copyFileSync(from + suffix, join(kept, to + suffix));
+                rmSync(kept, { recursive: true, force: true });
+                mkdirSync(kept, { mode: 0o700 });
+                if (existsSync(this.dataDir)) {
+                    const context = join(realpathSync(this.dataDir), "eidnara", "context");
+                    for (const [within, name] of [
+                        [context, "store.db"],
+                        [join(context, "kernel"), "kernel.sqlite"],
+                    ] as const) {
+                        for (const suffix of ["", "-wal", "-shm"]) {
+                            archiveStoreFile(within, name + suffix, join(kept, name + suffix));
                         }
                     }
                 }

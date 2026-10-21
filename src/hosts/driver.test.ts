@@ -1839,6 +1839,34 @@ describe("HostDriver faults", () => {
         );
     });
 
+    test("the final store archive replaces a planted final-store link and copies only the store's own files", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        mkdirSync(dirname(driver.storeDb), { recursive: true });
+        new Database(driver.storeDb).run(SEGMENTS_DDL);
+        const outside = tmp();
+        writeFileSync(join(outside, "store.db"), "untouched\n");
+        mkdirSync(armDir, { recursive: true });
+        symlinkSync(outside, join(armDir, "final-store"));
+        await driver.finish();
+        expect(readFileSync(join(outside, "store.db"), "utf8")).toBe("untouched\n");
+        const kept = join(armDir, "final-store");
+        expect(lstatSync(kept).isDirectory()).toBe(true);
+        expect(readFileSync(join(kept, "store.db"))).toEqual(readFileSync(driver.storeDb));
+    });
+
+    test("a final store file the host replaced with a link is refused, and nothing is copied through it", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
+        mkdirSync(dirname(driver.storeDb), { recursive: true });
+        new Database(driver.storeDb).run(SEGMENTS_DDL);
+        const secret = join(tmp(), "secret");
+        writeFileSync(secret, "harness only\n");
+        symlinkSync(secret, `${driver.storeDb}-shm`);
+        await expect(driver.finish()).rejects.toThrow(/is a symlink/);
+        expect(existsSync(join(armDir, "final-store", "store.db-shm"))).toBe(false);
+    });
+
     test("finish stops the daemon and writes the final store check", async () => {
         const { driver } = fixture("eidnara");
         const daemon = fakeDaemon(PID + 10);

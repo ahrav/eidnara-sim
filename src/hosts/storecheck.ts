@@ -151,10 +151,16 @@ export function parseStoreCheck(value: unknown, where: string): StoreCheck {
     if (identities.size !== bounds.length) {
         throw new Error(`${where}: store check lists a segment identity twice`);
     }
+    // The integrity text opens with the pragma's non-empty result and lists exactly the
+    // inverted ranges the recorded ranges derive.
     const derived = derive(bounds);
+    const parts = check.integrity.split("; ");
+    const claimed = parts.filter((part) => part.startsWith("inverted range "));
     const agrees =
+        (parts[0] ?? "") !== "" &&
+        !(parts[0] as string).startsWith("inverted range ") &&
         JSON.stringify(derived.overlaps) === JSON.stringify(check.overlaps) &&
-        derived.inverted.every((note) => check.integrity.split("; ").includes(note));
+        JSON.stringify(claimed) === JSON.stringify(derived.inverted);
     if (!agrees) throw new Error(`${where}: store check disagrees with its own ranges`);
     return check;
 }
