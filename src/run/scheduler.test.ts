@@ -2807,7 +2807,12 @@ describe("Scheduler", () => {
     test("journals with a BeginTurn while a job is open or before its schedule are refused, and a driver's non-object fault evidence fails the run", async () => {
         const events = fixtureEvents(1);
         const [e0, e1] = events.map((e) => e.id) as [string, string];
-        const open = (lines: Partial<Entry>[], turnsAwaitJobs = false, schedule = events) => {
+        const open = (
+            lines: Partial<Entry>[],
+            turnsAwaitJobs = false,
+            schedule = events,
+            faults: FaultEpisode[] = [],
+        ) => {
             const path = join(dir(), "j.jsonl");
             const j = new Journal(path);
             j.append({
@@ -2815,14 +2820,14 @@ describe("Scheduler", () => {
                 arm: null,
                 scenario_ms: 0,
                 order: ["a"],
-                scenario: scenarioId(schedule, []),
+                scenario: scenarioId(schedule, faults),
             });
             j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
             for (const l of lines) j.append({ arm: "a", scenario_ms: 0, ...l } as never);
             j.close();
             return new Scheduler({
                 events: schedule,
-                faults: [],
+                faults,
                 journal: new Journal(path),
                 settleMs: 0,
                 order: ["a"],
@@ -2848,6 +2853,14 @@ describe("Scheduler", () => {
         expect(String(accepted)).not.toMatch(/while job j is open/);
         const elsewhere = events.map((e) => (e.id === e0 ? e : { ...e, session: "s-0001" }));
         await expect(open(beside, false, elsewhere)).rejects.toThrow(
+            /BeginTurn for e-000001 while job j is open/,
+        );
+        const keyed = episode("t", "daemon_restart", {
+            kind: "user_turn",
+            session: "s-0000",
+            n: 1,
+        });
+        await expect(open(beside, false, events, [keyed])).rejects.toThrow(
             /BeginTurn for e-000001 while job j is open/,
         );
         const late = fixtureEvents(1).map((e) =>
@@ -6819,6 +6832,43 @@ describe("user turns at their scheduled time", () => {
         const end = at((e) => e.kind === "EndJob" && e.job === "summary");
         expect(end).toBeLessThan(at((e) => e.kind === "FaultFired"));
         expect(end).toBeLessThan(at((e) => e.kind === "BeginTurn" && e.event === "e-000002"));
+    });
+
+    test("a mid-fold kill that starts while the turn is prepared ends before the turn opens", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const kill = episode("k", "daemon_sigkill_mid_fold", {
+            kind: "first_summarizer_call",
+            session: "s-0000",
+        });
+        const inner = fakeDriver([], 0, (e) => {
+            if (e.kind === "user_turn" && e.index === 0) {
+                inner.arm().jobStart("summary");
+                setTimeout(() => inner.arm().jobEnd("summary"), 600);
+            }
+        });
+        const driver: ArmDriver = {
+            ...inner,
+            prepare: async (e) => {
+                if (e.id === "e-000002") inner.arm().observe("history_summarizer");
+            },
+            fault: async () => {
+                await Bun.sleep(80);
+                return { killed: true };
+            },
+        };
+        await new Scheduler({
+            events,
+            faults: [kill],
+            journal: j,
+            settleMs: 0,
+            jobPollMs: 5,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        const at = (pred: (e: Entry) => boolean) => j.entries.findIndex(pred);
+        const begin = at((e) => e.kind === "BeginTurn" && e.event === "e-000002");
+        expect(at((e) => e.kind === "FaultObserved")).toBeLessThan(begin);
+        expect(begin).toBeLessThan(at((e) => e.kind === "EndJob" && e.job === "summary"));
     });
 
     test("a job past its deadline is refused when a later turn would start on schedule", async () => {

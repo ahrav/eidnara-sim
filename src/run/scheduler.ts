@@ -686,7 +686,14 @@ export class Scheduler {
                     }
                     const working = [...jobs].find(([, n]) => n > 0);
                     const openSession = due.session === session;
-                    if (working !== undefined && (this.o.turnsAwaitJobs || !openSession)) {
+                    // A turn with a fault keyed to it waits for the busy set, as the runtime does.
+                    const keyed = scheduled.some(
+                        (f) =>
+                            f.trigger.kind === "user_turn" &&
+                            f.trigger.session === due.session &&
+                            f.trigger.n === (due.index ?? -1) + 1,
+                    );
+                    if (working !== undefined && (this.o.turnsAwaitJobs || !openSession || keyed)) {
                         throw fail(`BeginTurn for ${e.event} while job ${working[0]} is open`, e);
                     }
                     for (const f of scheduled) {
@@ -1336,14 +1343,7 @@ export class Scheduler {
         const limitMs = this.o.idleLimitMs ?? Number.POSITIVE_INFINITY;
         const entered = performance.now();
         for (;;) {
-            // A kill that starts while an earlier one runs is awaited too, so the turn opens
-            // with every outage window closed by its own mechanism.
-            let kill: Promise<unknown> | null;
-            do {
-                kill = this.pendingKill;
-                await kill;
-            } while (kill !== this.pendingKill);
-            if (this.fatal) throw this.fatal;
+            await this.settleKills();
             this.checkStop();
             const clock = this.clock as Clock;
             const busy = clock.busyIds();
@@ -1358,6 +1358,19 @@ export class Scheduler {
             if (busy.length === 0 || clock.now() >= e.scenario_ms) return;
             await Bun.sleep(this.o.jobPollMs ?? 50);
         }
+    }
+
+    /**
+     * Waits until no mid-fold kill is pending, a kill that starts while an earlier one runs
+     * included, so whatever follows opens with every outage window closed by its own mechanism.
+     */
+    private async settleKills(): Promise<void> {
+        let kill: Promise<unknown> | null;
+        do {
+            kill = this.pendingKill;
+            await kill;
+        } while (kill !== this.pendingKill);
+        if (this.fatal) throw this.fatal;
     }
 
     private async step(driver: ArmDriver, e: ScenarioEvent): Promise<void> {
@@ -1437,6 +1450,9 @@ export class Scheduler {
         };
         let outcome: TurnOutcome;
         if (e.kind === "user_turn") {
+            // Background work running into the turn can start a mid-fold kill while the
+            // preparation runs; the turn opens only after it, with no yield in between.
+            await this.settleKills();
             const turn = `turn:${e.id}`;
             this.log({ kind: "BeginTurn", event: e.id, probe: e.probe ?? null });
             clock.begin(turn);

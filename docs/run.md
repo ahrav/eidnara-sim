@@ -145,7 +145,8 @@ call through it is refused:
    running into the turn, as a real user replies at their own pace while the
    host summarizes or captures in the background, and each job's deadline
    still counts from its `RegisterJob`, so a job past it stops the run at the
-   next turn. Every other event, a turn with a fault due included (so a
+   next turn. A mid-fold kill that starts while the turn is prepared ends
+   before the turn's `BeginTurn`. Every other event, a turn with a fault due included (so a
    fault's mechanism never cuts the preceding turn's background work), and every user turn under
    `turnsAwaitJobs` (`--turns-await-jobs true`, recorded in the manifest),
    waits until no mid-fold kill is pending and the busy set is empty at the
@@ -276,7 +277,7 @@ non-array evidence object, a daemon exit without an object detail, a
 session-start or user-turn trigger whose fault neither fired nor was missed,
 a `BeginTurn` for a turn other than the one due, repeated for one turn,
 timestamped before its schedule, while a job is open when the turn opens no
-running session or the run sets `turnsAwaitJobs`, before a fault keyed to
+running session, has a fault keyed to it, or the run sets `turnsAwaitJobs`, before a fault keyed to
 that turn fired, or while such a scheduler fault is unresolved, a second
 `EndTurn` for a turn, an `Event` while a fired scheduler fault is still unobserved and
 unmarked, an interruption marker that closes no open turn
