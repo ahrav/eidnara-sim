@@ -15,8 +15,22 @@ v2 harness before any harness code existed.
 enabled, and at least one `native_compaction` call record exists in a p90
 session.
 
-No harness code, test, or run exists yet. The surface lands in M8
-(#1034).
+`src/hosts/profiles.ts` declares `eidnara-kl` with host compaction on and
+Eidnara compaction off; `src/hosts/arms.ts` writes Pi's `compaction.enabled`,
+OpenCode's `compaction.auto` and `compaction.prune`, and the user-tier
+`eidnara.jsonc` `compaction.enabled` from that profile. Runs before this
+profile wrote no Eidnara `compaction.enabled`: on OpenCode the plugin logged
+`disabled due to conflicts: OpenCode auto-compaction is enabled` at every
+session start (`smr/tier-S/S-101-opencode/eidnara-kl/r/eidnara.log`, 10
+lines), and on Pi each boot registered the transform
+(`smr/tier-S/S-101-pi/eidnara-kl`, 9 boots).
+
+`src/run/capabilities.ts` checks the arm's evidence: each session's plugin
+boots at its `session_end`, and before `EndArm` the transform passes and the
+arm's `history_summarizer` calls. The Pi smoke runs `smoke-s1/b-eidnara-kl`
+and `smoke-s1/c-eidnara-kl` (S seed 101, 9 events) show 3 boots in
+compaction-off mode, no transform pass, and memory capture calls. No check
+asserts a `native_compaction` record in a p90 session.
 
 ## Failure scenario
 

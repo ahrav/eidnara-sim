@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
     appendFileSync,
+    linkSync,
     mkdirSync,
     mkdtempSync,
     rmSync,
@@ -210,4 +211,22 @@ describe("audited daemon capabilities", () => {
             /direct-host-fixture capabilities were read at .*crates\/daemon\/examples\/direct_host_fixture.rs changed since/,
         );
     });
+});
+
+test("a transcript directory the agent replaced with a link is refused rather than walked", () => {
+    const root = armRoot([PI_ON, PASS], [LEGACY]);
+    const outside = join(tmp(), "outside");
+    mkdirSync(join(outside, "--ws--"), { recursive: true });
+    writeFileSync(join(outside, "--ws--", "x.jsonl"), "");
+    rmSync(join(root, "home/.pi/agent/sessions"), { recursive: true });
+    symlinkSync(outside, join(root, "home/.pi/agent/sessions"));
+    expect(() => observeArm("eidnara", "pi", root, { agent: 1 })).toThrow(
+        /link or not a directory/,
+    );
+});
+
+test("a hard-linked plugin log is refused rather than read", () => {
+    const root = armRoot([PI_ON]);
+    linkSync(join(root, "eidnara.log"), join(root, "second-name"));
+    expect(() => readPluginLog(join(root, "eidnara.log"))).toThrow(/single-link regular file/);
 });

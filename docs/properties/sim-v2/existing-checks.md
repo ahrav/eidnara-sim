@@ -1,7 +1,8 @@
 # Existing checks: world simulation v2
 
 The checks in this tree that exercise a v2 harness surface are listed in
-the M0, M5, and M7 tables below; the rest of the surface has none yet. The v1
+the M0, M5, M7, and arm-capability tables below; the rest of the surface has
+none yet. The v1
 harness in the eidnara repository (`packages/e2e-tests/src/ab-eval/`, read
 at `bb866266c`) holds the closest prior art. Each analog is `unaudited`; none
 removes a record, and none checks a v2 obligation as written.
@@ -39,5 +40,12 @@ Checks in this tree that enforce records at M7:
 | `src/stats/gate.test.ts`: a CUSUM stop records kind, signal index, and window, and withholds the pass | SIM-P55 | unaudited |
 | `src/stats/gate.test.ts`: `insufficient-runs(k)` below the family's registered floor | SIM-P56 | unaudited |
 | `src/stats/gate.test.ts`: `memory_made_it_worse` names the Holm-adjusted `worse` harm metrics | SIM-P58 | unaudited |
+
+Checks in this tree that enforce arm capabilities (Workstream A S1):
+
+| Check | Records | Status |
+| --- | --- | --- |
+| `src/run/capabilities.ts` `bootMismatches` (each `session_end`) and `armMismatches` (before `EndArm`): `eidnara-kl` plugin boots in compaction-off mode, no transform pass, no history summarizer call | SIM-P76 | unaudited |
+| `src/hosts/arms.test.ts`: Pi and OpenCode `eidnara-kl` write host compaction on and Eidnara `compaction.enabled=false` | SIM-P76 | unaudited |
 
 None found: user-sim, tape, clock, and counterfactual checks.

@@ -73,7 +73,7 @@ fault and preflight files, `tape.jsonl`, `pairing.jsonl`, `downstream.jsonl`, th
 scenario, and the manifest, and each arm's `resources.jsonl`, clock offset,
 `state.json`, `daemon.log`, `store.img`, `transcripts.json`, and the snapshot
 and store-check files (`snapshots.jsonl`, `tools.jsonl`, `commands.jsonl`,
-`store-check.json`, `memory.json`), plus this
+`store-check.json`, `memory.json`), `capabilities.json`, plus this
 process's staging names for the clock offset and `state.json`) must be absent
 or a regular file with a single link; a `lease.<pid>.tmp` left by a dead
 acquirer is removed first, so a crash between link and unlink stays resumable
@@ -172,8 +172,8 @@ toolchain wrappers are created exclusively after removing any planted name.
    repeated, an arm's second `UserSimRates`, a `StartArm` out of the manifest's order,
    an `Event` recorded before its scheduled time, a `StartArm` while the
    previous arm is open, any entry after `EndRun`, or
-   a row whose `seq` or `scenario_ms` is not a number), when any of those digests or a replay
-   tape's digest (`tape_sha256`) changed, when an
+   a row whose `seq` or `scenario_ms` is not a number), when any of those digests, a replay
+   tape's digest (`tape_sha256`), or an arm's recorded configuration (`arms`) changed, when an
    interception result, probed path, or toolchain version
    changed, when a probed host version or install path (current or
    `config.upgrade`) changed, or when the selected host's version or transcript

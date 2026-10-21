@@ -69,7 +69,10 @@ export function eachLine(path: string, onLine: (line: string) => void, from = 0)
         throw new Error(`${path} cannot be read as evidence: ${(caught as Error).message}`);
     }
     try {
-        if (!fstatSync(fd).isFile()) throw new Error(`${path} is not a regular file`);
+        const st = fstatSync(fd);
+        if (!st.isFile() || st.nlink !== 1) {
+            throw new Error(`${path} is not a single-link regular file`);
+        }
         const buf = Buffer.alloc(CHUNK);
         let pending: Buffer[] = [];
         let pendingBytes = 0;
@@ -160,9 +163,24 @@ export function readPluginLog(
 const FALLBACK =
     /the fused search route is unavailable \(([^)]*)\); results come from the legacy snapshot scan/;
 
-/** The `eidnara_search` results in Pi's session transcripts under `sessionsDir`, by answering route. */
-export function readPiSearches(sessionsDir: string): NonNullable<ArmObservation["search"]> {
+/**
+ * The `eidnara_search` results in Pi's session transcripts under `root/rel`, by answering route.
+ * The agent can write below `root`, so every component of `rel` must be a real directory, and the
+ * walk enters only real subdirectories; an absent directory holds no results.
+ */
+export function readPiSearches(root: string, rel: string): NonNullable<ArmObservation["search"]> {
     const search = { legacy_scan: [] as string[], fused: 0, errored: 0 };
+    let sessionsDir = root;
+    for (const part of rel.split("/")) {
+        sessionsDir = join(sessionsDir, part);
+        const stat = lstatSync(sessionsDir, { throwIfNoEntry: false });
+        if (stat === undefined) return search;
+        if (!stat.isDirectory()) {
+            throw new Error(
+                `${sessionsDir} is a link or not a directory; transcripts need a real one`,
+            );
+        }
+    }
     const walk = (dir: string, depth: number) => {
         let names: string[];
         try {
@@ -222,7 +240,7 @@ export function observeArm(
         arm,
         host,
         ...readPluginLog(join(armRoot, "eidnara.log")),
-        search: host === "pi" ? readPiSearches(join(armRoot, "home/.pi/agent/sessions")) : null,
+        search: host === "pi" ? readPiSearches(armRoot, "home/.pi/agent/sessions") : null,
         components: { ...components },
     };
 }
@@ -325,7 +343,8 @@ export function requireAuditedVariants(
     }
     for (const variant of variants) {
         const { sources } = DAEMON_VARIANTS[variant];
-        const diff = git(["diff", "--name-only", audited, "HEAD", "--", ...sources]);
+        // Against the working tree, so an uncommitted edit to a source counts as a change too.
+        const diff = git(["diff", "--name-only", audited, "--", ...sources]);
         const changed = diff.stdout.toString().trim();
         if (diff.exitCode !== 0 || changed !== "") {
             throw new Error(
