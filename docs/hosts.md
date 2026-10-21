@@ -96,7 +96,8 @@ complete evidence only when the two agree:
   no boot. A mismatch fails the event, so the journal records it fatal and a
   resume refuses the run.
 - Before `EndArm`, once the arm's finish and every job it started have
-  ended, the run writes
+  ended, a session still open when the arm ended (an `--events` prefix can
+  stop inside one) gets the same boot check, and the run writes
   `<arm>/capabilities.json`: the profile, the observed boots, the number of
   `served_from=transform` passes, the routes Pi's transcripts show each
   `eidnara_search` result came from (the legacy scan when the result carries

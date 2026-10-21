@@ -318,7 +318,7 @@ export function runOracles(run: RunLogs): Activation[] {
         const overflow = f1(arm);
         const agentOverflow = overflow.filter((a) => (a.component ?? "agent") === "agent");
         const f9 =
-            !armProfile(arm.arm).host_compaction &&
+            !(arm.hostCompaction ?? armProfile(arm.arm).host_compaction) &&
             agentOverflow.length > 0 &&
             !arm.calls.some((c) => c.component === "native_compaction")
                 ? [

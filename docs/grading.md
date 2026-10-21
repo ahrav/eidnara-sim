@@ -256,6 +256,10 @@ aggregates, the summed
 `P11.weighted_score` per arm, Δmem per memory arm from those grades, the judge errors, the journal's last `seq` as `journal_seq`, and
 `grader`: the grader digest each grade carries with the eidnara-sim commit
 and working-tree digest, both read when the pass starts.
+It grades only a `sim-run-manifest/v3` run, and every arm whose `EndArm` is
+journaled must hold the `capabilities.json` that arm's check wrote, with no
+mismatch (`docs/hosts.md`); a run from before the check keeps the grades it
+has.
 It removes any `grade-summary.json` in the run directory when it starts,
 under the run's lease, and writes the same summary there atomically when it
 finishes, so the cost panel prices only a finished pass over the journal as

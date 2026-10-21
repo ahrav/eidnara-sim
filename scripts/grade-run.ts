@@ -173,6 +173,42 @@ interface RowMeta {
     length: number;
 }
 
+/**
+ * Grades come only from runs whose arms ran what they declare: a `sim-run-manifest/v3` run, whose
+ * every ended arm holds the `capabilities.json` its `EndArm` check wrote with no mismatch. Runs
+ * from before the check stay as they were graded.
+ */
+export function requireCapabilities(
+    dir: string,
+    schema: unknown,
+    arms: readonly string[],
+    entries: readonly Entry[],
+): void {
+    if (schema !== "sim-run-manifest/v3") {
+        throw new Error(
+            `manifest schema ${String(schema)} predates the arm capability check; its grades stand as they were`,
+        );
+    }
+    for (const arm of arms) {
+        if (!entries.some((e) => e.kind === "EndArm" && e.arm === arm)) continue;
+        const path = join(dir, arm, "capabilities.json");
+        let record: { mismatches?: unknown };
+        try {
+            record = JSON.parse(readFileSync(path, "utf8"));
+        } catch (caught) {
+            throw new Error(
+                `arm ${arm} ended with no readable ${path}: ${(caught as Error).message}`,
+            );
+        }
+        const mismatches = record.mismatches;
+        if (!Array.isArray(mismatches) || mismatches.length > 0) {
+            throw new Error(
+                `arm ${arm} ran other capabilities than it declares: ${JSON.stringify(mismatches)}`,
+            );
+        }
+    }
+}
+
 async function grade(dir: string, config: SimConfig | null, regrade: boolean): Promise<Summary> {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
@@ -236,6 +272,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     }
     const scheduled = scenario.events.slice(0, manifest.events).map((e) => String(e.id));
     requireComplete(entries, arms, scheduled);
+    requireCapabilities(dir, manifest.schema, arms, entries);
     const log = new GradeLog(join(dir, "grades.jsonl"));
 
     const named = new Map<string, { arm: string; item: string }>();

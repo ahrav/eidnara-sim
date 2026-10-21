@@ -287,6 +287,18 @@ describe("oracle edge cases", () => {
         expect(oracle(turn, "F9")).toHaveLength(1);
     });
 
+    test("F9 follows the host compaction the run's manifest recorded for the arm", () => {
+        const overflow = "ValidationException: prompt is too long";
+        const calls = [call({ status: 400, error: overflow })];
+        const recordedOn = runWith({ ...armOf("eidnara", { calls }), hostCompaction: true });
+        expect(oracle(recordedOn, "F9")).toEqual([]);
+        const kl = {
+            ...armOf("eidnara-kl", { calls: calls.map((c) => ({ ...c, arm: "eidnara-kl" })) }),
+        };
+        expect(oracle(runWith({ ...kl, hostCompaction: false }), "F9")).toHaveLength(1);
+        expect(oracle(runWith(kl), "F9")).toEqual([]);
+    });
+
     test("F6 is one activation per arm and run, with every exceeded bound as evidence", () => {
         const host = armOf("host", { calls: [call({ arm: "host", input_tokens: 100 })] });
         const costly = armOf("eidnara", {

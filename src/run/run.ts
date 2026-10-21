@@ -1986,10 +1986,16 @@ async function runArms(
     // Each session's own plugin boots, read from the log's length when its host started: a
     // plugin that disabled itself, booted in another mode than the arm declares, or left no boot
     // stops the run at the session that shows it.
+    // A session still open when the arm ends (an `--events` prefix can stop inside one) is checked
+    // before `EndArm`.
     const sessionMark = new Map<string, number>();
-    const markSession = (arm: string, armRoot: string) =>
+    const unchecked = new Set<string>();
+    const markSession = (arm: string, armRoot: string) => {
         sessionMark.set(arm, logLength(join(armRoot, "eidnara.log")));
+        unchecked.add(arm);
+    };
     const requireBoots = (arm: string, armRoot: string) => {
+        unchecked.delete(arm);
         const boots = readPluginLog(join(armRoot, "eidnara.log"), sessionMark.get(arm) ?? 0);
         const wrong = bootMismatches(armProfile(arm), boots);
         if (wrong.length > 0) {
@@ -2000,6 +2006,7 @@ async function runArms(
     // started have ended, before `EndArm`; a mismatch leaves the arm open, so the run is not
     // complete evidence and a resume checks the same evidence again.
     const verifyArm = (arm: string, armRoot: string) => {
+        if (unchecked.has(arm)) requireBoots(arm, armRoot);
         const observed = observeArm(arm, o.host, armRoot, components.get(arm) ?? {});
         const mismatches = armMismatches(observed);
         const record = { profile: armProfile(arm), observed, mismatches };
