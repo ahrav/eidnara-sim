@@ -52,7 +52,7 @@ import {
     requireComplete,
     takeLease,
 } from "../src/run/journal";
-import { CallIndex, callsOf } from "../src/run/run";
+import { CallIndex, callsOf, simIdentity } from "../src/run/run";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
@@ -70,6 +70,8 @@ export interface Summary {
     judge_errors: number;
     /** The last `seq` of the journal this pass graded, so a later resume marks the summary stale. */
     journal_seq: number;
+    /** The grader implementation (`graderDigest`) and the eidnara-sim revision this pass ran. */
+    grader: { digest: string; sim_commit: string; sim_worktree: string };
 }
 
 /** Where a finished grading pass records its summary; `src/report/cost.ts` reads it. */
@@ -733,6 +735,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
         p3,
         judge_errors: judgeErrors,
         journal_seq: entries.at(-1)?.seq ?? 0,
+        grader: { digest: grader, ...simIdentity() },
     };
 }
 

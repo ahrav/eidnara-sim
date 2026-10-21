@@ -84,7 +84,7 @@ function run(o: RunOptions): string {
     const scenario = { ...body, scenario_hash: sha256Hex(canonicalJson(body)) };
     writeFileSync(join(dir, "scenario.json"), `${canonicalJson(scenario)}\n`);
     const manifest = {
-        schema: "sim-run-manifest/v2",
+        schema: "sim-run-manifest/v3",
         tier,
         seed: seedOf,
         host: "pi",

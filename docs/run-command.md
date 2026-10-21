@@ -147,12 +147,16 @@ toolchain wrappers are created exclusively after removing any planted name.
    link under `pi_install`, since Node resolves the CLI's dependencies
    there), the Node runtime Pi runs on, the libfaketime interposer, the
    OpenCode SDK package directory the host stack imports and the e2e
-   workspace's lock file (`absent` when not installed), the
+   workspace's lock file (`absent` when not installed), the Pi and OpenCode
+   plugin `dist` trees the hosts load (ignored build outputs, so the eidnara
+   working-tree digest omits them; `absent` when not built), each ordered
+   arm's profile with the user-tier `eidnara.jsonc` and daemon configuration
+   it writes (`arms`, `docs/hosts.md`), the
    Bedrock region and profile name, base wall time, price table (the version
    and rates the report prices the run's calls at), and preflight result. The working-tree digest hashes an
    untracked symlink's target text.
    A later invocation refuses a manifest whose `schema` is not
-   `sim-run-manifest/v2` or whose execution fields are out of range (an event
+   `sim-run-manifest/v3` or whose execution fields are out of range (an event
    count outside the compiled schedule, a non-positive context limit, an
    unnamed model, a non-integer seed, an unknown host, a price table without a
    version or with a negative or non-finite rate), revalidates a saved

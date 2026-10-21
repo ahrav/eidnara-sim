@@ -24,6 +24,9 @@ import { piCli } from "../run/preflight";
 import { parentPid, processStart, stopOwnedTree } from "../run/procs";
 import { FAKETIME_LIB, faketimeEnv } from "../run/timeinject";
 import { sandboxPath, toolbinDir, toolchainEnv } from "../run/toolchain";
+import { ARM_PROFILES, type ArmName } from "./profiles";
+
+export type { ArmName };
 
 // biome-ignore lint/suspicious/noExplicitAny: v1 harness modules are imported by runtime path.
 type Untyped = any;
@@ -77,8 +80,6 @@ export const DUMMY_AWS = {
     AWS_SECRET_ACCESS_KEY: "sim-v2/placeholder+secret",
     AWS_REGION: "us-west-2",
 };
-
-export type ArmName = "host" | "eidnara" | "eidnara-kl" | "eidnara-cf";
 
 export interface HostContext {
     config: SimConfig;
@@ -143,7 +144,7 @@ export interface PromptResult {
     interrupted?: boolean;
 }
 
-export const eidnaraOn = (arm: ArmName) => arm !== "host";
+export const eidnaraOn = (arm: ArmName) => ARM_PROFILES[arm].plugin;
 
 /** An A/A control arm `host~aa` runs as `host` under its own label. */
 export const armBase = (label: string) => label.split("~")[0] as ArmName;
@@ -184,10 +185,20 @@ export function piModels(ctx: Pick<HostContext, "model" | "sideModel">): string[
     return [...new Set([ctx.model, ...(ctx.sideModel ? [ctx.sideModel] : [])])];
 }
 
-function eidnaraUserConfig(connectionFile: string, model: string): Record<string, unknown> {
+/**
+ * The user-tier `eidnara.jsonc` an Eidnara arm writes. `compaction.enabled` is the arm's
+ * `eidnara_compaction`; with it false the plugin keeps its knowledge layer (memory, injection,
+ * notes, search) and leaves the context window to the host.
+ */
+export function eidnaraUserConfig(
+    connectionFile: string,
+    model: string,
+    arm: ArmName,
+): Record<string, unknown> {
     return {
         enabled: true,
         host: { connection_file: connectionFile },
+        compaction: { enabled: ARM_PROFILES[arm].eidnara_compaction },
         execute_threshold_percentage: 65,
         protected_tags: 20,
         history_budget_percentage: 0.15,
@@ -202,6 +213,11 @@ function eidnaraUserConfig(connectionFile: string, model: string): Record<string
         },
     };
 }
+
+/** The daemon configuration the hermetic host stack hands `direct_host_fixture`. */
+export const fixtureDaemonConfig = (model: string): Record<string, unknown> => ({
+    history_summarizer: { module_model: modelRef(model) },
+});
 
 export interface DaemonContext {
     config: SimConfig;
@@ -266,7 +282,7 @@ export class DaemonStack {
             startTimeoutMs: 300_000,
             harnessRuntime,
             credentialSource: DUMMY_AWS,
-            daemonConfig: { history_summarizer: { module_model: modelRef(this.ctx.model) } },
+            daemonConfig: fixtureDaemonConfig(this.ctx.model),
             daemonEnv: faketimeEnv(this.ctx.offsetFile),
         });
         this.connectionFile = this.stack.connectionFile;
@@ -556,7 +572,7 @@ export class PiSimHost extends SimHost {
             defaultProvider: "amazon-bedrock",
             defaultModel: this.ctx.model,
             enabledModels: piModels(this.ctx).map(modelRef),
-            compaction: { enabled: this.ctx.arm === "host" || this.ctx.arm === "eidnara-kl" },
+            compaction: { enabled: ARM_PROFILES[this.ctx.arm].host_compaction },
             retry: { enabled: true },
             defaultThinkingLevel: "off",
             quietStartup: true,
@@ -580,7 +596,11 @@ export class PiSimHost extends SimHost {
         );
         if (connectionFile) {
             const dir = this.controlDir("home/config/eidnara");
-            const config = eidnaraUserConfig(connectionFile, this.ctx.sideModel ?? this.ctx.model);
+            const config = eidnaraUserConfig(
+                connectionFile,
+                this.ctx.sideModel ?? this.ctx.model,
+                this.ctx.arm,
+            );
             this.writeControlFile(join(dir, "eidnara.jsonc"), JSON.stringify(config, null, 2));
         }
     }
@@ -857,7 +877,7 @@ export class OpencodeSimHost extends SimHost {
             small_model: modelRef(this.ctx.model),
             share: "disabled",
         };
-        if (!connection || this.ctx.arm === "eidnara-kl") {
+        if (ARM_PROFILES[this.ctx.arm].host_compaction) {
             extra.compaction = { auto: true, prune: true };
         }
         if (!connection) extra.plugin = [];
@@ -880,6 +900,7 @@ export class OpencodeSimHost extends SimHost {
                   eidnaraConfig: eidnaraUserConfig(
                       connection,
                       this.ctx.sideModel ?? this.ctx.model,
+                      this.ctx.arm,
                   ),
                   userHostConnectionFile: connection,
               }
