@@ -24,6 +24,24 @@ export function abstains(answer: string, subject: string): boolean {
     return abstention && !CANDIDATE_VALUE.test(rest) && !HEDGED_GUESS.test(rest);
 }
 
+/**
+ * The heredoc operator at the start of `text`: its length, its delimiter after quote removal, and
+ * whether `<<-` strips leading tabs from body lines. The delimiter is one shell word of quoted and
+ * unquoted pieces, so `<<'EOF'2`, `<<"$X"`, and `<<\EOF` end at `EOF2`, `$X`, and `EOF`.
+ */
+export function heredocAt(
+    text: string,
+): { length: number; delim: string; stripTabs: boolean } | null {
+    const m = /^<<(-?)[ \t]*((?:'[^']*'|"(?:[^"\\]|\\.)*"|\\.|[^\s'"\\<>|&;()])+)/.exec(text);
+    if (!m) return null;
+    const delim = (m[2] as string).replace(
+        /'([^']*)'|"((?:[^"\\]|\\.)*)"|\\(.)/g,
+        (_w, single?: string, double?: string, escaped?: string) =>
+            single ?? double?.replace(/\\([$`"\\\n])/g, "$1") ?? escaped ?? "",
+    );
+    return { length: m[0].length, delim, stripTabs: m[1] === "-" };
+}
+
 export function pattern(source: string): RegExp {
     return source.startsWith("(?i)") ? new RegExp(source.slice(4), "im") : new RegExp(source, "m");
 }

@@ -628,6 +628,24 @@ describe("intrusiveness panel", () => {
             { command: "git restore \\\nbb.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "git restore cc.rs;# done", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: 'git reset "--hard"', exit: 0, scenario_ms: 3, turn: "e-2" },
+            {
+                command: "cat <<EOF\n  EOF  \ngit reset --hard\nEOF",
+                exit: 0,
+                scenario_ms: 3,
+                turn: "e-2",
+            },
+            {
+                command: "cat <<EOF-1\nEOF\ngit reset --hard\nEOF-1",
+                exit: 0,
+                scenario_ms: 3,
+                turn: "e-2",
+            },
+            {
+                command: "cat <<A <<B\nB\nA\ngit reset --hard\nB",
+                exit: 0,
+                scenario_ms: 3,
+                turn: "e-2",
+            },
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
         const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));

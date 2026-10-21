@@ -1651,6 +1651,9 @@ describe("grading harness", () => {
         expect(run("true && exit 0; cat src/connection.rs")).toBe(0);
         expect(run(": && exit 0; cat src/connection.rs")).toBe(0);
         expect(run("test -f x && exit 0; cat src/connection.rs")).toBe(1);
+        expect(run("false || exit 0; cat src/connection.rs")).toBe(0);
+        expect(run("test -f x || exit 0; cat src/connection.rs")).toBe(1);
+        expect(run("false || cargo test", "P6.ran_tests")).toBe(true);
         expect(run("{ cat src/connection.rs; }")).toBe(1);
         expect(run("(cat src/connection.rs)")).toBe(1);
         expect(run("( cargo test )", "P6.ran_tests")).toBe(true);
@@ -1766,6 +1769,9 @@ describe("grading harness", () => {
             { command: "false && cargo test || true", exit: 0, scenario_ms: 20 },
             { command: "cat <<EOF\n EOF \ncargo test\nEOF", exit: 0, scenario_ms: 30 },
             { command: "cat <<-EOF\n\tbody\n\tEOF\necho done", exit: 0, scenario_ms: 40 },
+            { command: "cat <<'EOF'2\nEOF\ncargo test\nEOF2", exit: 0, scenario_ms: 41 },
+            { command: 'cat <<"$END"\ncargo test\n$END', exit: 0, scenario_ms: 42 },
+            { command: "cat <<\\EOF\ncargo test\nEOF", exit: 0, scenario_ms: 43 },
         );
         expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(false);
         log.commands.push({

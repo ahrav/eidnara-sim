@@ -35,6 +35,7 @@ import {
     type DiffFile,
     diffFiles,
     diffPaths,
+    heredocAt,
     literalQuotes,
     matchesAll,
     matchesAny,
@@ -364,14 +365,11 @@ function splitShell(command: string): Segment[] {
             seg += "<<<";
             i += 2;
         } else if (command.startsWith("<<", i)) {
-            const m = /^<<(-?)\s*(?:(['"])((?:(?!\2).)+)\2|([^\s'"<>|&;()]+))/.exec(
-                command.slice(i),
-            );
-            if (m) {
-                const delim = ((m[3] ?? m[4]) as string).replace(/\\(.)/g, "$1");
-                pending.push({ delim, stripTabs: m[1] === "-" });
-                seg += m[0];
-                i += m[0].length - 1;
+            const opened = heredocAt(command.slice(i));
+            if (opened) {
+                pending.push({ delim: opened.delim, stripTabs: opened.stripTabs });
+                seg += command.slice(i, i + opened.length);
+                i += opened.length - 1;
             } else seg += ch;
         } else if (command.startsWith("&&", i) || command.startsWith("||", i)) {
             push(command.slice(i, i + 2));
@@ -399,8 +397,9 @@ const groupBody = (seg: string): { brace: boolean; body: string } | null => {
 };
 /**
  * The parts of a command list that are sure to run: every part guarded by `;`, `&`, or a newline,
- * and an `&&` continuation whose whole guard chain is `true` or `:`; a `||` continuation and an
- * `&&` continuation after any other command depend on a status the text does not carry.
+ * an `&&` continuation whose whole guard chain is `true` or `:`, and a `||` continuation whose
+ * whole guard chain is `false`; a continuation after any other command depends on a status the
+ * text does not carry.
  */
 const sureParts = (parts: Segment[]): boolean[] => {
     const sure: boolean[] = [];
@@ -410,7 +409,8 @@ const sureParts = (parts: Segment[]): boolean[] => {
         if (/^[;&\n]$/.test(guard)) chainSure = true;
         else if (guard === "&&")
             chainSure = chainSure && /^(true|:)$/.test(unprefixed(parts[i - 1]?.seg ?? ""));
-        else if (guard === "||") chainSure = false;
+        else if (guard === "||")
+            chainSure = chainSure && /^false$/.test(unprefixed(parts[i - 1]?.seg ?? ""));
         sure.push(guard === "|" ? (sure[i - 1] ?? true) : chainSure);
     }
     return sure;
