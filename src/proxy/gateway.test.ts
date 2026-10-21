@@ -773,6 +773,26 @@ describe("witnesses", () => {
         });
     });
 
+    test("restore settles an injection on the next agent call even when that call was faulted too", () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_timeout",
+            strategy: "burst",
+            params: { count: 2 },
+        };
+        const at = Date.now();
+        const base = { ...RECORD, arm: "eidnara", fault_ref: "f" };
+        const first = { ...base, seq: 0, wall_ms: at + 100, started_wall_ms: at };
+        const second = { ...base, seq: 1, wall_ms: at + 1_100, started_wall_ms: at + 1_000 };
+        const resumed = new FaultInjector([fault], new Rng(7), 5_000);
+        restore(resumed, [first, second]);
+        expect(resumed.report("eidnara")[0]).toMatchObject({
+            status: "fired",
+            injected_seq: [0, 1],
+            host_observed_seq: [1],
+        });
+    });
+
     test("a handler that settles after stop gave up on it writes nothing and is reported", async () => {
         let finish: (() => void) | null = null;
         const stuck: Upstream = {

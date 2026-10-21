@@ -3592,4 +3592,7 @@ test("the plugin log is created without following a symlink the agent left at it
     createNoFollow(join(dir, "plain.log"));
     expect(lstatSync(join(dir, "plain.log")).isFile()).toBe(true);
     createNoFollow(join(dir, "plain.log"));
+    // A FIFO at the path fails at once instead of blocking the open on a reader.
+    expect(Bun.spawnSync(["mkfifo", join(dir, "fifo.log")]).exitCode).toBe(0);
+    expect(() => createNoFollow(join(dir, "fifo.log"))).toThrow(/fifo\.log is a FIFO/);
 });

@@ -236,7 +236,9 @@ export class FaultInjector {
     restoreRecord(record: CallRecord): void {
         const known =
             record.fault_ref !== null && this.faults.some((f) => f.id === record.fault_ref);
-        if (record.component === TARGET && !known) {
+        // Every later agent call settles the injections before it, a faulted one included, as
+        // `observe()` does live; the call's own injection registers after.
+        if (record.component === TARGET) {
             for (const p of this.restoring.filter((x) => x.arm === record.arm)) {
                 if (record.started_wall_ms <= p.wall + this.windowMs) {
                     (this.witnesses.get(p.key) as Witness).host_observed_seq.push(record.seq);
