@@ -247,15 +247,35 @@ const SECOND_CLIENT_PROMPT = "List the top-level files in this repository and st
  * than followed, and nothing is created outside the run directory on the agent's behalf.
  */
 export function createNoFollow(path: string): void {
+    // Nonblocking, so a FIFO planted at the path returns at once and fails the check below.
     const flags =
-        constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW;
+        constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_APPEND |
+        constants.O_NOFOLLOW |
+        constants.O_NONBLOCK;
+    let fd: number;
     try {
-        closeSync(openSync(path, flags, 0o644));
+        fd = openSync(path, flags, 0o644);
     } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === "ELOOP") {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === "ELOOP") {
             throw new Error(`${path} is a symlink; the plugin log must be a regular file`);
         }
+        if (code === "ENXIO") {
+            throw new Error(`${path} is a FIFO; the plugin log must be a regular file`);
+        }
         throw err;
+    }
+    try {
+        const st = fstatSync(fd);
+        if (!st.isFile() || st.nlink !== 1) {
+            throw new Error(
+                `${path} is not a single-link regular file; the plugin log must be one`,
+            );
+        }
+    } finally {
+        closeSync(fd);
     }
 }
 

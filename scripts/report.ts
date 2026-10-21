@@ -137,6 +137,7 @@ const recorded = (tier: Tier, dirs: string[], runs: GradedRun[]) => {
         cusum_sd: CusumScale | null;
         paired_items_per_probe_type: number;
         target_prereg_sha256: string;
+        source_prereg_sha256?: string;
         campaign_dir?: string;
     };
     // Containment is judged on resolved paths, so a symlink inside the campaign that leads
@@ -169,6 +170,15 @@ const recorded = (tier: Tier, dirs: string[], runs: GradedRun[]) => {
     if (record.target_prereg_sha256 !== preregistrationHash(prereg)) {
         console.error(
             `the ${tier}-resizing.json beside the runs was recorded under another ${tier} pre-registration`,
+        );
+        process.exit(2);
+    }
+    // The size and CUSUM scale came from the source tier's contract, which must still be the
+    // registered one, as the tier command requires.
+    const sourcePrereg = prereg.resizing ? loadPrereg(prereg.resizing.source_tier) : null;
+    if (sourcePrereg && record.source_prereg_sha256 !== preregistrationHash(sourcePrereg)) {
+        console.error(
+            `the ${tier}-resizing.json beside the runs was recorded under another ${sourcePrereg.tier} pre-registration`,
         );
         process.exit(2);
     }
