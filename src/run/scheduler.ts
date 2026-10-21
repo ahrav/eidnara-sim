@@ -687,12 +687,7 @@ export class Scheduler {
                     const working = [...jobs].find(([, n]) => n > 0);
                     const openSession = due.session === session;
                     // A turn with a fault keyed to it waits for the busy set, as the runtime does.
-                    const keyed = scheduled.some(
-                        (f) =>
-                            f.trigger.kind === "user_turn" &&
-                            f.trigger.session === due.session &&
-                            f.trigger.n === (due.index ?? -1) + 1,
-                    );
+                    const keyed = this.keyedTo(due);
                     if (working !== undefined && (this.o.turnsAwaitJobs || !openSession || keyed)) {
                         throw fail(`BeginTurn for ${e.event} while job ${working[0]} is open`, e);
                     }
@@ -1235,6 +1230,23 @@ export class Scheduler {
         }
     }
 
+    /**
+     * Whether a scheduled fault is keyed to user turn `e`, fired or not. Such a turn opens on a
+     * quiet busy set in every attempt, a resume after its fault fired included, so the runtime
+     * and the journal replay apply one rule.
+     */
+    private keyedTo(e: ScenarioEvent): boolean {
+        return (
+            e.kind === "user_turn" &&
+            this.o.faults.some(
+                (f) =>
+                    f.trigger.kind === "user_turn" &&
+                    f.trigger.session === e.session &&
+                    f.trigger.n === (e.index ?? -1) + 1,
+            )
+        );
+    }
+
     private faultsAt(e: ScenarioEvent): FaultEpisode[] {
         return this.o.faults.filter((f) => {
             const t = f.trigger;
@@ -1338,7 +1350,7 @@ export class Scheduler {
             !this.o.turnsAwaitJobs &&
             e.kind === "user_turn" &&
             this.session === e.session &&
-            this.faultsAt(e).length === 0;
+            !this.keyedTo(e);
         if (!concurrent) return this.quiesce();
         const limitMs = this.o.idleLimitMs ?? Number.POSITIVE_INFINITY;
         const entered = performance.now();

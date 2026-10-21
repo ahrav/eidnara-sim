@@ -6834,6 +6834,60 @@ describe("user turns at their scheduled time", () => {
         expect(end).toBeLessThan(at((e) => e.kind === "BeginTurn" && e.event === "e-000002"));
     });
 
+    test("a turn whose fault fired before a kill still waits for the busy set on resume, and its journal replays", async () => {
+        const restart = episode("t", "daemon_restart", {
+            kind: "user_turn",
+            session: "s-0000",
+            n: 2,
+        });
+        const first = new Journal(join(dir(), "j.jsonl"));
+        await new Scheduler({
+            events,
+            faults: [restart],
+            journal: first,
+            settleMs: 0,
+            jobPollMs: 5,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
+        const observed = first.entries.findIndex((e) => e.kind === "FaultObserved");
+        const path = join(dir(), "j.jsonl");
+        const cut = new Journal(path);
+        for (const { seq: _s, wall_ms: _w, ...e } of first.entries.slice(0, observed + 1)) {
+            cut.append(e as NewEntry);
+        }
+        cut.close();
+        const inner = fakeDriver([]);
+        const driver: ArmDriver = {
+            ...inner,
+            resume: async () => undefined,
+            bind: (h) => {
+                inner.bind?.(h);
+                h.jobStart("late");
+                setTimeout(() => h.jobEnd("late"), 150);
+            },
+        };
+        const resumed = new Journal(path);
+        const options = {
+            events,
+            faults: [restart],
+            journal: resumed,
+            settleMs: 0,
+            jobPollMs: 5,
+            order: ["a"],
+        };
+        await new Scheduler({ ...options, drivers: { a: driver } }).run();
+        const at = (pred: (e: Entry) => boolean) => resumed.entries.findIndex(pred);
+        expect(at((e) => e.kind === "EndJob" && e.job === "late")).toBeLessThan(
+            at((e) => e.kind === "BeginTurn" && e.event === "e-000002"),
+        );
+        await new Scheduler({
+            ...options,
+            journal: new Journal(path),
+            drivers: { a: fakeDriver([]) },
+        }).run();
+    });
+
     test("a mid-fold kill that starts while the turn is prepared ends before the turn opens", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));
         const kill = episode("k", "daemon_sigkill_mid_fold", {

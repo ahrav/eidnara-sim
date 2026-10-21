@@ -139,14 +139,14 @@ call through it is refused:
 1. Wait one settle interval after each answered turn (`settleMs`, 1 s by
    default), so a background job the host starts after its answer registers
    before the clock moves. A user turn in the session already open, with no
-   fault due at it, then waits only until no mid-fold kill is pending and the
+   fault keyed to it, then waits only until no mid-fold kill is pending and the
    scenario clock, which runs at wall speed while background work holds it,
    reaches the turn's scheduled time; background work still running keeps
    running into the turn, as a real user replies at their own pace while the
    host summarizes or captures in the background, and each job's deadline
-   still counts from its `RegisterJob`, so a job past it stops the run at the
-   next turn. A mid-fold kill that starts while the turn is prepared ends
-   before the turn's `BeginTurn`. Every other event, a turn with a fault due included (so a
+   still counts from its `RegisterJob`, so a job that runs past it stops the
+   run, at the next turn's wait or when it ends. A mid-fold kill that starts while the turn is prepared ends
+   before the turn's `BeginTurn`. Every other event, a turn with a fault keyed to it included, in every attempt (so a
    fault's mechanism never cuts the preceding turn's background work), and every user turn under
    `turnsAwaitJobs` (`--turns-await-jobs true`, recorded in the manifest),
    waits until no mid-fold kill is pending and the busy set is empty at the
