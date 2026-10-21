@@ -32,6 +32,7 @@ import {
     keepCompleteLines,
     leaseHost,
     MAX_JOURNAL_BYTES,
+    type NewEntry,
     pidNamespace,
     readJournal,
     releaseLease,
@@ -3277,6 +3278,43 @@ describe("Scheduler", () => {
             order: ["a"],
             drivers: { a: slow() },
         }).run();
+    });
+
+    test("replay refuses a clock jump while a fired fault's mechanism holds the clock", async () => {
+        const events = fixtureEvents(1);
+        const restart = episode("t", "daemon_restart", {
+            kind: "user_turn",
+            session: "s-0000",
+            n: 1,
+        });
+        const first = new Journal(join(dir(), "j.jsonl"));
+        await new Scheduler({
+            events,
+            faults: [restart],
+            journal: first,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
+        const fired = first.entries.findIndex((e) => e.kind === "FaultFired");
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        for (const { seq: _s, wall_ms: _w, ...e } of first.entries.slice(0, fired + 1)) {
+            j.append(e as NewEntry);
+        }
+        const at = first.entries[fired]?.scenario_ms ?? 0;
+        j.append({ kind: "AdvanceClock", arm: "a", scenario_ms: at + 1, from_ms: at });
+        j.close();
+        await expect(
+            new Scheduler({
+                events,
+                faults: [restart],
+                journal: new Journal(path),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            }).run(),
+        ).rejects.toThrow("AdvanceClock while the clock is busy");
     });
 
     test("replay refuses array evidence, a detail-less daemon exit, a jump naming no cause or both, and nameless jobs; an unjournalable observation poisons the run", async () => {

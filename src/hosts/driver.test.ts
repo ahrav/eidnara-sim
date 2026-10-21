@@ -1654,7 +1654,6 @@ describe("HostDriver faults", () => {
 
     test("the turn ending after daemon restarts carries a store check for each of them", async () => {
         const { driver } = fixture("eidnara");
-        (driver as unknown as { o: DriverOptions }).o.procStart = () => "start";
         driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
         driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
         await driver.fault(episode("daemon_restart"));
@@ -1689,7 +1688,6 @@ describe("HostDriver faults", () => {
         await driver.reset();
         mkdirSync(join(transcripts, "sessions"), { recursive: true });
         driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
-        (driver as unknown as { o: DriverOptions }).o.procStart = () => "start";
         await driver.fault(episode("daemon_restart"));
         await driver.event(ev("session_start"));
         const turn = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
@@ -1711,7 +1709,6 @@ describe("HostDriver faults", () => {
     test("a restart settles the check an earlier restart's served pass earned, before it kills the daemon", async () => {
         const { driver } = fixture("eidnara");
         driver.daemon = fakeDaemon(PID + 10) as unknown as DaemonStack;
-        (driver as unknown as { o: DriverOptions }).o.procStart = () => "start";
         driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
         await driver.fault(episode("daemon_restart"));
         pluginLog(driver, PASS);

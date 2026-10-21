@@ -596,11 +596,11 @@ export class Scheduler {
             // A fired fault's mechanism holds the clock as a turn does, from its `FaultFired`
             // until its `FaultObserved` or interruption marker; proxy faults and laptop sleeps
             // have no mechanism here, so they hold nothing.
-            const holding = [...fired].some(
+            const holding = [...fired].find(
                 (id) => !observed.has(id) && !marked.has(id) && holdsClock.has(id),
             );
             const busy =
-                holding ||
+                holding !== undefined ||
                 [...begun].some((t) => !ended.has(t)) ||
                 [...jobs].some(([, n]) => n > 0);
             if (e.kind !== "AdvanceClock") {
@@ -650,16 +650,8 @@ export class Scheduler {
                     if (turns.has(due.id) && e.outcome !== outcomes.get(due.id)) {
                         throw fail(`Event for ${e.event} contradicts its EndTurn outcome`, e);
                     }
-                    const unresolved = [...fired].find((id) => {
-                        const f = this.o.faults.find((x) => x.id === id) as FaultEpisode;
-                        const scheduler = f.seam.layer !== PROXY_LAYER && f.type !== "laptop_sleep";
-                        return scheduler && !observed.has(id) && !marked.has(id);
-                    });
-                    if (unresolved !== undefined) {
-                        throw fail(
-                            `Event for ${e.event} while fault ${unresolved} is unresolved`,
-                            e,
-                        );
+                    if (holding !== undefined) {
+                        throw fail(`Event for ${e.event} while fault ${holding} is unresolved`, e);
                     }
                     done++;
                     for (const f of this.o.faults) {
@@ -800,11 +792,7 @@ export class Scheduler {
                         }
                         if (jumped.has(f.id)) throw fail(`AdvanceClock for ${f.id} repeats`, e);
                     }
-                    const inFlight = [...begun].find((t) => !ended.has(t));
-                    const working = [...jobs].find(([, n]) => n > 0);
-                    if (inFlight !== undefined || working !== undefined) {
-                        throw fail("AdvanceClock while the clock is busy", e);
-                    }
+                    if (busy) throw fail("AdvanceClock while the clock is busy", e);
                     if (!due || e.scenario_ms !== due.scenario_ms) {
                         throw fail("AdvanceClock lands away from the event due", e);
                     }
