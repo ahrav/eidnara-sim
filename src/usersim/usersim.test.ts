@@ -884,6 +884,11 @@ describe("tape and pairing", () => {
         ).not.toThrow();
         source({ turns_await_jobs: false });
         expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).not.toThrow();
+        // Only a missing field reads as the earlier rule; an explicit non-boolean matches neither.
+        source({ turns_await_jobs: null });
+        expect(() =>
+            checkTapeSources([join(root, "tape.jsonl")], { ...run, turns_await_jobs: true }),
+        ).toThrow("turns_await_jobs null");
     });
 
     test("a replay source under another fault override is refused", () => {

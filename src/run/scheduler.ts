@@ -185,6 +185,8 @@ export class Scheduler {
     private jobActivity = 0;
     /** Each live job's `RegisterJob` on the monotonic clock, for its own idle deadline. */
     private readonly jobStarted = new Map<string, number>();
+    /** One deadline timer per open job, so a job overruns its bound whatever the arm is waiting on. */
+    private readonly jobTimers = new Map<string, ReturnType<typeof setTimeout>>();
     private fatal: HarnessFailure | null = null;
     private failed: Promise<never> | null = null;
     private fail: ((error: HarnessFailure) => void) | null = null;
@@ -311,7 +313,9 @@ export class Scheduler {
                 ? `fault ${fatal.fault} failed`
                 : fatal.event
                   ? `event ${fatal.event} failed`
-                  : "the daemon exited outside an outage window";
+                  : fatal.job
+                    ? `job ${fatal.job} ran past its deadline`
+                    : "the daemon exited outside an outage window";
             throw new HarnessFailure(`run failed: ${cause}`);
         }
         const finished = new Set(entries.filter((e) => e.kind === "EndArm").map((e) => e.arm));
@@ -358,6 +362,7 @@ export class Scheduler {
             };
             this.clock = clock;
             this.jobStarted.clear();
+            this.clearJobTimers();
             const driver = this.o.drivers[arm] as ArmDriver;
             let ended = false;
             let finishing = false;
@@ -476,6 +481,7 @@ export class Scheduler {
                 ended = true;
             } finally {
                 this.generation++;
+                this.clearJobTimers();
                 this.current = null;
                 this.faultCall = null;
                 this.pendingKill = null;
@@ -1372,6 +1378,25 @@ export class Scheduler {
         }
     }
 
+    private clearJobTimers(): void {
+        for (const timer of this.jobTimers.values()) clearTimeout(timer);
+        this.jobTimers.clear();
+    }
+
+    /**
+     * Stops the run for a job past its deadline, with the failure journaled first, so a resume
+     * refuses the run rather than finishing it over the violation.
+     */
+    private overdue(id: string): void {
+        if (this.fatal) return;
+        const error = `busy set held the clock past ${this.o.idleLimitMs} ms: job:${id}`;
+        this.fatal = new HarnessFailure(error);
+        this.recordFatal(
+            { kind: "ItemState", job: id, state: "failed", error, fatal: true },
+            `job ${id} deadline`,
+        );
+    }
+
     /**
      * Waits until no mid-fold kill is pending, a kill that starts while an earlier one runs
      * included, so whatever follows opens with every outage window closed by its own mechanism.
@@ -1555,8 +1580,18 @@ export class Scheduler {
                     throw caught;
                 }
                 clock.begin(`job:${id}`);
-                this.jobStarted.set(id, performance.now());
+                const stamp = performance.now();
+                this.jobStarted.set(id, stamp);
                 this.jobActivity++;
+                const limitMs = this.o.idleLimitMs;
+                if (limitMs !== undefined && Number.isFinite(limitMs)) {
+                    const timer = setTimeout(() => {
+                        if (generation === this.generation && this.jobStarted.get(id) === stamp) {
+                            this.overdue(id);
+                        }
+                    }, limitMs);
+                    this.jobTimers.set(id, timer);
+                }
             },
             jobEnd: (id) => {
                 const clock = live();
@@ -1577,16 +1612,13 @@ export class Scheduler {
                 }
                 const started = this.jobStarted.get(id);
                 this.jobStarted.delete(id);
+                clearTimeout(this.jobTimers.get(id));
+                this.jobTimers.delete(id);
                 clock.end(`job:${id}`, ended.scenario_ms);
                 this.jobActivity++;
-                // A job can end while a later turn runs beside it, where no wait watches its
-                // deadline; one that ends past it stops the run as a wait would have.
                 const limitMs = this.o.idleLimitMs ?? Number.POSITIVE_INFINITY;
                 if (started !== undefined && performance.now() > started + limitMs) {
-                    this.fatal ??= new HarnessFailure(
-                        `busy set held the clock past ${this.o.idleLimitMs} ms: job:${id}`,
-                    );
-                    this.fail?.(this.fatal);
+                    this.overdue(id);
                 }
             },
             observe: (component) => {

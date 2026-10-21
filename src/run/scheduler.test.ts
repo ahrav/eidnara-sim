@@ -6925,30 +6925,49 @@ describe("user turns at their scheduled time", () => {
         expect(begin).toBeLessThan(at((e) => e.kind === "EndJob" && e.job === "summary"));
     });
 
-    test("a job that crosses its deadline while a later turn runs beside it stops the run", async () => {
+    test("a job that crosses its deadline while a later turn runs beside it stops the run, and a resume refuses it", async () => {
         const late: ScenarioEvent[] = events.map((e) =>
             e.id === "e-000002" ? { ...e, scenario_ms: 100 } : e,
         );
         const driver = fakeDriver([], 0, async (e) => {
             if (e.kind === "user_turn" && e.index === 0) {
                 driver.arm().jobStart("summary");
-                setTimeout(() => driver.arm().jobEnd("summary"), 260);
+                // The job outlives the stopped arm, whose handle then refuses the late end.
+                setTimeout(() => {
+                    try {
+                        driver.arm().jobEnd("summary");
+                    } catch {}
+                }, 600);
             }
-            if (e.kind === "user_turn" && e.index === 1) await Bun.sleep(300);
+            if (e.kind === "user_turn" && e.index === 1) await Bun.sleep(500);
+        });
+        const path = join(dir(), "j.jsonl");
+        const options = {
+            events: late,
+            faults: [],
+            settleMs: 0,
+            jobPollMs: 5,
+            idleLimitMs: 200,
+            order: ["a"],
+        };
+        const started = performance.now();
+        await expect(
+            new Scheduler({ ...options, journal: new Journal(path), drivers: { a: driver } }).run(),
+        ).rejects.toThrow(/past 200 ms: job:summary/);
+        // The deadline fires during the overlapping turn, not when the prompt returns.
+        expect(performance.now() - started).toBeLessThan(500);
+        expect(readJournal(path).find((e) => e.kind === "ItemState")).toMatchObject({
+            job: "summary",
+            fatal: true,
         });
         await expect(
             new Scheduler({
-                events: late,
-                faults: [],
-                journal: new Journal(join(dir(), "j.jsonl")),
-                settleMs: 0,
-                jobPollMs: 5,
-                idleLimitMs: 200,
-                order: ["a"],
-                drivers: { a: driver },
+                ...options,
+                journal: new Journal(path),
+                drivers: { a: fakeDriver([]) },
             }).run(),
-        ).rejects.toThrow(/past 200 ms: job:summary/);
-        await Bun.sleep(100);
+        ).rejects.toThrow("run failed: job summary ran past its deadline");
+        await Bun.sleep(400);
     });
 
     test("a job past its deadline is refused when a later turn would start on schedule", async () => {

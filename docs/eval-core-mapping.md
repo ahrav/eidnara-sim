@@ -211,3 +211,13 @@ times, and fired and observed evidence (SIM-P31), and the report (M7) reads
 that journal. An eval-core counterpart would need a `FaultAction` family for
 harness seams and a scope outside `StoreFamily` in the Suite C fault contract
 (`eval-suite-c-fault-report/v3`); no extension is made here.
+
+## Run settings outside the pre-registration
+
+`manifest.turns_await_jobs` records whether each user turn waited for
+background work (`true`) or started at its scheduled time beside it
+(`false`, the default). It is a run identity component: the report pools
+only runs that share it, and a tape replay takes only sources that ran
+under the same rule; a manifest without the field ran with `true`.
+eval-core's `run_identity` has no scheduling component, so carrying it
+there needs `eval-manifest/v10`; no extension is made here.

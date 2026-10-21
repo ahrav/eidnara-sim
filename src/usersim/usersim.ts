@@ -269,12 +269,11 @@ export function checkTapeSources(
         };
         // A source's replies answered turns that started under its own scheduling rule; a
         // manifest from before the field ran every turn after its background work.
-        if (
-            run.turns_await_jobs !== undefined &&
-            (manifest.turns_await_jobs ?? true) !== run.turns_await_jobs
-        ) {
+        const sourceRule =
+            manifest.turns_await_jobs === undefined ? true : manifest.turns_await_jobs;
+        if (run.turns_await_jobs !== undefined && sourceRule !== run.turns_await_jobs) {
             throw new HarnessFailure(
-                `replay source ${tape} ran with turns_await_jobs ${String(manifest.turns_await_jobs ?? true)}`,
+                `replay source ${tape} ran with turns_await_jobs ${JSON.stringify(sourceRule)}`,
             );
         }
         // The fault schedule pins turns and so fixes the labels in every tape key.

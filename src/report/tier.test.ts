@@ -1459,6 +1459,14 @@ describe("tier report", () => {
         writeFileSync(join(dir, "scenario.json"), canonicalJson({ ...body, scenario_hash }));
         completeRun(dir);
         expect(loadGraded(dir, prereg).identity.scenario_provenance).toBe("g/1/c/emb");
+        // A manifest without turns_await_jobs ran every turn after its jobs; null is refused.
+        expect(loadGraded(dir, prereg).identity.turns_await_jobs).toBe(true);
+        const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({ ...manifest, turns_await_jobs: null }),
+        );
+        expect(() => loadGraded(dir, prereg)).toThrow("turns_await_jobs null is not a boolean");
     });
 
     test("every scripted user turn needs a pairing record in each analysed arm", () => {
