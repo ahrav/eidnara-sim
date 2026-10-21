@@ -222,12 +222,13 @@ rename, so a killed command leaves no partial file. Fault-asymmetric
 pairs leave the discordance and design effect, as they leave the M gates.
 It applies the pre-registered rule (`src/run/resize.ts`) to each
 superiority and noninferiority item metric:
-the discordance M observed, the ledger-fact design effect from M's
-intraclass correlation, and the n that reaches the family's L effect at
-its power, with Holm's first step over the harm family's metrics; L's count is the
-largest n, where a type M never saw discordant counts as the planning
-count; a count below the planning one follows when every type showed
-discordance, as the registered rule sets no floor.
+the discordance M observed, floored at the family's L effect as the
+registered rule states (so a type M never saw discordant is sized at that
+floor), the ledger-fact design effect from M's intraclass correlation, and
+the n that reaches the family's L effect at its power, with Holm's first
+step over the harm family's metrics; L's count is the largest n, and the
+planning count stands only for a family whose effect leaves no n. A count
+below the planning one can follow, as the registered rule sets no floor on n.
 The L scenarios are compiled with that count.
 
 ## Counterfactual arm

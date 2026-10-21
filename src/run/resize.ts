@@ -1,8 +1,9 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Preregistration } from "../prereg/schema";
 import { normalQuantile } from "../stats/dist";
 import type { TierInput } from "../stats/gate";
+import { contains, realExisting } from "./paths";
 
 export interface TypeSize {
     metric: string;
@@ -44,20 +45,8 @@ export function gradedMainRuns(
     }
     const main = jobs.map((j) => j.dir);
     // Containment is judged on resolved paths, so `..` steps and symlinks count where they lead.
-    const real = (path: string): string => {
-        const rest: string[] = [];
-        let existing = resolve(path);
-        while (!existsSync(existing) && dirname(existing) !== existing) {
-            rest.unshift(basename(existing));
-            existing = dirname(existing);
-        }
-        return join(realpathSync(existing), ...rest);
-    };
-    const root = real(dir);
-    const outside = main.filter((d) => {
-        const rel = relative(root, real(d));
-        return rel === "" || rel === ".." || rel.startsWith("../") || isAbsolute(rel);
-    });
+    const root = realExisting(dir);
+    const outside = main.filter((d) => !contains(root, realExisting(d), true));
     if (outside.length > 0) {
         throw new Error(`${dir} plans runs outside itself: ${outside.join(", ")}`);
     }
@@ -114,7 +103,9 @@ export function resizeFromM(l: Preregistration, m: TierInput): Resizing {
                 const harm = f.direction === "noninferiority";
                 const effect = Number(harm ? f.margin.value : f.mde.value) / 100;
                 const za = normalQuantile(1 - Number(f.alpha) / (harm ? f.metrics.length : 2));
-                const zb = normalQuantile(Number(f.power));
+                // The registered rule plans every family at power 0.8; the harm family's own
+                // power field records what its planning count reaches.
+                const zb = normalQuantile(0.8);
                 const d =
                     items.length === 0
                         ? 0
@@ -126,12 +117,17 @@ export function resizeFromM(l: Preregistration, m: TierInput): Resizing {
                 const per = facts.length === 0 ? 0 : items.length / facts.length;
                 const rho = icc(groups);
                 const de = 1 + Math.max(0, per - 1) * rho;
-                const variance = harm ? d : d - effect ** 2;
+                // The registered rule floors the discordance at the effect, since a paired
+                // difference of e needs discordance of at least e; the record keeps M's own.
+                const floored = Math.max(d, effect);
+                const variance = harm ? floored : floored - effect ** 2;
                 const n =
-                    d === 0 || effect === 0 || variance <= 0
+                    effect === 0 || variance <= 0
                         ? null
                         : Math.ceil(
-                              de * ((za * Math.sqrt(d) + zb * Math.sqrt(variance)) / effect) ** 2,
+                              de *
+                                  ((za * Math.sqrt(floored) + zb * Math.sqrt(variance)) / effect) **
+                                      2,
                           );
                 return {
                     metric,

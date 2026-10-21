@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
+import { preregistrationHash } from "../prereg/validate";
 import type { Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
@@ -311,6 +312,24 @@ test("a run directory with a live lease is being written by another process", ()
     expect(leaseHeld(dir)).toBe(true);
     releaseLease(dir, lease);
     expect(leaseHeld(dir)).toBe(false);
+});
+
+test("a recorded L resizing is refused once the M pre-registration it was sized under changes", () => {
+    const out = mkdtempSync(join(tmpdir(), "sim-tier-"));
+    const record = {
+        source_tier: "M",
+        source_dir: join(out, "m"),
+        source_prereg_sha256: "0".repeat(64),
+        target_prereg_sha256: preregistrationHash(loadPrereg("L")),
+        campaign_dir: out,
+        paired_items_per_probe_type: 5,
+    };
+    writeFileSync(join(out, "L-resizing.json"), JSON.stringify(record));
+    const r = spawnSync("bun", ["scripts/tier.ts", "--tier", "L", "--out", out, "--plan-only"], {
+        encoding: "utf8",
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("recorded under another M pre-registration");
 });
 
 test("the tier command refuses an output directory inside the Eidnara checkout", () => {

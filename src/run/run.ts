@@ -56,6 +56,7 @@ import {
 import { writeAtomic } from "./atomic";
 import { type Entry, Journal, releaseLease, requireAppendable, takeLease } from "./journal";
 import { plainPath } from "./launcher";
+import { contains, realExisting } from "./paths";
 import { type Preflight, piCli, preflight, preflightDrift } from "./preflight";
 import { PRICE_TABLE, type PriceTable } from "./price";
 import { running } from "./procs";
@@ -142,14 +143,7 @@ export function requirePinnedPath(config: SimConfig): void {
     }
 }
 
-const realExisting = (path: string): string => {
-    let probe = path;
-    while (!existsSync(probe)) probe = dirname(probe);
-    return join(realpathSync(probe), path.slice(probe.length));
-};
-
-const within = (path: string, dir: string) =>
-    dir === "/" || path === dir || path.startsWith(`${dir}/`);
+const within = (path: string, dir: string) => contains(dir, path);
 
 const ARTIFACTS = [
     `lease.${process.pid}.tmp`,

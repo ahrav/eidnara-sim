@@ -36,8 +36,8 @@ interface Ctx {
         tape_sha256?: string[];
         fault_override?: FaultEpisode[] | null;
     };
-    /** Digests by `arm/event` from the pairing logs of the tapes a replayed run took. */
-    recorded: Map<string, string>;
+    /** Every source row's digest and context by `arm/event`, from the replayed tapes' pairing logs. */
+    recorded: Map<string, { digest: string; context?: string }[]>;
     /** Tapes whose content or sibling pairing log differs from the digest the run recorded. */
     changedSources: string[];
     /** `arm/id` of every complete record on the arms' snapshot logs. */
@@ -95,7 +95,7 @@ function context(g: GradedRun): Ctx {
     const read: Ctx["manifest"] = existsSync(manifest)
         ? JSON.parse(readFileSync(manifest, "utf8"))
         : { order: g.run.arms.map((a) => a.arm), events: g.scenario.events.length };
-    const recorded = new Map<string, string>();
+    const recorded = new Map<string, { digest: string; context?: string }[]>();
     const changedSources: string[] = [];
     (read.tapes ?? []).forEach((tape, i) => {
         const pinned = read.tape_sha256?.[i];
@@ -109,7 +109,13 @@ function context(g: GradedRun): Ctx {
         const log = pairingBeside(tape);
         if (!existsSync(log)) return;
         for (const r of jsonl<PairingRecord>(log)) {
-            if (r.kind === "turn") recorded.set(`${r.arm}/${r.event}`, r.digest);
+            if (r.kind !== "turn") continue;
+            // Every source keeps its rows: a divergence may cite any source's row for the event.
+            const key = `${r.arm}/${r.event}`;
+            recorded.set(key, [
+                ...(recorded.get(key) ?? []),
+                { digest: r.digest, context: r.context_sha256 },
+            ]);
         }
     });
     return {
@@ -213,10 +219,18 @@ const CHECKS: Record<string, Check> = {
             c.pairing.forEach((r, i) => {
                 if (r.kind !== "divergedAt") return;
                 const own = turnOf(r.arm, r.event);
+                const rows = c.recorded.get(`${r.arm}/${r.event}`) ?? [];
+                const cited =
+                    rows.find(
+                        (x) =>
+                            x.digest === r.reference_digest &&
+                            (r.recorded_context_sha256 === undefined ||
+                                x.context === r.recorded_context_sha256),
+                    ) ?? rows[0];
                 const other =
                     r.against === "reference"
                         ? turnOf(reference(r.arm), r.event)?.digest
-                        : c.recorded.get(`${r.arm}/${r.event}`);
+                        : cited?.digest;
                 // A record whose turns a kill left unwritten describes nothing yet; it is no
                 // instance. A replayed record's source digest must exist.
                 if (!own || (r.against === "reference" && other === undefined)) return;

@@ -428,6 +428,17 @@ describe("property witness evidence", () => {
             });
         expect(one("P03", run("r")).status).toBe("witnessed");
         expect(one("P03", run("x")).status).toBe("violated");
+        // A divergence may cite any replay source's row for its event, not only the last one's.
+        const later = mkdtempSync(join(tmpdir(), "sim-witness-tape-"));
+        writeFileSync(join(later, "pairing.jsonl"), lines([turn("eidnara", "q")]));
+        const both = (r: string) =>
+            made({
+                tapes: [join(source, "tape.jsonl"), join(later, "tape.jsonl")],
+                pairing: [turn("host", "b"), diverged(r), turn("eidnara", "b")],
+            });
+        expect(one("P03", both("r")).status).toBe("witnessed");
+        expect(one("P03", both("q")).status).toBe("witnessed");
+        expect(one("P03", both("x")).status).toBe("violated");
         // The run recorded each source's digest, over the tape and its pairing log, at its
         // start; a source changed since is no corroboration.
         writeFileSync(join(source, "tape.jsonl"), "");

@@ -16,6 +16,7 @@ import { CONTINUITY_SCHEMA, type ContinuityFile, parseContinuity } from "../src/
 import type { GradedRun } from "../src/report/observe";
 import { renderTier } from "../src/report/render";
 import { aaScale, type CusumScale, cusumScale, loadGraded, tierReport } from "../src/report/tier";
+import { contains, realExisting } from "../src/run/paths";
 import { loadPrereg } from "../src/scenario/inputs";
 
 const args = process.argv.slice(2);
@@ -138,8 +139,11 @@ const recorded = (tier: Tier, dirs: string[], runs: GradedRun[]) => {
         target_prereg_sha256: string;
         campaign_dir?: string;
     };
+    // Containment is judged on resolved paths, so a symlink inside the campaign that leads
+    // elsewhere counts as elsewhere.
+    const campaign = record.campaign_dir === undefined ? null : realExisting(record.campaign_dir);
     const outside = dirs.filter(
-        (d) => record.campaign_dir === undefined || !d.startsWith(`${record.campaign_dir}/`),
+        (d) => campaign === null || !contains(campaign, realExisting(d), true),
     );
     if (outside.length > 0) {
         console.error(

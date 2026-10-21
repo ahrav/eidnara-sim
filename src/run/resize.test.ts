@@ -19,6 +19,13 @@ const pairs = (n: number, discordant: number, facts: number): ItemPair[] =>
         order: i,
     }));
 
+/** n for a superiority type at L's 12 pp effect whose discordance sits at the 0.12 floor. */
+const floorN = Math.ceil(
+    ((1.959963984540054 * Math.sqrt(0.12) + 0.8416212335729143 * Math.sqrt(0.12 - 0.12 ** 2)) /
+        0.12) **
+        2,
+);
+
 /** The tier input fields every resizing reads beside its observations. */
 const base = (p: { arms: { default: string } }) => ({
     arms: { control: "host", treatment: p.arms.default },
@@ -80,10 +87,11 @@ describe("L resizing from M", () => {
         );
         expect([p1?.discordance, p1?.design_effect, p1?.n]).toEqual([0.3, 1, want1]);
         const harm = r.per_type.find((t) => t.metric === "P2.harm");
-        const want2 = Math.ceil(((z(0.99) * Math.sqrt(0.1) + z(0.54) * Math.sqrt(0.1)) / 0.1) ** 2);
+        const want2 = Math.ceil(((z(0.99) * Math.sqrt(0.1) + z(0.8) * Math.sqrt(0.1)) / 0.1) ** 2);
         expect(harm?.n).toBe(want2);
-        expect(r.per_type.find((t) => t.metric === "P5.pass")?.n).toBeNull();
-        expect(r.paired_items_per_probe_type).toBe(Math.max(want1, want2));
+        // A type M never saw is sized with its discordance floored at the effect.
+        expect(r.per_type.find((t) => t.metric === "P5.pass")?.n).toBe(floorN);
+        expect(r.paired_items_per_probe_type).toBe(Math.max(want1, want2, floorN));
         const clustered = resizeFromM(L, {
             ...input,
             observations: [
@@ -192,10 +200,10 @@ describe("L resizing from M", () => {
             asymmetric: items.slice(0, 30).map((x) => x.item),
         });
         expect(all.per_type[0]?.discordance).toBe(0.3);
-        expect(dropped.per_type[0]).toMatchObject({ pairs: 70, discordance: 0, n: null });
+        expect(dropped.per_type[0]).toMatchObject({ pairs: 70, discordance: 0, n: floorN });
     });
 
-    test("a type M never saw discordant keeps the planning count, so L's count never falls below it", () => {
+    test("a type M never saw discordant is sized at the registered discordance floor", () => {
         const L = loadPrereg("L");
         const r = resizeFromM(L, {
             ...base(L),
@@ -210,9 +218,11 @@ describe("L resizing from M", () => {
             excluded: [],
             asymmetric: [],
         });
-        expect(r.per_type.find((t) => t.metric === "P1.pass")?.n).toBeLessThan(r.planning);
-        expect(r.per_type.some((t) => t.n === null)).toBe(true);
-        expect(r.paired_items_per_probe_type).toBe(r.planning);
+        expect(r.per_type.find((t) => t.metric === "P1.pass")?.n).toBe(floorN);
+        expect(r.per_type.every((t) => t.n !== null)).toBe(true);
+        expect(r.paired_items_per_probe_type).toBe(
+            Math.max(...r.per_type.map((t) => t.n as number)),
+        );
     });
 });
 

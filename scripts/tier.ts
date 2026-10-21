@@ -1,13 +1,5 @@
-import {
-    existsSync,
-    lstatSync,
-    mkdirSync,
-    readFileSync,
-    realpathSync,
-    rmSync,
-    writeFileSync,
-} from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
@@ -16,6 +8,7 @@ import { aaScale, loadGraded } from "../src/report/tier";
 import { writeAtomic } from "../src/run/atomic";
 import { Children, SIGTERM_EXIT, type StopReason } from "../src/run/children";
 import { leaseHeld, releaseLease, takeLease } from "../src/run/journal";
+import { contains, realExisting } from "../src/run/paths";
 import { gradedMainRuns, resizeFromM } from "../src/run/resize";
 import { loadScenario } from "../src/run/run";
 import {
@@ -103,18 +96,7 @@ if (new Set(hosts).size !== hosts.length || !hosts.every((h) => prereg.hosts.inc
     fail(`--hosts must name distinct hosts from ${prereg.hosts.join(",")}`);
 // The tier never writes under the Eidnara checkout (AGENTS.md); the check precedes the first
 // directory it would create.
-const inside = (path: string, root: string) => path === root || path.startsWith(`${root}/`);
-// Symlinks resolve too: the deepest existing ancestor of each path gives its real location.
-const real = (path: string): string => {
-    let existing = path;
-    const rest: string[] = [];
-    while (!existsSync(existing)) {
-        rest.unshift(basename(existing));
-        existing = dirname(existing);
-    }
-    return join(realpathSync(existing), ...rest);
-};
-if (inside(real(out), real(resolve(config.eidnara_checkout))))
+if (contains(realExisting(config.eidnara_checkout), realExisting(out)))
     fail(`--out ${out} is inside the Eidnara checkout ${config.eidnara_checkout}`);
 mkdirSync(out, { recursive: true });
 // One invocation per output directory: a second would resume runs the first still drives and
@@ -221,7 +203,9 @@ if (prereg.resizing && record) {
         );
     if (from && record.source_dir !== resolve(from))
         refuse(`${resizing} was recorded from ${record.source_dir}, not ${resolve(from)}`);
-    if (from && record.source_prereg_sha256 !== preregistrationHash(m))
+    // The sizing came from the source tier's contract, which must still be the one registered,
+    // whether or not this invocation names the source again.
+    if (record.source_prereg_sha256 !== preregistrationHash(m))
         refuse(`${resizing} was recorded under another ${m.tier} pre-registration`);
     const n = record.paired_items_per_probe_type;
     if (!Number.isInteger(n) || n <= 0)
