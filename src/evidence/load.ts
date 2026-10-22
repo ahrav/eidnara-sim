@@ -164,6 +164,21 @@ function relativeFiles(
 const blobText = (v: unknown): string =>
     v instanceof Uint8Array ? Buffer.from(v).toString("utf8") : typeof v === "string" ? v : "";
 
+class StoreUnreadable extends Error {}
+
+const isSqliteError = (e: unknown) =>
+    e instanceof Error &&
+    (e.name === "SQLiteError" || /^SQLITE_/.test(String((e as { code?: unknown }).code)));
+
+function openStore(path: string): Database | null {
+    try {
+        return new Database(path, { readonly: true });
+    } catch (caught) {
+        if (isSqliteError(caught)) return null;
+        throw caught;
+    }
+}
+
 /** The final store's memory objects and capture jobs; null parts when a database is absent. */
 export function readStore(dir: string): Pick<ArmData, "objects" | "captures"> {
     const kernelPath = join(dir, "kernel.sqlite");
@@ -173,8 +188,9 @@ export function readStore(dir: string): Pick<ArmData, "objects" | "captures"> {
     const commits = new Map<number, number>();
     let kernelRead = false;
     if (lstatSync(kernelPath, { throwIfNoEntry: false })?.isFile()) {
-        const db = new Database(kernelPath, { readonly: true });
+        const db = openStore(kernelPath);
         try {
+            if (!db) throw new StoreUnreadable();
             for (const r of db.query("select commit_seq, recorded_at from commit_log").all() as {
                 commit_seq: number;
                 recorded_at: number;
@@ -213,14 +229,20 @@ export function readStore(dir: string): Pick<ArmData, "objects" | "captures"> {
                 });
             }
             kernelRead = true;
+        } catch (caught) {
+            // A store a crash or fault left half-written reads as unobserved.
+            if (!(caught instanceof StoreUnreadable) && !isSqliteError(caught)) throw caught;
+            objects.length = 0;
         } finally {
-            db.close();
+            db?.close();
         }
     }
     let storeRead = false;
     if (lstatSync(storePath, { throwIfNoEntry: false })?.isFile()) {
-        const db = new Database(storePath, { readonly: true });
+        const db = openStore(storePath);
+        const kept = objects.length;
         try {
+            if (!db) throw new StoreUnreadable();
             const has = (t: string) =>
                 db.query("select 1 from sqlite_master where type='table' and name=?").get(t) !==
                 null;
@@ -292,8 +314,12 @@ export function readStore(dir: string): Pick<ArmData, "objects" | "captures"> {
                 }));
             }
             storeRead = true;
+        } catch (caught) {
+            if (!(caught instanceof StoreUnreadable) && !isSqliteError(caught)) throw caught;
+            objects.length = kept;
+            captures = null;
         } finally {
-            db.close();
+            db?.close();
         }
     }
     return { objects: kernelRead || storeRead ? objects : null, captures };

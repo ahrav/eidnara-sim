@@ -91,6 +91,23 @@ export function bodyText(body: ConverseBody): string {
     return out.join("\n");
 }
 
+/**
+ * The text a request put before the model: everything but the assistant messages after the
+ * last user prompt, which are the agent's own output in the turn the request continues.
+ */
+export function contextText(body: ConverseBody): string {
+    const messages = body.messages ?? [];
+    let prompt = -1;
+    messages.forEach((m, i) => {
+        const blocks = Array.isArray(m?.content) ? m.content : [];
+        if (m?.role === "user" && blocks.some((b) => typeof b?.text === "string")) prompt = i;
+    });
+    return bodyText({
+        ...body,
+        messages: messages.filter((m, i) => i <= prompt || m?.role !== "assistant"),
+    });
+}
+
 interface ToolUse {
     id: string;
     name: string;
@@ -194,8 +211,8 @@ function text(ctx: Context, c: CallRecord): string | null {
 function daemonMs(journal: Entry[], wall: number): number {
     let offset = 0;
     for (const e of journal) {
-        if (e.kind !== "ClockOffset") continue;
-        const settled = Number(e.offset_settled_ms ?? e.wall_ms);
+        if (e.offset_s === undefined) continue;
+        const settled = Number(e.offset_settled_ms ?? e.offset_wall_ms ?? e.wall_ms);
         if (settled <= wall) offset = Number(e.offset_s ?? 0);
     }
     return wall + offset * 1000;
@@ -223,9 +240,12 @@ function inScope(
     scopes: Map<string, Set<string>>,
 ): boolean | null {
     if (o.store === "kernel") {
-        const keys = scopes.get(project);
-        if (!keys || o.scope === null) return null;
-        return keys.has(o.scope.replace(/^project:/, ""));
+        if (o.scope === null) return null;
+        const key = o.scope.replace(/^project:/, "");
+        const mine = scopes.get(project);
+        if (mine) return mine.has(key);
+        for (const keys of scopes.values()) if (keys.has(key)) return false;
+        return null;
     }
     if (o.store === "notes") return o.scope?.replace(/\/+$/, "").endsWith(`/${project}`) ?? null;
     return true;
@@ -279,7 +299,10 @@ export function probeEvidence(
     const bodiesKept = run.parts !== null && turnCalls.some((c) => c.request !== undefined);
 
     // Probe-turn context: what every agent request of the turn carried, the probe text aside.
-    const turnTexts = turnCalls.map((c) => ({ c, t: text(ctx, c) }));
+    const turnTexts = turnCalls.map((c) => {
+        const b = body(ctx, c);
+        return { c, t: b ? contextText(b) : null };
+    });
     const contextHits = present.map((g) => {
         for (const { c, t } of turnTexts) {
             if (t === null) continue;
@@ -769,7 +792,7 @@ export function probeEvidence(
         memory,
         controls: control,
         delivered,
-        staleOnly: staleInContext.length > 0 && !delivered,
+        staleOnly: present.length > 0 && staleInContext.length > 0 && !delivered,
         flagged: flagged ? (sessionRow as SessionHealth) : null,
     });
 

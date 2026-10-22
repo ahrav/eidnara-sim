@@ -1755,7 +1755,19 @@ async function runArms(
     const agentText = new Map<string, AgentReply>();
     /** Each arm's call records by component, for the capability check at its finish. */
     const components = new Map<string, Record<string, number>>();
+    // A background call received after a turn began and before that turn's first agent answer
+    // came from the turn before it, so the record names that turn as its origin. A resume reads
+    // both from the call log and the journal.
+    const answered = new Set<string>();
+    const precedingTurn = new Map<string, string>();
+    const eventSession = new Map(allEvents.map((e) => [e.id, String(e.session)]));
+    for (const e of journal.entries) {
+        if (e.kind !== "EndTurn" || typeof e.arm !== "string") continue;
+        const session = eventSession.get(String(e.event));
+        if (session !== undefined) precedingTurn.set(`${e.arm}/${session}`, String(e.event));
+    }
     const noteAgent = (r: CallRecord) => {
+        if (r.component === "agent" && r.turn !== null) answered.add(`${r.arm}/${r.turn}`);
         const reply = agentReplyOf(r);
         if (reply) agentText.set(`${r.arm}/${r.session}`, reply);
         const counts = components.get(r.arm) ?? {};
@@ -1847,10 +1859,6 @@ async function runArms(
     });
     const now = () => scheduler.clock?.now() ?? 0;
     const scope = { arm: "", session: null as string | null, turn: null as string | null };
-    // A background call received after a turn began and before that turn's first agent answer
-    // came from the turn before it, so the record names that turn as its origin.
-    const answered = new Set<string>();
-    const precedingTurn = new Map<string, string>();
     const origin = (): string | null => {
         if (scope.turn === null || answered.has(`${scope.arm}/${scope.turn}`)) return scope.turn;
         return precedingTurn.get(`${scope.arm}/${scope.session}`) ?? scope.turn;
@@ -1859,9 +1867,6 @@ async function runArms(
     class RunRecords extends RecordWriter {
         override write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
             const record = super.write(partial);
-            if (record.component === "agent" && record.turn !== null) {
-                answered.add(`${record.arm}/${record.turn}`);
-            }
             noteAgent(record);
             return record;
         }

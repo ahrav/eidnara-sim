@@ -1,10 +1,11 @@
-import { mkdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { sessionHealth } from "../src/evidence/health";
 import { loadRun } from "../src/evidence/load";
 import { type RunEvidence, renderEvidence } from "../src/evidence/report";
 import { runEvidence } from "../src/evidence/stages";
 import { writeAtomic } from "../src/run/atomic";
+import { contains, realExisting } from "../src/run/paths";
 
 const USAGE = "usage: bun scripts/evidence-run.ts <run dir>... [--out <dir>]";
 
@@ -13,6 +14,14 @@ export function evidenceRun(dirs: string[], out: string | null): string {
     const names = dirs.map((d) => basename(d));
     if (out && new Set(names).size !== names.length) {
         throw new Error("--out: two run directories share a name");
+    }
+    // A target inside a run directory would put the files into the run it only reads.
+    if (out) {
+        const runs = dirs.map((d) => realpathSync(d));
+        const targets = [out, ...names.map((n) => join(out, n))];
+        if (targets.some((t) => runs.some((r) => contains(r, realExisting(t))))) {
+            throw new Error("--out lies inside a run directory; leave --out off to write there");
+        }
     }
     for (const dir of dirs) {
         const run = loadRun(dir);
@@ -50,10 +59,12 @@ if (import.meta.main) {
         console.error(USAGE);
         process.exit(2);
     }
-    const outDir = out ? resolve(out) : null;
-    if (outDir && dirs.some((d) => outDir === realpathSync(d))) {
-        console.error("--out names a run directory; leave it out to write there");
-        process.exit(2);
+    for (const d of dirs) {
+        if (!existsSync(join(d, "manifest.json"))) {
+            console.error(`${d}: no manifest.json\n${USAGE}`);
+            process.exit(2);
+        }
     }
+    const outDir = out ? resolve(out) : null;
     process.stdout.write(evidenceRun(dirs, outDir));
 }

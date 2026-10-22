@@ -6,6 +6,7 @@ import {
     mkdtempSync,
     readdirSync,
     readFileSync,
+    rmSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -399,6 +400,69 @@ describe("evidence stages on a memory arm", () => {
         expect(stage(p, "delivery")?.detail?.stale_in_context).toEqual(["TAG_OLD"]);
     });
 
+    test("the agent's own output in the probe turn is no delivery", () => {
+        const wrote = {
+            body: {
+                messages: [
+                    user("Add the error path."),
+                    toolUse("t9", "write", { content: 'throw new Error("TAG_X")' }),
+                    toolResult("t9", "ok"),
+                ],
+            },
+        };
+        const p = evidence(build({ calls: [SOURCE_READ, CAPTURED, wrote], objects: [STORED] }));
+        expect(stage(p, "delivery")?.status).toBe("failed");
+        expect(p.attributed.cause).toBe("retrieval");
+    });
+
+    test("an abstain item with only its unsettled values in context is an application failure", () => {
+        const scenario: EvidenceScenario = {
+            ...SCENARIO,
+            probes: SCENARIO.probes.map((p) => ({
+                ...p,
+                type: "P9",
+                ground_truth: {
+                    expect: "abstain",
+                    present: [],
+                    stale: ["TAG_OLD"],
+                    sources: ["e-0"],
+                },
+            })),
+        };
+        const p = evidence(build({ scenario, calls: [SOURCE_READ, searchTurn("TAG_OLD")] }));
+        expect(p.attributed.cause).toBe("application");
+    });
+
+    test("a clock jump's own offset moves the probe onto the daemon clock", () => {
+        const late = { ...STORED, created_ms: BEGIN_WALL + 1 };
+        const r = build({
+            calls: [SOURCE_READ, CAPTURED, searchTurn("TAG_X")],
+            objects: [late],
+            journal: [
+                { kind: "Event", event: "e-0", outcome: "ok" },
+                { kind: "AdvanceClock", offset_s: 5, offset_wall_ms: 1 },
+                { kind: "BeginTurn", event: "e-5", wall_ms: BEGIN_WALL },
+            ],
+        });
+        expect(stage(evidence(r), "persisted")?.status).toBe("ok");
+    });
+
+    test("a memory under a key another project owns fails eligibility in a project with no captures", () => {
+        const scenario: EvidenceScenario = {
+            ...SCENARIO,
+            probes: SCENARIO.probes.map((p) => ({ ...p, project: "gamma" })),
+            sessions: [...SCENARIO.sessions, { id: "s-9", project: "gamma" }],
+        };
+        const p = evidence(
+            build({
+                scenario,
+                calls: [SOURCE_READ, CAPTURED, searchTurn("nothing")],
+                objects: [STORED],
+            }),
+        );
+        expect(stage(p, "eligibility")?.status).toBe("failed");
+    });
+
     test("a run without request bodies reports the stages it cannot decide as unobserved", () => {
         const p = evidence(
             build({ calls: [SOURCE_READ, searchTurn("TAG_X")], parts: false, transcripts: null }),
@@ -509,7 +573,7 @@ describe("context health", () => {
 
     test("a refused compaction before an over-window prompt flags the session", () => {
         const r = build({ arm: "host", calls: [compaction(0, "content_filtered"), big] });
-        const [h] = sessionHealth(r);
+        const h = sessionHealth(r).find((x) => x.session === "s-2");
         expect(h).toMatchObject({
             cause: "compaction-refused",
             compaction_refused: 1,
@@ -530,9 +594,9 @@ describe("context health", () => {
             input_tokens: 0,
             error: "ValidationException: prompt is too long: 1000229 tokens > 1000000 maximum",
         };
-        const [h] = sessionHealth(
+        const h = sessionHealth(
             build({ arm: "host", calls: [compaction(900, "end_turn"), refused] }),
-        );
+        ).find((x) => x.session === "s-2");
         expect(h).toMatchObject({
             cause: "context-overflow",
             prompt_too_long_errors: 1,
@@ -541,11 +605,36 @@ describe("context health", () => {
     });
 
     test("a refused compaction with every prompt inside the window flags nothing", () => {
-        const [h] = sessionHealth(
+        const h = sessionHealth(
             build({ arm: "host", calls: [compaction(0, "content_filtered"), { session: "s-2" }] }),
-        );
+        ).find((x) => x.session === "s-2");
         expect(h?.compaction_refused).toBe(1);
         expect(h?.cause).toBeNull();
+    });
+
+    test("a refusal after the session's last call flags the next turn the journal began", () => {
+        const r = build({
+            arm: "host",
+            calls: [
+                compaction(0, "content_filtered"),
+                { session: "s-2", turn: null, input_tokens: 300_000 },
+            ],
+            journal: [{ kind: "BeginTurn", event: "e-5", wall_ms: 5 }],
+        });
+        const h = sessionHealth(r).find((x) => x.session === "s-2");
+        expect(h?.flagged_from).toBe("e-5");
+    });
+
+    test("a session the arm ran with no calls still gets a row", () => {
+        const scenario = {
+            ...SCENARIO,
+            sessions: [{ id: "s-1", project: "alpha", forced_p90: true }],
+        };
+        const r = build({ scenario, calls: [] });
+        (r.arms.get("eidnara") as ArmData).profile = { plugin: true, host_compaction: true };
+        expect(sessionHealth(r).find((x) => x.session === "s-1")?.p90_native_compaction).toBe(
+            false,
+        );
     });
 
     test("the comparison keeps flagged turns apart", () => {
@@ -566,7 +655,7 @@ describe("context health", () => {
         };
         const r = build({ scenario, calls: [compaction(900, "end_turn")] });
         (r.arms.get("eidnara") as ArmData).profile = { plugin: true, host_compaction: true };
-        expect(sessionHealth(r)[0]?.p90_native_compaction).toBe(true);
+        expect(sessionHealth(r).find((x) => x.session === "s-2")?.p90_native_compaction).toBe(true);
     });
 });
 
@@ -633,6 +722,8 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     store.run("insert into memory_capture_jobs values ('sim-s-1', 'KEY_A', 1, 1, null)");
     store.close();
     expect(() => evidenceRun([dir, dir], join(root, "dup"))).toThrow(/share a name/);
+    expect(() => evidenceRun([dir], root)).toThrow(/inside a run directory/);
+    expect(() => evidenceRun([dir], join(dir, "ev"))).toThrow(/inside a run directory/);
     const before = readdirSync(dir).sort();
     const out = join(root, "out");
     const report = evidenceRun([dir], out);
@@ -646,4 +737,7 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     expect(readFileSync(join(out, "evidence.md"), "utf8")).toBe(report);
     expect(report).toContain("| run | eidnara | q-1 | P1 | fail |");
     expect(loadRun(dir).arms.get("eidnara")?.objects?.[0]?.created_ms).toBe(5000);
+    writeFileSync(join(dir, "eidnara", "final-store", "kernel.sqlite"), "not a database");
+    rmSync(join(dir, "eidnara", "final-store", "store.db"));
+    expect(loadRun(dir).arms.get("eidnara")?.objects).toBeNull();
 });

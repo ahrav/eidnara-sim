@@ -46,6 +46,19 @@ export const refusedCompaction = (c: CallRecord) =>
     c.error === null &&
     (c.finish_reason === "content_filtered" || c.output_tokens === 0);
 
+/** The first turn of the session the arm began at or after `wall`. */
+function nextTurn(run: RunData, arm: string, session: string, wall: number): string | null {
+    const sessionOf = new Map(run.scenario.events.map((e) => [e.id, e.session]));
+    const begin = run.journal.find(
+        (e) =>
+            e.kind === "BeginTurn" &&
+            e.arm === arm &&
+            e.wall_ms >= wall &&
+            sessionOf.get(String(e.event)) === session,
+    );
+    return begin ? String(begin.event) : null;
+}
+
 /**
  * `cause` is `compaction-refused` when a refused compaction precedes the session's first prompt
  * over the window or prompt-too-long refusal, and `context-overflow` when such a prompt has no
@@ -55,6 +68,12 @@ export function sessionHealth(run: RunData): SessionHealth[] {
     const projectOf = new Map(run.scenario.sessions.map((s) => [s.id, s.project]));
     const p90 = new Map(run.scenario.sessions.map((s) => [s.id, s.forced_p90 === true]));
     const bySession = new Map<string, CallRecord[]>();
+    const sessionOf = new Map(run.scenario.events.map((e) => [e.id, e.session]));
+    for (const e of run.journal) {
+        if (e.kind !== "Event" || typeof e.arm !== "string") continue;
+        const session = sessionOf.get(String(e.event));
+        if (session) bySession.set(`${e.arm}\u0000${session}`, []);
+    }
     for (const c of run.calls) {
         if (c.session === null || c.component === "user-sim" || c.component === "judge") continue;
         const key = `${c.arm}\u0000${c.session}`;
@@ -71,10 +90,9 @@ export function sessionHealth(run: RunData): SessionHealth[] {
         const mark = (c: CallRecord, why: string): HealthMark => ({
             seq: c.seq,
             turn:
-                c.origin_turn ??
                 c.turn ??
                 sorted.find((x) => x.seq > c.seq && x.turn !== null)?.turn ??
-                null,
+                nextTurn(run, arm, session, c.started_wall_ms),
             why,
         });
         let first_refused: HealthMark | null = null;
