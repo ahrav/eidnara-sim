@@ -656,7 +656,7 @@ function p6(r: ArtefactReader, c: Check): Outcome {
     }
     const tokens = turnCalls.reduce((n, x) => n + x.input_tokens + x.output_tokens, 0);
     const w = workFor(r, c, commands, commandText);
-    const asks = (answer: string) => /\?\s*$/m.test(answer);
+    const asks = (answer: string) => (answer.trim().split("\n").at(-1) ?? "").trim().endsWith("?");
     const pass = c.clarify
         ? asks(r.answer()) &&
           matchesAll(r.answer(), c.clarify) &&

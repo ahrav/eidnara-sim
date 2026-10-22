@@ -326,6 +326,7 @@ describe("grading harness", () => {
         const both =
             "Two items are open: jaunty_yak_count and the LUNAR_HERON command.\nWhich first?";
         expect(answerWith(both, "")).toBe("pass");
+        expect(answerWith(`${both}\nI will start with the first one.`, "")).toBe("fail");
         expect(answerWith("Which one should I start with?", "")).toBe("fail");
         expect(answerWith("I added jaunty_yak_count and LUNAR_HERON.", "")).toBe("fail");
         expect(answerWith(both)).toBe("fail");
