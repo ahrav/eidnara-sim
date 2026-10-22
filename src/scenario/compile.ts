@@ -126,14 +126,14 @@ export interface Fact {
 }
 
 /**
- * A probe's expected behaviour and its evidence. `present` lists the generated literals correct
- * work carries, `absent` those it must not carry, and `stale` the superseded literals; `sources`
+ * A probe's expected behaviour and its evidence. `present` lists, per rule pattern, the generated
+ * literals of which correct work carries at least one, `absent` those it must not carry, and `stale` the superseded literals; `sources`
  * names every event that exposes the fact, each before the probe.
  */
 export interface GroundTruth {
     expect: Expect;
     basis: Basis;
-    present: string[];
+    present: string[][];
     absent: string[];
     stale: string[];
     supersedes: string[];
@@ -188,18 +188,22 @@ const pascal = (word: string) =>
         .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
         .join("");
 
-/** The placeholder names in a check's positive (or negative) grading keys. */
-export function placeholders(check: unknown, positive: boolean): string[] {
+/**
+ * The placeholder names of a check's positive (or negative) grading keys, one group per pattern:
+ * a pattern holds when any one of its group's values occurs, so the group lists alternatives.
+ */
+export function placeholderGroups(check: unknown, positive: boolean): string[][] {
     if (!check || typeof check !== "object") return [];
-    const out: string[] = [];
+    const out: string[][] = [];
     for (const [k, v] of Object.entries(check)) {
         if (IGNORED.has(k) || NEGATIVE(k) === positive) continue;
         for (const text of [v].flat()) {
             if (typeof text !== "string") continue;
-            for (const [, name] of text.matchAll(/\{(\w+)\}/g)) if (name) out.push(name);
+            const names = [...text.matchAll(/\{(\w+)\}/g)].flatMap(([, n]) => (n ? [n] : []));
+            if (names.length > 0) out.push([...new Set(names)]);
         }
     }
-    return [...new Set(out)];
+    return out;
 }
 
 const MARKERS = [
@@ -524,10 +528,16 @@ export async function compileScenario(input: CompileInput) {
     };
     const negate = (c: Check): Check =>
         Object.fromEntries(lists(c, "must").map(([k, v]) => [`${k}_not`, v]));
-    /** A later instance forbids its predecessor's requirements and everything that one forbade. */
+    /**
+     * A later instance forbids its predecessor's requirements, its forbidden values that stand
+     * apart from a requirement, and everything earlier instances forbade.
+     */
     const inherit = (base: Check, prev: Check | undefined, prevInherited: Check): Check => {
         if (!prev) return {};
-        const forbidden = append(append(negate(prev), prev), prevInherited);
+        const ownForbids = Object.fromEntries(
+            lists(prev, "must_not").filter(([k]) => prev[k.replace(/_not$/, "")] === undefined),
+        );
+        const forbidden = append(append(negate(prev), ownForbids), prevInherited);
         const required = (k: string) =>
             (base[k.replace(/_not$/, "")] as string[] | undefined) ?? [];
         return Object.fromEntries(
@@ -723,8 +733,8 @@ export async function compileScenario(input: CompileInput) {
             const path = tpl.example ? render(tpl.example.path, vars) : `notes/${word}.md`;
             const pushed =
                 revision > 0
-                    ? "I pushed a change that replaces something we set up earlier. Look over the latest commit before we continue."
-                    : "I pushed a small change to the repo. Look over the latest commit before we continue.";
+                    ? `I pushed a change to \`${path}\` that replaces something we set up earlier. Look it over before we continue.`
+                    : `I pushed a small change to \`${path}\`. Look it over before we continue.`;
             conveyed = cue(pushed, commits([{ path, content }]), content);
         } else if (manner === "tool_error") {
             const path = `scripts/check_${word}.sh`;
@@ -845,37 +855,49 @@ export async function compileScenario(input: CompileInput) {
 
         const bound = [...GENERATED, ...Object.keys(variant)];
         const words = Object.values(variant);
-        const litsOf = (c: unknown, v: Record<string, string>, positive: boolean) =>
-            placeholders(c, positive)
-                .filter((k) => bound.includes(k))
-                .map((k) => v[k] as string);
-        const taskLits = (k: 0 | 1) => litsOf(tasks[k].tpl.check, tasks[k].vars, true);
+        const groupsOf = (c: unknown, v: Record<string, string>) =>
+            placeholderGroups(c, true)
+                .map((g) => g.filter((k) => bound.includes(k)).map((k) => v[k] as string))
+                .filter((g) => g.length > 0);
+        const absentOf = (c: unknown, v: Record<string, string>) => [
+            ...new Set(
+                placeholderGroups(c, false)
+                    .flat()
+                    .filter((k) => bound.includes(k))
+                    .map((k) => v[k] as string),
+            ),
+        ];
+        const taskLits = (k: 0 | 1) => groupsOf(tasks[k].tpl.check, tasks[k].vars);
         const ownPresent = isPlan
             ? planExpect === "clarify"
                 ? [...taskLits(0), ...taskLits(1)]
                 : taskLits(planRevised ? 1 : 0)
-            : litsOf(tpl.check, vars, true);
-        const ownAbsent = isPlan ? [] : litsOf(tpl.check, vars, false);
+            : groupsOf(tpl.check, vars);
+        const ownAbsent = isPlan ? [] : absentOf(tpl.check, vars);
         const replaced = [
             ...line.literals,
-            ...(swap ? Object.values(swap) : []),
-            ...(planRevised ? taskLits(0) : []),
+            ...[...statementTemplate.matchAll(/\{(\w+)\}/g)].flatMap(([, k]) =>
+                swap && k && k in swap ? [swap[k as keyof typeof swap]] : [],
+            ),
+            ...(planRevised ? taskLits(0).flat() : []),
             ...(f.kind === "decision" ? ownAbsent : []),
         ];
-        const stale = [...new Set(replaced)].filter((x) => !ownPresent.includes(x));
+        const stale = [...new Set(replaced)].filter((x) => !ownPresent.flat().includes(x));
+        const QUOTES = ["double", "single"];
         const truthFor = (expect: Expect, outSide = false): TruthOf => {
-            const present = outSide ? litsOf(tpl.out_check, vars, true) : ownPresent;
-            const absent = outSide ? litsOf(tpl.out_check, vars, false) : ownAbsent;
+            const present = outSide ? groupsOf(tpl.out_check, vars) : ownPresent;
+            const style = renderDeep<Check>(
+                (outSide ? tpl.out_check : tpl.check) ?? {},
+                vars,
+            ).quote_style_must;
+            const opposite = QUOTES.filter((q) => typeof style === "string" && q !== style);
+            const absent = [...(outSide ? absentOf(tpl.out_check, vars) : ownAbsent), ...opposite];
             if (expect === "avoid") {
-                return {
-                    expect,
-                    present: [],
-                    absent: [...new Set([...present, ...absent])],
-                    stale,
-                };
+                const all = [...new Set([...present.flat(), ...absent])];
+                return { expect, present: [], absent: all, stale };
             }
             if (expect === "abstain") return { expect, present: [], absent: [], stale };
-            const apart = (xs: string[]) => xs.filter((x) => !present.includes(x));
+            const apart = (xs: string[]) => xs.filter((x) => !present.flat().includes(x));
             return { expect, present, absent: apart(absent), stale: apart(stale) };
         };
         const probeText = render(tpl.probe, vars);
@@ -884,7 +906,8 @@ export async function compileScenario(input: CompileInput) {
         if (f.type === "P1") {
             const before = win.filter((x) => x.start_ms < opened);
             const control = truthFor("baseline");
-            addProbe("P1-control", project.id, probeText, check, before, control, all, null);
+            const unprimed = append(append(base, superseded), negate(obsolete));
+            addProbe("P1-control", project.id, probeText, unprimed, before, control, all, null);
             addProbe("P1", project.id, probeText, check, fromConveyed, truthFor("apply"));
             addProbe("P2", project.id, outText, mustNot, fromConveyed, truthFor("avoid"));
             const twin = twinOf(project.id);
@@ -991,7 +1014,7 @@ export async function compileScenario(input: CompileInput) {
         line.inherited = inherited;
         line.outBase.push(outBase);
         line.outInherited = outInherited;
-        line.literals.push(...ownPresent, ...ownAbsent);
+        line.literals.push(...ownPresent.flat(), ...ownAbsent);
         line.words.push(...words);
     }
     for (const i of range(0, perType)) {
@@ -1212,14 +1235,21 @@ export async function compileScenario(input: CompileInput) {
     });
     const diffSessions = new Set(diffs.map((d) => d.session));
     const guarded = new Map<string, number>();
+    const guard = (session: string, n: number) =>
+        guarded.set(session, Math.max(guarded.get(session) ?? 0, n));
     for (const p of probes) {
-        if (!p.text) continue;
+        if (p.type === "P14") {
+            guard(p.session, (p.check as { window_to_turn: number }).window_to_turn);
+            continue;
+        }
         const sources = (p.ground_truth?.sources ?? []).map((id) => events[order.get(id) ?? -1]);
         for (const e of [events[order.get(p.event ?? "") ?? -1], ...sources]) {
-            if (e?.kind !== "user_turn") continue;
-            const n = (e.index as number) + 1;
-            guarded.set(e.session as string, Math.max(guarded.get(e.session as string) ?? 0, n));
+            if (e?.kind === "user_turn") guard(e.session as string, (e.index as number) + 1);
         }
+    }
+    for (const h of plans.flatMap((x) => x.history)) {
+        const e = events[order.get(h.event) ?? -1];
+        if (e?.kind === "user_turn") guard(e.session as string, (e.index as number) + 1);
     }
     const faults = scheduleFaults(
         prereg.tier,
@@ -1367,7 +1397,8 @@ export function proveExposure(o: Exposure): void {
                 );
             }
         }
-        const own = [...truth.present, ...truth.absent].filter((x) => !truth.stale.includes(x));
+        const present = truth.present.flat();
+        const own = [...present, ...truth.absent].filter((x) => !truth.stale.includes(x));
         for (const lit of own) {
             if (!sources.some((e) => holds(eventText(e), lit))) {
                 throw new Error(`${p.id}: no source of ${fact.id} exposes ${lit}`);
@@ -1388,9 +1419,9 @@ export function proveExposure(o: Exposure): void {
                 }
             }
         }
-        if (truth.present.length > 0) {
+        if (present.length > 0) {
             const carries = all.filter((i) =>
-                truth.present.some((lit) => holds(eventText(o.events[i] as ScenarioEvent), lit)),
+                present.some((lit) => holds(eventText(o.events[i] as ScenarioEvent), lit)),
             );
             const current = Math.max(...carries);
             for (const e of o.events.slice(current + 1, at)) {
@@ -1403,14 +1434,19 @@ export function proveExposure(o: Exposure): void {
             }
         }
         if (fact.form === "tool_result") {
-            const lit = truth.present.find((x) => [...tree.values()].some((c) => holds(c, x)));
+            const lit = present.find((x) => [...tree.values()].some((c) => holds(c, x)));
             if (lit) throw new Error(`${p.id}: the tree still holds the check that prints ${lit}`);
         }
         if (p.type === "P3") {
             const files = [...tree.values()];
-            const missing = truth.present.find((lit) => !files.some((c) => holds(c, lit)));
-            if (missing)
-                throw new Error(`${p.id}: the authoritative ${missing} is not in the tree`);
+            const missing = truth.present.find(
+                (g) => !g.some((x) => files.some((c) => holds(c, x))),
+            );
+            if (missing) {
+                throw new Error(
+                    `${p.id}: the authoritative ${missing.join(" or ")} is not in the tree`,
+                );
+            }
         }
         p.ground_truth = { ...rest, sources: sources.map((e) => e.id) };
     }

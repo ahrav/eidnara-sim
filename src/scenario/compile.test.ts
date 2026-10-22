@@ -566,7 +566,7 @@ describe("compiled S scenario", async () => {
             expect(g.basis).toBe(fact?.basis ?? "instruction");
             for (const id of g.sources) expect(order.get(id) ?? Infinity).toBeLessThan(at);
             const exposed = g.sources.map((id) => textOf(s.events[order.get(id) ?? -1] ?? {}));
-            for (const lit of g.present) {
+            for (const lit of g.present.flat()) {
                 expect({
                     probe: p.id,
                     lit,
@@ -583,7 +583,9 @@ describe("compiled S scenario", async () => {
     test("a probe's ground truth never lists a literal as both carried and forbidden", () => {
         for (const p of s.probes.filter((x) => x.ground_truth)) {
             const g = p.ground_truth as NonNullable<typeof p.ground_truth>;
-            const clash = g.present.filter((x) => g.absent.includes(x) || g.stale.includes(x));
+            const clash = g.present
+                .flat()
+                .filter((x) => g.absent.includes(x) || g.stale.includes(x));
             expect({ probe: p.id, clash }).toEqual({ probe: p.id, clash: [] });
         }
     });
@@ -647,6 +649,70 @@ describe("compiled S scenario", async () => {
         }
     });
 
+    test("a hand-applied commit's first turn names the file it adds", () => {
+        for (const f of s.facts.filter((x) => x.manner === "hand_applied_diff")) {
+            const add = s.events.find(
+                (e) => e.kind === "apply_diff" && e.fact === f.id && !e.remove,
+            );
+            const first = all.find((t) => t.session === add?.session && t.index === 0);
+            expect(first?.text).toContain(`\`${String(add?.path)}\``);
+        }
+    });
+
+    test("a revised line's control and later checks stay passable", async () => {
+        const m = await compileScenario(loadCompileInput(201, "M", hashEmbedder, true));
+        let revisedControls = 0;
+        for (const c of m.probes.filter((p) => p.type === "P1-control")) {
+            const f = m.facts.find((x) => x.id === c.fact);
+            if (!f || f.revision === 0) continue;
+            revisedControls++;
+            const p1 = m.probes.find((p) => p.type === "P1" && p.fact === c.fact);
+            const forbids = (check: unknown) =>
+                Object.entries(check as Record<string, unknown>)
+                    .filter(([k]) => k.endsWith("_not"))
+                    .reduce((n, [, v]) => n + (v as string[]).length, 0);
+            expect(forbids(c.check)).toBeLessThan(forbids(p1?.check));
+        }
+        expect(revisedControls).toBeGreaterThan(0);
+        const tags = m.probes.filter(
+            (p) =>
+                p.type === "P13" &&
+                m.facts.find((f) => f.id === p.fact)?.template === "session-commit-tag" &&
+                (m.facts.find((f) => f.id === p.fact)?.revision ?? 0) > 0,
+        );
+        expect(tags.length).toBeGreaterThan(0);
+        for (const p of tags) {
+            const tag = p.ground_truth?.present.flat()[0] ?? "";
+            const commit = `git commit -m '[${tag}] wip'`;
+            const c = p.check as { commands_must: string[]; commands_must_not: string[] };
+            expect(c.commands_must.every((x) => new RegExp(x).test(commit))).toBe(true);
+            expect(c.commands_must_not.some((x) => new RegExp(x).test(commit))).toBe(false);
+        }
+    });
+
+    test("a provider fault fires after every probe, source, plan status, and P14 window of its session", () => {
+        const guarded = new Map<string, number>();
+        const guard = (session: string, n: number) =>
+            guarded.set(session, Math.max(guarded.get(session) ?? 0, n));
+        const turnOf = (id: string) => all.find((t) => t.id === id);
+        for (const p of s.probes) {
+            if (p.type === "P14")
+                guard(p.session, (p.check as { window_to_turn: number }).window_to_turn);
+            for (const id of [p.event ?? "", ...(p.ground_truth?.sources ?? [])]) {
+                const t = turnOf(id);
+                if (t) guard(t.session, t.index + 1);
+            }
+        }
+        for (const h of s.plans.flatMap((x) => x.history)) {
+            const t = turnOf(h.event);
+            if (t) guard(t.session, t.index + 1);
+        }
+        for (const f of s.faults.filter((x) => x.trigger.kind === "user_turn")) {
+            const { session, n } = f.trigger as { session: string; n: number };
+            expect(n).toBeGreaterThan(guarded.get(session) ?? 0);
+        }
+    });
+
     test("P6 items are resume or clarify, each with one plan open at its probe", () => {
         const p6 = s.probes.filter((x) => x.type === "P6");
         const kinds = new Set(p6.map((p) => p.ground_truth?.expect));
@@ -676,7 +742,7 @@ describe("compiled S scenario", async () => {
             const sources = (p.ground_truth?.sources ?? []).map(
                 (id) => s.events[order.get(id) ?? -1],
             );
-            const [identity] = p.ground_truth?.present ?? [];
+            const [identity] = p.ground_truth?.present.flat() ?? [];
             expect(identity).toMatch(/^[A-Z][a-z]+[A-Z][a-z]+$/);
             const lang = s.projects.find((x) => x.id === p.project)?.lang;
             if (f?.form === "tool_result") {
@@ -1265,7 +1331,7 @@ describe("exposure proof", () => {
         fact: "f-1",
         expect: "apply" as const,
         basis: "observation" as const,
-        present: ["54321"],
+        present: [["54321"]],
         absent: [],
         stale: ["12345"],
         supersedes: [],

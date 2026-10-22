@@ -312,6 +312,17 @@ function renderedProblems(where: string, kind: string, t: Json, vars: Vars): str
     if (kind === "plan" && !isStringList(check.must)) {
         problems.push(`${where}: check needs must, which a clarify item names`);
     }
+    if (kind === "plan") {
+        const text = JSON.stringify([t.task, t.check]);
+        const rebound = [...text.matchAll(/\{(\w+)\}/g)].some(
+            ([, k]) => k !== "token" && k !== "TOKEN",
+        );
+        if (rebound) {
+            problems.push(
+                `${where}: a plan task binds only {token} and {TOKEN}, which a second task rebinds`,
+            );
+        }
+    }
     if (kind === "scoped_update") {
         for (const field of ["update", "out_probe"]) {
             if (typeof t[field] !== "string" || t[field].trim() === "") {
@@ -366,7 +377,9 @@ function variantProblems(where: string, variants: unknown): string[] {
             problems.push(`${where}: a variant rebinds a generated placeholder`);
         }
     }
-    if (new Set(variants.map((v) => JSON.stringify(v))).size !== variants.length) {
+    const canonical = (v: Json) =>
+        JSON.stringify(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1)));
+    if (new Set((variants as Json[]).map(canonical)).size !== variants.length) {
         problems.push(`${where}: variants repeat`);
     }
     return problems;

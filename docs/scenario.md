@@ -103,8 +103,12 @@ of instance `k`. Instance `k + 1` supersedes instance `k` explicitly:
   updates) draws a different `variants` entry per instance, such as the next
   log level or the flipped quote rule;
 - `supersedes` names instance `k`, and the check forbids what instance `k`
-  required and everything it forbade, except a pattern the new check
-  requires;
+  required, the values it forbade apart from a requirement (a decision's
+  stated figure, an anchor value; a commit-tag rule's complement of its own
+  requirement stays out), and everything earlier instances forbade, except a
+  pattern the new check requires. The P1 control of a revised constraint
+  carries the new requirement without those inherited forbids, since its
+  agent has yet to hear the revision;
 - the session that conveys instance `k + 1` opens with commits that remove
   every file the line committed earlier and the new instance does not
   rewrite, so the repository never holds two live states of one line; a
@@ -131,7 +135,7 @@ pasted, and a P3 value read from its authoritative file).
 | Probe | Fact kind | Placement |
 |---|---|---|
 | P1 | constraint | Later session of the same project, inside the constraint's scope |
-| P1 control | the P1 fact | The same task as the P1 item, in the same window before the fact is conveyed; `ground_truth.expect` is `baseline` and its `sources` are empty |
+| P1 control | the P1 fact | The same task as the P1 item, in the same window before the fact is conveyed; `ground_truth.expect` is `baseline`, its `sources` are empty, and a revised line's control omits the forbids it would inherit |
 | P2 | the P1 fact | Later session of the same project, outside the scope; the check forbids the convention |
 | P3 | decision | A later session opens with a commit of the template's authoritative file (one stable path per template) and a first turn naming that path and saying it replaces the stated figure; the commit removes the line's notes and check scripts, and the probe follows in a later session; the check requires the file's value and forbids the stated one |
 | P4 | scoped update | A second conveyance narrows the rule to one module; items alternate inside and outside it, with the alternation offset by seed parity so the pooled counts balance per language across seeds, and `check.side` says which (`in` or `out`) |
@@ -184,8 +188,8 @@ Commits fire only between sessions, so every commit lands at the start of
 the session whose first turn points at it:
 
 - a hand-applied diff adds a file whose content implies the fact, and the
-  first turn asks the agent to look over the latest commit without stating
-  the fact. A constraint template whose scope is a directory names an example
+  first turn names that file and asks the agent to look it over without
+  stating the fact. A constraint template whose scope is a directory names an example
   path inside that scope (`src/cmd/{token}.rs`, `src/adapter/{token}.ts`,
   `tests/{token}.rs`, `test/{codename}.{token}.test.ts`); every other template
   adds `notes/{token}.md`, a note that states the fact's current state;
@@ -206,8 +210,9 @@ tool-output sample.
 
 Each probe with user text carries `ground_truth`: `expect` (`apply`,
 `baseline`, `avoid`, `answer`, `abstain`, `explain`, `resume`, or
-`clarify`), `basis`, `present` (the generated literals and variant words
-correct work carries), `absent` (those it must not carry), `stale` (literals of
+`clarify`), `basis`, `present` (per rule pattern, the generated literals and
+variant words of which correct work carries at least one), `absent` (those it must not carry, including the other delimiter of a quote-style
+rule), `stale` (literals of
 superseded instances, decoys, a dropped plan step, and a P3 fact's stated
 figure), `supersedes`, and `sources` (every event that exposes the fact). The
 compiler proves each record against the event sequence and refuses the
@@ -222,12 +227,14 @@ scenario when:
   level is a common word, so it is left to the exposure and grading checks);
 - a `stale` generated literal reaches the agent after the last source that
   carries a `present` literal;
-- a P3 item's authoritative value is missing from the tree, or a
+- a P3 item's authoritative value (one literal of each pattern) is missing
+  from the tree, or a
   `tool_result` P12 item's check script is still in it;
 - a P1 control follows a source of its fact.
 
-Provider faults trigger after the last probe or source turn of their session,
-so a fault never withholds a source a probe depends on.
+Provider faults trigger after the last probe, source, or plan status turn of
+their session and after any P14 window in it, so a fault never withholds a
+source a probe depends on or a turn the ledger records.
 
 ## Compile-time refusals
 
@@ -269,7 +276,7 @@ daemon. Each type gets one episode.
 
 | Layer | Trigger | Strategy |
 |---|---|---|
-| Proxy sink (provider faults) | The Nth user turn of a session with at least two turns, after its last probe or source turn; each provider episode gets its own session | single (1 call), burst (3 calls), intermittent (probability 0.3 over 10 calls), or persistent (to the end of the session) |
+| Proxy sink (provider faults) | The Nth user turn of a session with at least two turns, after its last probe, source, or plan status turn and any P14 window; each provider episode gets its own session | single (1 call), burst (3 calls), intermittent (probability 0.3 over 10 calls), or persistent (to the end of the session) |
 | Scheduler, mid-fold SIGKILL | The first observed summarizer call of a forced p90 session (OQ-8, schedule half) | single |
 | Clock, laptop sleep | The start of the session after the widest idle gap, among sessions that start without a hand-applied diff | single, with `duration_ms` equal to that gap, so the jump holds no events (SIM-P18) |
 | Scheduler, every other type | The start of a session after the first | single; the store-full fault is persistent for that one session (`sessions: 1`) |
@@ -301,15 +308,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `df5a33dc` | 0.2684 | 0.4949 |
-| S | 102 | `884c9706` | 0.2647 | 0.5081 |
-| M | 201 | `08feb271` | 0.2584 | 0.5807 |
-| M | 202 | `fa6495bb` | 0.2578 | 0.551 |
-| M | 203 | `10664511` | 0.261 | 0.551 |
-| L | 301 | `6b880393` | 0.2582 | 0.5807 |
-| L | 302 | `14170b5e` | 0.2603 | 0.5807 |
-| L | 303 | `907a1db8` | 0.2615 | 0.5807 |
-| XL | 401 | `baed7e80` | 0.2579 | 0.5807 |
+| S | 101 | `793ff269` | 0.2687 | 0.4949 |
+| S | 102 | `04749e74` | 0.265 | 0.5075 |
+| M | 201 | `e36d111a` | 0.2584 | 0.5807 |
+| M | 202 | `9d1bbe8d` | 0.2578 | 0.551 |
+| M | 203 | `7b7c5b00` | 0.261 | 0.551 |
+| L | 301 | `4c8aa927` | 0.2582 | 0.5807 |
+| L | 302 | `a4b854f9` | 0.2603 | 0.5807 |
+| L | 303 | `a2e80ab4` | 0.2615 | 0.5807 |
+| XL | 401 | `d6207fd3` | 0.2579 | 0.5807 |
 
 ## Known limits
 

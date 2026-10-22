@@ -138,7 +138,7 @@ export interface FaultSession {
     forced_p90: boolean;
     has_diff: boolean;
     gap_before_ms: number;
-    /** The last turn (1-based) that delivers a probe or a source a probe depends on; 0 when none. */
+    /** The last turn (1-based) that delivers a probe, a source, a plan status, or a P14 window; 0 when none. */
     guarded_turns?: number;
 }
 
