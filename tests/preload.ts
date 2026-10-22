@@ -25,7 +25,11 @@ for (const name of readdirSync(base)) {
     if (!Number.isSafeInteger(pid) || pid === process.pid || alive(pid)) continue;
     const path = join(base, name);
     if (lstatSync(path, { throwIfNoEntry: false })?.isDirectory()) {
-        rmSync(path, { recursive: true, force: true });
+        try {
+            rmSync(path, { recursive: true, force: true });
+        } catch (caught) {
+            console.error(`stale test temp ${path} left in place: ${(caught as Error).message}`);
+        }
     }
 }
 
@@ -34,5 +38,9 @@ process.env.SIM_TEST_TMP_BASE = base;
 process.env.TMPDIR = TEST_TMP;
 
 afterAll(() => {
-    rmSync(TEST_TMP, { recursive: true, force: true });
+    try {
+        rmSync(TEST_TMP, { recursive: true, force: true });
+    } catch (caught) {
+        console.error(`test temp ${TEST_TMP} left in place: ${(caught as Error).message}`);
+    }
 });

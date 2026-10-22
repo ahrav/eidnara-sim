@@ -350,11 +350,16 @@ export function probeEvidence(
 
     // Source: delivered before the probe, then seen by the model in the project's sessions.
     const sourceStage = (): Stage => {
+        // A scenario some of whose probes carry ground truth leaves it off the probe types that
+        // trace no literal; one with none predates ground truth.
         if (probe.ground_truth === undefined) {
+            const traced = run.scenario.probes.some((p) => p.ground_truth !== undefined);
             return {
                 stage: "source",
-                status: "unobserved",
-                reason: "the scenario records no ground truth for the probe",
+                status: traced ? "n/a" : "unobserved",
+                reason: traced
+                    ? "the probe type traces no literal"
+                    : "the scenario records no ground truth",
                 pointers: [{ path: "scenario.json", at: probe.id }],
             };
         }
