@@ -137,6 +137,8 @@ export function readPiTranscripts(sessionsDir: string): Map<string, TranscriptRe
                 }
                 const m = entry.message;
                 if (m?.role !== "toolResult" || typeof m.toolCallId !== "string") continue;
+                // Retrieval reads Eidnara's own tools only; other results stay unread.
+                if (typeof m.toolName !== "string" || !m.toolName.startsWith("eidnara_")) continue;
                 const text = (Array.isArray(m.content) ? m.content : [])
                     .map((c: { text?: unknown }) => (typeof c?.text === "string" ? c.text : ""))
                     .join("\n");
@@ -344,6 +346,10 @@ export function readGrades(path: string, legacy: boolean): GradeRecord[] {
         // A current run's refused log is damaged or tampered, and its refusal stands.
         if (!legacy || !(caught instanceof GradeRefused)) throw caught;
     }
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.nlink !== 1) {
+        throw new GradeRefused(`grade log ${path} is a link, not a regular file`);
+    }
     const latest = new Map<string, GradeRecord>();
     for (const g of readJsonl<GradeRecord>(path)) {
         if (typeof g?.item !== "string" || typeof g.arm !== "string") continue;
@@ -384,7 +390,14 @@ export function loadRun(dir: string): RunData {
         : [];
     const arms = new Map<string, ArmData>();
     for (const arm of manifest.order ?? Object.keys(manifest.arms ?? {})) {
+        // An arm is one directory of this run; a name or link that leaves it is refused.
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(arm)) {
+            throw new Error(`${dir}: arm ${JSON.stringify(arm)} is not a directory name`);
+        }
         const root = join(dir, arm);
+        if (lstatSync(root, { throwIfNoEntry: false })?.isSymbolicLink()) {
+            throw new Error(`${root} is a link; an arm directory must be the run's own`);
+        }
         const toolsPath = join(root, "tools.jsonl");
         const tools = lstatSync(toolsPath, { throwIfNoEntry: false })?.isFile()
             ? readTools(toolsPath)

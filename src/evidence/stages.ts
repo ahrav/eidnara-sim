@@ -350,7 +350,9 @@ export function probeEvidence(
     const projectSessions = new Set(
         run.scenario.sessions.filter((s) => s.project === project).map((s) => s.id),
     );
-    const bodiesKept = run.parts !== null && turnCalls.some((c) => c.request !== undefined);
+    // Every probe-turn body must rebuild for a negative answer; one missing leaves it unobserved.
+    const bodiesKept =
+        run.parts !== null && turnCalls.length > 0 && turnCalls.every((c) => body(ctx, c) !== null);
 
     // Probe-turn context: what every agent request of the turn carried, the probe text aside.
     const turnTexts = turnCalls.map((c) => {

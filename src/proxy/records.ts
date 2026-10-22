@@ -69,7 +69,8 @@ export interface CallRecord {
     request?: RequestRef;
     /**
      * The turn a background call belongs to when it differs from `turn`: the session's preceding
-     * turn, for a call received after the next turn began and before that turn's first answer.
+     * turn, for a call received between turns, or after the next turn began and before that
+     * turn's first answer.
      */
     origin_turn?: string;
 }

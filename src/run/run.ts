@@ -1863,7 +1863,7 @@ async function runArms(
     const now = () => scheduler.clock?.now() ?? 0;
     const scope = { arm: "", session: null as string | null, turn: null as string | null };
     const origin = (): string | null => {
-        if (scope.turn === null || answered.has(`${scope.arm}/${scope.turn}`)) return scope.turn;
+        if (scope.turn !== null && answered.has(`${scope.arm}/${scope.turn}`)) return scope.turn;
         return precedingTurn.get(`${scope.arm}/${scope.session}`) ?? scope.turn;
     };
     let jobSeq = journal.entries.filter((e) => e.kind === "RegisterJob").length;

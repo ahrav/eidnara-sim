@@ -558,6 +558,13 @@ describe("evidence stages on a memory arm", () => {
         expect(stage(p, "eligibility")?.status).toBe("unobserved");
     });
 
+    test("a probe-turn body that no longer rebuilds leaves delivery unobserved", () => {
+        const r = build({ calls: [SOURCE_READ, searchTurn("nothing")] });
+        const last = r.calls.at(-1) as CallRecord;
+        last.request = { ...(last.request as NonNullable<CallRecord["request"]>), bytes: 1 };
+        expect(stage(evidence(r), "delivery")?.status).toBe("unobserved");
+    });
+
     test("a run without request bodies reports the stages it cannot decide as unobserved", () => {
         const p = evidence(
             build({ calls: [SOURCE_READ, searchTurn("TAG_X")], parts: false, transcripts: null }),
@@ -893,6 +900,11 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     store.run("insert into memory_capture_jobs values ('sim-s-1', 'KEY_A', 1, 1, null)");
     store.close();
     expect(() => evidenceRun([dir, dir], join(root, "dup"), null)).toThrow(/share a name/);
+    const manifestPath = join(dir, "manifest.json");
+    const manifest = readFileSync(manifestPath, "utf8");
+    writeFileSync(manifestPath, manifest.replace('"order":["eidnara"]', '"order":["../x"]'));
+    expect(() => loadRun(dir)).toThrow(/not a directory name/);
+    writeFileSync(manifestPath, manifest);
     expect(() => evidenceRun([dir], root, null)).toThrow(/inside a run directory/);
     expect(() => evidenceRun([dir], join(dir, "ev"), null)).toThrow(/inside a run directory/);
     const before = readdirSync(dir).sort();

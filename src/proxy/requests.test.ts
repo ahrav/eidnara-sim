@@ -177,6 +177,30 @@ test("the record names the body the proxy forwarded, after the fields it removed
     ]);
 });
 
+test("a background call between turns names the preceding turn", async () => {
+    const records = new RecordWriter(null);
+    const gateway = new Gateway({
+        upstream: echo,
+        records,
+        injector: new FaultInjector([], new Rng(1), 1_000),
+        rng: new Rng(1),
+        clock: { scenarioMs: () => 0 },
+        scope: () => ({ arm: "a", session: "s", turn: null, origin: "e-1" }),
+    });
+    await gateway.start();
+    gateways.push(gateway);
+    const capture = {
+        system: [{ text: "Extract durable project memory." }],
+        messages: [turn('{"existing_memories": []}')],
+    };
+    const r = await fetch(`${gateway.urls[0]}/model/m/converse`, {
+        method: "POST",
+        body: JSON.stringify(capture),
+    });
+    await r.text();
+    expect(records.records[0]).toMatchObject({ turn: null, origin_turn: "e-1" });
+});
+
 test("a background call names its origin turn; an agent call keeps the turn in scope", async () => {
     const records = new RecordWriter(null);
     const gateway = new Gateway({
