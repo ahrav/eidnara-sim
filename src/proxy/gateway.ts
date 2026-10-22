@@ -24,6 +24,7 @@ import { COMPONENT_HEADER, type ConverseBody, classify } from "./classify";
 import { encodeError, encodeEvent, encodeException, wireJson } from "./eventstream";
 import { type FaultInjector, type Sink, sleep, writeFault } from "./inject";
 import { type CallRecord, type Component, RESPONSE_TEXT_LIMIT, type RecordWriter } from "./records";
+import type { RequestStore } from "./requests";
 
 export type UpstreamResponse =
     | { events: AsyncIterable<Record<string, unknown>> }
@@ -102,6 +103,11 @@ export interface Scope {
     arm: string;
     session: string | null;
     turn: string | null;
+    /**
+     * The turn a background call received now belongs to, when the caller tells it apart from
+     * `turn`; recorded as `origin_turn` on the calls `BACKGROUND` lists.
+     */
+    origin?: string | null;
 }
 
 export interface CallStarted {
@@ -136,6 +142,8 @@ export interface GatewayOptions {
     drainMs?: number;
     /** The first arrival ordinal to assign; a resume passes one past the persisted maximum. */
     firstArrival?: number;
+    /** Stores each classified call's forwarded body; the record names it as `request`. */
+    requests?: RequestStore;
 }
 
 const ROUTE = /^\/model\/([^/]+)\/(converse-stream|converse)$/;
@@ -146,6 +154,12 @@ type Done = Partial<CallRecord> &
 
 const RESPONSE_TAIL_LIMIT = 6_000;
 const RELAYED_TEXT = new Set<string>(["agent", "user-sim", "judge"]);
+/** Components that run after the turn that caused them, so their record may name an origin. */
+export const BACKGROUND = new Set<string>([
+    "memory_capture",
+    "memory_classifier",
+    "history_summarizer",
+]);
 
 const CLAUDE_5_5 = /anthropic\.claude-(opus|sonnet|haiku)-5-5/;
 
@@ -221,7 +235,9 @@ interface Request {
      * error reading them raised with whatever was read first; `handle()` records that error
      * against the request under that scope.
      */
-    owner: { scope: Scope; scenario_ms: number } | { scope?: Scope; error: unknown };
+    owner:
+        | { scope: Scope; scenario_ms: number; origin?: string | null }
+        | { scope?: Scope; error: unknown };
 }
 
 export class Gateway {
@@ -440,9 +456,9 @@ export class Gateway {
     private received(): Request["owner"] {
         let scope: Scope | undefined;
         try {
-            const { arm, session, turn } = this.options.scope();
+            const { arm, session, turn, origin } = this.options.scope();
             scope = { arm, session, turn };
-            return { scope, scenario_ms: this.options.clock.scenarioMs() };
+            return { scope, scenario_ms: this.options.clock.scenarioMs(), origin };
         } catch (error) {
             return { scope, error };
         }
@@ -583,8 +599,24 @@ export class Gateway {
         const streaming = route[2] === "converse-stream";
         const tag = classify(body, header);
         const done: Done = { ...tag, model, status: 200 };
+        const owner = request.owner as { scope: Scope; origin?: string | null };
+        if (
+            BACKGROUND.has(tag.component) &&
+            typeof owner.origin === "string" &&
+            owner.origin !== owner.scope.turn
+        ) {
+            done.origin_turn = owner.origin;
+        }
         const stripped = stripUnsupported(model, body);
         if (stripped) done.stripped = stripped;
+        if (this.options.requests) {
+            // A store that cannot write fails the run at stop; the call itself is still served.
+            try {
+                done.request = this.options.requests.store(body);
+            } catch (caught) {
+                this.failures.push(caught as Error);
+            }
+        }
         progress(done);
         const event = { kind: "call_started", component: tag.component, wall_ms: Date.now() };
         try {

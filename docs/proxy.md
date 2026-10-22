@@ -62,6 +62,24 @@ rest. The writer refuses a record that lacks any field below.
 | `fault_ref` | The injected fault episode, or `null` |
 | `stripped` | Request fields the proxy removed, keyed by path; present only when it removed one |
 | `arrival` | The request's arrival ordinal within its proxy process, assigned at the first byte; a resume replays records by this ordinal, falling back to `started_wall_ms` then `seq` for records written before it existed |
+| `request` | The forwarded body: `sha256` of the JSON handed upstream (after `stripped` removals), its UTF-8 `bytes`, and `parts`, the ids of its stored parts in body order (see Request bodies); present on every classified call of a run that stores bodies |
+| `origin_turn` | On a `memory_capture`, `memory_classifier`, or `history_summarizer` call: the session's preceding turn, when the call was received after the next turn began and before that turn's first agent answer was recorded; absent otherwise |
+
+## Request bodies
+
+`RequestStore` (`src/proxy/requests.ts`) keeps the bytes each classified call
+forwarded upstream, in the run's `requests.jsonl`. A body splits into parts:
+each element of `messages` on its own and every other top-level field whole.
+A part's id is the first 128 bits of the SHA-256 of its canonical JSON, and
+the log holds one `{id, part}` line per distinct id, written before the record
+that names it, so a conversation that grows by one message per call adds one
+line per call. `rebuildRequest(ref, parts)` reassembles a body from the
+record's `request.parts`. A reopened log drops a line a kill cut and keeps the
+ids already written. The store opens the file without following a link once
+its directory resolves without one, and a line that is not a part refuses the
+log. A body the store cannot write leaves the record without `request` and
+adds a gateway failure, which fails the run at stop. An injected fault's
+request is stored too; its record's `fault_ref` shows that no provider saw it.
 
 ## Component tags
 
