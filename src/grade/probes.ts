@@ -658,7 +658,7 @@ function p6(r: ArtefactReader, c: Check): Outcome {
     const w = workFor(r, c, commands, commandText);
     const asks = (answer: string) => /\?\s*$/m.test(answer);
     const pass = c.clarify
-        ? asks(r.answer()) && matchesAll(r.answer(), c.clarify) && !broken(w, c)
+        ? asks(r.answer()) && matchesAll(r.answer(), c.clarify) && !broken(workFor(r, c), c)
         : held(w, c) && !broken(w, c);
     return binary("P6", pass, {
         "P6.reread_files": reread.length,

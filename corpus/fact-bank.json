@@ -191,12 +191,13 @@
                 }
             },
             {
-                "id": "rs-no-utf8-values",
-                "statement": "converting stored values to String with from_utf8 was tried and reverted because binary payloads were corrupted",
-                "probe": "Add a STRLEN command that reports how many bytes a key holds.",
+                "id": "rs-no-unchecked-decode",
+                "statement": "skipping bounds checks with unsafe indexing in the frame parser was tried and reverted because fuzzing found out-of-bounds reads",
+                "probe": "Speed up decoding of long bulk strings.",
                 "check": {
                     "must_not": [
-                        "from_utf8(?:_lossy)?\\s*\\("
+                        "\\bunsafe\\s*\\{",
+                        "get_unchecked(?:_mut)?\\s*\\("
                     ]
                 }
             },
@@ -298,7 +299,7 @@
                 "check": {
                     "must_not": [
                         "tokio::sync::Mutex",
-                        "sync::\\{[^}]*\\bMutex\\b[^}]*\\}"
+                        "tokio::sync::\\{[^}]*\\bMutex\\b[^}]*\\}"
                     ]
                 }
             },
@@ -400,7 +401,7 @@
                 "statement": "the {token} branch integration test fails with {Alt}Error",
                 "paste": "CI went red on my branch for issue #{value2}:\n```\n$ cargo test --test server\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.27s\n     Running tests/server.rs (target/debug/deps/server-3f9c2a1e7b5d4c60)\n\nrunning 7 tests\ntest {token}_roundtrip ... FAILED\n\nfailures:\n\n---- {token}_roundtrip stdout ----\n\nthread '{token}_roundtrip' panicked at tests/server.rs:212:44:\ncalled `Result::unwrap()` on an `Err` value: {Alt}Error { key_len: {value} }\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\ntest result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n```",
                 "revise": "Issue #{value2} failed again on my branch, differently this time:\n```\n$ cargo test --test server\nrunning 7 tests\ntest {token}_roundtrip ... FAILED\n\n---- {token}_roundtrip stdout ----\n\nthread '{token}_roundtrip' panicked at tests/server.rs:212:44:\ncalled `Result::unwrap()` on an `Err` value: {Alt}Error { key_len: {value} }\n\ntest result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n```",
-                "probe": "Issue #{value2} is open again, failing the way that log showed. Add a troubleshooting an entry to the README naming the exact error type it raised.",
+                "probe": "Issue #{value2} is open again, failing the way that log showed. Add a troubleshooting entry to the README naming the exact error type it raised.",
                 "check": {
                     "must": [
                         "\\b{Alt}Error\\b"
@@ -602,13 +603,12 @@
                 }
             },
             {
-                "id": "ts-no-any-cast",
-                "statement": "silencing type errors with as any casts was tried and backed out because it hid broken handler signatures",
-                "probe": "Tighten the typing of the context's store field.",
+                "id": "ts-no-object-freeze",
+                "statement": "freezing the shared settings with Object.freeze was tried and backed out because plugins patch config during setup",
+                "probe": "Stop handlers from accidentally changing the shared app settings.",
                 "check": {
                     "must_not": [
-                        "\\bas\\s+any\\b",
-                        "<any>"
+                        "Object\\.freeze\\s*\\("
                     ]
                 }
             },
@@ -624,13 +624,12 @@
                 }
             },
             {
-                "id": "ts-no-runtime-regexp",
-                "statement": "building route matchers with new RegExp at registration was tried and backed out because it slowed cold starts",
-                "probe": "Support a wildcard segment in the middle of a route path.",
+                "id": "ts-no-queue-microtask",
+                "statement": "deferring callbacks with queueMicrotask was tried and reverted because their errors escaped the onError hook",
+                "probe": "Fire the analytics callback without holding up the handler's return.",
                 "check": {
                     "must_not": [
-                        "new\\s+RegExp\\s*\\(",
-                        "\\bRegExp\\s*\\("
+                        "queueMicrotask\\s*\\("
                     ]
                 }
             },
@@ -645,12 +644,13 @@
                 }
             },
             {
-                "id": "ts-no-node-buffer",
-                "statement": "parsing bodies through Node's Buffer was tried and backed out because it broke the web-standard adapter",
-                "probe": "Read a raw binary upload fully into memory.",
+                "id": "ts-no-reflect-metadata",
+                "statement": "declaring routes through Reflect metadata decorators was tried and reverted because every runtime needed a polyfill",
+                "probe": "Let controller classes declare their routes with annotations.",
                 "check": {
                     "must_not": [
-                        "Buffer\\.(?:from|concat|alloc|allocUnsafe)\\s*\\("
+                        "Reflect\\.(?:defineMetadata|getMetadata|metadata)\\b",
+                        "['\"]reflect-metadata['\"]"
                     ]
                 }
             },
@@ -665,12 +665,12 @@
                 }
             },
             {
-                "id": "ts-no-instanceof-response",
-                "statement": "checking instanceof Response was tried and backed out because replies built in another realm failed it",
-                "probe": "Pass a handler result straight through when it is already a finished reply object.",
+                "id": "ts-no-enum",
+                "statement": "a TypeScript enum for lifecycle names was tried and reverted because it broke isolated-module builds",
+                "probe": "Give the lifecycle event names one shared definition.",
                 "check": {
                     "must_not": [
-                        "instanceof\\s+Response\\b"
+                        "^\\s*(?:export\\s+)?(?:declare\\s+)?(?:const\\s+)?enum\\s+\\w+"
                     ]
                 }
             },
@@ -686,12 +686,13 @@
                 }
             },
             {
-                "id": "ts-no-date-ids",
-                "statement": "request ids built from Date.now() were tried and backed out because they collided under load",
-                "probe": "Give each incoming call a unique identifier for tracing.",
+                "id": "ts-no-global-this",
+                "statement": "stashing the app instance on globalThis was tried and backed out because tests leaked state between apps",
+                "probe": "Make the current app reachable from helper modules without passing it around.",
                 "check": {
                     "must_not": [
-                        "Date\\.now\\s*\\("
+                        "globalThis\\.\\w+\\s*=(?!=)",
+                        "globalThis\\[[^\\]]+\\]\\s*=(?!=)"
                     ]
                 }
             },
@@ -701,18 +702,17 @@
                 "probe": "Serve a file from disk for a static route.",
                 "check": {
                     "must_not": [
-                        "readFileSync\\s*\\(",
-                        "existsSync\\s*\\("
+                        "readFileSync\\s*\\("
                     ]
                 }
             },
             {
-                "id": "ts-no-structured-clone",
-                "statement": "copying the store with structuredClone was tried and backed out because it dropped class instances",
-                "probe": "Give each derived context its own copy of the shared store.",
+                "id": "ts-no-symbol-for",
+                "statement": "keying plugin state with Symbol.for was tried and backed out because two copies of the package collided",
+                "probe": "Give each plugin a private key for the state it stores on the context.",
                 "check": {
                     "must_not": [
-                        "structuredClone\\s*\\("
+                        "Symbol\\.for\\s*\\("
                     ]
                 }
             }
@@ -775,7 +775,7 @@
                 "statement": "the {token} branch test fails with {Alt}Error",
                 "paste": "CI went red on my branch for issue #{value2}:\n```\n$ bun test test/core/handle-error.test.ts\nbun test v1.2.21\n\ntest/core/handle-error.test.ts:\n18 |   it('keeps the {token} handler typed', async () => {\n19 |     const app = new Elysia().get('/', () => 'ok')\n20 |     const res = await app.handle(req('/'))\n                                  ^\n{Alt}Error: route table rejected a handler after {value} registrations\n      at add (src/index.ts:812:23)\n(fail) keeps the {token} handler typed [3.41ms]\n\n 0 pass\n 1 fail\n```",
                 "revise": "Issue #{value2} failed again on my branch, with a different error:\n```\n$ bun test test/core/handle-error.test.ts\n{Alt}Error: route table rejected a handler after {value} registrations\n      at add (src/index.ts:812:23)\n(fail) keeps the {token} handler typed [2.87ms]\n\n 0 pass\n 1 fail\n```",
-                "probe": "Issue #{value2} is open again, failing the way that log showed. Add a troubleshooting a section to CONTRIBUTING.md naming the exact error type it raised.",
+                "probe": "Issue #{value2} is open again, failing the way that log showed. Add a troubleshooting section to CONTRIBUTING.md naming the exact error type it raised.",
                 "check": {
                     "must": [
                         "\\b{Alt}Error\\b"

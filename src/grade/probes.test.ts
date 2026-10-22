@@ -329,6 +329,17 @@ describe("grading harness", () => {
         expect(answerWith("Which one should I start with?", "")).toBe("fail");
         expect(answerWith("I added jaunty_yak_count and LUNAR_HERON.", "")).toBe("fail");
         expect(answerWith(both)).toBe("fail");
+        const searched = structuredClone(f.snapshots[0]) as Snapshot;
+        for (const a of searched.artefacts) {
+            if (a.class === "proxy-call") for (const c of a.calls) c.response_text = both;
+            if (a.class === "diff" && a.role === "turn") a.patch = "";
+            if (a.class === "command-log") {
+                a.commands = [
+                    { command: "grep -rn jaunty_yak_count src", exit: 1, scenario_ms: 0 },
+                ];
+            }
+        }
+        expect(gradeItem(probe, [searched], rules)?.verdict).toBe("pass");
     });
 
     test("P6 recognises a package-script test command", () => {
