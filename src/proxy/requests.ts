@@ -4,6 +4,7 @@ import {
     constants,
     existsSync,
     fstatSync,
+    ftruncateSync,
     openSync,
     readSync,
     realpathSync,
@@ -95,6 +96,9 @@ export function isRequestRef(value: unknown): value is RequestRef {
 export class RequestStore {
     private readonly fd: number;
     private readonly ids = new Set<string>();
+    /** Bytes of complete lines; a failed append is cut back to this length. */
+    private size: number;
+    private broken: Error | null = null;
 
     constructor(path: string) {
         const full = resolve(path);
@@ -109,10 +113,12 @@ export class RequestStore {
             full,
             constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW,
         );
-        if (!fstatSync(this.fd).isFile()) {
+        const stat = fstatSync(this.fd);
+        if (!stat.isFile()) {
             closeSync(this.fd);
             throw new Error(`${full} is not a regular file`);
         }
+        this.size = stat.size;
     }
 
     /** Writes the parts not yet in the log and returns the body's reference. */
@@ -126,12 +132,26 @@ export class RequestStore {
             if (this.ids.has(id)) return;
             lines.push(`${JSON.stringify({ id, part })}\n`);
         });
+        if (this.broken) throw this.broken;
         if (lines.length > 0) {
             const bytes = Buffer.from(lines.join(""));
             let written = 0;
-            while (written < bytes.length) {
-                written += writeSync(this.fd, bytes, written, bytes.length - written);
+            try {
+                while (written < bytes.length) {
+                    written += writeSync(this.fd, bytes, written, bytes.length - written);
+                }
+            } catch (caught) {
+                // A cut line followed by a whole one would not parse on resume.
+                try {
+                    ftruncateSync(this.fd, this.size);
+                } catch (cut) {
+                    this.broken = new Error(
+                        `request log cut mid-line and not truncated: ${(cut as Error).message}`,
+                    );
+                }
+                throw caught;
             }
+            this.size += bytes.length;
             for (const id of ids) this.ids.add(id);
         }
         return {

@@ -864,6 +864,15 @@ export function attribute(
 ): ProbeEvidence["attributed"] {
     const reach: StageName = o.memory ? "delivery" : "context";
     const at = (name: StageName) => stages.find((s) => s.stage === name);
+    if (o.verdict === "excluded") {
+        // An item set aside because its evidence never existed (a P12 check that never ran)
+        // names that stage; any other exclusion stays the grader's.
+        const missing = stages.find((s) => s.status === "unavailable");
+        if (missing)
+            return { cause: missing.stage, status: "unavailable", reason: missing.reason ?? "" };
+        const app = at("application") as Stage;
+        return { cause: "application", status: "excluded", reason: app.reason ?? "excluded" };
+    }
     if (o.controls) {
         // A control's grade passes when the agent applied the rule with no source for it.
         if (o.verdict !== "pass") {

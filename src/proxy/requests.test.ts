@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -69,6 +70,31 @@ test("a reopened store drops a cut line and writes no part twice", () => {
     expect(lines).toHaveLength(3);
     expect(rebuildRequest(ref, readRequestParts(path))?.messages).toHaveLength(2);
     expect(requestParts(body).map(partId)).toEqual(ref.parts.slice(0, 2));
+});
+
+test("an append that fails part-way is cut back, so the log reopens whole", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-requests-"));
+    const path = join(dir, "requests.jsonl");
+    const store = new RequestStore(path);
+    store.store({ messages: [turn("a")] });
+    const original = fs.writeSync;
+    const spy = spyOn(fs, "writeSync").mockImplementationOnce(((
+        fd: number,
+        buf: Buffer,
+        offset: number,
+    ) => {
+        (original as (...a: unknown[]) => number)(fd, buf, offset, 7);
+        throw new Error("ENOSPC: no space left on device");
+    }) as unknown as typeof fs.writeSync);
+    try {
+        expect(() => store.store({ messages: [turn("a"), turn("b")] })).toThrow(/ENOSPC/);
+    } finally {
+        spy.mockRestore();
+    }
+    const ref = store.store({ messages: [turn("a"), turn("b")] });
+    store.close();
+    expect(rebuildRequest(ref, readRequestParts(path))?.messages).toHaveLength(2);
+    expect(() => new RequestStore(path).close()).not.toThrow();
 });
 
 test("a corrupt line in the log is refused rather than read as a part", () => {

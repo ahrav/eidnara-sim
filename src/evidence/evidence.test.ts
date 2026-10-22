@@ -446,6 +446,12 @@ describe("evidence stages on the host arm", () => {
         });
         const read = [{ line: 1, turn: "e-2", command: "cat scripts/check.sh", exit: 0 }];
         expect(evidence(build({ ...base, tools: read })).attributed.status).toBe("unavailable");
+        expect(
+            evidence(build({ ...base, tools: cut, verdict: "excluded" })).attributed,
+        ).toMatchObject({
+            cause: "source",
+            status: "unavailable",
+        });
         const ran = [{ line: 1, turn: "e-2", command: "sh scripts/check.sh", exit: 1 }];
         const p = evidence(build({ ...base, tools: ran }));
         expect(stage(p, "source")?.status).toBe("ok");
@@ -476,6 +482,12 @@ describe("control items", () => {
         );
         expect(p.attributed).toMatchObject({ cause: "eligibility", status: "failed" });
         expect(stage(p, "retrieval")?.status).toBe("failed");
+    });
+    test("an excluded control is neither held nor lost at a stage", () => {
+        const p = evidence(
+            build({ scenario: control, calls: [searchTurn("nothing")], verdict: "excluded" }),
+        );
+        expect(p.attributed).toMatchObject({ cause: "application", status: "excluded" });
     });
     test("a control that applies the rule unprompted blames application", () => {
         const p = evidence(
@@ -620,6 +632,7 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     );
     store.run("insert into memory_capture_jobs values ('sim-s-1', 'KEY_A', 1, 1, null)");
     store.close();
+    expect(() => evidenceRun([dir, dir], join(root, "dup"))).toThrow(/share a name/);
     const before = readdirSync(dir).sort();
     const out = join(root, "out");
     const report = evidenceRun([dir], out);

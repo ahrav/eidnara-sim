@@ -10,6 +10,10 @@ const USAGE = "usage: bun scripts/evidence-run.ts <run dir>... [--out <dir>]";
 
 export function evidenceRun(dirs: string[], out: string | null): string {
     const runs: RunEvidence[] = [];
+    const names = dirs.map((d) => basename(d));
+    if (out && new Set(names).size !== names.length) {
+        throw new Error("--out: two run directories share a name");
+    }
     for (const dir of dirs) {
         const run = loadRun(dir);
         const sessions = sessionHealth(run);
