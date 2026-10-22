@@ -11,7 +11,9 @@ and `Confidence` lines are its own: a record whose surface has landed says
 the rest read `not yet` and `low`, because no harness surface existed to
 verify against when they were written.
 
-Stable ids: `SIM-P01` to `SIM-P77` carry the spec's proposed records, and
+Stable ids: `SIM-P01` to `SIM-P77` carry the spec's proposed records,
+`SIM-P78` to `SIM-P80` the Workstream A S5 delivery-mode and control records,
+and
 `SIM-L01` to `SIM-L03` carry the liveness bounds OQ-6 asked for and M0
 pre-registers. Each id is the slug prefix and opens the `Guarantee:` line.
 
@@ -22,7 +24,8 @@ pre-registers. Each id is the slug prefix and opens the `Guarantee:` line.
   and resume records that need an interrupt are reached by default.
 - `explicit-config-only`: the surface runs only when a tier schedules provider
   or infrastructure faults, the counterfactual arm, or two host clients on one
-  daemon.
+  daemon, or when a run takes a qualification registration
+  (`--qualification`).
 - `test-only`: a surface only a test constructs; no record carries this class.
 
 `scripts/check-catalog.ts` checks the record schema and field order against
@@ -109,6 +112,9 @@ pre-registers. Each id is the slug prefix and opens the `Guarantee:` line.
 | SIM-P75 | [sim-p75-arm-config-fixed-for-run](#sim-p75-arm-config-fixed-for-run) | safety | `always` | default-production | M8 |
 | SIM-P76 | [sim-p76-kl-arm-has-host-compaction-on](#sim-p76-kl-arm-has-host-compaction-on) | safety | `always` | default-production | M8 |
 | SIM-P77 | [sim-p77-two-hosts-one-store-attributed](#sim-p77-two-hosts-one-store-attributed) | safety | `always` | explicit-config-only | M10 |
+| SIM-P78 | [sim-p78-oracle-note-confined-to-its-turn](#sim-p78-oracle-note-confined-to-its-turn) | safety | `always` | explicit-config-only | S5 |
+| SIM-P79 | [sim-p79-explicit-search-arm-receives-no-injection](#sim-p79-explicit-search-arm-receives-no-injection) | safety | `always` | explicit-config-only | S5 |
+| SIM-P80 | [sim-p80-wrong-project-lookup-is-no-answer](#sim-p80-wrong-project-lookup-is-no-answer) | safety | `always` | explicit-config-only | S5 |
 | SIM-L01 | [sim-l01-turn-ends-within-turn-deadline](#sim-l01-turn-ends-within-turn-deadline) | liveness | `always` | default-production | M4 |
 | SIM-L02 | [sim-l02-background-job-ends-within-job-deadline](#sim-l02-background-job-ends-within-job-deadline) | liveness | `always` | default-production | M4 |
 | SIM-L03 | [sim-l03-tier-completes-within-wall-budget](#sim-l03-tier-completes-within-wall-budget) | liveness | `always` | default-production | M4 |
@@ -2151,6 +2157,94 @@ Open questions:
 - OQ-10: whether two host clients can attach to one daemon concurrently and
   whether the plugin reconnects after SIGKILL without a host restart.
   Unresolved, observed at L and XL (needs human input).
+
+### sim-p78-oracle-note-confined-to-its-turn
+
+Type: safety
+Reachability: explicit-config-only
+Status: active
+Exercised: partial - `src/run/delivery.test.ts` builds request bodies through
+the request store and checks a delivered note, a missing one, one before its
+turn, one in another session, an unmatched opening, and a note on a host arm
+in its user or system text; the Pi smoke recorded in PR #32 ran the check on
+one sourced probe
+Guarantee: SIM-P78: On an `oracle-context` arm, every delivered probe turn
+whose ground truth names sources carries its oracle note in the prompt of
+that turn, no request carries a note before its turn, in another session,
+or without a matching owed note, and no request of any other arm in the run
+carries one.
+Check: `always` - assert over every agent request body of every arm in a run
+whose order holds an oracle-context arm, because a single misplaced note makes
+the arm a different control.
+Fault/timing angle: a resume replays the journal, so the owed notes are read
+from delivered `UserTurn` rows and recovered rows are left out.
+Required faults and enabling state: a qualification run with `host-oracle`
+that reaches a probe turn with sources.
+Confidence: medium -
+[evidence](evidence/sim-p78-oracle-note-confined-to-its-turn.md). The check
+reads the request bytes the proxy stored, which the agent cannot write.
+Existing check: `src/run/capabilities.ts` `observeDelivery` and
+`deliveryMismatches` (unaudited), run before `EndArm`.
+Impact: The upper-bound control leaks the answer into another arm or another
+turn, and every comparison against it is confounded.
+Open questions: None.
+
+### sim-p79-explicit-search-arm-receives-no-injection
+
+Type: safety
+Reachability: explicit-config-only
+Status: active
+Exercised: not yet - `armOrder` refuses `eidnara-search` before preflight,
+since both daemon variants compose the recalled-memory block whenever memory
+is on; `src/run/delivery.test.ts` checks the run-time rule on a request with
+a `<project-memory>` block
+Guarantee: SIM-P79: An `explicit-search` arm's agent requests carry no block
+the Eidnara plugin writes (`<project-memory>`, `<memory-updates>`,
+`<project-note>`, `<eidnara-search-auto>`, `<eidnara-search-hint>`), while
+Eidnara's tools stay registered.
+Check: `always` - assert over every agent request body of the arm, because
+one injected block turns the arm into automatic delivery.
+Fault/timing angle: none.
+Required faults and enabling state: an Eidnara build whose daemon can drop
+the recalled-memory block while memory search stays on.
+Confidence: low -
+[evidence](evidence/sim-p79-explicit-search-arm-receives-no-injection.md).
+The arm has never run; the refusal names the Eidnara source that blocks it.
+Existing check: `src/hosts/profiles.ts` `capabilityGaps` refusal and
+`src/run/capabilities.ts` `deliveryMismatches` (unaudited).
+Impact: The explicit-search comparison measures automatic delivery.
+Open questions:
+- Which Eidnara switch should drop the `<project-memory>` block while
+  `memory.enabled` stays on (needs human input).
+
+### sim-p80-wrong-project-lookup-is-no-answer
+
+Type: safety
+Reachability: explicit-config-only
+Status: active
+Exercised: partial - `src/grade/controls.test.ts` grades abstentions,
+answers that place the value in the other project by wording or by its name,
+the bare value, a hedge on it, an answer that disowns the value and then
+recommends it, and another guess on a P8-twin item compiled under
+qualification Q
+Guarantee: SIM-P80: A `P8-twin` item passes only when the answer abstains and
+every sentence that names the base project's value places it in another
+project.
+Check: `always` - assert on every graded P8-twin record, because a pass that
+carries the other project's value would count leakage as recall.
+Fault/timing angle: none.
+Required faults and enabling state: a qualification naming
+`wrong-project-lookup`.
+Confidence: medium -
+[evidence](evidence/sim-p80-wrong-project-lookup-is-no-answer.md). The
+positive and negative controls run against compiled items.
+Existing check: `src/grade/probes.ts` `P8-twin` grader and `requireTruth`
+(unaudited).
+Impact: Cross-project leakage of a looked-up value scores as a pass.
+Open questions:
+- Whether a sentence that names the owner and still recommends the value
+  (`use X, as mini-redis does`) should fail; the sentence rule passes it.
+  Unresolved, needs the Q campaign's answers.
 
 ## Liveness
 

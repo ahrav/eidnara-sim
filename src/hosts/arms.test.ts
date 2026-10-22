@@ -1494,6 +1494,8 @@ test("each Pi arm writes the host and Eidnara compaction its profile declares", 
         ["host", true, null],
         ["eidnara", false, true],
         ["eidnara-kl", true, false],
+        ["eidnara-search", false, true],
+        ["host-oracle", true, null],
     ];
     for (const [arm, hostCompaction, eidnaraCompaction] of rows) {
         const dir = join(run, arm);
@@ -1511,7 +1513,8 @@ test("each Pi arm writes the host and Eidnara compaction its profile declares", 
         }
         const config = JSON.parse(readFileSync(eidnara, "utf8"));
         expect(config.compaction).toEqual({ enabled: eidnaraCompaction });
-        expect(config.memory).toMatchObject({ enabled: true, auto_search: { enabled: true } });
+        const hints = arm !== "eidnara-search";
+        expect(config.memory).toMatchObject({ enabled: true, auto_search: { enabled: hints } });
     }
 });
 

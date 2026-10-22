@@ -212,7 +212,7 @@ export function checkCatalog(
         .filter((line) => line.startsWith("|"))
         .slice(2)) {
         const m =
-            /^\| ([A-Z0-9-]+) \| \[([a-z0-9-]+)\]\(#\2\) \| ([a-z]+) \| (`[^`]+`) \| ([a-z-]+) \| (M\d+) \|$/.exec(
+            /^\| ([A-Z0-9-]+) \| \[([a-z0-9-]+)\]\(#\2\) \| ([a-z]+) \| (`[^`]+`) \| ([a-z-]+) \| ([MS]\d+) \|$/.exec(
                 row,
             );
         if (!m) {
@@ -262,9 +262,12 @@ export function checkCatalog(
     return errors;
 }
 
-/** The sim-v2 catalog's stable ids: the spec's 77 proposed records and the 3 liveness bounds. */
+/**
+ * The sim-v2 catalog's stable ids: the spec's 77 proposed records, the 3 Workstream A S5 records,
+ * and the 3 liveness bounds.
+ */
 export const SIM_IDS = [
-    { prefix: "SIM-P", count: 77 },
+    { prefix: "SIM-P", count: 80 },
     { prefix: "SIM-L", count: 3 },
 ];
 

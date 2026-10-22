@@ -24,24 +24,24 @@ import {
     USER_SIM_RATES,
 } from "./schema";
 
-type Check = (value: unknown) => string | null;
+export type Check = (value: unknown) => string | null;
 type Obj = Record<string, unknown>;
 
-const literal =
+export const literal =
     (expected: unknown): Check =>
     (v) =>
         v === expected ? null : `expected ${JSON.stringify(expected)}`;
-const oneOf =
+export const oneOf =
     (allowed: readonly string[]): Check =>
     (v) =>
         typeof v === "string" && allowed.includes(v)
             ? null
             : `expected one of ${allowed.join(", ")}`;
-const posInt: Check = (v) =>
+export const posInt: Check = (v) =>
     Number.isSafeInteger(v) && (v as number) > 0 ? null : "expected a positive integer";
 const nonNegInt: Check = (v) =>
     Number.isSafeInteger(v) && (v as number) >= 0 ? null : "expected a non-negative integer";
-const uint32: Check = (v) =>
+export const uint32: Check = (v) =>
     Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 0xffff_ffff
         ? null
         : "expected an integer in [0, 4294967295]";
@@ -63,7 +63,7 @@ const unitClosed: Check = (v) =>
     isCanonicalDecimal(v) && (v === "0" || v === "1" || /^0\.\d+$/.test(v))
         ? null
         : "expected a canonical decimal in [0, 1]";
-const text: Check = (v) =>
+export const text: Check = (v) =>
     typeof v === "string" && v.trim() !== "" ? null : "expected a non-blank string";
 const atLeast =
     (floor: number): Check =>
@@ -72,7 +72,7 @@ const atLeast =
             ? null
             : `expected an integer of at least ${floor}`;
 /** True when `actual` holds exactly the strings of `expected`, in any order, without repeats. */
-function sameSet(actual: unknown, expected: readonly string[]): boolean {
+export function sameSet(actual: unknown, expected: readonly string[]): boolean {
     if (!Array.isArray(actual) || actual.length !== expected.length) return false;
     const want = new Set(expected);
     return new Set(actual).size === want.size && actual.every((x) => want.has(x as string));
@@ -81,7 +81,7 @@ const exactSet =
     (expected: readonly string[], name: string): Check =>
     (v) =>
         sameSet(v, expected) ? null : `expected ${name}`;
-const list =
+export const list =
     (item: Check, distinct = true): Check =>
     (v) => {
         if (!Array.isArray(v) || v.length === 0) return "expected a non-empty array";
@@ -98,7 +98,7 @@ class ArrayOf {
 }
 
 /** The fields of one object, each with the check its value must pass or its nested shape. */
-interface Shape {
+export interface Shape {
     [field: string]: Check | Shape | ArrayOf;
 }
 
@@ -262,7 +262,7 @@ function itemPath(path: string, item: unknown, index: number): string {
     return `${path}[${typeof id === "string" && id !== "" ? id : index}]`;
 }
 
-function checkShape(
+export function checkShape(
     value: unknown,
     shape: Shape,
     path: string,

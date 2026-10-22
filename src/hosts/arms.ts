@@ -24,7 +24,7 @@ import { piCli } from "../run/preflight";
 import { parentPid, processStart, stopOwnedTree } from "../run/procs";
 import { FAKETIME_LIB, faketimeEnv } from "../run/timeinject";
 import { sandboxPath, toolbinDir, toolchainEnv } from "../run/toolchain";
-import { ARM_PROFILES, type ArmName } from "./profiles";
+import { ARM_PROFILES, type ArmName, deliveryOf } from "./profiles";
 
 export type { ArmName };
 
@@ -212,7 +212,8 @@ export function piModels(ctx: Pick<HostContext, "model" | "sideModel">): string[
 /**
  * The user-tier `eidnara.jsonc` an Eidnara arm writes. `compaction.enabled` is the arm's
  * `eidnara_compaction`; with it false the plugin keeps its knowledge layer (memory, injection,
- * notes, search) and leaves the context window to the host.
+ * notes, search) and leaves the context window to the host. An arm that delivers through explicit
+ * search alone turns the auto-search hint off.
  */
 export function eidnaraUserConfig(
     connectionFile: string,
@@ -232,7 +233,7 @@ export function eidnaraUserConfig(
             enabled: true,
             auto_promote: true,
             auto_capture: true,
-            auto_search: { enabled: true },
+            auto_search: { enabled: deliveryOf(ARM_PROFILES[arm]) === "automatic" },
             git_commit_indexing: { enabled: false },
         },
     };

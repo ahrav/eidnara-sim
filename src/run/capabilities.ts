@@ -8,13 +8,19 @@ import {
     readSync,
 } from "node:fs";
 import { join } from "node:path";
+import { bodyText, injectedBlocks } from "../evidence/stages";
 import {
     type ArmProfile,
     AUDITED_EIDNARA,
     armProfile,
     DAEMON_VARIANTS,
     type DaemonVariant,
+    deliveryOf,
 } from "../hosts/profiles";
+import type { ConverseBody } from "../proxy/classify";
+import type { CallRecord } from "../proxy/records";
+import { type RequestPart, rebuildRequest } from "../proxy/requests";
+import { ORACLE_OPENING } from "./oracle-note";
 
 /** The model-call components only the Eidnara plugin and daemon make. */
 export const EIDNARA_COMPONENTS = [
@@ -49,6 +55,148 @@ export interface ArmObservation {
     search: { legacy_scan: string[]; fused: number; errored: number } | null;
     /** Proxy call records of the arm, by component. */
     components: Record<string, number>;
+    /** What the arm's agent requests carried; null where the run's arms need no request read. */
+    delivery?: DeliveryObservation | null;
+}
+
+/** An oracle note the arm owes: the probe turn it goes into and the background it quotes. */
+export interface ExpectedNote {
+    event: string;
+    session: string;
+    background: string;
+    /** The scripted turn text the delivered prompt ends with, after the note. */
+    text: string;
+    /**
+     * False for a turn a resume recovered from the pairing log: the host may have received it, so
+     * its note is placed where it appears, but its delivery is not owed.
+     */
+    owed: boolean;
+}
+
+/**
+ * The arm's agent request bodies against its delivery mode: how many were read and could not be
+ * rebuilt, how many carry a block the Eidnara plugin writes, which owed oracle notes reached the
+ * prompt of their own turn, and which requests carry a note outside its session or before its
+ * turn, or an opening that matches no owed note.
+ */
+export interface DeliveryObservation {
+    requests: number;
+    unreadable: number;
+    injected_blocks: number;
+    notes: { expected: number; delivered: number; missing: string[]; misplaced: number[] };
+}
+
+/** The text blocks of the body's user messages, where a prompt prefix lands. */
+const userTexts = (body: ConverseBody) =>
+    (body.messages ?? [])
+        .filter((m) => m?.role === "user")
+        .map((m) =>
+            (Array.isArray(m.content) ? m.content : [])
+                .map((b) => (typeof b?.text === "string" ? b.text : ""))
+                .join("\n"),
+        );
+
+const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
+
+export function observeDelivery(
+    calls: readonly Pick<CallRecord, "seq" | "component" | "session" | "turn" | "request">[],
+    parts: ReadonlyMap<string, RequestPart>,
+    notes: readonly ExpectedNote[],
+    eventIndex: ReadonlyMap<string, number>,
+): DeliveryObservation {
+    const out: DeliveryObservation = {
+        requests: 0,
+        unreadable: 0,
+        injected_blocks: 0,
+        notes: {
+            expected: notes.filter((n) => n.owed).length,
+            delivered: 0,
+            missing: [],
+            misplaced: [],
+        },
+    };
+    const delivered = new Set<string>();
+    const index = (event: string | null) => eventIndex.get(event ?? "") ?? -1;
+    const backgrounds = [...new Set(notes.map((n) => n.background))];
+    for (const call of calls) {
+        if (call.component !== "agent" || !call.request) continue;
+        const body = rebuildRequest(call.request, parts);
+        if (!body) {
+            out.unreadable++;
+            continue;
+        }
+        out.requests++;
+        const text = bodyText(body);
+        if (injectedBlocks(text).length > 0) out.injected_blocks++;
+        const users = userTexts(body);
+        const prompt = [...users].reverse().find((t) => t.length > 0) ?? "";
+        for (const n of notes) {
+            const opens = prompt.startsWith(n.background);
+            if (n.event === call.turn && opens && prompt.trimEnd().endsWith(n.text.trimEnd())) {
+                delivered.add(n.event);
+            }
+        }
+        const carried = backgrounds.filter((b) => text.includes(b));
+        const due = (b: string) =>
+            notes.filter(
+                (n) =>
+                    n.background === b &&
+                    n.session === call.session &&
+                    index(n.event) <= index(call.turn),
+            ).length;
+        const placed = carried.every((b) => due(b) > 0);
+        // The agent's own replies may quote a note, so only system and user text count. User-message
+        // occurrences count toward owned, capped per background by the matching notes due in the
+        // call's session through its turn.
+        const entered = bodyText({
+            system: body.system,
+            messages: (body.messages ?? []).filter((m) => m?.role === "user"),
+        });
+        const user = users.join("\n");
+        const owned = carried.reduce((sum, b) => sum + Math.min(occurrences(user, b), due(b)), 0);
+        if (!placed || occurrences(entered, ORACLE_OPENING) > owned) {
+            out.notes.misplaced.push(call.seq);
+        }
+    }
+    out.notes.delivered = delivered.size;
+    out.notes.missing = notes.filter((n) => n.owed && !delivered.has(n.event)).map((n) => n.event);
+    return out;
+}
+
+/** Delivery evidence that contradicts the profile; an arm without the observation passes. */
+export function deliveryMismatches(profile: ArmProfile, o: DeliveryObservation | null): string[] {
+    if (!o) return [];
+    const mode = deliveryOf(profile);
+    const out: string[] = [];
+    const { notes } = o;
+    if (o.unreadable > 0) {
+        out.push(
+            `${o.unreadable} agent request bodies cannot be rebuilt to check ${mode} delivery`,
+        );
+    }
+    if (mode === "oracle-context") {
+        if (notes.expected === 0) {
+            out.push("the arm reached no probe turn with sources, so it delivered no oracle note");
+        }
+        if (notes.missing.length > 0) {
+            out.push(
+                `${notes.missing.length} oracle notes reached no prompt of their own turn: ${notes.missing.join(", ")}`,
+            );
+        }
+    }
+    if (mode === "explicit-search" && o.injected_blocks > 0) {
+        out.push(
+            `${o.injected_blocks} agent requests carry an Eidnara injected block, but the arm declares explicit search alone`,
+        );
+    }
+    if (notes.misplaced.length > 0) {
+        const where =
+            mode === "oracle-context"
+                ? "before its probe turn, in another session, or matching no owed note"
+                : `on a ${profile.role} arm`;
+        out.push(`agent requests ${notes.misplaced.join(", ")} carry an oracle note ${where}`);
+    }
+    return out;
 }
 
 const CHUNK = 1 << 20;
@@ -277,7 +425,7 @@ export function bootMismatches(profile: ArmProfile, o: Pick<ArmObservation, "boo
 /** Every difference between what the arm's profile declares and what its run evidence shows. */
 export function armMismatches(o: ArmObservation): string[] {
     const profile = armProfile(o.arm);
-    const out = bootMismatches(profile, o);
+    const out = [...bootMismatches(profile, o), ...deliveryMismatches(profile, o.delivery ?? null)];
     const count = (component: string) => o.components[component] ?? 0;
     if (!profile.plugin) {
         for (const c of EIDNARA_COMPONENTS) {

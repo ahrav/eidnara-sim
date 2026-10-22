@@ -9,7 +9,7 @@ PATH=<opencode release>/node_modules/.bin:$PATH \
 bun scripts/run-tier.ts --tier S --seed 101 --out runs/S-101-pi \
     [--host pi|opencode] [--arms host,eidnara] [--events N] \
     [--faults episodes.json] [--context-limit N] [--models a,b] \
-    [--tapes tape.jsonl,...]
+    [--tapes tape.jsonl,...] [--qualification Q]
 ```
 
 The v1 harness closure resolves `opencode` through a shell, and that shell
@@ -27,7 +27,29 @@ user-sim tapes to replay replies from (`docs/user-sim.md`), `--side-model`
 sets Eidnara's side-call model for a model-factor run, and `--user-sim-model`
 replaces the pre-registered user-sim model for a variant run. The manifest
 records every one of these values, and a digest of each tape and the
-pairing log beside it (`tape_sha256`). Each tape must come from a finished
+pairing log beside it (`tape_sha256`).
+
+`--qualification Q` runs under the qualification registration
+`prereg/Q.json` (`sim-qualification/v1`, `src/prereg/qualification.ts`)
+instead of the tier's arm order. The registration binds one tier's
+pre-registration by hash and lists its own seeds, hosts, arms with one order
+per seed, descriptive contrasts between arms of different delivery modes,
+and the control items it adds to the scenario (`docs/scenario.md`). The
+validator (`bun run prereg:validate`) refuses a stale tier digest, a seed or
+host the tier does not run, an arm without a profile or with a capability
+gap, an order that is not a permutation of the run arms, and a contrast
+between arms of one delivery mode. The run refuses a qualification over
+another tier, a seed or host it does not list, an arm outside the seed's
+order, and every A/A control label; the tier pre-registration still supplies
+the liveness bounds, user-sim, and grading rules. The manifest records
+`qualification` (`{id, sha256}`, or `null` for a tier run), the scenario
+manifest records `qualification_sha256`. A resume compares both;
+`grade-run`, `pairing-check`, and `oracle-run` require the scenario's digest
+to equal the manifest's (none for a tier run), the registration to still
+hash to it, the host and seed to be ones it lists, and the order to be a
+subsequence of the seed's registered order. `scripts/report.ts` refuses a
+qualification run, since the tier report reads the tier's gates and the
+qualification registers descriptive contrasts. Each tape must come from a finished
 run (its journal holds `EndRun`) of the same seed, scenario,
 pre-registration, fault override, and `turns_await_jobs` (a source
 manifest from before that field counts as `true`) that ran every arm of this run over

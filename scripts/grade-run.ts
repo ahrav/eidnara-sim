@@ -58,7 +58,7 @@ import {
 } from "../src/run/journal";
 import { CallIndex, callsOf, simIdentity } from "../src/run/run";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
-import { loadPrereg } from "../src/scenario/inputs";
+import { admittedArms, loadPrereg, loadQualification } from "../src/scenario/inputs";
 
 export interface Summary {
     /** Verdict counts over the run's current grades, the ones kept from earlier passes included. */
@@ -252,14 +252,19 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     const prereg = loadPrereg(manifest.tier);
     const rules = prereg.grading;
     const arms = manifest.order as string[];
-    const seedIndex = prereg.seeds.indexOf(manifest.seed);
+    // A qualification run's arms come from the registration it recorded, which must still hash
+    // to the recorded digest.
+    const admitted = admittedArms(manifest, scenario as { manifest?: Record<string, unknown> });
+    const registry = manifest.qualification ? loadQualification(manifest.qualification.id) : prereg;
+    const name = manifest.qualification
+        ? `qualification ${String(manifest.qualification.id)}`
+        : String(manifest.tier);
+    const seedIndex = registry.seeds.indexOf(manifest.seed);
     if (seedIndex < 0) {
-        throw new Error(
-            `seed ${String(manifest.seed)} is not pre-registered for ${String(manifest.tier)}`,
-        );
+        throw new Error(`seed ${String(manifest.seed)} is not pre-registered for ${name}`);
     }
-    const permitted = (prereg.arms.order_by_seed[seedIndex] ?? prereg.arms.run) as string[];
-    requireSeedOrder(arms, permitted, prereg.aa_controls?.pairs ?? []);
+    const permitted = (registry.arms.order_by_seed[seedIndex] ?? registry.arms.run) as string[];
+    requireSeedOrder(arms, permitted, admitted.pairs);
     const models = manifest.models as unknown;
     if (
         !Array.isArray(models) ||

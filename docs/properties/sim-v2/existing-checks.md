@@ -48,4 +48,12 @@ Checks in this tree that enforce arm capabilities (Workstream A S1):
 | `src/run/capabilities.ts` `bootMismatches` (each `session_end`) and `armMismatches` (before `EndArm`): `eidnara-kl` plugin boots in compaction-off mode, no transform pass, no history summarizer call | SIM-P76 | unaudited |
 | `src/hosts/arms.test.ts`: Pi and OpenCode `eidnara-kl` write host compaction on and Eidnara `compaction.enabled=false` | SIM-P76 | unaudited |
 
+Checks for the delivery-mode arms and the qualification controls (Workstream A S5):
+
+| Check | Records | Status |
+| --- | --- | --- |
+| `src/run/capabilities.ts` `observeDelivery` and `deliveryMismatches` (before `EndArm`): each owed oracle note in a request of its turn, none misplaced, none on another arm; no plugin block on an explicit-search arm | SIM-P78, SIM-P79 | unaudited |
+| `src/hosts/profiles.ts` `capabilityGaps`: `eidnara-search` refused for `memory_injection` | SIM-P79 | unaudited |
+| `src/grade/probes.ts` `P8-twin` grader and `src/grade/controls.test.ts` positive and negative answers | SIM-P80 | unaudited |
+
 None found: user-sim, tape, clock, and counterfactual checks.
