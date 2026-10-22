@@ -308,8 +308,14 @@ describe("persisted runs under a qualification", () => {
         expect(() =>
             admittedArms({ tier: "S", host: "pi", qualification: ref }, qualified),
         ).toThrow(/qualification Q runs no seed undefined/);
-        const run = (seed: number, order: string[]) =>
-            admittedArms({ tier: "S", host: "pi", seed, order, qualification: ref }, qualified);
+        const run = (seed: number, order: string[], compiled = seed) =>
+            admittedArms(
+                { tier: "S", host: "pi", seed, order, qualification: ref },
+                { manifest: { ...qualified.manifest, seed: compiled } },
+            );
+        expect(() => run(102, ["host-oracle"], 101)).toThrow(
+            /compiled for seed 101, but the manifest names 102/,
+        );
         expect(run(102, ["host-oracle", "host"]).run).toContain("host-oracle");
         expect(() => run(102, ["host", "host-oracle"])).toThrow(/is not a subsequence/);
         expect(() => run(201, ["host"])).toThrow(/qualification Q runs no seed 201/);

@@ -115,8 +115,8 @@ export function loadQualification(
 /**
  * The arms and A/A pairs a run's manifest is admitted under: those of the qualification it names,
  * whose current registration must hash to the recorded digest, bind the manifest's tier, list
- * its host and seed, and schedule its order for that seed, or else its tier's. The scenario must name the same qualification digest, or none
- * with a tier run.
+ * its host and seed, and schedule its order for that seed, or else its tier's. The scenario must
+ * name the manifest's seed and the same qualification digest, or none with a tier run.
  */
 export function admittedArms(
     manifest: {
@@ -129,6 +129,16 @@ export function admittedArms(
     scenario: { manifest?: Record<string, unknown> },
 ): { run: string[]; pairs: string[][] } {
     const ref = manifest.qualification ?? null;
+    const compiledSeed = scenario.manifest?.seed;
+    if (
+        compiledSeed !== undefined &&
+        manifest.seed !== undefined &&
+        compiledSeed !== manifest.seed
+    ) {
+        throw new Error(
+            `scenario.json was compiled for seed ${String(compiledSeed)}, but the manifest names ${manifest.seed}`,
+        );
+    }
     const compiled = scenario.manifest?.qualification_sha256 ?? null;
     if (compiled !== (ref?.sha256 ?? null)) {
         throw new Error(
