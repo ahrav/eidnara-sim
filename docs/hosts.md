@@ -46,13 +46,15 @@ derives Pi's `compaction.enabled`, OpenCode's `compaction.auto` and
 `compaction.prune`, and the user-tier `eidnara.jsonc` `compaction.enabled`
 from it.
 
-| Arm | Role | Daemon | Plugin | Eidnara compaction | Host compaction | Search route |
-|---|---|---|---|---|---|---|
-| `host` | host-only | none | none | n/a | on | none |
-| `eidnara` | fallback-search | `direct_host_fixture` | Eidnara | on | off | legacy scan |
-| `eidnara-kl` | knowledge-only | `direct_host_fixture` | Eidnara | off | on | legacy scan |
-| `eidnara-cf` | fallback-search | `direct_host_fixture` | Eidnara | on | off | legacy scan |
-| `eidnara-hybrid` | production-hybrid | production `eidnara-host` | Eidnara | on | off | fused |
+| Arm | Role | Daemon | Plugin | Eidnara compaction | Host compaction | Search route | Delivery |
+|---|---|---|---|---|---|---|---|
+| `host` | host-only | none | none | n/a | on | none | none |
+| `eidnara` | fallback-search | `direct_host_fixture` | Eidnara | on | off | legacy scan | automatic |
+| `eidnara-kl` | knowledge-only | `direct_host_fixture` | Eidnara | off | on | legacy scan | automatic |
+| `eidnara-cf` | fallback-search | `direct_host_fixture` | Eidnara | on | off | legacy scan | automatic |
+| `eidnara-hybrid` | production-hybrid | production `eidnara-host` | Eidnara | on | off | fused | automatic |
+| `eidnara-search` | explicit-search-only | `direct_host_fixture` | Eidnara | on | off | legacy scan | explicit search |
+| `host-oracle` | oracle-context | none | none | n/a | on | none | oracle context |
 
 `eidnara-cf` runs as `eidnara` here; its counterfactual deletions land with
 the counterfactual arm. `eidnara-kl` keeps Eidnara's knowledge layer
@@ -60,13 +62,68 @@ the counterfactual arm. `eidnara-kl` keeps Eidnara's knowledge layer
 context window to the host (SIM-P76); with Eidnara compaction off, OpenCode's
 conflict check reports no conflict with its native compaction.
 
+Delivery names how knowledge from earlier sessions reaches the agent
+(`deliveryOf` in `src/hosts/profiles.ts`; an arm without a declared mode
+delivers automatically with the plugin and not at all without it):
+
+- automatic: Eidnara's tools beside its automatic injection, the daemon's
+  `<project-memory>` block and the plugin's `<eidnara-search-hint>`.
+- explicit search: Eidnara's tools with the auto-search hint off
+  (`memory.auto_search.enabled=false`) and no recalled-memory block. Eidnara
+  has no switch for that block: the daemon composes it whenever
+  `memory.enabled` holds (`crates/daemon/src/m0_compose.rs`), its config
+  (`crates/daemon/src/config.rs`) has no key that drops it, and
+  `memory.enabled=false` also disables the plugin's kernel memory client,
+  which serves Pi's `eidnara_search`. Both daemon variants therefore provide
+  `memory_injection: always-on`, and `armOrder` refuses `eidnara-search`
+  until Eidnara exposes the switch.
+- oracle context: the harness-only upper-bound control. `host-oracle` runs
+  the host alone, and each probe turn whose `ground_truth.sources` names
+  events carries those events' text ahead of the user's own (`src/run/oracle-note.ts`).
+  It stands for no production configuration.
+
+### Oracle note
+
+The note is a prefix of the probe turn's user message. Both hosts take
+per-turn context only through the prompt, a system-prompt change needs a
+host restart, and the host arm runs Pi with `--no-extensions`, so the prompt
+is the one channel that reaches the model as ordinary context on both hosts.
+The run adds it after the user-sim decides the turn, so the pairing log
+hashes the scripted text and the oracle arm stays paired with the others; a
+turn the user-sim abandons gets no note. The sources are quoted earliest
+first, under the name of the project they belong to (the base project for a
+`P8-twin` or P11 item asked in its twin):
+
+````text
+Background from earlier sessions on <project>, quoted as it came up:
+
+Earlier I wrote:
+> <each line of a user-turn source>
+
+Committed then as <path>:
+```
+<content of an apply_diff source>
+```
+
+<path> was removed from the repository.
+
+My request now:
+<the delivered turn text>
+````
+
+The fence around a file is one backtick longer than the longest backtick run
+in it. The run refuses to start an oracle arm when a scenario text holds the
+opening `Background from earlier sessions on ` or a note carries a marker
+(SIM-P07). The note stays in the session's history after its turn, as any
+earlier user message does; the next session starts without it.
+
 Each daemon variant provides a fixed capability set, read from the Eidnara
 source at commit `08de9051a` (`AUDITED_EIDNARA`):
 
-| Variant | Search route | Embeddings | Memory reviewer | Side calls |
-|---|---|---|---|---|
-| `direct_host_fixture` | legacy scan (no query route limits) | deterministic 8-dimension engine | none | through the proxy, by the `--harness-runtime` redirect extension |
-| production `eidnara-host` | fused | `gte-modernbert-base-f32` | yes | straight to Bedrock |
+| Variant | Search route | Embeddings | Memory reviewer | Side calls | Memory injection |
+|---|---|---|---|---|---|
+| `direct_host_fixture` | legacy scan (no query route limits) | deterministic 8-dimension engine | none | through the proxy, by the `--harness-runtime` redirect extension | always on |
+| production `eidnara-host` | fused | `gte-modernbert-base-f32` | yes | straight to Bedrock | always on |
 
 The production launcher admits only its compiled-in qualified harness
 closures, runs Pi with `--no-extensions` and a fresh `HOME`, and refuses AWS
@@ -74,7 +131,8 @@ endpoint overrides, so its model calls cannot reach the proxy and their cost
 goes unmeasured. `armOrder` refuses an arm whose profile declares a
 capability its variant lacks, naming each gap, before the run writes a
 manifest or starts preflight; `eidnara-hybrid` is refused that way for its
-side calls, and no tier pre-registers it. Before preflight, the run also
+side calls and `eidnara-search` for its memory injection, and no tier
+pre-registers either. Before preflight, the run also
 requires the build clone to hold `AUDITED_EIDNARA` and its copies of each
 running variant's source files (`sources` in `src/hosts/profiles.ts`) to
 match that commit's, so a build whose fixture changed stops until the
@@ -110,6 +168,19 @@ complete evidence only when the two agree:
   answered agent calls with no transform pass; one with it off that shows a
   transform pass or a `history_summarizer` call; or a search result from a
   route other than the declared one.
+- In a run whose order holds an oracle-context arm, and on an
+  explicit-search arm, `capabilities.json` also holds `delivery`: the arm's
+  agent request bodies rebuilt from `requests.jsonl`, those that could not
+  be, those carrying a block the plugin writes (`<project-memory>`,
+  `<memory-updates>`, `<project-note>`, `<eidnara-search-auto>`,
+  `<eidnara-search-hint>`), and the oracle notes the arm owed (one per
+  delivered `UserTurn` of a probe with sources), delivered, and misplaced.
+  An oracle-context arm is a mismatch when it owed no note, when an owed
+  note reached no agent request of its own turn, when a request carries a
+  note before its turn or in another session or an opening that matches no
+  owed note, or when a body cannot be rebuilt; any other arm is a mismatch
+  when a request carries a note; an explicit-search arm is a mismatch when a
+  request carries a plugin block or a body cannot be rebuilt.
 
 The plugin writes its log inside the arm root, which the agent's tools can
 write too, so the evidence holds against an agent that leaves the log alone;

@@ -12,7 +12,10 @@ into the run directory; with `--out` it writes `<out>/<run name>/` per run and
 ## Stages
 
 A memory arm (one whose profile loads the Eidnara plugin) has six stages; a
-host arm has `source`, `context`, and `application`. Each stage carries a
+host arm has `source`, `context`, and `application`. The oracle-context arm
+(`host-oracle`) is a host arm whose probe turn carries the oracle note
+(`docs/hosts.md`), so its `context` stage reads the note with the rest of the
+request. Each stage carries a
 status, a reason, and pointers (`path` and `at`: a call `seq`, a journal
 `seq`, a `tools.jsonl` line, a store object id, a transcript `toolCallId`, or
 a grade record).
