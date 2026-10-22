@@ -147,16 +147,14 @@ export function admittedArms(
     if (manifest.host !== undefined && !q.hosts.includes(manifest.host)) {
         throw new Error(`qualification ${q.id} runs no ${manifest.host} host`);
     }
-    if (manifest.seed !== undefined) {
-        const at = q.seeds.indexOf(manifest.seed);
-        if (at < 0) throw new Error(`qualification ${q.id} runs no seed ${manifest.seed}`);
-        const scheduled = q.arms.order_by_seed[at] ?? [];
-        const ranks = (manifest.order ?? []).map((arm) => scheduled.indexOf(arm));
-        if (ranks.some((r, i) => r < 0 || (i > 0 && r <= (ranks[i - 1] as number)))) {
-            throw new Error(
-                `manifest order ${(manifest.order ?? []).join(",")} is not a subsequence of qualification ${q.id}'s seed ${manifest.seed} order ${scheduled.join(",")}`,
-            );
-        }
+    const at = manifest.seed === undefined ? -1 : q.seeds.indexOf(manifest.seed);
+    if (at < 0) throw new Error(`qualification ${q.id} runs no seed ${manifest.seed}`);
+    const scheduled = q.arms.order_by_seed[at] ?? [];
+    const ranks = (manifest.order ?? []).map((arm) => scheduled.indexOf(arm));
+    if (ranks.some((r, i) => r < 0 || (i > 0 && r <= (ranks[i - 1] as number)))) {
+        throw new Error(
+            `manifest order ${(manifest.order ?? []).join(",")} is not a subsequence of qualification ${q.id}'s seed ${manifest.seed} order ${scheduled.join(",")}`,
+        );
     }
     return { run: q.arms.run, pairs: [] };
 }

@@ -2168,12 +2168,18 @@ async function runArms(
         const observed = observeArm(arm, o.host, armRoot, components.get(arm) ?? {});
         const mode = deliveryOf(armProfile(arm));
         if (manifest.order.some(oracle) || mode === "explicit-search") {
+            // A recovered row says what the user-sim decided; the host may or may not have the turn.
+            const turns = journal.entries.filter(
+                (t) => t.kind === "UserTurn" && t.arm === arm && t.delivered === true,
+            );
             const notes: ExpectedNote[] = oracle(arm)
-                ? userTurns(arm).flatMap((t) => {
-                      const background = backgrounds.get(String(t.event));
-                      return background
-                          ? [{ event: String(t.event), session: String(t.session), background }]
-                          : [];
+                ? turns.flatMap((t) => {
+                      const event = String(t.event);
+                      const background = backgrounds.get(event);
+                      const text = scriptedById.get(event)?.text;
+                      if (!background || text === undefined) return [];
+                      const owed = t.recovered !== true;
+                      return [{ event, session: String(t.session), background, text, owed }];
                   })
                 : [];
             observed.delivery = observeDelivery(

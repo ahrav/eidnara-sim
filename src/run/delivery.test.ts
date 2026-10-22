@@ -135,6 +135,8 @@ describe("delivery check", () => {
         event: "e-2",
         session: "s-1",
         background: `${ORACLE_OPENING}mini-redis, quoted as it came up:\n\nEarlier I wrote:\n> The alias is gilded-marmot-53.\n\nMy request now:\n`,
+        text: "Which alias?",
+        owed: true,
     };
     const parts = () => readRequestParts(join(dir, "requests.jsonl"));
     const check = (arm: string, calls: ReturnType<typeof call>[], notes: ExpectedNote[]) =>
@@ -161,7 +163,7 @@ describe("delivery check", () => {
     });
 
     test("probes sharing sources share a note, and history alone does not deliver a turn's note", () => {
-        const twin: ExpectedNote = { ...note, event: "e-3" };
+        const twin: ExpectedNote = { ...note, event: "e-3", text: "Again?" };
         const history = (turn: string, prompt: string): ReturnType<typeof call> => {
             const body: ConverseBody = {
                 messages: [
@@ -179,6 +181,25 @@ describe("delivery check", () => {
         ).toEqual([]);
         expect(check("host-oracle", [first, history("e-3", "Again?")], [note, twin])).toEqual([
             "1 oracle notes reached no prompt of their own turn: e-3",
+        ]);
+    });
+
+    test("a note after the question, or one that replaced it, delivers nothing", () => {
+        for (const prompt of [`Which alias?\n${note.background}`, note.background]) {
+            expect(check("host-oracle", [call("s-1", "e-2", prompt)], [note])).toContain(
+                "1 oracle notes reached no prompt of their own turn: e-2",
+            );
+        }
+    });
+
+    test("a recovered turn's note is placed where it appears and owes no delivery", () => {
+        const recovered = { ...note, owed: false };
+        const own = call("s-1", "e-2", `${note.background}Which alias?`);
+        expect(check("host-oracle", [own], [recovered, { ...note, event: "e-3" }])).toEqual([
+            "1 oracle notes reached no prompt of their own turn: e-3",
+        ]);
+        expect(check("host-oracle", [call("s-1", "e-2", "Which alias?")], [recovered])).toEqual([
+            "the arm reached no probe turn with sources, so it delivered no oracle note",
         ]);
     });
 
@@ -265,7 +286,8 @@ describe("persisted runs under a qualification", () => {
     const ref = { id: "Q", sha256: qualificationHash(Q) };
 
     test("the manifest, the scenario, and the registration name one qualification and host", () => {
-        expect(admittedArms({ tier: "S", host: "pi", qualification: ref }, qualified)).toEqual({
+        const at101 = { tier: "S" as const, host: "pi", seed: 101, order: ["host"] };
+        expect(admittedArms({ ...at101, qualification: ref }, qualified)).toEqual({
             run: ["host", "eidnara", "host-oracle"],
             pairs: [],
         });
@@ -281,8 +303,11 @@ describe("persisted runs under a qualification", () => {
             /but the manifest names none/,
         );
         expect(() =>
-            admittedArms({ tier: "S", host: "opencode", qualification: ref }, qualified),
+            admittedArms({ ...at101, host: "opencode", qualification: ref }, qualified),
         ).toThrow(/qualification Q runs no opencode host/);
+        expect(() =>
+            admittedArms({ tier: "S", host: "pi", qualification: ref }, qualified),
+        ).toThrow(/qualification Q runs no seed undefined/);
         const run = (seed: number, order: string[]) =>
             admittedArms({ tier: "S", host: "pi", seed, order, qualification: ref }, qualified);
         expect(run(102, ["host-oracle", "host"]).run).toContain("host-oracle");

@@ -64,6 +64,13 @@ export interface ExpectedNote {
     event: string;
     session: string;
     background: string;
+    /** The scripted turn text the delivered prompt ends with, after the note. */
+    text: string;
+    /**
+     * False for a turn a resume recovered from the pairing log: the host may have received it, so
+     * its note is placed where it appears, but its delivery is not owed.
+     */
+    owed: boolean;
 }
 
 /**
@@ -101,7 +108,12 @@ export function observeDelivery(
         requests: 0,
         unreadable: 0,
         injected_blocks: 0,
-        notes: { expected: notes.length, delivered: 0, missing: [], misplaced: [] },
+        notes: {
+            expected: notes.filter((n) => n.owed).length,
+            delivered: 0,
+            missing: [],
+            misplaced: [],
+        },
     };
     const delivered = new Set<string>();
     const index = (event: string | null) => eventIndex.get(event ?? "") ?? -1;
@@ -119,7 +131,10 @@ export function observeDelivery(
         const users = userTexts(body);
         const prompt = [...users].reverse().find((t) => t.length > 0) ?? "";
         for (const n of notes) {
-            if (n.event === call.turn && prompt.includes(n.background)) delivered.add(n.event);
+            const opens = prompt.startsWith(n.background);
+            if (n.event === call.turn && opens && prompt.trimEnd().endsWith(n.text.trimEnd())) {
+                delivered.add(n.event);
+            }
         }
         const carried = backgrounds.filter((b) => text.includes(b));
         const due = (b: string) =>
@@ -144,7 +159,7 @@ export function observeDelivery(
         }
     }
     out.notes.delivered = delivered.size;
-    out.notes.missing = notes.filter((n) => !delivered.has(n.event)).map((n) => n.event);
+    out.notes.missing = notes.filter((n) => n.owed && !delivered.has(n.event)).map((n) => n.event);
     return out;
 }
 

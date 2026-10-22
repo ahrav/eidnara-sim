@@ -174,9 +174,11 @@ complete evidence only when the two agree:
   be, those carrying a block the plugin writes (`<project-memory>`,
   `<memory-updates>`, `<project-note>`, `<eidnara-search-auto>`,
   `<eidnara-search-hint>`), and the oracle notes the arm owed (one per
-  delivered `UserTurn` of a probe with sources), delivered, and misplaced.
-  An oracle-context arm is a mismatch when it owed no note, when an owed
-  note reached no agent request of its own turn, when a request carries a
+  delivered `UserTurn` of a probe with sources; a row a resume recovered from
+  the pairing log places its note but owes no delivery), delivered, and
+  misplaced. A note is delivered when a prompt of its own turn starts with it
+  and ends with the turn's scripted text. An oracle-context arm is a mismatch
+  when it owed no note, when an owed note was not delivered, when a request carries a
   note before its turn or in another session or an opening that matches no
   owed note; any other arm is a mismatch when a request carries a note; an
   explicit-search arm is a mismatch when a request carries a plugin block;
