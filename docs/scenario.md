@@ -103,9 +103,11 @@ of instance `k`. Instance `k + 1` supersedes instance `k` explicitly:
   updates) draws a different `variants` entry per instance, such as the next
   log level or the flipped quote rule;
 - `supersedes` names instance `k`, and the check forbids what instance `k`
-  required, the values it forbade apart from a requirement (a decision's
-  stated figure, an anchor value; a commit-tag rule's complement of its own
-  requirement stays out), and everything earlier instances forbade, except a
+  required, the values it forbade apart from those requirements (a
+  decision's stated figure, an anchor value; a forbid that names the
+  predecessor's own required value, such as a commit-tag rule's complement,
+  is that requirement restated and stays out), and everything earlier
+  instances forbade, except a
   pattern the new check requires. The P1 control of a revised constraint
   carries the new requirement without those inherited forbids, since its
   agent has yet to hear the revision;
@@ -262,7 +264,7 @@ The compiler throws, and writes nothing, when:
   session, or the first summarizer call of a session; a trigger that names an
   unknown session or a turn the session lacks; and an episode whose seam entry
   differs from the seam table (SIM-P05);
-- `scheduleFaults` finds fewer sessions with two or more turns and a turn
+- `scheduleFaults` finds fewer sessions with two or more turns and two turns
   after every probe and source than provider episodes, no forced p90 session for the mid-fold SIGKILL, or no session
   after the first that starts without a hand-applied diff for the sleep.
 
@@ -276,7 +278,7 @@ daemon. Each type gets one episode.
 
 | Layer | Trigger | Strategy |
 |---|---|---|
-| Proxy sink (provider faults) | The Nth user turn of a session with at least two turns, after its last probe, source, or plan status turn and any P14 window; each provider episode gets its own session | single (1 call), burst (3 calls), intermittent (probability 0.3 over 10 calls), or persistent (to the end of the session) |
+| Proxy sink (provider faults) | The Nth user turn of a session with at least two turns, after its last probe, source, or plan status turn and any P14 window, and before its last turn, so a later agent call can witness the fault; each provider episode gets its own session | single (1 call), burst (3 calls), intermittent (probability 0.3 over 10 calls), or persistent (to the end of the session) |
 | Scheduler, mid-fold SIGKILL | The first observed summarizer call of a forced p90 session (OQ-8, schedule half) | single |
 | Clock, laptop sleep | The start of the session after the widest idle gap, among sessions that start without a hand-applied diff | single, with `duration_ms` equal to that gap, so the jump holds no events (SIM-P18) |
 | Scheduler, every other type | The start of a session after the first | single; the store-full fault is persistent for that one session (`sessions: 1`) |
@@ -308,15 +310,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `793ff269` | 0.2687 | 0.4949 |
-| S | 102 | `04749e74` | 0.265 | 0.5075 |
-| M | 201 | `e36d111a` | 0.2584 | 0.5807 |
-| M | 202 | `9d1bbe8d` | 0.2578 | 0.551 |
-| M | 203 | `7b7c5b00` | 0.261 | 0.551 |
-| L | 301 | `4c8aa927` | 0.2582 | 0.5807 |
-| L | 302 | `a4b854f9` | 0.2603 | 0.5807 |
-| L | 303 | `a2e80ab4` | 0.2615 | 0.5807 |
-| XL | 401 | `d6207fd3` | 0.2579 | 0.5807 |
+| S | 101 | `daa553b5` | 0.2687 | 0.4949 |
+| S | 102 | `d563ae43` | 0.265 | 0.5075 |
+| M | 201 | `cb8bf18b` | 0.2584 | 0.5807 |
+| M | 202 | `f75e96ed` | 0.2578 | 0.551 |
+| M | 203 | `309b3a1f` | 0.261 | 0.551 |
+| L | 301 | `f47f5119` | 0.2582 | 0.5807 |
+| L | 302 | `dcc98c3e` | 0.2603 | 0.5807 |
+| L | 303 | `6675a4f1` | 0.2615 | 0.5807 |
+| XL | 401 | `fcab45dc` | 0.2579 | 0.5807 |
 
 ## Known limits
 

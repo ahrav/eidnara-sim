@@ -174,6 +174,8 @@ interface Line {
     /** Files the line has committed that the scenario-defined tree still holds. */
     artifacts: Map<string, string>;
     literals: string[];
+    /** Per instance, the generated literals its check requires. */
+    required: string[][];
     words: string[];
 }
 
@@ -529,13 +531,20 @@ export async function compileScenario(input: CompileInput) {
     const negate = (c: Check): Check =>
         Object.fromEntries(lists(c, "must").map(([k, v]) => [`${k}_not`, v]));
     /**
-     * A later instance forbids its predecessor's requirements, its forbidden values that stand
-     * apart from a requirement, and everything earlier instances forbade.
+     * A later instance forbids its predecessor's requirements, the values it forbade apart from
+     * those requirements, and everything earlier instances forbade.
      */
-    const inherit = (base: Check, prev: Check | undefined, prevInherited: Check): Check => {
+    const inherit = (
+        base: Check,
+        prev: Check | undefined,
+        prevInherited: Check,
+        prevRequired: string[] = [],
+    ): Check => {
         if (!prev) return {};
+        // A forbid naming the predecessor's own required value is that requirement's complement.
+        const complement = (p: string) => prevRequired.some((lit) => p.includes(lit));
         const ownForbids = Object.fromEntries(
-            lists(prev, "must_not").filter(([k]) => prev[k.replace(/_not$/, "")] === undefined),
+            lists(prev, "must_not").map(([k, v]) => [k, v.filter((p) => !complement(p))]),
         );
         const forbidden = append(append(negate(prev), ownForbids), prevInherited);
         const required = (k: string) =>
@@ -570,6 +579,7 @@ export async function compileScenario(input: CompileInput) {
             outInherited: {},
             artifacts: new Map(),
             literals: [],
+            required: [],
             words: [],
         };
         lines.set(lineKey, line);
@@ -835,7 +845,12 @@ export async function compileScenario(input: CompileInput) {
                   ? append(planCheck(1), negate(planCheck(0)))
                   : planCheck(0)
             : renderDeep<Check>(tpl.check, vars);
-        const inherited = inherit(base, line.base[revision - 1], line.inherited);
+        const inherited = inherit(
+            base,
+            line.base[revision - 1],
+            line.inherited,
+            line.required[revision - 1],
+        );
         const superseded = swap ? renderDeep<Check>(tpl.check, { ...vars, ...swap }) : {};
         const swappedOnly = (pattern: string) => {
             const names = [...pattern.matchAll(/\{(\w+)\}/g)].map(([, k]) => k ?? "");
@@ -851,7 +866,12 @@ export async function compileScenario(input: CompileInput) {
         const check = append(append(append(base, superseded), negate(obsolete)), inherited);
         const mustNot = append(append(negate(base), negate(superseded)), inherited);
         const outBase = renderDeep<Check>(tpl.out_check ?? tpl.check, vars);
-        const outInherited = inherit(outBase, line.outBase[revision - 1], line.outInherited);
+        const outInherited = inherit(
+            outBase,
+            line.outBase[revision - 1],
+            line.outInherited,
+            line.required[revision - 1],
+        );
 
         const bound = [...GENERATED, ...Object.keys(variant)];
         const words = Object.values(variant);
@@ -1015,6 +1035,7 @@ export async function compileScenario(input: CompileInput) {
         line.outBase.push(outBase);
         line.outInherited = outInherited;
         line.literals.push(...ownPresent.flat(), ...ownAbsent);
+        line.required.push(ownPresent.flat());
         line.words.push(...words);
     }
     for (const i of range(0, perType)) {

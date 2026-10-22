@@ -649,6 +649,23 @@ describe("compiled S scenario", async () => {
         }
     });
 
+    test("a revised P3 item forbids every superseded figure it lists as stale", () => {
+        const revised = s.probes.filter(
+            (p) => p.type === "P3" && (s.facts.find((f) => f.id === p.fact)?.revision ?? 0) > 0,
+        );
+        expect(revised.length).toBeGreaterThan(0);
+        for (const p of revised) {
+            const forbids = ((p.check as { must_not?: string[] }).must_not ?? []).join("\n");
+            for (const lit of (p.ground_truth?.stale ?? []).filter((x) => /^\d+$/.test(x))) {
+                expect({ probe: p.id, lit, forbidden: forbids.includes(lit) }).toEqual({
+                    probe: p.id,
+                    lit,
+                    forbidden: true,
+                });
+            }
+        }
+    });
+
     test("a hand-applied commit's first turn names the file it adds", () => {
         for (const f of s.facts.filter((x) => x.manner === "hand_applied_diff")) {
             const add = s.events.find(
@@ -1622,7 +1639,7 @@ describe("fault schedule", () => {
         });
         const few = [session("s-0000", 3), session("s-0001", 3), session("s-0002", 1)];
         expect(() => scheduleFaults("M", few, new Rng(1))).toThrow(
-            /8 provider faults need 8 sessions with two or more turns and a turn after every probe and source; 2 available/,
+            /8 provider faults need 8 sessions with two or more turns and two turns after every probe and source; 2 available/,
         );
         const noP90 = Array.from({ length: 9 }, (_, i) => session(`s-${i}`, 3));
         expect(() => scheduleFaults("L", noP90, new Rng(1))).toThrow(/no forced p90 session/);
@@ -1647,6 +1664,7 @@ describe("fault schedule", () => {
                 const s = sessions.find((x) => x.id === f.trigger.session);
                 expect(s?.guarded_turns).toBe(4);
                 expect(f.trigger.n).toBeGreaterThan(4);
+                expect(f.trigger.n).toBeLessThan(s?.requests ?? 0);
             }
         }
     });
