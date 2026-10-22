@@ -130,9 +130,15 @@ export function observeDelivery(
                     index(n.event) <= index(call.turn),
             ),
         );
-        const all = users.join("\n");
-        const owned = carried.reduce((sum, b) => sum + occurrences(all, b), 0);
-        if (!placed || occurrences(all, ORACLE_OPENING) > owned) out.notes.misplaced.push(call.seq);
+        // The agent's own replies may quote a note, so only system and user text count.
+        const entered = bodyText({
+            system: body.system,
+            messages: (body.messages ?? []).filter((m) => m?.role === "user"),
+        });
+        const owned = carried.reduce((sum, b) => sum + occurrences(entered, b), 0);
+        if (!placed || occurrences(entered, ORACLE_OPENING) > owned) {
+            out.notes.misplaced.push(call.seq);
+        }
     }
     out.notes.delivered = delivered.size;
     out.notes.missing = notes.filter((n) => !delivered.has(n.event)).map((n) => n.event);
@@ -145,10 +151,10 @@ export function deliveryMismatches(profile: ArmProfile, o: DeliveryObservation |
     const mode = deliveryOf(profile);
     const out: string[] = [];
     const { notes } = o;
-    if (mode === "oracle-context" || mode === "explicit-search") {
-        if (o.unreadable > 0) {
-            out.push(`${o.unreadable} agent request bodies cannot be rebuilt to check ${mode}`);
-        }
+    if (o.unreadable > 0) {
+        out.push(
+            `${o.unreadable} agent request bodies cannot be rebuilt to check ${mode} delivery`,
+        );
     }
     if (mode === "oracle-context") {
         if (notes.expected === 0) {

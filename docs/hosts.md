@@ -178,9 +178,12 @@ complete evidence only when the two agree:
   An oracle-context arm is a mismatch when it owed no note, when an owed
   note reached no agent request of its own turn, when a request carries a
   note before its turn or in another session or an opening that matches no
-  owed note, or when a body cannot be rebuilt; any other arm is a mismatch
-  when a request carries a note; an explicit-search arm is a mismatch when a
-  request carries a plugin block or a body cannot be rebuilt.
+  owed note; any other arm is a mismatch when a request carries a note; an
+  explicit-search arm is a mismatch when a request carries a plugin block;
+  and every arm whose delivery is read is a mismatch when a body cannot be
+  rebuilt. Notes and openings are counted in the system blocks and user
+  messages, the text that enters the context; the agent's own replies may
+  quote a note.
 
 The plugin writes its log inside the arm root, which the agent's tools can
 write too, so the evidence holds against an agent that leaves the log alone;

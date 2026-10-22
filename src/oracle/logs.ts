@@ -2,6 +2,7 @@ import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs
 import { join } from "node:path";
 import type { Command } from "../grade/artefacts";
 import { armBase, requireOrder } from "../hosts/arms";
+import { runsEidnara } from "../hosts/profiles";
 import { parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
 import { ARMS, type Preregistration, type Tier } from "../prereg/schema";
 import { type CallRecord, recordProblems } from "../proxy/records";
@@ -384,7 +385,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     const kinds = new Map(scenario.events.map((e) => [String(e.id), String(e.kind)]));
     const order = manifest.order as string[];
     if (order.length === 0) throw new Error("manifest names no arms");
-    const admitted = admittedArms(manifest);
+    const admitted = admittedArms(manifest, scenario as { manifest?: Record<string, unknown> });
     requireOrder(order, [...ARMS, ...admitted.run], admitted.pairs);
     for (const arm of order) {
         if (!admitted.run.includes(armBase(arm))) {
@@ -516,7 +517,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         if (!existsSync(join(dir, arm.arm, "tools.jsonl"))) {
             throw new Error(`arm ${arm.arm} has no tools.jsonl`);
         }
-        if (armBase(arm.arm) === "host") continue;
+        if (!runsEidnara(arm.arm)) continue;
         if (!arm.resources.some((s) => typeof s.rss === "number")) {
             throw new Error(
                 `arm ${arm.arm} has no daemon RSS samples in ${arm.arm}/resources.jsonl`,

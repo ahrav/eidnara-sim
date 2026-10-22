@@ -27,11 +27,14 @@ arm whose delivery is `oracle-context`; an abandoned turn gets none.
 Before `EndArm`, `verifyArm` reads the arm's agent call records and
 `requests.jsonl`. `observeDelivery` (`src/run/capabilities.ts`) rebuilds each
 body, marks the owed notes (from delivered, unrecovered `UserTurn` rows) that
-reached a request of their own turn, and lists requests that carry a note in
-another session, before its turn, or an opening in a user text block that
-matches no owed note. `deliveryMismatches` fails the arm on any missing or
-misplaced note, an unreadable body, or no owed note at all; on any other arm
-in such a run it fails a request that carries a note.
+reached the prompt of their own turn, and lists requests that carry a note in
+another session, before its turn, or an opening in the system or user text
+that matches no owed note. `deliveryMismatches` fails the arm on any missing
+or misplaced note or no owed note at all; on any other arm in such a run it
+fails a request that carries a note; on every arm it reads, it fails an
+unreadable body. The Pi smoke recorded in PR #32 (S seed 102, 32 events,
+`host-oracle` and `host`) owed one note, delivered it, and found none on the
+host arm.
 
 `src/run/delivery.test.ts` covers each case with bodies written through
 `RequestStore`.

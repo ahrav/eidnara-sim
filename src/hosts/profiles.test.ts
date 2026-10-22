@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import { ARMS } from "../prereg/schema";
-import { ARM_PROFILES, armProfile, capabilityGaps, deliveryOf, isArmName } from "./profiles";
+import {
+    ARM_PROFILES,
+    armProfile,
+    capabilityGaps,
+    deliveryOf,
+    isArmName,
+    runsEidnara,
+} from "./profiles";
 
 test("every pre-registered arm has a profile its daemon variant satisfies", () => {
     for (const arm of ARMS) {
@@ -62,5 +69,12 @@ test("each delivery mode has its arm, and the oracle control runs no Eidnara", (
     expect(capabilityGaps("host-oracle")).toEqual([]);
     for (const arm of ["host", "eidnara", "eidnara-kl", "eidnara-cf", "eidnara-hybrid"] as const) {
         expect(Object.hasOwn(ARM_PROFILES[arm], "delivery")).toBe(false);
+    }
+});
+
+test("the oracle control is exempt from daemon and plugin evidence as the host arm is", () => {
+    for (const label of ["host", "host~aa", "host-oracle"]) expect(runsEidnara(label)).toBe(false);
+    for (const label of ["eidnara", "eidnara~aa", "eidnara-kl", "eidnara-x"]) {
+        expect(runsEidnara(label)).toBe(true);
     }
 });

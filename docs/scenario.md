@@ -145,7 +145,7 @@ pasted, and a P3 value read from its authoritative file).
 | P6 | plan | First turn of a later session, at least one hour after the previous session ends; see Plans below |
 | P7 | rationale | Later session; judge-graded against the reference reason |
 | P8 | lookup | Later session; the answer must carry the value |
-| P8-twin | the P8 fact | Qualification control `wrong-project-lookup` only: the same question in a session of the twin project after the conveyance; `ground_truth.expect` is `abstain`, `absent` holds the base project's value, and `sources` are the base project's |
+| P8-twin | the P8 fact | Qualification control `wrong-project-lookup` only: the same question in a session of the twin project after the conveyance; `ground_truth.expect` is `abstain`, `absent` holds the base project's value, `check.owner` names the base project, and `sources` are the base project's |
 | P9 | never settled | Later session; the answer must abstain |
 | P10 | anchor | Later, unrelated task; the value must not appear |
 | P11 | the P1 fact | A session of the twin project after the conveyance; the check forbids the convention |

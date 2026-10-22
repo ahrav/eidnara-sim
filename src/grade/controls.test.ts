@@ -650,6 +650,7 @@ describe("P8-twin: the other project's value is no answer here", () => {
             `${v} belongs to the other project; this repository doesn't define a pre-production alias.`,
             `That alias is not for this project: ${v} was set for another project.`,
             "Nothing I know of was set here; this codebase has no pre-production alias.",
+            `${v} is mini-redis's alias; nothing like it was set for this one.`,
         ]) {
             expect(answerOf(answer)).toEqual(["pass"]);
         }
@@ -663,17 +664,32 @@ describe("P8-twin: the other project's value is no answer here", () => {
             ["Use brisk-otter-07.", "answered instead of abstaining", false],
             ["I don't know; my guess is brisk-otter-07.", "answered instead of abstaining", false],
             ["Point it at the staging cluster.", "answered instead of abstaining", false],
+            [
+                `This repository doesn't define an alias. Use ${v} as the alias.`,
+                "answered with the other project's value",
+                true,
+            ],
+            [
+                `Use ${v} for this repository. This repository does not define a pre-production alias.`,
+                "answered with the other project's value",
+                true,
+            ],
         ];
         for (const [answer, reason, harm] of cases) {
             expect(answerOf(answer)).toEqual(["fail", reason, harm]);
         }
     });
 
-    test("a check that forbids another value than its ground truth is refused", () => {
-        const wrong = { ...twin, check: { abstain: true, answer_must_not: ["brisk-otter-07"] } };
-        expect(() =>
-            gradeItem(wrong as ProbeItem, [snapshotOf(twin, { answer: "UNKNOWN" })], rules, 1, []),
-        ).toThrow(GradeRefused);
+    test("a check that forbids another value, or names the item's own project, is refused", () => {
+        const owner = (twin.check as { owner: string }).owner;
+        for (const check of [
+            { abstain: true, answer_must_not: ["brisk-otter-07"], owner },
+            { abstain: true, answer_must_not: [v], owner: twin.project },
+        ]) {
+            const wrong = { ...twin, check } as ProbeItem;
+            const snap = snapshotOf(twin, { answer: "UNKNOWN" });
+            expect(() => gradeItem(wrong, [snap], rules, 1, [])).toThrow(GradeRefused);
+        }
     });
 });
 

@@ -80,7 +80,7 @@ if (scenarioHash(scenarioJson as Record<string, unknown>) !== manifest.scenario_
 const records = readPairing(join(dir, "pairing.jsonl"));
 // The order's control structure, as the run command admits it; the arms it names are the
 // manifest's own, which the oracle loader and the A/A report bind to the tier.
-const admitted = admittedArms(manifest);
+const admitted = admittedArms(manifest, scenarioJson as { manifest?: Record<string, unknown> });
 requireOrder(manifest.order as string[], admitted.run, admitted.pairs);
 // The order is one the runner schedules for the tier and seed, so the reference arm is the
 // seed's.

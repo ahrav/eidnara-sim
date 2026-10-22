@@ -63,6 +63,8 @@ export interface Check {
     answer?: string;
     answer_must_not?: string | string[];
     abstain?: boolean;
+    /** The project a P8-twin item's forbidden value belongs to. */
+    owner?: string;
     /**
      * A P6 item whose right response is a question: the final answer asks one and carries every
      * pattern, and the diff applies none of the open tasks.
@@ -174,6 +176,7 @@ const CHECK_FIELDS: Record<keyof Check, Field> = {
     commands_must_not: patternList,
     answer_must_not: (v: unknown) => compiles(v) || patternList(v),
     abstain: (v: unknown) => v === true,
+    owner: text,
     clarify: patternList,
     scope: (v: unknown) =>
         text(v) &&
@@ -200,7 +203,7 @@ const REQUIRED: Record<string, (keyof Check)[]> = {
     P5: [],
     P8: ["answer"],
     P9: ["abstain"],
-    "P8-twin": ["abstain", "answer_must_not"],
+    "P8-twin": ["abstain", "answer_must_not", "owner"],
     P10: ["must_not", "answer_must_not"],
     P11: [],
     P13: ["turns"],
@@ -1099,12 +1102,18 @@ const GRADERS: Record<string, Grader> = {
         const extra = { "P9.cross_session_pass_rate": hit };
         return binary("P9", hit, extra, "answered instead of abstaining");
     },
-    "P8-twin": (r, _c, _rules, p) => {
+    "P8-twin": (r, c, _rules, p) => {
         const answer = r.answer();
         const values = p.ground_truth?.absent ?? [];
         const subject = [p.text ?? "", ...values].join(" ");
-        const abstained = abstains(answer, subject, p.ground_truth?.stale ?? [], DISOWNS);
-        const harm = values.some((v) => carries(answer, v)) && !DISOWNS.test(answer);
+        const elsewhere = (s: string) =>
+            DISOWNS.test(s) || (c.owner !== undefined && carries(s, c.owner));
+        const naming = sentences(answer).filter((s) => values.some((v) => carries(s, v)));
+        const harm = naming.some((s) => !elsewhere(s));
+        // Every sentence that names the value places it in another project: that is the answer.
+        const placed = naming.length > 0 && !harm;
+        const wording = placed ? /(?:)/ : DISOWNS;
+        const abstained = abstains(answer, subject, p.ground_truth?.stale ?? [], wording);
         const why = harm
             ? "answered with the other project's value"
             : "answered instead of abstaining";
@@ -1147,6 +1156,7 @@ const EXPECTS: Record<string, string[]> = {
     P8: ["answer"],
     P9: ["abstain"],
     "P8-twin": ["abstain"],
+    P10: ["avoid"],
     P11: ["avoid"],
     P12: ["apply"],
     P13: ["apply"],
@@ -1167,6 +1177,9 @@ function requireTruth(probe: ProbeItem, check: Check, truth: GroundTruth | undef
     const forbidden = [check.answer_must_not ?? []].flat();
     const same = (a: string[], b: string[]) =>
         a.length === b.length && a.every((x) => b.includes(x)) && b.every((x) => a.includes(x));
+    if (probe.type === "P8-twin" && check.owner === probe.project) {
+        throw new GradeRefused(`P8-twin item ${probe.id} names its own project as the owner`);
+    }
     if (probe.type === "P8-twin" && !same(forbidden, truth.absent)) {
         throw new GradeRefused(
             `P8-twin item ${probe.id} forbids other values than its ground truth`,

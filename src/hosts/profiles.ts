@@ -215,6 +215,12 @@ export const ARM_PROFILES: Record<ArmName, ArmProfile> = {
 
 export const isArmName = (name: string): name is ArmName => Object.hasOwn(ARM_PROFILES, name);
 
+/** Whether the arm a label names runs Eidnara's daemon and plugin; an unknown label does. */
+export function runsEidnara(label: string): boolean {
+    const base = label.split("~")[0] as string;
+    return !isArmName(base) || ARM_PROFILES[base].daemon !== null;
+}
+
 /** The profile an arm label runs under; an A/A control `host~aa` runs as `host`. */
 export function armProfile(label: string): ArmProfile {
     const base = label.split("~")[0] as string;

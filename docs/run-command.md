@@ -43,8 +43,12 @@ another tier, a seed or host it does not list, an arm outside the seed's
 order, and every A/A control label; the tier pre-registration still supplies
 the liveness bounds, user-sim, and grading rules. The manifest records
 `qualification` (`{id, sha256}`, or `null` for a tier run), the scenario
-manifest records `qualification_sha256`, and a resume, `pairing-check`, and
-`oracle-run` compare both. Each tape must come from a finished
+manifest records `qualification_sha256`. A resume compares both;
+`grade-run`, `pairing-check`, and `oracle-run` require the scenario's digest
+to equal the manifest's (none for a tier run), the registration to still
+hash to it, and the host to be one it lists. `scripts/report.ts` refuses a
+qualification run, since the tier report reads the tier's gates and the
+qualification registers descriptive contrasts. Each tape must come from a finished
 run (its journal holds `EndRun`) of the same seed, scenario,
 pre-registration, fault override, and `turns_await_jobs` (a source
 manifest from before that field counts as `true`) that ran every arm of this run over

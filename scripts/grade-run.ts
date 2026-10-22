@@ -254,7 +254,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     const arms = manifest.order as string[];
     // A qualification run's arms come from the registration it recorded, which must still hash
     // to the recorded digest.
-    admittedArms(manifest);
+    admittedArms(manifest, scenario as { manifest?: Record<string, unknown> });
     const registry = manifest.qualification ? loadQualification(manifest.qualification.id) : prereg;
     const name = manifest.qualification
         ? `qualification ${String(manifest.qualification.id)}`

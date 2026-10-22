@@ -8,7 +8,7 @@ import type { ConverseBody } from "../proxy/classify";
 import type { CallRecord } from "../proxy/records";
 import { RequestStore, readRequestParts } from "../proxy/requests";
 import { compileScenario, type Scenario, scenarioInputMismatch } from "../scenario/compile";
-import { loadCompileInput, loadQualification } from "../scenario/inputs";
+import { admittedArms, loadCompileInput, loadQualification } from "../scenario/inputs";
 import { hashEmbedder } from "../scenario/similarity";
 import { deliveryMismatches, type ExpectedNote, observeDelivery } from "./capabilities";
 import { ORACLE_OPENING, oracleBackground } from "./oracle-note";
@@ -34,7 +34,11 @@ describe("wrong-project lookup control", () => {
             const base = p8.find((p) => p.fact === twin.fact);
             const value = (base?.check as { answer: string }).answer;
             expect(twin.project).toBe(`${base?.project}-twin`);
-            expect(twin.check).toEqual({ abstain: true, answer_must_not: [value] });
+            expect(twin.check).toEqual({
+                abstain: true,
+                answer_must_not: [value],
+                owner: base?.project,
+            });
             expect(twin.ground_truth).toMatchObject({ expect: "abstain", absent: [value] });
             expect(twin.ground_truth?.sources).toEqual(base?.ground_truth?.sources);
         }
@@ -193,6 +197,10 @@ describe("delivery check", () => {
         expect(check("host", [leaked], [])).toEqual([
             `agent requests ${leaked.seq} carry an oracle note on a host-only arm`,
         ]);
+        const system = call("s-1", "e-2", "Which alias?", `${note.background}`);
+        expect(check("host", [system], [])).toEqual([
+            `agent requests ${system.seq} carry an oracle note on a host-only arm`,
+        ]);
         const injected = call(
             "s-1",
             "e-2",
@@ -209,10 +217,13 @@ describe("delivery check", () => {
         const broken = { ...call("s-1", "e-2", "Which alias?") };
         broken.request = { ...(broken.request as NonNullable<typeof broken.request>), bytes: 1 };
         expect(check("host-oracle", [broken], [note])).toContain(
-            "1 agent request bodies cannot be rebuilt to check oracle-context",
+            "1 agent request bodies cannot be rebuilt to check oracle-context delivery",
         );
         expect(check("eidnara-search", [broken], [])).toEqual([
-            "1 agent request bodies cannot be rebuilt to check explicit-search",
+            "1 agent request bodies cannot be rebuilt to check explicit-search delivery",
+        ]);
+        expect(check("host", [broken], [])).toEqual([
+            "1 agent request bodies cannot be rebuilt to check none delivery",
         ]);
     });
 });
@@ -239,5 +250,37 @@ describe("arm order under a qualification", () => {
             /qualification Q runs over tier S, not M/,
         );
         expect(() => armOrder({ tier: "S", seed: 101, qualification: "Z" })).toThrow(/Z\.json/);
+    });
+});
+
+describe("persisted runs under a qualification", () => {
+    const ref = { id: "Q", sha256: qualificationHash(Q) };
+
+    test("the manifest, the scenario, and the registration name one qualification and host", () => {
+        expect(admittedArms({ tier: "S", host: "pi", qualification: ref }, qualified)).toEqual({
+            run: ["host", "eidnara", "host-oracle"],
+            pairs: [],
+        });
+        expect(admittedArms({ tier: "S", host: "pi", qualification: null }, tier).run).toEqual([
+            "host",
+            "eidnara",
+            "eidnara-kl",
+        ]);
+        expect(() => admittedArms({ tier: "S", host: "pi", qualification: ref }, tier)).toThrow(
+            /compiled under qualification none, but the manifest names/,
+        );
+        expect(() => admittedArms({ tier: "S", host: "pi" }, qualified)).toThrow(
+            /but the manifest names none/,
+        );
+        expect(() =>
+            admittedArms({ tier: "S", host: "opencode", qualification: ref }, qualified),
+        ).toThrow(/qualification Q runs no opencode host/);
+        const stale = { ...ref, sha256: "0".repeat(64) };
+        const scenario = {
+            manifest: { ...qualified.manifest, qualification_sha256: stale.sha256 },
+        };
+        expect(() => admittedArms({ tier: "S", qualification: stale }, scenario)).toThrow(
+            /prereg\/Q.json changed since the run recorded/,
+        );
     });
 });

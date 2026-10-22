@@ -2165,12 +2165,12 @@ Reachability: explicit-config-only
 Status: active
 Exercised: partial - `src/run/delivery.test.ts` builds request bodies through
 the request store and checks a delivered note, a missing one, one before its
-turn, one in another session, an unmatched opening, and a note on a host arm;
-the Pi smoke under `~/scratch/smoke-s5/` runs `host-oracle` under
-qualification Q to a sourced probe
+turn, one in another session, an unmatched opening, and a note on a host arm
+in its user or system text; the Pi smoke recorded in PR #32 ran the check on
+one sourced probe
 Guarantee: SIM-P78: On an `oracle-context` arm, every delivered probe turn
-whose ground truth names sources carries its oracle note in an agent request
-of that turn, no request carries a note before its turn, in another session,
+whose ground truth names sources carries its oracle note in the prompt of
+that turn, no request carries a note before its turn, in another session,
 or without a matching owed note, and no request of any other arm in the run
 carries one.
 Check: `always` - assert over every agent request body of every arm in a run
@@ -2223,10 +2223,12 @@ Type: safety
 Reachability: explicit-config-only
 Status: active
 Exercised: partial - `src/grade/controls.test.ts` grades abstentions,
-answers that place the value in the other project, the bare value, a hedge on
-it, and another guess on a P8-twin item compiled under qualification Q
+answers that place the value in the other project by wording or by its name,
+the bare value, a hedge on it, an answer that disowns the value and then
+recommends it, and another guess on a P8-twin item compiled under
+qualification Q
 Guarantee: SIM-P80: A `P8-twin` item passes only when the answer abstains and
-names the base project's value, if at all, while placing it in another
+every sentence that names the base project's value places it in another
 project.
 Check: `always` - assert on every graded P8-twin record, because a pass that
 carries the other project's value would count leakage as recall.
@@ -2240,9 +2242,9 @@ Existing check: `src/grade/probes.ts` `P8-twin` grader and `requireTruth`
 (unaudited).
 Impact: Cross-project leakage of a looked-up value scores as a pass.
 Open questions:
-- Whether an answer that disowns the value and then uses it anyway should
-  fail; the wording rule passes it. Unresolved, needs the Q campaign's
-  answers.
+- Whether a sentence that names the owner and still recommends the value
+  (`use X, as mini-redis does`) should fail; the sentence rule passes it.
+  Unresolved, needs the Q campaign's answers.
 
 ## Liveness
 

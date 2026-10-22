@@ -90,7 +90,16 @@ const boundary = readFileSync(join(import.meta.dir, "../docs/claim-boundary.md")
 const catalog = readFileSync(join(import.meta.dir, "../docs/properties/sim-v2/catalog.md"), "utf8");
 const byTier = new Map<Tier, string[]>();
 for (const dir of dirs) {
-    const tier = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).tier as unknown;
+    const recorded = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+    const tier = recorded.tier as unknown;
+    // A qualification run answers its registration's descriptive contrasts, which the tier
+    // report's gates do not read.
+    if (recorded.qualification) {
+        console.error(
+            `${dir}: ran under qualification ${String(recorded.qualification.id)}; the tier report covers tier runs only`,
+        );
+        process.exit(2);
+    }
     if (!TIERS.includes(tier as Tier)) {
         console.error(
             `${dir}: manifest tier ${JSON.stringify(tier)} is not one of ${TIERS.join(", ")}`,

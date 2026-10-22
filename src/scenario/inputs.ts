@@ -114,13 +114,25 @@ export function loadQualification(
 
 /**
  * The arms and A/A pairs a run's manifest is admitted under: those of the qualification it names,
- * whose current registration must hash to the recorded digest, or else its tier's.
+ * whose current registration must hash to the recorded digest, bind the manifest's tier, and list
+ * its host, or else its tier's. The scenario must name the same qualification digest, or none
+ * with a tier run.
  */
-export function admittedArms(manifest: {
-    tier: Tier;
-    qualification?: { id: string; sha256: string } | null;
-}): { run: string[]; pairs: string[][] } {
+export function admittedArms(
+    manifest: {
+        tier: Tier;
+        host?: string;
+        qualification?: { id: string; sha256: string } | null;
+    },
+    scenario: { manifest?: Record<string, unknown> },
+): { run: string[]; pairs: string[][] } {
     const ref = manifest.qualification ?? null;
+    const compiled = scenario.manifest?.qualification_sha256 ?? null;
+    if (compiled !== (ref?.sha256 ?? null)) {
+        throw new Error(
+            `scenario.json was compiled under qualification ${String(compiled ?? "none")}, but the manifest names ${ref?.sha256 ?? "none"}`,
+        );
+    }
     if (ref === null) {
         const prereg = loadPrereg(manifest.tier);
         return { run: prereg.arms.run, pairs: prereg.aa_controls?.pairs ?? [] };
@@ -130,6 +142,9 @@ export function admittedArms(manifest: {
         throw new Error(`prereg/${ref.id}.json changed since the run recorded ${ref.sha256}`);
     }
     if (q.tier !== manifest.tier) throw new Error(`qualification ${q.id} binds tier ${q.tier}`);
+    if (manifest.host !== undefined && !q.hosts.includes(manifest.host)) {
+        throw new Error(`qualification ${q.id} runs no ${manifest.host} host`);
+    }
     return { run: q.arms.run, pairs: [] };
 }
 

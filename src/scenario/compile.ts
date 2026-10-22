@@ -1036,7 +1036,7 @@ export async function compileScenario(input: CompileInput) {
                 // The twin asks the same lookup: the value is the base project's, never the twin's.
                 const value = (check as { answer: string }).answer;
                 const twin = twinOf(project.id);
-                const twinCheck = { abstain: true, answer_must_not: [value] };
+                const twinCheck = { abstain: true, answer_must_not: [value], owner: project.id };
                 const truth: TruthOf = { expect: "abstain", present: [], absent: [value], stale };
                 addProbe("P8-twin", twin, probeText, twinCheck, later(twin), truth);
             }
