@@ -323,7 +323,8 @@ its line and over following lines while a bracket it opened stays open (ten
 lines at most), is one unit, and `must` then reads the units. Patterns and
 brackets read the added lines with comments and string-literal contents
 blanked (a Rust `'a` lifetime stays code, and a Rust raw string `r#"..."#` closes only at a quote with its hashes), so a comment or a string starts
-no unit and opens no bracket: at least one
+no unit and opens no bracket. The unit `must` reads is the source with its
+comments blanked, so a comment satisfies no rule: at least one
 must exist and every one must match every `must` pattern. A grader reads the
 turn diff only when the check names a diff channel. P1, P1-control, P3, P4, P6, P12, and P13 require a rule to hold (for P6, `clarify` counts),
 and P2, P3, P5, P10, and P11 a rule to break; an item without one is refused.

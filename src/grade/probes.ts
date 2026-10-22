@@ -306,13 +306,16 @@ const invokesAny = (patterns: string[]) => (x: Command) => patterns.some((p) => 
  * The statements an `applies` pattern finds in the files' added lines: each match extended to the
  * end of its line, and over following lines while a bracket it opened stays open (ten lines at most).
  * Patterns and brackets read the code mask, so a comment or a string literal starts no unit and
- * opens no bracket; the unit itself is the source text.
+ * opens no bracket; the unit is the source text with its comments blanked, so a comment satisfies
+ * no rule.
  */
 function unitsOf(files: DiffFile[], patterns: string[]): string[] {
     const units: string[] = [];
     for (const f of files) {
         const text = f.added.join("\n");
-        const mask = codeMask(text, f.path.endsWith(".rs"));
+        const rust = f.path.endsWith(".rs");
+        const mask = codeMask(text, rust);
+        const source = codeMask(text, rust, true);
         const starts = new Set<number>();
         for (const p of patterns) {
             const re = pattern(p);
@@ -322,7 +325,7 @@ function unitsOf(files: DiffFile[], patterns: string[]): string[] {
         const open = (code: string) =>
             (code.match(/[([{]/g)?.length ?? 0) - (code.match(/[)\]}]/g)?.length ?? 0);
         for (const at of [...starts].sort((a, b) => a - b)) {
-            const lines = text.slice(at).split("\n");
+            const lines = source.slice(at).split("\n");
             const masked = mask.slice(at).split("\n");
             let unit = lines[0] as string;
             let code = masked[0] as string;

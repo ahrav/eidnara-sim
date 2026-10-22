@@ -634,12 +634,16 @@ const RUST_CHAR = /^'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^'\\\n])'
  * literal keeps its delimiters. One left-to-right scan decides each token, so a quote inside a
  * comment is comment text and a `//` inside a string is literal content. In Rust (`rust`), a `'`
  * opens a character literal only when one closes it; otherwise it is a lifetime and stays code. A
- * Rust raw string (`r#"..."#`) reads no escapes and closes only at a quote with its hashes.
+ * Rust raw string (`r#"..."#`) reads no escapes and closes only at a quote with its hashes. With
+ * `literals`, literal contents stay and only comments are blanked.
  */
-export function codeMask(text: string, rust: boolean): string {
+export function codeMask(text: string, rust: boolean, literals = false): string {
     const out = text.split("");
-    const blank = (from: number, to: number) => {
+    const wipe = (from: number, to: number) => {
         for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
+    };
+    const blank = (from: number, to: number) => {
+        if (!literals) wipe(from, to);
     };
     let i = 0;
     while (i < text.length) {
@@ -648,12 +652,12 @@ export function codeMask(text: string, rust: boolean): string {
         if (ch === "/" && next === "/") {
             const end = text.indexOf("\n", i);
             const stop = end < 0 ? text.length : end;
-            blank(i, stop);
+            wipe(i, stop);
             i = stop;
         } else if (ch === "/" && next === "*") {
             const end = text.indexOf("*/", i + 2);
             const stop = end < 0 ? text.length : end + 2;
-            blank(i, stop);
+            wipe(i, stop);
             i = stop;
         } else if (rust && (ch === "r" || ch === "b") && !/\w/.test(text[i - 1] ?? "")) {
             const raw = RUST_RAW.exec(text.slice(i, i + 260));

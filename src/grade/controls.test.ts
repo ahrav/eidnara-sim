@@ -162,6 +162,24 @@ describe("P1 and P1-control: the rule holds on every construct it governs, in it
         expect(outcome(p1, mixed)).toEqual(["fail", "a governed construct breaks the rule"]);
     });
 
+    test("a comment beside a governed construct satisfies no rule", () => {
+        const line = (text: string) => ({ files: [{ path: "src/cmd/mget.rs", lines: [text] }] });
+        const broken = ["fail", "a governed construct breaks the rule"];
+        expect(outcome(p1, line(`pub const WRONG_NAME: usize = 64; // ${token}_MAX_KEYS`))).toEqual(
+            broken,
+        );
+        expect(outcome(p1, line(`pub const ${token}_MAX_KEYS: usize = 64; // limit`))).toEqual([
+            "pass",
+        ]);
+        const tag = probeOf("P1", "rs-cmd-error-tag");
+        const word = literal(tag);
+        const get = (text: string) => ({ files: [{ path: "src/cmd/get.rs", lines: [text] }] });
+        expect(outcome(tag, get(`return Err("bad key".into()); // "[${word}]"`))).toEqual(broken);
+        expect(outcome(tag, get(`return Err("[${word}] bad key".into()); // tagged`))).toEqual([
+            "pass",
+        ]);
+    });
+
     test("a file scope governs only that file, and a multi-line statement is one unit", () => {
         const tag = probeOf("P1", "ts-error-tag");
         const word = literal(tag);
