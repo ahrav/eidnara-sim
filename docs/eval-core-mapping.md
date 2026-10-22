@@ -78,10 +78,10 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `liveness_bounds.job_deadline_ms` | none | extension | 20 minutes; SIM-L02. |
 | `liveness_bounds.tier_wall_budget_ms` | none | extension | S 2 h, M 10 h, L 30 h, XL 96 h; SIM-L03. |
 | `liveness_bounds.daemon_busy_cpu_fraction` | none | extension | Daemon CPU time per wall second above which the M4 sampler holds the scenario clock (OQ-2), added in revision 3 before any run. `eval-analysis-family/v3`, beside the wall-clock liveness bounds of the parent row. |
-| `grading` | none | extension | The M5 probe grading rules, added in revision 4 before any run. eval-core grades with deterministic oracles and has no probe rules; `eval-manifest/v10` would add them. |
+| `grading` | none | extension | The M5 probe grading rules, added in revision 4 before any run; revision 7 replaced the P8 and P9 rules. eval-core grades with deterministic oracles and has no probe rules; `eval-manifest/v10` would add them. |
 | `grading.first_attempt_only` | none | extension | A grade reads the first probe turn's artefacts only (SIM-P41). |
-| `grading.lookup_match` | none | extension | P8 matches the value as a whole word, the v1 A/B rule. |
-| `grading.abstain_rule` | none | extension | P9 abstains with a first line of `UNKNOWN` alone or abstention wording with no value-shaped or hedged guess, extending the v1 A/B rule. |
+| `grading.lookup_match` | none | extension | `committed-whole-word`: P8 matches the value as a whole word, the v1 A/B rule, in a first candidate sentence that asserts it with no earlier decline, negation, or competing value left standing. |
+| `grading.abstain_rule` | none | extension | `abstention-without-guess`: P9 abstains with a first line of `UNKNOWN` alone or abstention wording, with no value-shaped token, superseded value, explicit guess, or sentence that offers a candidate under a hedge, extending the v1 A/B rule. |
 | `grading.p11_false_positive_weight` | none | extension | A P11 false-positive injection counts this many times a hit in `P11.weighted_score` (SIM-P50); `P11.harm` stays binary. |
 | `grading.p13_reduction_ratio` | none | extension | Summary output tokens per summarized input token a P13 fold must fall between. |
 | `grading.p13_reduction_ratio.min` | none | extension | Lower bound, a decimal in (0, 1). |
