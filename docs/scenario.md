@@ -5,7 +5,7 @@ scenario to `runs/scenarios/<tier>-<seed>.json`; a `--embedder local` compile
 defaults to `runs/scenarios/<tier>-<seed>.local.json`, so a stand-in never
 replaces a Titan scenario. The inputs are the seed, the
 tier's pre-registration in `prereg/<tier>.json`, the corpus under `corpus/`,
-and the generator version `sim-scenario/v3`. The same inputs produce the same
+and the generator version `sim-scenario/v4`. The same inputs produce the same
 bytes in any process, and a run reuses a cached `scenario.json` only when its
 top-level `schema`, generator version, pre-registration hash, and corpus
 inputs hash match the current inputs. The compiler scores cue and probe pairs with
@@ -36,7 +36,7 @@ The scenario file is canonical JSON with these sections:
 | `projects` | Each repository in `corpus/repos.json` and its twin |
 | `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, `basis`, `line`, `revision`, `supersedes`, statement, the cue texts that carry it, and for P12 facts the `form` (`tool_result` or `pasted`) |
-| `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, the event that delivers it, and, for every probe with user text, its `ground_truth`. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` and `commands_must_not` over the command log, an optional `scope` (a directory prefix) that limits the diff-channel keys to files under it, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, `clarify` for a P6 item whose right response is a question (patterns the final answer must all carry), `side` (`in` or `out`) for P4, `turns` for P13, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
+| `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, the event that delivers it, and, for every probe with user text, its `ground_truth`. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` and `commands_must_not` over the command log, an optional `scope` (a directory prefix or one file path) that limits the diff-channel keys to files under it (on a P4 `out` item, to the files outside it), `applies` (regexes for the constructs a constraint governs, each of which must carry the `must` patterns), `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, `clarify` for a P6 item whose right response is a question (patterns the final answer must all carry), `side` (`in` or `out`) for P4, `turns` for P13, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
 | `plans` | One record per P6 fact: project, `expect` (`resume` or `clarify`), and its history, each entry an event with the status it set (`accepted`, `revised`, `completed`) and the next actions it leaves open |
 | `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, each committed file of the fact and each shared first turn that joins its cue counted as a cue, each record naming its cue by `cue_sha256`, journaled to four decimals; the threshold gate compares the full-precision values |
 | `events` | `apply_diff` (a whole-file `content`, or `remove: true`), `session_start`, `user_turn`, and `session_end` events in scenario time |
@@ -81,7 +81,7 @@ pre-registered seeds end between 0.2 and 1.2 days past it.
 
 Each probe type gets `paired_items_per_probe_type / (seeds * hosts)` items;
 the pre-registration validator requires that division to be exact. Facts come
-from the templates in `corpus/fact-bank.json` (`sim-fact-bank/v2`), filled
+from the templates in `corpus/fact-bank.json` (`sim-fact-bank/v3`), filled
 with generated tokens: `adjective_noun` words in lower, upper, and Pascal
 case, five-digit numbers, and `adjective-noun-NN` codenames, from the v1
 harness word lists.
@@ -140,7 +140,7 @@ pasted, and a P3 value read from its authoritative file).
 | P1 control | the P1 fact | The same task as the P1 item, in the same window before the fact is conveyed; `ground_truth.expect` is `baseline`, its `sources` are empty, and a revised line's control omits the forbids it would inherit |
 | P2 | the P1 fact | Later session of the same project, outside the scope; the check forbids the convention |
 | P3 | decision | A later session opens with a commit of the template's authoritative file (one stable path per template) and a first turn naming that path and saying it replaces the stated figure; the commit removes the line's notes and check scripts, and the probe follows in a later session; the check requires the file's value and forbids the stated one |
-| P4 | scoped update | A second conveyance narrows the rule to one module; items alternate inside and outside it, with the alternation offset by seed parity so the pooled counts balance per language across seeds, and `check.side` says which (`in` or `out`) |
+| P4 | scoped update | A second conveyance narrows the rule to one module; items alternate inside and outside it, with the alternation offset by seed parity so the pooled counts balance per language across seeds, and `check.side` says which (`in` or `out`); both sides carry the update's `check.scope` |
 | P5 | rejected approach | Later session; the check forbids the rejected approach |
 | P6 | plan | First turn of a later session, at least one hour after the previous session ends; see Plans below |
 | P7 | rationale | Later session; judge-graded against the reference reason |
@@ -310,15 +310,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `daa553b5` | 0.2687 | 0.4949 |
-| S | 102 | `d563ae43` | 0.265 | 0.5075 |
-| M | 201 | `cb8bf18b` | 0.2584 | 0.5807 |
-| M | 202 | `f75e96ed` | 0.2578 | 0.551 |
-| M | 203 | `309b3a1f` | 0.261 | 0.551 |
-| L | 301 | `f47f5119` | 0.2582 | 0.5807 |
-| L | 302 | `dcc98c3e` | 0.2603 | 0.5807 |
-| L | 303 | `6675a4f1` | 0.2615 | 0.5807 |
-| XL | 401 | `fcab45dc` | 0.2579 | 0.5807 |
+| S | 101 | `fbffe588` | 0.2687 | 0.4949 |
+| S | 102 | `b3d05f99` | 0.265 | 0.5075 |
+| M | 201 | `ebcad7b7` | 0.2584 | 0.5807 |
+| M | 202 | `3381852f` | 0.2578 | 0.551 |
+| M | 203 | `2d9a6d12` | 0.261 | 0.551 |
+| L | 301 | `632f07d8` | 0.2582 | 0.5807 |
+| L | 302 | `498e8f95` | 0.2603 | 0.5807 |
+| L | 303 | `bf0272b5` | 0.2615 | 0.5807 |
+| XL | 401 | `31c558a8` | 0.2579 | 0.5807 |
 
 ## Known limits
 
@@ -327,8 +327,9 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 - Filler pastes still come from the OpenHands tool-output samples, which are
   Python runs; no probe depends on them.
 - The exposure proof covers delivery: a source turn was sent and its commit
-  landed. Whether the agent ran the check script or read the commit is run
-  evidence, outside the compiler.
+  landed. Whether the agent ran the check script is run evidence: the P12
+  grader reads it from the arm's tool ledger and excludes a tool-result item
+  whose check never ran (`docs/grading.md`).
 - At the current pre-registration sizes, an S scenario holds about 50 sessions
   and 500 user turns per arm. That is larger than the two-hour S wall budget
   admits, and M8 resizes S through a pre-registration revision.

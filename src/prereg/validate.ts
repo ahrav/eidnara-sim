@@ -187,8 +187,8 @@ const PREREG_SHAPE: Shape = {
     leak_bound: { c_bytes_per_session: posInt, r2_threshold: unitRate, sample_interval_ms: posInt },
     grading: {
         first_attempt_only: literal(true),
-        lookup_match: literal("whole-word"),
-        abstain_rule: literal("leading-UNKNOWN"),
+        lookup_match: literal("committed-whole-word"),
+        abstain_rule: literal("abstention-without-guess"),
         p11_false_positive_weight: decimal,
         p13_reduction_ratio: { min: unitRate, max: unitRate },
         judge: {

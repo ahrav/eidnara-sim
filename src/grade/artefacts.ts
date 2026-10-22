@@ -30,8 +30,12 @@ export interface Command {
 export interface CommandLog {
     id: string;
     class: "command-log";
-    /** `turn`: the probe turn's commands; `session`: every command of its session so far. */
-    role: "turn" | "session";
+    /**
+     * `turn`: the probe turn's commands; `session`: every command of its session so far;
+     * `source`: the commands the arm's tool ledger records for the turns that exposed the
+     * probe's source, which grade-run reads from `tools.jsonl`.
+     */
+    role: "turn" | "session" | "source";
     commands: Command[];
 }
 
@@ -193,7 +197,7 @@ const PAYLOADS: Record<ArtefactClass, (a: Record<string, unknown>, path: string)
                 p,
             ),
         "command-log": (a, p) =>
-            badField({ role: oneOf(["turn", "session"]) }, a, p) ??
+            badField({ role: oneOf(["turn", "session", "source"]) }, a, p) ??
             listOf(COMMAND, `${p}.commands`, a.commands),
         "test-result": (a, p) =>
             badField(

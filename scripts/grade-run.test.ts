@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../src/config/config";
 import type { CallView, Snapshot } from "../src/grade/artefacts";
+import { GradeLog } from "../src/grade/probes";
 import { armProfile } from "../src/hosts/profiles";
 import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
@@ -51,12 +52,15 @@ interface RunOptions {
     order?: string[];
     /** The scenario's counterfactual deletion sample. */
     cf_deletions?: { probe: string }[];
+    /** Events of earlier sessions, scheduled before the probes' session. */
+    prelude?: Record<string, unknown>[];
 }
 
 function run(o: RunOptions): string {
     const dir = mkdtempSync(join(tmpdir(), "grade-run-"));
     dirs.push(dir);
     const events: Record<string, unknown>[] = [
+        ...(o.prelude ?? []),
         { id: "e-0", kind: "session_start", scenario_ms: 0, session: "s-1" },
         ...o.probes.map((p, i) => ({
             id: `e-${i + 1}`,
@@ -1086,6 +1090,96 @@ describe("grade-run", () => {
         snapshot(dir, "eidnara", p7snap);
         await expect(gradeRun(dir, null)).rejects.toThrow("shares the agent model's family");
         expect(() => readFileSync(join(dir, "grades.jsonl"))).toThrow();
+    });
+});
+
+describe("tool-result evidence", () => {
+    const script = "scripts/check_quiet_vole.sh";
+    const prelude = [
+        { id: "e-s0", kind: "session_start", scenario_ms: 0, session: "s-0" },
+        {
+            id: "e-src",
+            kind: "apply_diff",
+            scenario_ms: 0,
+            session: "s-0",
+            path: script,
+            content: "#!/bin/sh\necho 'error: BriskHeronError: frame 318' >&2\nexit 1\n",
+        },
+        {
+            id: "e-cue",
+            kind: "user_turn",
+            scenario_ms: 0,
+            session: "s-0",
+            index: 0,
+            text: `Run \`sh ${script}\`; it reproduces issue #54321.`,
+        },
+        { id: "e-s0-end", kind: "session_end", scenario_ms: 0, session: "s-0" },
+    ];
+    const probe = {
+        id: "q-p12",
+        type: "P12",
+        fact: "f-1",
+        project: "mini-redis",
+        text: "Issue #54321 is open again. Add a troubleshooting entry to the README.",
+        check: { must: ["\\bBriskHeronError\\b"], paths_must: ["^README\\.md$"] },
+        ground_truth: {
+            expect: "apply",
+            basis: "observation",
+            present: [["BriskHeron"]],
+            absent: [],
+            stale: [],
+            supersedes: [],
+            sources: ["e-src", "e-cue"],
+        },
+    };
+    const entry: Snapshot = {
+        id: "s-p12",
+        item: "q-p12",
+        arm: "eidnara",
+        session: "s-1",
+        turn: "e-1",
+        turn_outcome: "ok",
+        artefacts: [
+            {
+                id: "d1",
+                class: "diff",
+                role: "turn",
+                patch: "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,0 +1,1 @@\n+Issue #54321: CI fails with BriskHeronError.\n",
+            },
+        ],
+    };
+    const ledger = (dir: string, lines: Record<string, unknown>[]) =>
+        writeFileSync(
+            join(dir, "eidnara", "tools.jsonl"),
+            lines.map((l) => `${JSON.stringify(l)}\n`).join(""),
+        );
+
+    test("the tool ledger shows the check ran in its cue turn, so the entry is graded", async () => {
+        const dir = run({ probes: [probe], prelude, order: ["eidnara"] });
+        ledger(dir, [{ turn: "e-cue", command: `sh ${script}`, exit: 1, scenario_ms: 0 }]);
+        snapshot(dir, "eidnara", entry);
+        const summary = await gradeRun(dir, null);
+        expect(summary.verdicts).toEqual({ "eidnara/P12": { pass: 1 } });
+        const [grade] = new GradeLog(join(dir, "grades.jsonl")).latest();
+        expect(grade?.inputs.some((id) => id.endsWith(":source-commands"))).toBe(true);
+    });
+
+    test("an arm without a tool ledger refuses the tool-result item instead of excluding it", async () => {
+        const dir = run({ probes: [probe], prelude, order: ["eidnara"] });
+        snapshot(dir, "eidnara", entry);
+        rmSync(join(dir, "eidnara", "tools.jsonl"), { force: true });
+        await expect(gradeRun(dir, null)).rejects.toThrow("has no tools.jsonl");
+    });
+
+    test("a check that never ran in its source session excludes the item", async () => {
+        const dir = run({ probes: [probe], prelude, order: ["eidnara"] });
+        ledger(dir, [
+            { turn: "e-cue", command: `cat ${script}`, exit: 0, scenario_ms: 0 },
+            { turn: "e-1", command: `sh ${script}`, exit: 1, scenario_ms: 0 },
+        ]);
+        snapshot(dir, "eidnara", entry);
+        const summary = await gradeRun(dir, null);
+        expect(summary.verdicts).toEqual({ "eidnara/P12": { excluded: 1 } });
     });
 });
 

@@ -2,8 +2,27 @@ const SENTINEL = /^\W*UNKNOWN\W*$/i;
 const ABSTAIN =
     /\b(don'?t|do not) (know|have|see)\b|\bnever (settled|decided|discussed|set|mentioned)\b|\bnot (sure|aware)\b|\bno record\b|\bcan(no|')t find\b|\b(nobody|no one|no-one|none)\b[^.\n]{0,60}\b(named|assigned|decided|chosen|set|owns|recorded)\b|\b(isn'?t|wasn'?t|hasn'?t been|not been|not) (named|assigned|decided|chosen|recorded)\b|\b(doesn'?t|does not|don'?t|do not) (name|say|record|specify|state)\b/i;
 const CANDIDATE_VALUE = /\b\d{5}\b|\b[a-z]+-[a-z]+-\d{2}\b|\b[a-z]{2}-[a-z]+(-[a-z]+)?-\d\b/i;
-const HEDGED_GUESS =
-    /\b(probably|maybe|perhaps|likely|possibly|presumably|my (best )?guess|if I had to guess|I('d| would) (guess|say)|I (think|guess|believe|suspect|assume)|might be|could be)\b/i;
+/** A guess said as one, wherever it sits in the answer. */
+const EXPLICIT_GUESS =
+    /\b(?:my (?:best )?guess|if I had to (?:guess|pick)|I(?:'d| would) (?:guess|say|bet|go with|pick))\b/i;
+/**
+ * A sentence that offers a candidate answer under a hedge: a hedged noun for the asked-for thing
+ * (`the likely owner`), a hedge right before a highlighted or capitalised value (`probably
+ * Ana`, `is probably **Ana**`), or a hedged claim about who or what it is (`I think it's Ana`).
+ */
+const OFFERS = new RegExp(
+    [
+        "\\b(?:[Ll]ikely|[Pp]robable|[Pp]ossible)\\s+(?:owner|person|candidate|maintainer|answer|choice|option|location|region|bucket|period|duration|value|name|pick)s?\\b",
+        "\\b(?:is|was|would be|'s|are)\\s+(?:probably|likely|presumably|possibly|maybe|perhaps)\\s+(?=[A-Z0-9\"'`*])",
+        '\\b(?:[Pp]robably|[Ll]ikely|[Pp]resumably|[Mm]aybe|[Pp]erhaps|[Pp]ossibly)\\s+(?=[`*"]|(?!(?:I|It|Its|The|This|That|These|Those|There|They|We|You|He|She|A|An|If|In|On|At|Some|Any|No|Not)\\b)[A-Z0-9])',
+        "\\bI (?:think|believe|suspect|assume|guess)\\s+(?:it'?s|it is|the answer is|that'?s|they|he|she)\\s+(?=[A-Z0-9\"'`*])",
+        "\\b(?:[Mm]ight|[Cc]ould) be\\s+(?=[A-Z0-9\"'`*])",
+        "\\b(?:[Pp]robably|[Mm]aybe|[Pp]erhaps|[Ll]ikely|[Pp]ossibly|[Pp]resumably|[Mm]ight be|[Cc]ould be|I (?:think|guess|suspect))\\b[^.?!]{0,30}?\\b(?:\\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|thirty|ninety)\\s+(?:days?|weeks?|months?|years?|hours?|minutes?|seconds?|quarters?)\\b",
+    ].join("|"),
+    "g",
+);
+/** A negation at most two words before an offer, in the same clause, turns the offer down. */
+const NEGATED_OFFER = /(?:\b(?:not|no|never|without)\b|n't)(?:[ \t]+[\w-]+){0,2}[ \t]*$/i;
 
 function standalone(token: string): RegExp {
     const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -14,14 +33,201 @@ export function carries(text: string, token: string): boolean {
     return standalone(token).test(text);
 }
 
-export function abstains(answer: string, subject: string): boolean {
+/**
+ * Whether a sentence offers a candidate answer under a hedge, an offer the words just before it
+ * negate (`not offering a likely candidate`) aside.
+ */
+const offersGuess = (sentence: string): boolean =>
+    [...sentence.matchAll(OFFERS)].some(
+        (m) => !NEGATED_OFFER.test(sentence.slice(Math.max(0, m.index - 40), m.index)),
+    );
+
+/**
+ * The P9 rule (`abstention-without-guess`): the answer abstains, by `UNKNOWN` alone on its first
+ * line or by abstention wording, and guesses nothing. A guess is a value-shaped token, one of the
+ * item's superseded values, an explicit guess phrase, or a sentence that offers a candidate under a
+ * hedge. A hedge that qualifies something other than the answer (`the decision was probably made
+ * elsewhere`) is no guess. The value and phrase checks leave the subject's own words out first, so
+ * restating the question is no guess either.
+ */
+export function abstains(answer: string, subject: string, stale: string[] = []): boolean {
     const rest = subject
         .split(/\s+/)
         .filter((word) => word.length > 0)
         .reduce((text, word) => text.replace(standalone(word), " "), answer);
     const lead = answer.trim().split("\n", 1)[0] ?? "";
     const abstention = SENTINEL.test(lead) || ABSTAIN.test(answer);
-    return abstention && !CANDIDATE_VALUE.test(rest) && !HEDGED_GUESS.test(rest);
+    const guess =
+        CANDIDATE_VALUE.test(rest) ||
+        stale.some((v) => carries(rest, v)) ||
+        EXPLICIT_GUESS.test(rest) ||
+        sentences(answer).some(offersGuess);
+    return abstention && !guess;
+}
+
+/** Prose with Markdown emphasis, code marks, headings, bullets, and table bars taken out. */
+function plainText(answer: string): string {
+    return answer
+        .replace(/^\s*```.*$/gm, "\n")
+        .replace(/\*\*|__|`/g, "")
+        .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+        .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, "")
+        .replace(/\|/g, " ");
+}
+
+/** The answer's sentences: lines, split again after `.`, `!`, or `?` and a space. */
+export function sentences(answer: string): string[] {
+    return plainText(answer)
+        .split(/\n+|(?<=[.!?])\s+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+}
+
+const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** Tokens of the expected value's shape: letters for letters, the same count of digits for digits. */
+const shapeOf = (value: string): RegExp =>
+    new RegExp(
+        `(?<![A-Za-z0-9-])${value
+            .split(/([A-Za-z]+|\d+)/)
+            .map((part) =>
+                /^[A-Za-z]+$/.test(part)
+                    ? "[A-Za-z]+"
+                    : /^\d+$/.test(part)
+                      ? `\\d{${part.length}}`
+                      : escapeRegex(part),
+            )
+            .join("")}(?![A-Za-z0-9-])`,
+        "g",
+    );
+
+/** A word that turns down the next value it names within the clause. */
+const NEGATOR =
+    /\b(?:not|never|no longer|[a-z]+n['\u2019]t|instead of|rather than|other than|except|replac(?:e|es|ed|ing)(?!\s+(?:by|with)\b)|supersed(?:e|es|ed|ing)(?!\s+by\b)|(?:changed|moved|renamed|switched|updated|went)\s+from|avoid(?:ing)?)\b/gi;
+/** A word that marks the value right after it, at most four words on, as superseded. */
+const STALE_ADJECTIVE =
+    /\b(?:old|older|earlier|previous|previously|prior|former|formerly|originally|retired|outdated|stale|deprecated|obsolete)\b(?=,?(?:\s+(?!(?:to|and|but|so)\b)[\w-]+,?){0,4}?\s+$)/i;
+/** What follows a value to say it is wrong or superseded. */
+const AFTER = new RegExp(
+    `^[^.?!;]{0,30}?(?:${[
+        "\\b(?:is|was|are|were|'s|is now)\\s+(?:not\\b|no longer|wrong|invalid|incorrect|stale|outdated|out of date|superseded|retired|obsolete|deprecated|replaced\\b|(?:renamed|changed|moved|updated|switched)\\s+to\\b|a typo|impossible)",
+        "\\b(?:isn'?t|is not|wasn'?t|was not|can'?t be|cannot be|couldn'?t be)\\s+(?:a\\s+)?(?:valid|right|correct|real|current|usable)\\b",
+        "\\b(?:should|must|shall)(?:n'?t|\\s+not|\\s+never)\\b",
+        "\\bis best avoided\\b",
+        "\\bmarked (?:as )?(?:out of date|stale|superseded|old|obsolete)",
+        "\\((?:now\\s+)?(?:old|outdated|superseded|retired|stale|previous|deprecated)\\b",
+    ].join("|")})`,
+    "i",
+);
+/** A sentence that says the answer cannot be given. */
+const DECLINE =
+    /\b(?:can(?:no|')t|cannot|couldn'?t|unable to)\s+(?:tell|say|confirm|give|find|determine|know|be sure|pin|verify|recommend)\b|\b(?:don'?t|do not|didn'?t)\s+know\b|\bnot (?:sure|certain)\b|\bunsure\b|\bno record\b|\bunknown\b|\bunclear\b|\bnever (?:settled|recorded|named|given|decided|stated)\b|\b(?:rather not|won'?t|not going to) (?:guess|pick)\b|\bconflict(?:s|ing)?\b|\bcontradict\w*|\bdisagree\b/i;
+
+/** EQUALLY matches wording that signals competition between co-mentioned values. */
+const EQUALLY =
+    /\b(?:either|conflict\w*|contradict\w*|disagree\w*|two different|which (?:one|of)|both (?:are|were|could|may|might)|equally)\b|\bcan'?t tell which\b/i;
+
+/** A word that ends the clause a negation governs before it reaches a value. */
+const CLAUSE = /\b(?:to|and|but|so)\b/i;
+/** What follows a value to place it in the past: `Y was only for testing`, `Y was used before`. */
+const HISTORY = /^[^.?!;]{0,30}?\b(?:was|were)\s+(?:only|used|for)\b/i;
+/** A sentence after the answer that switches to another value: `Actually, use Y instead`. */
+const CORRECTION =
+    /\b(?:actually|instead|correction|on second thought|scratch that|I meant|rather)\b/i;
+
+interface Mention {
+    token: string;
+    at: number;
+    expected: boolean;
+    negated: boolean;
+    past: boolean;
+}
+
+/** Every candidate value a sentence names, in order, with whether the sentence turns it down. */
+function mentions(sentence: string, value: string, stale: string[]): Mention[] {
+    const found = new Map<number, Mention>();
+    const add = (re: RegExp, expected: boolean) => {
+        for (const m of sentence.matchAll(re)) {
+            const token = m[0];
+            const own = token.toLowerCase() === value.toLowerCase();
+            if (!found.has(m.index)) {
+                found.set(m.index, {
+                    token,
+                    at: m.index,
+                    expected: own,
+                    negated: false,
+                    past: false,
+                });
+            }
+            if (expected && own) (found.get(m.index) as Mention).expected = true;
+        }
+    };
+    add(standalone(value), true);
+    add(shapeOf(value), false);
+    for (const v of stale) add(standalone(v), false);
+    const list = [...found.values()].sort((a, b) => a.at - b.at);
+    for (const n of sentence.matchAll(NEGATOR)) {
+        const end = n.index + n[0].length;
+        const next = list.find((m) => m.at >= end);
+        const between = sentence.slice(end, next?.at ?? end);
+        if (next && /^[^.?!,;:()\u2013\u2014]{0,40}$/.test(between) && !CLAUSE.test(between)) {
+            next.negated = true;
+        }
+    }
+    for (const [i, m] of list.entries()) {
+        const before = sentence.slice(
+            (list[i - 1]?.at ?? 0) + (list[i - 1]?.token.length ?? 0),
+            m.at,
+        );
+        const after = sentence.slice(m.at + m.token.length, list[i + 1]?.at ?? sentence.length);
+        if (STALE_ADJECTIVE.test(before) || AFTER.test(after)) m.negated = true;
+        m.past = HISTORY.test(after);
+    }
+    return list;
+}
+
+/**
+ * Why an answer fails to commit to `value` (`committed-whole-word`), or null when it commits. The
+ * first sentence naming a candidate value (the expected one, one of its shape, or a superseded
+ * one) must assert the expected value as a whole word, not as a question and not turned down
+ * (`not X`, `X is wrong`), and no sentence before that point may decline to answer. No sentence
+ * that names the value may name a competing value it leaves standing, so an answer that lists the
+ * value beside another as equally possible fails; a competitor the sentence marks as replaced or
+ * superseded stands aside. A later sentence with a correction word (`actually`, `instead`)
+ * switches to a competitor it leaves standing, unless the sentence also asserts the value or
+ * places the competitor in the past (`Y was only for testing`). A decisive value placed in the past
+ * (`X was only for testing`) is turned down unless a later sentence asserts it.
+ */
+export function uncommitted(answer: string, value: string, stale: string[] = []): string | null {
+    if (!carries(answer, value)) return "answer lacks the value";
+    const all = sentences(answer).map((s) => ({ s, found: mentions(s, value, stale) }));
+    const first = all.findIndex((x) => x.found.length > 0);
+    const decisive = all[first];
+    if (!decisive) return "answer lacks the value";
+    const own = decisive.found.find((m) => m.expected);
+    if (!own) return "answer leads with another value";
+    const lead = decisive.s.slice(0, own.at);
+    if (all.slice(0, first).some((x) => DECLINE.test(x.s)) || DECLINE.test(lead)) {
+        return "answer declines before naming the value";
+    }
+    if (decisive.s.endsWith("?")) return "answer asks instead of answering";
+    if (own.negated) return "answer turns the value down";
+    const live = (found: Mention[]) => found.some((m) => !m.expected && !m.negated);
+    const asserts = (found: Mention[]) => found.some((m) => m.expected && !m.negated && !m.past);
+    if (own.past && !all.slice(first + 1).some((x) => asserts(x.found))) {
+        return "answer turns the value down";
+    }
+    if (live(decisive.found)) return "answer names a competing value beside it";
+    for (const [i, { s, found }] of all.entries()) {
+        if (found.some((m) => m.expected && m.negated)) return "answer turns the value down";
+        const current = found.filter((m) => !m.past);
+        if (i > first && live(current) && CORRECTION.test(s) && !asserts(found)) {
+            return "answer switches to a competing value";
+        }
+        if (found.some((m) => m.expected) && live(found) && EQUALLY.test(s)) {
+            return "answer names a competing value beside it";
+        }
+    }
+    return null;
 }
 
 /**
@@ -416,6 +622,68 @@ export function literalQuotes(lines: string[]): ("double" | "single")[] {
         }
     }
     return out;
+}
+
+/** A Rust raw string opener (`r"`, `r#"`, `br##"`); its hashes close it after a `"`. */
+const RUST_RAW = /^b?r(#{0,255})"/;
+const RUST_CHAR = /^'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^'\\\n])'/;
+
+/**
+ * `text` with every comment blanked and every string literal's contents blanked, at the same
+ * length and with its line breaks kept, so offsets into the mask are offsets into the text. A
+ * literal keeps its delimiters. One left-to-right scan decides each token, so a quote inside a
+ * comment is comment text and a `//` inside a string is literal content. In Rust (`rust`), a `'`
+ * opens a character literal only when one closes it; otherwise it is a lifetime and stays code. A
+ * Rust raw string (`r#"..."#`) reads no escapes and closes only at a quote with its hashes. With
+ * `literals`, literal contents stay and only comments are blanked.
+ */
+export function codeMask(text: string, rust: boolean, literals = false): string {
+    const out = text.split("");
+    const wipe = (from: number, to: number) => {
+        for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
+    };
+    const blank = (from: number, to: number) => {
+        if (!literals) wipe(from, to);
+    };
+    let i = 0;
+    while (i < text.length) {
+        const ch = text[i] as string;
+        const next = text[i + 1];
+        if (ch === "/" && next === "/") {
+            const end = text.indexOf("\n", i);
+            const stop = end < 0 ? text.length : end;
+            wipe(i, stop);
+            i = stop;
+        } else if (ch === "/" && next === "*") {
+            const end = text.indexOf("*/", i + 2);
+            const stop = end < 0 ? text.length : end + 2;
+            wipe(i, stop);
+            i = stop;
+        } else if (rust && (ch === "r" || ch === "b") && !/\w/.test(text[i - 1] ?? "")) {
+            const raw = RUST_RAW.exec(text.slice(i, i + 260));
+            if (raw) {
+                const close = `"${raw[1]}`;
+                const end = text.indexOf(close, i + raw[0].length);
+                const stop = end < 0 ? text.length : end;
+                blank(i + raw[0].length, stop);
+                i = end < 0 ? stop : stop + close.length;
+            } else i++;
+        } else if (ch === "'" && rust) {
+            const m = RUST_CHAR.exec(text.slice(i, i + 12));
+            if (m) blank(i + 1, i + m[0].length - 1);
+            i += m ? m[0].length : 1;
+        } else if (ch === '"' || ch === "'" || ch === "`") {
+            const multiline = ch === "`" || rust;
+            let j = i + 1;
+            while (j < text.length && text[j] !== ch && (multiline || text[j] !== "\n")) {
+                j += text[j] === "\\" ? 2 : 1;
+            }
+            const stop = Math.min(j, text.length);
+            blank(i + 1, stop);
+            i = text[stop] === ch ? stop + 1 : stop;
+        } else i++;
+    }
+    return out.join("");
 }
 
 export const matchesAny = (text: string, sources: string[]) =>

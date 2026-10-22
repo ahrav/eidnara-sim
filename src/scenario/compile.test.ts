@@ -90,7 +90,7 @@ describe("SIM-P01: deterministic compile across processes", () => {
             expect(body.manifest).toMatchObject({
                 seed,
                 tier,
-                generator_version: "sim-scenario/v3",
+                generator_version: "sim-scenario/v4",
             });
         }, 180_000);
     }
@@ -251,7 +251,7 @@ describe("compiled S scenario", async () => {
             const [tpl] = (input.bank[lang]?.scoped_update ?? []) as Template[];
             const { side, ...rest } = p.check as Record<string, unknown>;
             if (side === "out") {
-                expect(rest.scope).toBeUndefined();
+                expect(rest.scope).toBe((tpl?.check as { scope?: string }).scope);
                 for (const k of Object.keys(tpl?.out_check ?? {})) expect(k in rest).toBe(true);
             }
             return side === "out";

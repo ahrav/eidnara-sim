@@ -960,7 +960,8 @@ describe("grading harness", () => {
         diff.patch = "fatal: not a git repository";
         expect(() => gradeItem(f.probe, [snap], rules)).toThrow("patch");
         diff.patch = "";
-        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("pass");
+        const noop = gradeItem(f.probe, [snap], rules);
+        expect([noop?.verdict, noop?.reason]).toEqual(["fail", "no code change"]);
     });
 
     test("an inherited object property is not a probe type", () => {

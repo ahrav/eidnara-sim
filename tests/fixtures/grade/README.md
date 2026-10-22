@@ -24,3 +24,8 @@ The P7 files hold an answer pair and the judge's two verdicts, scripted for
 the test; `P7-pass` and `P7-fail` are the pairs the live judge
 (`global.openai.gpt-5.6-luna`) graded the same way on 2026-10-16, recorded
 with its identity in `runs/judge-smoke/judgments.json`.
+
+These fixtures carry checks from before generator `sim-scenario/v4` (no
+`applies`, no file scope, no `ground_truth`), so they exercise the graders'
+channel logic on its own. The controls in `src/grade/controls.test.ts` grade
+against the checks and ground truth the current compiler emits.

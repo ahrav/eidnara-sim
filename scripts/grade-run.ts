@@ -12,6 +12,8 @@ import { loadConfig, type SimConfig } from "../src/config/config";
 import {
     AnswerRefused,
     assertArtefactsOnly,
+    type Command,
+    type CommandLog,
     EvidenceRefused,
     GradeRefused,
     type Snapshot,
@@ -31,7 +33,9 @@ import {
     type GradeRecord,
     gradeItem,
     graderDigest,
+    needsSourceCommands,
     requireEvidence,
+    type SourceEvent,
     verdictCounts,
 } from "../src/grade/probes";
 import { armBase } from "../src/hosts/arms";
@@ -635,7 +639,77 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
         if (!config) throw new Error("P7 judging needs the sim config");
     }
 
+    const eventOrder = new Map(scenario.events.map((e, i) => [String(e.id), i]));
+    const sourcesOf = (probe: Scenario["probes"][number]): SourceEvent[] =>
+        (probe.ground_truth?.sources ?? []).flatMap((id) => {
+            const at = eventOrder.get(id);
+            return at === undefined ? [] : [scenario.events[at] as unknown as SourceEvent];
+        });
+    const ledgers = new Map<string, { turn: string | null; run: Command }[]>();
+    /** The arm's tool ledger (`tools.jsonl`), read once, each run with the turn it belongs to. */
+    const ledger = (arm: string) => {
+        const cached = ledgers.get(arm);
+        if (cached) return cached;
+        const path = join(dir, arm, "tools.jsonl");
+        if (!existsSync(path)) throw new Error(`arm ${arm} has no tools.jsonl`);
+        const rows = readJsonl<Record<string, unknown>>(path);
+        const runs: { turn: string | null; run: Command }[] = [];
+        rows.forEach((row, i) => {
+            const { turn, command, exit, scenario_ms } = row;
+            const exitOk = exit === null || Number.isInteger(exit);
+            if (
+                (turn !== null && typeof turn !== "string") ||
+                typeof command !== "string" ||
+                !exitOk ||
+                typeof scenario_ms !== "number" ||
+                !Number.isFinite(scenario_ms) ||
+                scenario_ms < 0
+            ) {
+                throw new Error(`${arm}/tools.jsonl line ${i + 1} is not a tool run`);
+            }
+            runs.push({
+                turn: turn as string | null,
+                run: { command, exit: exit as number | null, scenario_ms },
+            });
+        });
+        ledgers.set(arm, runs);
+        return runs;
+    };
+    /**
+     * A P12 tool-result snapshot gains a `source` command log: the runs the arm's tool ledger
+     * attributes to a user turn of a source turn's session, from the first source turn up to the
+     * probe, so the grader can confirm the agent ran the committed check.
+     */
+    const withSourceCommands = (
+        snap: Snapshot,
+        probe: Scenario["probes"][number],
+        sources: SourceEvent[],
+    ): Snapshot => {
+        if (!needsSourceCommands(probe, sources)) return snap;
+        const turns = sources.filter((e) => e.kind === "user_turn");
+        const from = Math.min(...turns.map((e) => eventOrder.get(e.id) ?? Infinity));
+        const to = eventOrder.get(probe.event ?? "") ?? scenario.events.length;
+        const sessions = new Set(turns.map((e) => e.session));
+        const open = new Set(
+            scenario.events
+                .slice(from, to)
+                .filter((e) => e.kind === "user_turn" && sessions.has(String(e.session)))
+                .map((e) => String(e.id)),
+        );
+        const commands = ledger(snap.arm)
+            .filter((x) => x.turn !== null && open.has(x.turn))
+            .map((x) => x.run);
+        const source: CommandLog = {
+            id: `${snap.id}:source-commands`,
+            class: "command-log",
+            role: "source",
+            commands,
+        };
+        return { ...snap, artefacts: [...snap.artefacts, source] };
+    };
+
     for (const probe of scenario.probes.filter((p) => p.type !== "P7")) {
+        const sources = sourcesOf(probe);
         for (const arm of arms) {
             if (probe.type === "P14") {
                 skip(arm, "P14 has no probe turn");
@@ -656,7 +730,9 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
             }
             let grade: GradeRecord | null;
             try {
-                grade = gradeItem(probe, mine, rules);
+                const [first, ...later] = mine;
+                const graded = [withSourceCommands(first as Snapshot, probe, sources), ...later];
+                grade = gradeItem(probe, graded, rules, 1, sources);
             } catch (caught) {
                 if (!(caught instanceof EvidenceRefused)) throw caught;
                 skip(arm, caught instanceof AnswerRefused ? "answer refused" : "evidence refused");

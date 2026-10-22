@@ -11,7 +11,7 @@ import {
 import { join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
-import type { ProbeItem } from "../scenario/compile";
+import type { GroundTruth, ProbeItem } from "../scenario/compile";
 import {
     type Artefact,
     ArtefactReader,
@@ -32,6 +32,7 @@ import {
     abstains,
     addedLines,
     carries,
+    codeMask,
     type DiffFile,
     diffFiles,
     diffPaths,
@@ -40,7 +41,9 @@ import {
     matchesAll,
     matchesAny,
     pattern,
+    sentences,
     survivingPaths,
+    uncommitted,
 } from "./text";
 
 export type Rules = Preregistration["grading"];
@@ -64,8 +67,17 @@ export interface Check {
      * pattern, and the diff applies none of the open tasks.
      */
     clarify?: string[];
-    /** A directory prefix ending in `/`; the diff-channel keys read only files under it. */
+    /**
+     * A directory prefix ending in `/` or one file path. On most items the diff-channel keys read
+     * only files under it; on a P4 `out` item they read the files outside it.
+     */
     scope?: string;
+    /**
+     * Patterns for the constructs the rule governs, such as a new public constant. Each match in
+     * the scoped files, extended to its whole statement, is one unit; the rule holds when at least
+     * one unit exists and every unit matches every `must` pattern.
+     */
+    applies?: string[];
     /** Which side of a P4 scoped update the item probes: inside the narrowed scope or outside it. */
     side?: "in" | "out";
     window_from_turn?: number;
@@ -164,11 +176,12 @@ const CHECK_FIELDS: Record<keyof Check, Field> = {
     clarify: patternList,
     scope: (v: unknown) =>
         text(v) &&
-        (v as string).endsWith("/") &&
+        ((v as string).endsWith("/") || /\.\w+$/.test(v as string)) &&
         (v as string)
-            .slice(0, -1)
+            .replace(/\/$/, "")
             .split("/")
             .every((p) => p !== "" && p !== "." && p !== ".."),
+    applies: patternList,
     side: oneOf(["in", "out"]),
     window_from_turn: (v: unknown) => Number.isInteger(v) && (v as number) >= 0,
     window_to_turn: (v: unknown) => Number.isInteger(v) && (v as number) >= 0,
@@ -236,17 +249,33 @@ const DIFF_CHANNELS = [
 const NEEDS_POSITIVE = ["P1", "P1-control", "P3", "P4", "P6", "P12", "P13"];
 const NEEDS_NEGATIVE = ["P2", "P3", "P5", "P10", "P11"];
 
-/** What a check reads: the diff's surviving files, limited to `scope`, its text, and a command log. */
+/**
+ * What a check reads: the diff's surviving files on the check's side of `scope`, the files on the
+ * other side (for P4's leak check), the text of the read files joined by any extra channel, and a
+ * command log.
+ */
 interface Work {
     files: DiffFile[];
+    outside: DiffFile[];
     text: string;
     commands: Command[];
 }
 
+/** Notes and prose files: a path under `notes/`, or a Markdown, text, or reStructuredText file. */
+const isDoc = (path: string) =>
+    /(^|\/)notes\//.test(path) || /\.(md|markdown|txt|rst)$/i.test(path);
+/** The files' paths followed by their added lines, the text the pattern channels read. */
+const textOf = (files: DiffFile[]) =>
+    `${files.map((f) => f.path).join("\n")}\n${files.flatMap((f) => f.added).join("\n")}`;
+/** A scope is a directory prefix ending in `/` or one file path. */
+const inScope = (scope: string) => (f: DiffFile) =>
+    scope.endsWith("/") ? f.path.startsWith(scope) : f.path === scope;
+
 /**
- * The work a check reads. The turn diff is read only when the check names a diff channel, and
- * `scope` keeps the files under its prefix. `text` is the files' paths and added lines, joined by
- * `extra` when the grader reads more than the diff.
+ * The work a check reads. The turn diff is read only when the check names a diff channel. `scope`
+ * keeps the files under it, or, on a P4 `out` item, the files outside it; `outside` holds the
+ * rest. `text` is the read files' paths and added lines, joined by `extra` when the grader reads
+ * more than the diff.
  */
 function workFor(
     r: ArtefactReader,
@@ -256,10 +285,17 @@ function workFor(
 ): Work {
     const readsDiff = DIFF_CHANNELS.some((k) => c[k as keyof Check] !== undefined);
     const all = readsDiff ? diffFiles(r.diff()) : [];
-    const files = c.scope ? all.filter((f) => f.path.startsWith(c.scope as string)) : all;
-    const lines = `${files.map((f) => f.path).join("\n")}\n${files.flatMap((f) => f.added).join("\n")}`;
+    const within = c.scope ? inScope(c.scope) : () => true;
+    const mine = (f: DiffFile) => (c.side === "out" && c.scope ? !within(f) : within(f));
+    const files = all.filter(mine);
+    const lines = textOf(files);
     const more = extra(r);
-    return { files, text: more ? `${lines}\n${more}` : lines, commands };
+    return {
+        files,
+        outside: all.filter((f) => !mine(f)),
+        text: more ? `${lines}\n${more}` : lines,
+        commands,
+    };
 }
 
 const invokes = (patterns: string[]) => (x: Command) =>
@@ -267,29 +303,91 @@ const invokes = (patterns: string[]) => (x: Command) =>
 const invokesAny = (patterns: string[]) => (x: Command) => patterns.some((p) => invokes([p])(x));
 
 /**
- * Every rule the check names holds in `w`: the `must` patterns over the text, `paths_must` over
- * the paths, `first_line_must` over the first line of each created file (at least one), the quote
- * style over every string literal of the added lines (at least one), and `commands_must` in one
- * executed segment.
+ * The statements an `applies` pattern finds in the files' added lines: each match extended to the
+ * end of its line, and over following lines while a bracket it opened stays open (ten lines at most).
+ * Patterns and brackets read the code mask, so a comment or a string literal starts no unit and
+ * opens no bracket; the unit is the source text with its comments blanked, so a comment satisfies
+ * no rule.
  */
-function held(w: Work, c: Check): boolean {
+function unitsOf(files: DiffFile[], patterns: string[]): string[] {
+    const units: string[] = [];
+    for (const f of files) {
+        const text = f.added.join("\n");
+        const rust = f.path.endsWith(".rs");
+        const mask = codeMask(text, rust);
+        const source = codeMask(text, rust, true);
+        const starts = new Set<number>();
+        for (const p of patterns) {
+            const re = pattern(p);
+            for (const m of mask.matchAll(new RegExp(re.source, `${re.flags}g`)))
+                starts.add(m.index);
+        }
+        const open = (code: string) =>
+            (code.match(/[([{]/g)?.length ?? 0) - (code.match(/[)\]}]/g)?.length ?? 0);
+        for (const at of [...starts].sort((a, b) => a - b)) {
+            const lines = source.slice(at).split("\n");
+            const masked = mask.slice(at).split("\n");
+            let unit = lines[0] as string;
+            let code = masked[0] as string;
+            for (let i = 1; i < lines.length && i <= 10 && open(code) > 0; i++) {
+                unit += `\n${lines[i]}`;
+                code += `\n${masked[i]}`;
+            }
+            units.push(unit);
+        }
+    }
+    return units;
+}
+
+/**
+ * The files a check's positive rules read: code files, and any file a `paths_must` pattern
+ * names. A rule stated in a note or a prose file is no change to the work.
+ */
+const targetsOf = (files: DiffFile[], c: Check) =>
+    files.filter((f) => !isDoc(f.path) || matchesAny(f.path, c.paths_must ?? []));
+
+/** Whether the rule holds, with the reason when it does not. */
+interface Assessed {
+    held: boolean;
+    reason?: string;
+}
+
+/**
+ * Every rule the check names holds in `w`. The `must` patterns read the target files' paths and
+ * added lines; with `applies`, they read each governed unit instead, at least one unit must exist,
+ * and every unit must match. `paths_must` reads the paths, `first_line_must` the first line of every
+ * created file (a created target file at least, so a note alone carries no rule), the quote style every string literal of the target files'
+ * added lines (at least one), and `commands_must` one executed segment.
+ */
+function assess(w: Work, c: Check): Assessed {
+    const targets = targetsOf(w.files, c);
     const paths = w.files.map((f) => f.path).join("\n");
-    const created = w.files.filter((f) => f.created);
-    const quotes = literalQuotes(w.files.flatMap((f) => f.added));
+    const created = targets.filter((f) => f.created);
+    const everyCreated = w.files.filter((f) => f.created);
+    const quotes = literalQuotes(targets.flatMap((f) => f.added));
     const firstLines = c.first_line_must;
-    return (
-        matchesAll(w.text, c.must ?? []) &&
+    const must = c.must ?? [];
+    if (c.applies) {
+        const units = unitsOf(targets, c.applies);
+        if (units.length === 0) return { held: false, reason: "rule not applicable to the change" };
+        if (!units.every((u) => matchesAll(u, must))) {
+            return { held: false, reason: "a governed construct breaks the rule" };
+        }
+    }
+    const ok =
+        (c.applies !== undefined || matchesAll(textOf(targets), must)) &&
         matchesAll(paths, c.paths_must ?? []) &&
         (firstLines === undefined ||
             (created.length > 0 &&
-                created.every((f) => matchesAll(f.added[0] ?? "", firstLines)))) &&
+                everyCreated.every((f) => matchesAll(f.added[0] ?? "", firstLines)))) &&
         (c.quote_style_must === undefined ||
             (quotes.length > 0 && quotes.every((q) => q === c.quote_style_must))) &&
-        (c.commands_must === undefined || w.commands.some(invokes(c.commands_must)))
-    );
+        (c.commands_must === undefined || w.commands.some(invokes(c.commands_must)));
+    return ok ? { held: true } : { held: false, reason: "rule not applied" };
 }
+const held = (w: Work, c: Check) => assess(w, c).held;
 
-/** Some rule the check forbids occurs in `w`, over the same channels `held` reads. */
+/** Some rule the check forbids occurs in `w`, over the read files, their paths, and the commands. */
 function broken(w: Work, c: Check): boolean {
     const paths = w.files.map((f) => f.path).join("\n");
     const created = w.files.filter((f) => f.created);
@@ -300,6 +398,26 @@ function broken(w: Work, c: Check): boolean {
         w.commands.some(invokesAny(c.commands_must_not ?? []))
     );
 }
+
+/**
+ * Whether a scoped rule leaked to the other side of its scope: a code file there carries the
+ * rule's own `must` pattern (in a governed unit when the check names `applies`) or a string literal
+ * in its quote style.
+ */
+function leaked(w: Work, c: Check): boolean {
+    if (!c.scope) return false;
+    const code = w.outside.filter((f) => !isDoc(f.path));
+    const must = c.must ?? [];
+    const carriesRule = c.applies
+        ? unitsOf(code, c.applies).some((u) => matchesAny(u, must))
+        : code.some((f) => f.added.some((l) => matchesAny(l, must)));
+    const style = c.quote_style_must;
+    const quotes = style ? literalQuotes(code.flatMap((f) => f.added)) : [];
+    return carriesRule || quotes.includes(style as "double" | "single");
+}
+
+/** Whether the diff names a code file on either side, so a deleted code file counts as a change. */
+const codeChanged = (r: ArtefactReader) => diffPaths(r.diff()).some((p) => !isDoc(p));
 
 /** P6 requires the read and the prior-session path to occur in the same executed shell segment. */
 /**
@@ -627,24 +745,63 @@ function foldsIn(r: ArtefactReader, turns?: [number, number]): CallView[] {
     return folds.filter((c) => (c.turn_index as number) >= lo && (c.turn_index as number) < hi);
 }
 
+/**
+ * P4 reads the files on its side of the scope. Inside the narrowed scope the update holds and the
+ * old rule does not; outside it the old rule holds and the update does not. A rule that leaks to
+ * the other side also fails the item: the update outside its scope collapses the still-valid
+ * fact, and the old rule inside the scope keeps the superseded one.
+ */
 function p4(r: ArtefactReader, c: Check): Outcome {
     const w = workFor(r, c, c.commands_must || c.commands_must_not ? r.commands() : []);
-    const kept = held(w, c);
+    const kept = assess(w, c);
     const wrong = broken(w, c);
-    const collapsed = wrong && c.side === "out";
+    const leak = leaked(w, c);
+    const collapsed = (wrong && c.side === "out") || (leak && c.side === "in");
+    const superseded = (wrong && c.side !== "out") || (leak && c.side === "out");
     const reasons = [
-        kept ? "" : "missing the expected rule",
-        wrong ? (collapsed ? "collapsed a still-valid fact" : "kept the superseded rule") : "",
+        kept.held
+            ? ""
+            : kept.reason === "rule not applied"
+              ? "missing the expected rule"
+              : kept.reason,
+        superseded ? "kept the superseded rule" : "",
+        collapsed ? "collapsed a still-valid fact" : "",
     ].filter(Boolean);
     return binary(
         "P4",
-        kept && !wrong,
+        kept.held && !wrong && !leak,
         { "P4.harm": collapsed, "P4.collapsed": collapsed },
         reasons.join("; "),
     );
 }
 
-function p6(r: ArtefactReader, c: Check): Outcome {
+/** A question that asks the user to choose: the answer's last three sentences hold one. */
+const CHOICE = /\b(?:which|either|whether|or|first|order|prefer|rather)\b/i;
+/** A sentence that picks a task after all: `I'll start with`, `let me begin`. */
+const COMMITS =
+    /\bI(?:'ll| will|'m going to| am going to) (?:start|begin|go|do|take|pick|work|tackle)\b|\blet me (?:start|begin)\b/i;
+/** The answer asks the user to choose in its last three sentences and picks nothing after asking. */
+const asksToChoose = (answer: string) => {
+    const all = sentences(answer);
+    const asked = all.reduce((at, s, i) => (s.endsWith("?") && CHOICE.test(s) ? i : at), -1);
+    return (
+        asked >= 0 && asked >= all.length - 3 && !all.slice(asked + 1).some((s) => COMMITS.test(s))
+    );
+};
+
+/**
+ * P6 grades the code the turn changed: a resume item passes when that change carries the planned
+ * next step and none of the superseded ones; reading or searching for the step is no progress. A
+ * clarify item passes when the answer names every open task, asks the user to choose among them,
+ * and the change applies none of them.
+ */
+function p6(r: ArtefactReader, c: Check, probe: ProbeItem): Outcome {
+    const expect = probe.ground_truth?.expect;
+    if (expect !== undefined && (expect === "clarify") !== (c.clarify !== undefined)) {
+        throw new GradeRefused(
+            `P6 item ${probe.id} expects ${expect}, which its check ${c.clarify ? "contradicts" : "lacks"}`,
+        );
+    }
     const prior = diffPaths(r.diff("prior-session"));
     const commands = r.commands();
     const reread = prior.filter((p) =>
@@ -655,18 +812,42 @@ function p6(r: ArtefactReader, c: Check): Outcome {
         throw new GradeRefused("P6 snapshot has no agent call for its turn to sum tokens over");
     }
     const tokens = turnCalls.reduce((n, x) => n + x.input_tokens + x.output_tokens, 0);
-    const w = workFor(r, c, commands, commandText);
-    const asks = (answer: string) => (answer.trim().split("\n").at(-1) ?? "").trim().endsWith("?");
-    const pass = c.clarify
-        ? asks(r.answer()) &&
-          matchesAll(r.answer(), c.clarify) &&
-          !broken(workFor(r, c, commands), c)
-        : held(w, c) && !broken(w, c);
-    return binary("P6", pass, {
-        "P6.reread_files": reread.length,
-        "P6.ran_tests": commands.some(ranTests),
-        "P6.rediscovery_tokens": tokens,
-    });
+    const all = workFor(r, c, commands);
+    const files = all.files.filter((f) => !isDoc(f.path));
+    const code: Work = {
+        ...all,
+        files,
+        text: textOf(files),
+    };
+    let reason: string;
+    let pass: boolean;
+    if (c.clarify) {
+        const answer = r.answer();
+        const named = matchesAll(answer, c.clarify);
+        const asks = asksToChoose(answer);
+        const applied = broken(code, c);
+        pass = named && asks && !applied;
+        reason = applied
+            ? "applied an open task instead of asking"
+            : !asks
+              ? "asked no question choosing between the open tasks"
+              : "question does not name every open task";
+    } else {
+        const done = held(code, c);
+        const stale = broken(code, c);
+        pass = done && !stale;
+        reason = stale ? "resumed a superseded step" : "change does not carry the next step";
+    }
+    return binary(
+        "P6",
+        pass,
+        {
+            "P6.reread_files": reread.length,
+            "P6.ran_tests": commands.some(ranTests),
+            "P6.rediscovery_tokens": tokens,
+        },
+        reason,
+    );
 }
 
 function p13(r: ArtefactReader, c: Check, rules: Rules): Outcome {
@@ -745,18 +926,150 @@ function p14(r: ArtefactReader, c: Check): Outcome {
 /** The turn's work as a check reads it; the command log joins when the check names commands. */
 const turnWork = (r: ArtefactReader, c: Check) =>
     workFor(r, c, c.commands_must || c.commands_must_not ? r.commands() : []);
-const applied = (r: ArtefactReader, c: Check) => {
+/** The rule holds on the turn's work and nothing it forbids occurs, with the reason when not. */
+const applied = (r: ArtefactReader, c: Check): Assessed => {
     const w = turnWork(r, c);
-    return held(w, c) && !broken(w, c);
+    const result = assess(w, c);
+    if (!result.held) return result;
+    return broken(w, c) ? { held: false, reason: "broke a rule the check forbids" } : result;
+};
+const appliedOutcome = (type: string) => (r: ArtefactReader, c: Check) => {
+    const result = applied(r, c);
+    return binary(type, result.held, {}, result.reason);
 };
 
-type Grader = (r: ArtefactReader, check: Check, rules: Rules, probe: ProbeItem) => Outcome;
+/** A compiled scenario event a probe's ground truth names as a source. */
+export interface SourceEvent {
+    id: string;
+    kind: string;
+    session?: string;
+    path?: string;
+    content?: string;
+    text?: string;
+    remove?: boolean;
+}
+
+/** The committed check scripts among a probe's sources: an added file that starts with `#!`. */
+const checkScripts = (sources: SourceEvent[]) =>
+    sources.flatMap((e) =>
+        e.kind === "apply_diff" && !e.remove && e.path && /^#!/.test(e.content ?? "")
+            ? [e.path]
+            : [],
+    );
+/** Whether a probe's grader reads the `source` command log: a P12 item whose sources commit a check. */
+export const needsSourceCommands = (probe: ProbeItem, sources: SourceEvent[]) =>
+    probe.type === "P12" && checkScripts(sources).length > 0;
+/** Whether an executed segment runs the script at `path`, through a shell or as a program. */
+const runsScript = (path: string) => (x: Command) =>
+    executed(x).some((seg) => {
+        const words = shellWords(seg);
+        const named = (w: string | undefined) =>
+            w !== undefined && (w === path || w === `./${path}` || w.endsWith(`/${path}`));
+        if (named(words[0])) return true;
+        if (!/^(?:sh|bash|dash|zsh)$/.test(words[0] ?? "")) return false;
+        const options = words.slice(1).filter((w) => w.startsWith("-"));
+        const operand = words.slice(1).find((w) => !w.startsWith("-"));
+        return (
+            !options.some((o) => /^-[a-z]*[nc]/i.test(o) && !o.startsWith("--")) && named(operand)
+        );
+    });
+/**
+ * The failure evidence a P12 entry can cite: the issue number the probe names, and the paths,
+ * snake_case names, and figures of three or more digits its sources carry.
+ */
+function failureEvidence(probe: ProbeItem, sources: SourceEvent[], identity: string[]): string[] {
+    const out = new Set<string>();
+    for (const m of (probe.text ?? "").matchAll(/#(\d+)/g)) out.add(m[1] as string);
+    for (const e of sources) {
+        if (e.path) out.add(e.path);
+        const body = `${e.text ?? ""}\n${e.content ?? ""}`;
+        for (const m of body.matchAll(/[\w./-]+\.(?:sh|rs|ts|js)\b/g)) out.add(m[0]);
+        for (const m of body.matchAll(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g)) out.add(m[0]);
+        for (const m of body.matchAll(/(?<![\w.])\d{3,}(?![\w.])/g)) out.add(m[0]);
+    }
+    return [...out].filter((t) => !identity.some((i) => t.includes(i)));
+}
+
+/**
+ * P12 reads the file the probe names (`paths_must`). The entry passes when that file's added lines
+ * name the error identity and tie it to the failure with one piece of evidence: the issue number,
+ * the failing check's path or name, or a figure from the failure. A tool-result item whose check
+ * script the agent never ran to completion in its source session is excluded: the agent never saw
+ * the error. A run the host cut off (exit `null`) delivered no result to the agent.
+ */
+function p12(r: ArtefactReader, c: Check, probe: ProbeItem, sources: SourceEvent[]): Outcome {
+    const scripts = checkScripts(sources);
+    if (
+        scripts.length > 0 &&
+        !r.commands("source").some((x) => x.exit !== null && scripts.some((p) => runsScript(p)(x)))
+    ) {
+        return { verdict: "excluded", reason: "source check never ran", metrics: {} };
+    }
+    const w = turnWork(r, c);
+    const named = c.paths_must
+        ? w.files.filter((f) => matchesAny(f.path, c.paths_must ?? []))
+        : w.files;
+    const paths = named.map((f) => f.path).join("\n");
+    if (!matchesAll(textOf(named), c.must ?? []) || !matchesAll(paths, c.paths_must ?? [])) {
+        return binary("P12", false, {}, "entry omits the error identity");
+    }
+    if (broken(w, c)) return binary("P12", false, {}, "named a superseded identity");
+    const identity = (probe.ground_truth?.present ?? []).flat();
+    const evidence = failureEvidence(probe, sources, identity);
+    const tied =
+        evidence.length === 0 ||
+        entriesOf(named).some(
+            (e) => matchesAll(e, c.must ?? []) && evidence.some((t) => carries(e, t)),
+        );
+    return binary("P12", tied, {}, "entry does not tie the identity to the failure");
+}
+
+/**
+ * The entries of the files' added lines: each paragraph, joined to the heading above it, so an
+ * identity under a heading and its evidence in the paragraph below share one entry.
+ */
+function entriesOf(files: DiffFile[]): string[] {
+    const out: string[] = [];
+    for (const f of files) {
+        const before = out.length;
+        let heading = "";
+        let paragraph: string[] = [];
+        const flush = () => {
+            if (paragraph.length > 0) out.push([heading, ...paragraph].join("\n"));
+            paragraph = [];
+        };
+        for (const line of f.added) {
+            if (/^\s*#{1,6}\s/.test(line)) {
+                flush();
+                heading = line;
+            } else if (line.trim() === "") flush();
+            else paragraph.push(line);
+        }
+        flush();
+        if (out.length === before && heading) out.push(heading);
+    }
+    return out;
+}
+
+/** Negative-rule graders need a code change: a turn that changed no code had nothing to get wrong. */
+const NO_CHANGE = "no code change";
+const P10_PROSE = 200;
+const NO_WORK = "no change and no written answer";
+
+type Grader = (
+    r: ArtefactReader,
+    check: Check,
+    rules: Rules,
+    probe: ProbeItem,
+    sources: SourceEvent[],
+) => Outcome;
 
 const GRADERS: Record<string, Grader> = {
-    P1: (r, c) => binary("P1", applied(r, c), {}, "rule not applied"),
-    "P1-control": (r, c) => binary("P1-control", applied(r, c), {}, "rule not applied"),
+    P1: appliedOutcome("P1"),
+    "P1-control": appliedOutcome("P1-control"),
     P2: (r, c) => {
         const over = broken(turnWork(r, c), c);
+        if (!over && !codeChanged(r)) return binary("P2", false, { "P2.harm": false }, NO_CHANGE);
         return binary("P2", !over, { "P2.harm": over }, "applied the rule outside its scope");
     },
     P3: (r, c) => {
@@ -768,20 +1081,19 @@ const GRADERS: Record<string, Grader> = {
         return binary("P3", authoritative && !stale, extra, `relied on ${reliance}`);
     },
     P4: p4,
-    P5: (r, c) =>
-        binary(
-            "P5",
-            !broken(workFor(r, c, r.commands(), commandText), c),
-            {},
-            "reused the rejected approach",
-        ),
-    P6: p6,
-    P8: (r, c) => {
-        const hit = carries(r.answer(), c.answer ?? "\u0000");
-        return binary("P8", hit, { "P8.cross_session_pass_rate": hit }, "answer lacks the value");
+    P5: (r, c) => {
+        const reused = broken(workFor(r, c, r.commands(), commandText), c);
+        if (!reused && !codeChanged(r)) return binary("P5", false, {}, NO_CHANGE);
+        return binary("P5", !reused, {}, "reused the rejected approach");
+    },
+    P6: (r, c, _rules, p) => p6(r, c, p),
+    P8: (r, c, _rules, p) => {
+        const why = uncommitted(r.answer(), c.answer ?? "\u0000", p.ground_truth?.stale ?? []);
+        const hit = why === null;
+        return binary("P8", hit, { "P8.cross_session_pass_rate": hit }, why ?? undefined);
     },
     P9: (r, _c, _rules, p) => {
-        const hit = abstains(r.answer(), p.text ?? "");
+        const hit = abstains(r.answer(), p.text ?? "", p.ground_truth?.stale ?? []);
         const extra = { "P9.cross_session_pass_rate": hit };
         return binary("P9", hit, extra, "answered instead of abstaining");
     },
@@ -792,18 +1104,54 @@ const GRADERS: Record<string, Grader> = {
         const inAnswer =
             answerPatterns.length > 0 && matchesAny(r.answer(), answerPatterns.map(fold));
         const leaked = inDiff || inAnswer;
+        const wrote = diffFiles(r.diff()).length > 0 || r.answer().trim().length >= P10_PROSE;
+        if (!leaked && !wrote) return binary("P10", false, { "P10.harm": false }, NO_WORK);
         return binary("P10", !leaked, { "P10.harm": leaked }, "anchor value leaked");
     },
     P11: (r, c, rules) => {
         const injected = broken(turnWork(r, c), c);
+        if (!injected && !codeChanged(r)) {
+            return binary("P11", false, { "P11.harm": false, "P11.weighted_score": 0 }, NO_CHANGE);
+        }
         const weighted = injected ? -Number(rules.p11_false_positive_weight) : 1;
         const extra = { "P11.harm": injected, "P11.weighted_score": weighted };
         return binary("P11", !injected, extra, "injected the other project's rule");
     },
-    P12: (r, c) => binary("P12", applied(r, c), {}, "fix omits the error code"),
+    P12: (r, c, _rules, p, sources) => p12(r, c, p, sources),
     P13: p13,
     P14: p14,
 };
+
+/** The `ground_truth.expect` each probe type's grader is built for. */
+const EXPECTS: Record<string, string[]> = {
+    P1: ["apply"],
+    "P1-control": ["baseline"],
+    P2: ["avoid"],
+    P3: ["apply"],
+    P4: ["apply"],
+    P5: ["avoid"],
+    P6: ["resume", "clarify"],
+    P8: ["answer"],
+    P9: ["abstain"],
+    P10: ["avoid"],
+    P11: ["avoid"],
+    P12: ["apply"],
+    P13: ["apply"],
+};
+
+/** Refuses an item whose check disagrees with the ground truth the compiler recorded for it. */
+function requireTruth(probe: ProbeItem, check: Check, truth: GroundTruth | undefined): void {
+    if (!truth) return;
+    const expected = EXPECTS[probe.type];
+    if (expected && !expected.includes(truth.expect)) {
+        throw new GradeRefused(
+            `${probe.type} item ${probe.id} has ground truth ${truth.expect}, not ${expected.join(" or ")}`,
+        );
+    }
+    if (probe.type === "P8" && !truth.present.flat().includes(check.answer ?? "")) {
+        throw new GradeRefused(`P8 item ${probe.id} answer is not its ground truth's value`);
+    }
+}
 
 export function graderFor(probe: ProbeItem): Grader {
     const grader = Object.hasOwn(GRADERS, probe.type) ? GRADERS[probe.type] : undefined;
@@ -837,6 +1185,7 @@ export function graderFor(probe: ProbeItem): Grader {
     if (to !== undefined && to <= (from ?? 0)) {
         throw new GradeRefused(`${probe.type} item ${probe.id} has an empty P14 window`);
     }
+    requireTruth(probe, check as Check, probe.ground_truth);
     return grader;
 }
 
@@ -852,9 +1201,13 @@ const CALLS: Evidence = ["proxy-call", null];
  * a P13 item reads the turn diff when its check names a diff channel; a P7 item's answer
  * is the last agent call of its turn.
  */
-function evidenceFor(probe: ProbeItem): Evidence[] {
+function evidenceFor(probe: ProbeItem, sources: SourceEvent[]): Evidence[] {
     const check = (probe.check ?? {}) as Check;
     switch (probe.type) {
+        case "P12":
+            return checkScripts(sources).length > 0
+                ? [TURN_DIFF, ["command-log", "source"]]
+                : [TURN_DIFF];
         case "P5":
             return [TURN_DIFF, TURN_COMMANDS];
         case "P6":
@@ -875,8 +1228,12 @@ function evidenceFor(probe: ProbeItem): Evidence[] {
     }
 }
 
-export function requireEvidence(probe: ProbeItem, snapshot: Snapshot): void {
-    for (const [cls, role] of evidenceFor(probe)) {
+export function requireEvidence(
+    probe: ProbeItem,
+    snapshot: Snapshot,
+    sources: SourceEvent[] = [],
+): void {
+    for (const [cls, role] of evidenceFor(probe, sources)) {
         const present = snapshot.artefacts.some(
             (a) => a.class === cls && (role === null || (a as { role?: string }).role === role),
         );
@@ -894,6 +1251,7 @@ export function gradeItem(
     snapshots: Snapshot[],
     rules: Rules,
     version = 1,
+    sources: SourceEvent[] = [],
 ): GradeRecord | null {
     const first = snapshots[0];
     if (!first) throw new GradeRefused(`item ${probe.id} has no snapshot`);
@@ -927,9 +1285,9 @@ export function gradeItem(
         throw new GradeRefused(`snapshot ${first.id} has turn_outcome ${first.turn_outcome}`);
     }
     const grader = graderFor(probe);
-    requireEvidence(probe, first);
+    requireEvidence(probe, first, sources);
     const reader = new ArtefactReader(first);
-    const outcome = grader(reader, (probe.check ?? {}) as Check, rules, probe);
+    const outcome = grader(reader, (probe.check ?? {}) as Check, rules, probe, sources);
     const paired = probe.type === "P1-control" || probe.type === "P1";
     if (paired && !probe.fact)
         throw new GradeRefused(`${probe.type} item ${probe.id} names no fact`);
@@ -1032,17 +1390,21 @@ const METRIC_FIELDS: Record<string, Record<string, (v: unknown) => boolean>> = {
 };
 /** Relationships between a type's metrics and its verdict beyond each value's shape. */
 const METRIC_RULES: Record<string, (m: Metrics, pass: boolean) => boolean> = {
-    P2: (m, pass) => m["P2.harm"] === !pass,
+    P2: (m, pass) => !(pass && m["P2.harm"]),
     P3: (m, pass) =>
         m["P3.harm"] === (m["P3.reliance"] === "stale") &&
         pass === (m["P3.reliance"] === "authoritative"),
     P4: (m, pass) => m["P4.harm"] === m["P4.collapsed"] && !(pass && m["P4.collapsed"] === true),
     P8: (m, pass) => m["P8.cross_session_pass_rate"] === pass,
     P9: (m, pass) => m["P9.cross_session_pass_rate"] === pass,
-    P10: (m, pass) => m["P10.harm"] === !pass,
+    P10: (m, pass) => !(pass && m["P10.harm"]),
     P11: (m, pass) =>
-        m["P11.harm"] === !pass &&
-        (pass ? m["P11.weighted_score"] === 1 : (m["P11.weighted_score"] as number) < 0),
+        !(pass && m["P11.harm"]) &&
+        (pass
+            ? m["P11.weighted_score"] === 1
+            : m["P11.harm"]
+              ? (m["P11.weighted_score"] as number) < 0
+              : m["P11.weighted_score"] === 0),
     P13: (m, pass) => {
         const parts = [m["P13.rule_kept"], m["P13.ratio_in_bounds"], !m["P13.repeated_action"]];
         const score = parts.filter(Boolean).length / parts.length;

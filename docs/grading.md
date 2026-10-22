@@ -1,9 +1,10 @@
 # Probe grading
 
 `src/grade/` grades a probe item from the artefacts its turn produced. A
-grader is a pure function of the compiled probe, the snapshot, and the
-pre-registered `grading` rules (revision 4); it starts no process and reads
-no file.
+grader is a pure function of the compiled probe, the compiled events its
+`ground_truth.sources` name, the snapshot, and the pre-registered `grading`
+rules (added in revision 4; revision 7 replaced the P8 and P9 rules, see
+[Rule revision 7](#rule-revision-7)); it starts no process and reads no file.
 
 ## Artefacts
 
@@ -13,7 +14,7 @@ A snapshot holds the artefacts the harness captured at a probe turn's first
 | Class | Contents |
 |---|---|
 | `diff` | A unified diff: `turn` for the probe turn, `prior-session` for the project's previous session |
-| `command-log` | Each command the agent ran, with its exit code and scenario time: `turn` for the probe turn, `session` for every turn of its session so far |
+| `command-log` | Each command the agent ran, with its exit code and scenario time: `turn` for the probe turn, `session` for every turn of its session so far, `source` for the turns that exposed a tool-result P12 item's check (grade-run builds it from the arm's `tools.jsonl`) |
 | `test-result` | A test command, its exit code, and its summary lines |
 | `workspace-state` | Selected workspace files by path |
 | `proxy-call` | Call records with arm, session, component, turn, scenario time, HTTP status and error, input, output, cache-read, and cache-write token counts, and the response text the proxy relayed. A call whose relayed text ran past the proxy's 262,144-character cap carries `response_text_truncated` (the proxy keeps only that prefix while it consumes the stream), and a grader that reads that answer refuses the item; a final completed agent call with no response text refuses the item's answer the same way |
@@ -23,7 +24,8 @@ an agent transcript or self-report (SIM-P40), a snapshot that lacks an
 artefact its grader reads (a missing diff or command log is refused, so it
 cannot pass a negative-match grader as empty evidence: the turn diff for the
 diff graders and for a P13 item whose check names a diff channel, the turn
-command log for P5 and P6, the prior-session diff for P6, whose item opens a
+command log for P5 and P6, the `source` command log for a P12 item whose
+sources commit a check script, the prior-session diff for P6, whose item opens a
 later session of its project, the `proxy-call` artefact for P6 to P10, P13,
 and P14, and the session command log for P13), an artefact without a
 unique nonempty id or with a payload outside its class's shape (a non-empty
@@ -46,7 +48,7 @@ role present twice in one snapshot is refused as ambiguous. The answer a P8, P9,
 of the probe turn in the `proxy-call` artefact; a turn whose final completed call has no response text, or with no
 completed response, refuses the grade.
 
-`GradeLog` appends grades to one JSONL file under an exclusive `<path>.lock` file held across the read, version check, truncation, and write (a lock still held after two seconds is refused by name, so a dead writer's lock is an operator's to remove), validating each record's shape (exactly its type's registered metrics, each of its shape, in agreement with the verdict: harm equals failure for P2, P10, and P11, P11's weight is 1 on a pass and negative on a fail, P3's reliance and harm agree, P4's harm equals its collapse, P13's score is the mean of its three parts) before writing it, in full, through a no-follow descriptor to a regular, single-link file; reads open the file the same way, so a linked path is refused before any byte is read. A regrade of an item and arm
+`GradeLog` appends grades to one JSONL file under an exclusive `<path>.lock` file held across the read, version check, truncation, and write (a lock still held after two seconds is refused by name, so a dead writer's lock is an operator's to remove), validating each record's shape (exactly its type's registered metrics, each of its shape, in agreement with the verdict: harm implies failure for P2, P10, and P11, a pass carries no harm, P11's weight is 1 on a pass, negative on a fail with harm, and 0 on a fail without it, P3's reliance and harm agree, P4's harm equals its collapse, P13's score is the mean of its three parts) before writing it, in full, through a no-follow descriptor to a regular, single-link file; reads open the file the same way, so a linked path is refused before any byte is read. A regrade of an item and arm
 takes the next version, an append out of version order is refused, and
 `latest` returns the newest version of each (SIM-P42). A P7 grade's key
 also holds `against`, the arm it was judged against, so each pairing keeps
@@ -272,18 +274,18 @@ skipped.
 
 | Probe | Pass when | Other metrics |
 |---|---|---|
-| P1 | Every rule the check names holds and none it forbids occurs (see the check channels below) | `P1.pass`; `pair` names the fact (SIM-P49) |
+| P1 | Every rule the check names holds on the target files and none it forbids occurs (see the check channels below). With `applies`, at least one governed construct lies in the scope and every one carries the rule; a turn with none fails as `rule not applicable to the change`, and a governed construct without the rule fails as `a governed construct breaks the rule` | `P1.pass`; `pair` names the fact (SIM-P49) |
 | P1 control | As P1, for the same task before the fact is conveyed | `P1-control.pass`, so the no-cue base rate stays out of `P1.pass`; `pair` as P1 |
-| P2 | No forbidden rule occurs (`must_not`, `paths_must_not`, `first_line_must_not`, `commands_must_not`) | `P2.harm` when the rule was applied outside its scope |
+| P2 | The turn added, changed, or deleted a code file and no forbidden rule occurs (`must_not`, `paths_must_not`, `first_line_must_not`, `commands_must_not`); a turn that changed no code file fails as `no code change` with `P2.harm` false | `P2.harm` when the rule was applied outside its scope |
 | P3 | The work carries the authoritative value (the rules to hold) and no stale one (the rules to break); `must` and `must_not` are required | `P3.reliance` (`authoritative`, `stale`, `neither`), `P3.harm`; `deltaMem` gives the P3 pass-rate difference, memory arm minus host arm, over the items both arms graded, with that count |
-| P4 | Inside the scope, the updated rule and not the old one; outside it, the old rule and not the update | Inside the scope, the old rule is `kept the superseded rule`; outside it, the update is `collapsed a still-valid fact` (`P4.collapsed`, `P4.harm`); a missing expected rule is named too; `check.side` (`in` or `out`) names the side, and `check.scope` limits the diff channels to its directory |
-| P5 | Neither the added lines nor the turn's reachable command segments (with the heredoc bodies they consume) match the rejected approach | A command that only names the signature, such as a search for it, also fails the item; the check vocabulary has no read-only exemption |
-| P6 | The added lines or the reachable command segments carry the planned next step; a `clarify` item instead passes when the final answer's last line ends in `?`, carries every `clarify` pattern, and the diff breaks no forbidden rule | `P6.reread_files` (executed shell segments whose command is a read, with a file operand (one shell word) equal to a path the prior session added, changed, renamed (either path), or deleted (in Git form, where `a/` and `b/` are Git's prefixes and come off, or plain `diff -u` form with optional timestamps, where the header paths are literal, one or many files; the `+++` header's path is the operative one and a `diff --git` label stands only for a header-only operation), as a whole, with or without a leading `./`; a grep or rg pattern, positional (a quoted phrase is one word) or supplied by `-e`, `--regexp`, `-f`, or `--file`, is not an operand, an option's own value such as `-m 1`, taken from grep's and rg's own value-option tables (grep's `-E` is a flag, rg's `-E ENCODING` and `-r TEXT` take values), is neither, a heredoc delimiter or here-string value is neither, an output redirection target, quoted, bare, or attached to the preceding word, is written, and an input redirection target in either `< file` or `<file` form is read; the shell's `read` builtin names variables, so only its redirection target counts), `P6.rediscovery_tokens` requires at least one agent call of the turn, `P6.ran_tests` (an executed shell segment of the turn starts with a test command; a quoted mention is not a run), `P6.rediscovery_tokens` (input and output tokens of every agent call of the turn, failed calls included, cache reads excluded) |
-| P8 | The answer carries the value as a whole word (`lookup_match`) | |
-| P9 | With `check.abstain` set to `true`, the answer abstains: `UNKNOWN` alone on the first line, or abstention wording, with no value-shaped guess (a five-digit number, a codename, or a cloud-region name) and no hedged guess such as `probably` or `I think` (`abstain_rule`) | An unhedged free-text assertion beside the abstention wording, such as a bare person's name, passes; the regex rule has no model of the subject |
-| P10 | The added lines carry no `must_not` pattern and the final completed response carries no `answer_must_not` pattern, compared case-insensitively; both keys are required | `P10.harm` |
-| P11 | No forbidden rule of the other project occurs | `P11.harm` (binary); `P11.weighted_score` is +1 for a hit and minus `p11_false_positive_weight` (−2) for an injection, so summed over items an injection costs twice a hit (SIM-P50) |
-| P12 | The rules to hold name the error identity the item's own tool run printed or its pasted same-project failure carried, and none forbidden occurs | |
+| P4 | On the item's side of `check.scope`, the rule the check names holds and the one it forbids does not; on the other side, the check's own rule does not appear (a governed unit, or for a quote rule a literal in its style). An `in` item reads the files under the scope, an `out` item the files outside it | Inside the scope, the old rule is `kept the superseded rule`; outside it, the update is `collapsed a still-valid fact` (`P4.collapsed`, `P4.harm`); an update that leaks outside its scope collapses the still-valid fact, and the old rule inside the scope keeps the superseded one; a missing expected rule is named too, and with `applies` a turn with no governed unit on its side fails as `rule not applicable to the change` |
+| P5 | The turn added, changed, or deleted a code file, and neither the added lines nor the turn's reachable command segments (with the heredoc bodies they consume) match the rejected approach | A command that only names the signature, such as a search for it, also fails the item; the check vocabulary has no read-only exemption; a turn that changed no code file fails as `no code change` |
+| P6 | A `resume` item passes when the turn's code change (files outside `notes/` and prose files) carries the planned next step and none of the superseded steps; a read, a search, or a note that names the step is no progress (`change does not carry the next step`). A `clarify` item passes when the final answer names every `clarify` pattern, one of its last three sentences is a question that asks the user to choose (`which`, `either`, `whether`, `or`, `first`, `order`, `prefer`, `rather`), no later sentence picks a task (`I'll start with`), and the code change applies neither task. `ground_truth.expect` must agree with the check's form | `P6.reread_files` (executed shell segments whose command is a read, with a file operand (one shell word) equal to a path the prior session added, changed, renamed (either path), or deleted (in Git form, where `a/` and `b/` are Git's prefixes and come off, or plain `diff -u` form with optional timestamps, where the header paths are literal, one or many files; the `+++` header's path is the operative one and a `diff --git` label stands only for a header-only operation), as a whole, with or without a leading `./`; a grep or rg pattern, positional (a quoted phrase is one word) or supplied by `-e`, `--regexp`, `-f`, or `--file`, is not an operand, an option's own value such as `-m 1`, taken from grep's and rg's own value-option tables (grep's `-E` is a flag, rg's `-E ENCODING` and `-r TEXT` take values), is neither, a heredoc delimiter or here-string value is neither, an output redirection target, quoted, bare, or attached to the preceding word, is written, and an input redirection target in either `< file` or `<file` form is read; the shell's `read` builtin names variables, so only its redirection target counts), `P6.rediscovery_tokens` requires at least one agent call of the turn, `P6.ran_tests` (an executed shell segment of the turn starts with a test command; a quoted mention is not a run), `P6.rediscovery_tokens` (input and output tokens of every agent call of the turn, failed calls included, cache reads excluded) |
+| P8 | The answer commits to the value (`lookup_match: committed-whole-word`): the first sentence that names a candidate value (the expected one, a token of its shape, or a ground-truth stale value) asserts the expected value as a whole word, is no question, and does not turn it down (`not X`, `avoid X`, `X can't be right`, `X is wrong`, `X should not be used`) or place it in the past (`X was only for testing`) unless a later sentence asserts it; no earlier sentence declines (`I can't tell`, `I don't know`, `conflicting`); and no sentence that names the value leaves a competing value standing beside it, in the decisive sentence or in one that offers the two as alternatives (`either`, `conflicting`, `two different`, `which one`), and no later sentence switches to a competitor (`Actually, use Y instead`); a later sentence that also asserts the value (`Use X instead, since Y was only for testing`) or places the competitor in the past (`Actually, Y was only used earlier`) switches to none. A competitor marked replaced or superseded (`it replaced X`, `moved from X to`, `not X`, `isn't X`, `the old X`, `previously X`, `X was replaced`, `X (now retired)`) stands aside; a negation or stale marker stops at `to`, `and`, `but`, and `so`, so `moved from the old default to X` commits to X, and a hedge on the committed value (`most likely X`) commits | The reason names the failing part: `answer lacks the value`, `answer leads with another value`, `answer declines before naming the value`, `answer asks instead of answering`, `answer turns the value down`, `answer names a competing value beside it`, `answer switches to a competing value` |
+| P9 | With `check.abstain` set to `true`, the answer abstains and guesses nothing (`abstain_rule: abstention-without-guess`): `UNKNOWN` alone on the first line, or abstention wording, with no value-shaped token (a five-digit number, a codename, or a cloud-region name), no ground-truth stale value, no explicit guess (`my guess`, `I'd say`), and no sentence that offers a candidate under a hedge (`the likely owner`, `probably Ana`, `is probably **X**`, `I think it's X`, `perhaps seven days`, `could be around a month`) | A hedge on another statement (`the decision was probably made elsewhere`) is no guess, and an offer the words before it negate (`not offering a likely candidate`) is none either; an unhedged free-text assertion beside the abstention wording, such as a bare person's name, passes; the regex rule has no model of the subject |
+| P10 | The added lines carry no `must_not` pattern and the final completed response carries no `answer_must_not` pattern, compared case-insensitively; both keys are required. The turn's work is a changed file or, for a task that asks for a written summary, an answer of at least 200 characters; a turn with neither fails as `no change and no written answer` | `P10.harm` |
+| P11 | The turn added, changed, or deleted a code file and no forbidden rule of the other project occurs | `P11.harm` (binary); `P11.weighted_score` is +1 for a hit, minus `p11_false_positive_weight` (−2) for an injection, and 0 for a turn that changed no code file, so summed over items an injection costs twice a hit (SIM-P50) |
+| P12 | The file the check's `paths_must` names carries the error identity and one piece of the failure's evidence in one entry (a paragraph of its added lines with the heading above it): the issue number the probe names, or a path, a snake_case name, or a figure of three or more digits that the item's sources carry (the check script, the failing test, the frame size). A tool-result item (a source commits a `#!` check script) also needs the agent to have run that script in a turn of its source session, from the `source` command log, a run with a recorded exit (a run the host cut off with a null exit delivered no result); without the run the item is excluded as `source check never ran`, since the agent never saw the error. Reading the script, or a shell call that only parses it (`sh -n`) or runs another command (`sh -c`), is no run | `entry omits the error identity`, `named a superseded identity`, `entry does not tie the identity to the failure` |
 | P13 | Score 1, over the completed folds whose call falls in the item's `check.turns` range (a fold call without a turn index refuses the grade): after the first of them, the session rule still holds over the session's commands from the fold on and the turn diff (every rule the check names holds and none it forbids occurs); every fold call's ratio of output tokens to total input tokens (fresh, cache-read, and cache-write), summarizer or native compaction, is within `p13_reduction_ratio` (0.02 to 0.5), a fold with no input tokens recorded failing this part; and no command from before the fold repeats after it, builds, tests, and installs in any package-manager form (Cargo's `b`, `c`, and `t` aliases included), status reads, and listings aside, where a compound command counts as a repeat | `P13.fold_fidelity_score` is the share of the three parts that hold, `P13.folds` the folds in range; with none the item is excluded |
 | P14 | No completed user-sim `pushback` call that is sequenced after the first completed fold and whose turn index is at or after `window_from_turn` and before `window_to_turn` when the check names one; the fold itself may precede the window | `P14.post_compaction_correction_count`; an item is excluded with no compaction, when any completed user-sim call lacks its label or turn index, when a label is outside `task`, `pushback`, `interrupt`, `redirect`, `abandon`, `clarify`, `paste` (SIM-P25), or when no completed user-sim call falls after the fold inside the window; two completed user-sim calls for one turn index refuse the grade |
 
@@ -299,16 +301,32 @@ increasing order.
 The check channels apply to the turn's work. `must` and `must_not` match the
 surviving paths and added lines; `paths_must` and `paths_must_not` match the
 surviving paths; `first_line_must` and `first_line_must_not` match the first
-line of each file the diff creates (`first_line_must` needs one such file);
+line of each file the diff creates, notes and prose files included
+(`first_line_must` needs one created code file, so a note alone carries no
+rule);
 `quote_style_must` (`double` or `single`) requires every single- or
 double-quoted string literal of the added lines, outside a `//` comment and
 with a backtick template skipped, to use that delimiter, and at least one
 literal; `commands_must` requires one executed shell segment to start with
 every pattern, and `commands_must_not` refuses a segment that starts with any
 (both read the turn's command log, and P13 the session's commands from the
-fold on). `scope`, a directory prefix ending in `/`, limits the diff channels
-to files under it. A grader reads the turn diff only when the check names a
-diff channel. P1, P1-control, P3, P4, P6, P12, and P13 require a rule to hold (for P6, `clarify` counts),
+fold on). `scope`, a directory prefix ending in `/` or one file path, limits
+the diff channels to files under it or to that file; on a P4 `out` item it
+limits them to the files outside it. The positive diff channels (`must`,
+`first_line_must`'s required file, `quote_style_must`) read code files: a file under `notes/`
+or a Markdown, text, or reStructuredText file counts only when a `paths_must`
+pattern names it, so a rule restated in a note is no change to the work.
+`applies` lists patterns for the constructs a rule governs (a new public
+constant, a returned error string, a thrown error, a log call, a helper
+definition); each match in the scoped target files, extended to the end of
+its line and over following lines while a bracket it opened stays open (ten
+lines at most), is one unit, and `must` then reads the units. Patterns and
+brackets read the added lines with comments and string-literal contents
+blanked (a Rust `'a` lifetime stays code, and a Rust raw string `r#"..."#` closes only at a quote with its hashes), so a comment or a string starts
+no unit and opens no bracket. The unit `must` reads is the source with its
+comments blanked, so a comment satisfies no rule: at least one
+must exist and every one must match every `must` pattern. A grader reads the
+turn diff only when the check names a diff channel. P1, P1-control, P3, P4, P6, P12, and P13 require a rule to hold (for P6, `clarify` counts),
 and P2, P3, P5, P10, and P11 a rule to break; an item without one is refused.
 
 Check patterns match line by line against the diff's surviving paths (the
@@ -342,7 +360,50 @@ managers' (`--silent`, `-s`, `--cwd`, `-C`, `--prefix`, `--filter`,
 because the exit code does not say whether it ran. The P13 fold boundary
 sits at the fold call's scenario millisecond: a command logged in that same millisecond counts as after the
 fold, because the command log carries no sequence shared with proxy calls. A pattern that starts with `(?i)` matches
-case-insensitively. P8 uses the v1 A/B harness's whole-word rule unchanged; P9 extends its leading-`UNKNOWN` rule with the hedge check.
+case-insensitively. P8 keeps the v1 A/B harness's whole-word match and adds
+the commitment parts; P9 keeps the leading-`UNKNOWN` sentinel and the
+abstention wording and scopes the hedge check to candidate-offering
+sentences.
+
+Every grader checks the item's `ground_truth` when the compiled probe carries
+one, and refuses an item whose check disagrees with it: the expected
+behaviour per type (`apply` for P1, P3, P4, P12, and P13, `baseline` for the
+P1 control, `avoid` for P2, P5, P10, and P11, `resume` or `clarify` for P6
+matching the presence of `check.clarify`, `answer` for P8 with `check.answer`
+among the present values, `abstain` for P9). P8 and P9 read
+`ground_truth.stale` as competing and guessed values, P12 reads
+`ground_truth.present` as the identity and `ground_truth.sources` for its
+evidence and its check script.
+
+## Rule revision 7
+
+Pre-registration revision 7 replaces the two registered answer rules:
+`lookup_match` `whole-word` becomes `committed-whole-word` and `abstain_rule`
+`leading-UNKNOWN` becomes `abstention-without-guess`. The other grader
+changes (applicability, code-file targets, the no-op rule for P2, P5, P10,
+and P11, P4's leak check, P6, and P12) live in the grader source and the fact
+bank, so they change the grader digest (`graderDigest`) and the scenario hash
+rather than the registered block.
+
+The evidence came from the 2026-10-19 runs under `smr/sched/` (S-101, S-102,
+M-201, M-202, M-203, host and eidnara arms, generator v2 scenarios), read
+without regrading them: 2,004 first snapshots. P8 passed 55 of 142 answers
+that carried the value as a whole word; 26 of those 55 lead with `I can't
+tell`, name the value only after declining, or list it beside conflicting
+values, and the committed rule fails them. The P9 hedge rule (any of
+`probably`, `likely`, `I think`, and kin anywhere in the answer) failed 15
+abstentions that otherwise passed. Two of the 15 offer the repository's
+maintainer as `the likely owner`; the other 13 hedge an unrelated statement
+(`the decision was probably made somewhere outside this repo`, `the CI
+workflow probably doesn't run for this copy`). Scoping the hedge to
+candidate-offering sentences passes the 13, keeps the 2 failing, and changes
+no other verdict among the 143 P9 answers.
+
+Grades already written stay as they are. A run directory records its
+pre-registration and scenario digests, so grade-run refuses to regrade a run
+from before revision 7 (the digests differ), and its grades carry the old
+grader digest. Those runs remain historical evidence under the rules they
+were graded with.
 
 The pre-registered P8 and P9 families name `P8.cross_session_pass_rate` and
 `P9.cross_session_pass_rate`. The compiler places every P8 and P9 item in a
@@ -504,6 +565,16 @@ eligibility requires it, and the agreement rule between the two judges'
 labels is still to be pre-registered.
 
 ## Fixtures
+
+`src/grade/controls.test.ts` grades synthetic snapshots against the checks
+and ground truth the compiler emits for S-101. For each programmatic grader
+it holds a valid implementation and a valid alternative that pass (another
+file, name, visibility, phrasing, or tie), and a no-op, an unrelated edit,
+work in the wrong scope or a note, and the grader's own known-bad shapes
+(a negated or contradictory P8 answer, a hedged P9 guess, a P6 search or
+picked task, a P12 entry with the wrong identity, no tie, or a check that
+never ran) that fail with their reason. `scripts/grade-run.test.ts` builds
+the P12 `source` command log from a run's `tools.jsonl`.
 
 `tests/fixtures/grade/` holds a known pass and a known fail for every
 probe type (P7's as an answer pair with scripted judge verdicts), extra fixtures for each branch a grader can take,

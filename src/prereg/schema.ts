@@ -154,11 +154,15 @@ export interface Preregistration {
     };
     bootstrap: { replicates: number; seed: number };
     leak_bound: { c_bytes_per_session: number; r2_threshold: string; sample_interval_ms: number };
-    /** Probe grading rules (M5), added in revision 4 before any run. */
+    /**
+     * Probe grading rules (M5), added in revision 4 before any run. Revision 7 replaces the P8
+     * and P9 rules after the 2026-10-19 runs showed P8 passing negated and contradictory answers
+     * and the P9 hedge rule failing abstentions that hedged an unrelated statement.
+     */
     grading: {
         first_attempt_only: true;
-        lookup_match: "whole-word";
-        abstain_rule: "leading-UNKNOWN";
+        lookup_match: "committed-whole-word";
+        abstain_rule: "abstention-without-guess";
         /** P11 weights a false-positive injection this many times a hit (SIM-P50). */
         p11_false_positive_weight: string;
         /** Bounds on summary tokens per folded input token for a P13 fold. */

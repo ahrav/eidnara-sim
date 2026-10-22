@@ -78,6 +78,7 @@
   ],
   "expect": {
     "verdict": "fail",
+    "reason": "change does not carry the next step",
     "metrics": {
       "P6.pass": false,
       "P6.reread_files": 1,

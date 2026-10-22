@@ -34,7 +34,7 @@
   ],
   "expect": {
     "verdict": "fail",
-    "reason": "fix omits the error code",
+    "reason": "entry omits the error identity",
     "metrics": {
       "P12.pass": false
     },
