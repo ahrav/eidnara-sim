@@ -411,9 +411,12 @@ describe("compiled S scenario", async () => {
         const authorities = diffs.filter(
             (d) => !s.facts.find((f) => f.id === d.fact)?.cues.includes(d.content),
         );
+        const joined = all.filter((t) => ((t as { facts?: string[] }).facts?.length ?? 0) > 1);
+        for (const t of joined) texts.set(sha256Hex(t.text), t.text);
         const collection = [
             ...s.facts.flatMap((f) => f.cues),
             ...authorities.map((d) => d.content),
+            ...joined.map((t) => t.text),
         ];
         for (const x of s.similarity as { probe: string; cue_sha256: string; bm25: number }[]) {
             const text = s.probes.find((p) => p.id === x.probe)?.text ?? "";
@@ -433,8 +436,52 @@ describe("compiled S scenario", async () => {
                 ? [e.content]
                 : [],
         );
-        return new Set([...(f?.cues ?? []), ...extra]);
+        const joined = all
+            .filter((t) => ((t as { facts?: string[] }).facts ?? []).length > 1)
+            .filter((t) => (t as { facts?: string[] }).facts?.includes(fact))
+            .map((t) => t.text);
+        return new Set([...(f?.cues ?? []), ...extra, ...joined]);
     };
+
+    test("SIM-P08: a first turn that joins several commit cues is scored whole for each fact", () => {
+        const joined = all.filter((t) => ((t as { facts?: string[] }).facts?.length ?? 0) > 1);
+        expect(joined.length).toBeGreaterThan(0);
+        for (const t of joined) {
+            for (const fact of (t as { facts?: string[] }).facts ?? []) {
+                for (const p of s.probes.filter((x) => x.fact === fact && x.text)) {
+                    const scored = s.similarity.filter((x) => x.probe === p.id);
+                    expect(scored.map((x) => x.cue_sha256)).toContain(sha256Hex(t.text));
+                }
+            }
+        }
+    });
+
+    test("a P4 item's ground truth names the variant rule it conveys", () => {
+        const p4 = s.probes.filter((p) => p.type === "P4");
+        expect(p4.length).toBeGreaterThan(0);
+        for (const p of p4) {
+            const g = p.ground_truth;
+            expect((g?.present.length ?? 0) + (g?.absent.length ?? 0)).toBeGreaterThan(0);
+        }
+        const revised = p4.filter((p) => (s.facts.find((f) => f.id === p.fact)?.revision ?? 0) > 0);
+        for (const p of revised) expect(p.ground_truth?.stale.length).toBeGreaterThan(0);
+    });
+
+    test("a revised fact conveyed by a commit says it replaces the earlier one", () => {
+        for (const f of s.facts.filter((x) => x.revision > 0)) {
+            if (f.manner === "hand_applied_diff") {
+                const turn = all.find(
+                    (t) => (t as { facts?: string[] }).facts?.includes(f.id) && t.index === 0,
+                );
+                expect(turn?.text).toContain("replaces something we set up earlier");
+            }
+            if (f.manner === "tool_error" && f.kind !== "tool_error") {
+                expect(f.cues.some((c) => c.includes("this rule replaces the earlier one"))).toBe(
+                    true,
+                );
+            }
+        }
+    });
 
     test("SIM-P08: an authoritative P3 diff is scored against its fact's probes", () => {
         for (const f of s.facts.filter((x) => x.kind === "decision")) {
@@ -1214,6 +1261,7 @@ describe("exposure proof", () => {
         absent: [],
         stale: ["12345"],
         supersedes: [],
+        words: [],
     };
     const run = (
         events: Ev[],

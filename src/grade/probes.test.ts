@@ -340,6 +340,17 @@ describe("grading harness", () => {
             }
         }
         expect(gradeItem(probe, [searched], rules)?.verdict).toBe("pass");
+        const committed = structuredClone(searched);
+        for (const a of committed.artefacts) {
+            if (a.class === "command-log") {
+                a.commands = [{ command: "git commit -m wip", exit: 0, scenario_ms: 0 }];
+            }
+        }
+        const forbids = {
+            ...probe,
+            check: { clarify: tasks, must_not: tasks, commands_must_not: ["git commit"] },
+        };
+        expect(gradeItem(forbids, [committed], rules)?.verdict).toBe("fail");
     });
 
     test("P6 recognises a package-script test command", () => {

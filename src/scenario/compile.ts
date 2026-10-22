@@ -140,7 +140,8 @@ export interface GroundTruth {
     sources: string[];
 }
 type TruthOf = Pick<GroundTruth, "expect" | "present" | "absent" | "stale">;
-type Truth = Omit<GroundTruth, "sources"> & { fact: string };
+/** `words` are literals a variant binds, common words the tree and ordering checks leave out. */
+type Truth = Omit<GroundTruth, "sources"> & { fact: string; words: string[] };
 
 export interface ProbeItem {
     id: string;
@@ -173,6 +174,7 @@ interface Line {
     /** Files the line has committed that the scenario-defined tree still holds. */
     artifacts: Map<string, string>;
     literals: string[];
+    words: string[];
 }
 
 /** Placeholders the compiler fills with generated values; every other one is template text. */
@@ -558,6 +560,7 @@ export async function compileScenario(input: CompileInput) {
             outInherited: {},
             artifacts: new Map(),
             literals: [],
+            words: [],
         };
         lines.set(lineKey, line);
         const revision = line.facts.length;
@@ -704,8 +707,9 @@ export async function compileScenario(input: CompileInput) {
               }
             : undefined;
         const written = isPlan ? statement : render(tpl.statement ?? "", vars);
+        const replaces = revision > 0 ? " This replaces the earlier note on the same subject." : "";
         const note = (text: string) =>
-            `# Note\n\n${text.charAt(0).toUpperCase()}${text.slice(1)}.\n`;
+            `# Note\n\n${text.charAt(0).toUpperCase()}${text.slice(1)}.${replaces}\n`;
         let conveyed: Turn;
         if (form === "tool_result") {
             const script = renderDeep(tpl.script ?? { path: "", content: "" }, vars);
@@ -717,15 +721,16 @@ export async function compileScenario(input: CompileInput) {
         } else if (manner === "hand_applied_diff") {
             const content = tpl.example ? `${render(tpl.example.content, vars)}\n` : note(written);
             const path = tpl.example ? render(tpl.example.path, vars) : `notes/${word}.md`;
-            conveyed = cue(
-                "I pushed a small change to the repo. Look over the latest commit before we continue.",
-                commits([{ path, content }]),
-                content,
-            );
+            const pushed =
+                revision > 0
+                    ? "I pushed a change that replaces something we set up earlier. Look over the latest commit before we continue."
+                    : "I pushed a small change to the repo. Look over the latest commit before we continue.";
+            conveyed = cue(pushed, commits([{ path, content }]), content);
         } else if (manner === "tool_error") {
             const path = `scripts/check_${word}.sh`;
             const said = written.replace(/["\\`$]/g, "\\$&");
-            const content = `#!/bin/sh\n# Pre-merge check.\necho "error: ${said}" >&2\nexit 1\n`;
+            const replaced = revision > 0 ? " (this rule replaces the earlier one)" : "";
+            const content = `#!/bin/sh\n# Pre-merge check.\necho "error: ${said}${replaced}" >&2\nexit 1\n`;
             const text = `Run \`sh ${path}\` from the repo root before you start and tell me what it reports.`;
             conveyed = cue(text, commits([{ path, content }]), [text, content]);
         } else if (manner === "stated_then_reversed") {
@@ -807,6 +812,7 @@ export async function compileScenario(input: CompileInput) {
                 basis,
                 supersedes: line.facts.map((x) => x.id),
                 fact: id,
+                words: [...new Set([...words, ...line.words])],
             });
             return t;
         };
@@ -837,9 +843,11 @@ export async function compileScenario(input: CompileInput) {
         const outBase = renderDeep<Check>(tpl.out_check ?? tpl.check, vars);
         const outInherited = inherit(outBase, line.outBase[revision - 1], line.outInherited);
 
+        const bound = [...GENERATED, ...Object.keys(variant)];
+        const words = Object.values(variant);
         const litsOf = (c: unknown, v: Record<string, string>, positive: boolean) =>
             placeholders(c, positive)
-                .filter((k) => GENERATED.includes(k))
+                .filter((k) => bound.includes(k))
                 .map((k) => v[k] as string);
         const taskLits = (k: 0 | 1) => litsOf(tasks[k].tpl.check, tasks[k].vars, true);
         const ownPresent = isPlan
@@ -983,6 +991,7 @@ export async function compileScenario(input: CompileInput) {
         line.outBase.push(outBase);
         line.outInherited = outInherited;
         line.literals.push(...ownPresent, ...ownAbsent);
+        line.words.push(...words);
     }
     for (const i of range(0, perType)) {
         const session = p90[i % p90.length] as Session;
@@ -1032,9 +1041,14 @@ export async function compileScenario(input: CompileInput) {
     const authorities = withContent.filter(
         (d) => !facts.find((f) => f.id === d.fact)?.cues.includes(d.content as string),
     );
+    // A shared opening delivers every joined cue in one turn, so that turn is scored as a cue too.
+    const joined = [...turns.values()].filter((t) => (t.facts?.length ?? 0) > 1);
+    const joinedOf = (fact: string) =>
+        joined.filter((t) => t.facts?.includes(fact)).map((t) => t.text);
     const allCues = [
         ...facts.flatMap((f) => f.cues),
         ...authorities.map((d) => d.content as string),
+        ...joined.map((t) => t.text),
     ];
     const pairs = probes.flatMap((p) => {
         const fact = facts.find((f) => f.id === p.fact);
@@ -1043,7 +1057,7 @@ export async function compileScenario(input: CompileInput) {
         const authority = authorities
             .filter((d) => d.fact === fact.id)
             .map((d) => d.content as string);
-        return [...new Set([...fact.cues, ...authority])].map((cue) => ({
+        return [...new Set([...fact.cues, ...authority, ...joinedOf(fact.id)])].map((cue) => ({
             probe: p.id,
             fact: fact.id,
             cue,
@@ -1310,7 +1324,7 @@ const holds = (text: string, lit: string) =>
  * Fills each probe's `ground_truth` and refuses a probe whose ground truth the event sequence
  * does not support: every source precedes the probe in the fact's project, each generated literal
  * the probe turns on appears in a source, the scenario-defined tree at the probe holds no
- * superseded literal, no superseded literal reaches the agent after the current state, a P3
+ * superseded generated literal, none reaches the agent after the current state, a P3
  * item's authoritative value is in the tree, a tool-result P12 item's failing check is not, and
  * no project asks one probe text for two facts.
  */
@@ -1320,7 +1334,8 @@ export function proveExposure(o: Exposure): void {
     for (const p of o.probes) {
         const truth = o.truths.get(p.id);
         if (!p.text || !truth) continue;
-        const { fact: factId, ...rest } = truth;
+        const { fact: factId, words, ...rest } = truth;
+        const tracked = truth.stale.filter((x) => !words.includes(x));
         const k = `${p.project}\n${p.text}`;
         const earlier = asked.get(k);
         if (earlier !== undefined && earlier !== factId) {
@@ -1363,7 +1378,7 @@ export function proveExposure(o: Exposure): void {
             if (e.remove) tree.delete(String(e.path));
             else tree.set(String(e.path), String(e.content));
         }
-        for (const lit of truth.stale) {
+        for (const lit of tracked) {
             for (const [path, content] of tree) {
                 if (holds(content, lit)) {
                     throw new Error(
@@ -1378,7 +1393,7 @@ export function proveExposure(o: Exposure): void {
             );
             const current = Math.max(...carries);
             for (const e of o.events.slice(current + 1, at)) {
-                const lit = truth.stale.find((x) => holds(eventText(e), x));
+                const lit = tracked.find((x) => holds(eventText(e), x));
                 if (lit && o.projectOf(e) === fact.project) {
                     throw new Error(
                         `${p.id}: ${e.id} exposes the superseded ${lit} after the current state`,

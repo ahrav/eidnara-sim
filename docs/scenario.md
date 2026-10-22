@@ -38,7 +38,7 @@ The scenario file is canonical JSON with these sections:
 | `facts` | Ledger facts with template, kind, project, conveyance manner, `basis`, `line`, `revision`, `supersedes`, statement, the cue texts that carry it, and for P12 facts the `form` (`tool_result` or `pasted`) |
 | `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, the event that delivers it, and, for every probe with user text, its `ground_truth`. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` and `commands_must_not` over the command log, an optional `scope` (a directory prefix) that limits the diff-channel keys to files under it, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, `clarify` for a P6 item whose right response is a question (patterns the final answer must all carry), `side` (`in` or `out`) for P4, `turns` for P13, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
 | `plans` | One record per P6 fact: project, `expect` (`resume` or `clarify`), and its history, each entry an event with the status it set (`accepted`, `revised`, `completed`) and the next actions it leaves open |
-| `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, each committed file of the fact counted as a cue, each record naming its cue by `cue_sha256`, journaled to four decimals; the threshold gate compares the full-precision values |
+| `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, each committed file of the fact and each shared first turn that joins its cue counted as a cue, each record naming its cue by `cue_sha256`, journaled to four decimals; the threshold gate compares the full-precision values |
 | `events` | `apply_diff` (a whole-file `content`, or `remove: true`), `session_start`, `user_turn`, and `session_end` events in scenario time |
 | `faults` | Fault episodes with type, strategy, trigger, parameters, and seam-table entry |
 | `cf_deletions` | Counterfactual deletions before 20% of the P1, P3, and P5 probes (L only) |
@@ -107,7 +107,10 @@ of instance `k`. Instance `k + 1` supersedes instance `k` explicitly:
   requires;
 - the session that conveys instance `k + 1` opens with commits that remove
   every file the line committed earlier and the new instance does not
-  rewrite, so the repository never holds two live states of one line.
+  rewrite, so the repository never holds two live states of one line; a
+  revision conveyed by a commit says so (the note and the check script's
+  output name the replacement, and the first turn says the change replaces
+  something set up earlier).
 
 When a project reuses a probe text for another fact, the later probe gets a
 neutral framing from the bank's `framings` list (`New request.`, `Next
@@ -139,7 +142,7 @@ pasted, and a P3 value read from its authoritative file).
 | P9 | never settled | Later session; the answer must abstain |
 | P10 | anchor | Later, unrelated task; the value must not appear |
 | P11 | the P1 fact | A session of the twin project after the conveyance; the check forbids the convention |
-| P12 | tool error | `tool_result`: a session opens with a commit of a check script under `scripts/`, and its first turn asks the agent to run it, so the error reaches the agent as its own tool result; a later session opens with a commit removing the script once "the fix is in", and the probe follows. `pasted`: the user pastes a failure of this project's own test command (`cargo test` or `bun test`) on a branch. Items alternate between the forms; the error identity (`<Word>Error`) is generated per fact, the probe names the failure by its issue number, and the check requires the identity |
+| P12 | tool error | `tool_result`: a session opens with a commit of a check script under `scripts/`, and its first turn asks the agent to run it, so the error reaches the agent as its own tool result; a later session opens with a commit removing the script once "the fix is in", and the probe follows. `pasted`: the user pastes a failure of this project's own test command (`cargo test` or `bun test`) on a branch. Items alternate between the forms; the error identity (`<Word>Error`) is generated per fact, the probe names the failure by its issue number, and the check requires the identity in the file the probe names (`README.md` for Rust, `CONTRIBUTING.md` for TypeScript) |
 | P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe, and `check.turns` gives the turn after the cue and the turn after the probe, so the range holds exactly the folds the probe turn's snapshot can carry. Session rules are placed in scenario order, and a later rule of a template in the project supersedes the earlier one through its `revise` wording |
 | P14 | none | The last third of a forced p90 session, split into one window of at least ten turns per item (`window_from_turn` to `window_to_turn`), measured from user-sim labels; the item's `event` is the session's last user turn, where its snapshot is taken |
 
@@ -190,8 +193,9 @@ the session whose first turn points at it:
   `scripts/check_{token}.sh`, which prints the rule as an error and exits 1,
   and the first turn asks the agent to run it;
 - the commits of several facts may share one session opening; its first turn
-  then joins each fact's cue, and `facts` names them all. A probe that opens
-  a session (P6) holds that opening alone.
+  then joins each fact's cue, `facts` names them all, and the similarity gate
+  scores the joined turn against each of those facts' probes beside each
+  fragment. A probe that opens a session (P6) holds that opening alone.
 
 Every other turn avoids a session's first turn, extending its session when no
 later slot is free. Every request that carries no conveyance or probe is a
@@ -202,8 +206,8 @@ tool-output sample.
 
 Each probe with user text carries `ground_truth`: `expect` (`apply`,
 `baseline`, `avoid`, `answer`, `abstain`, `explain`, `resume`, or
-`clarify`), `basis`, `present` (the generated literals correct work
-carries), `absent` (those it must not carry), `stale` (literals of
+`clarify`), `basis`, `present` (the generated literals and variant words
+correct work carries), `absent` (those it must not carry), `stale` (literals of
 superseded instances, decoys, a dropped plan step, and a P3 fact's stated
 figure), `supersedes`, and `sources` (every event that exposes the fact). The
 compiler proves each record against the event sequence and refuses the
@@ -214,9 +218,10 @@ scenario when:
 - a `present` or own `absent` literal appears in no source, compared
   case-insensitively, with a number matched as a whole value;
 - the scenario-defined tree at the probe, every `apply_diff` before it
-  replayed, holds a `stale` literal;
-- a `stale` literal reaches the agent after the last source that carries a
-  `present` literal;
+  replayed, holds a `stale` generated literal (a variant word such as a log
+  level is a common word, so it is left to the exposure and grading checks);
+- a `stale` generated literal reaches the agent after the last source that
+  carries a `present` literal;
 - a P3 item's authoritative value is missing from the tree, or a
   `tool_result` P12 item's check script is still in it;
 - a P1 control follows a source of its fact.
@@ -296,15 +301,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `9c011308` | 0.2669 | 0.4949 |
-| S | 102 | `67aa1301` | 0.2648 | 0.5075 |
-| M | 201 | `b9191d94` | 0.2585 | 0.5807 |
-| M | 202 | `3d21c05c` | 0.2578 | 0.551 |
-| M | 203 | `ead6e007` | 0.261 | 0.551 |
-| L | 301 | `da0a67ee` | 0.2582 | 0.5807 |
-| L | 302 | `8fb5d429` | 0.2603 | 0.5807 |
-| L | 303 | `a4eae94f` | 0.2616 | 0.5807 |
-| XL | 401 | `e4d2331d` | 0.2581 | 0.5807 |
+| S | 101 | `66e39344` | 0.2684 | 0.4949 |
+| S | 102 | `1f633b15` | 0.2647 | 0.5081 |
+| M | 201 | `86713ebb` | 0.2584 | 0.5807 |
+| M | 202 | `6a9824bf` | 0.2578 | 0.551 |
+| M | 203 | `9b06cc1b` | 0.261 | 0.551 |
+| L | 301 | `0826307d` | 0.2582 | 0.5807 |
+| L | 302 | `a5e7775e` | 0.2603 | 0.5807 |
+| L | 303 | `62baa2eb` | 0.2615 | 0.5807 |
+| XL | 401 | `a82a1119` | 0.2579 | 0.5807 |
 
 ## Known limits
 

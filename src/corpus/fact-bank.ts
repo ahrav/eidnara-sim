@@ -96,14 +96,15 @@ const isObject = (v: unknown): v is Json =>
     typeof v === "object" && v !== null && !Array.isArray(v);
 const isStringList = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === "string");
 
-/** The values a sample rendering of one template fills in: the base set and its first variant. */
+/** The values sample renderings of one template fill in: the base set with each of its variants. */
 type Vars = Record<string, string>;
-const varsOf = (t: Json): Vars => {
-    const first = Array.isArray(t.variants) && isObject(t.variants[0]) ? t.variants[0] : {};
-    const variant = Object.fromEntries(
-        Object.entries(first).filter((e): e is [string, string] => typeof e[1] === "string"),
-    );
-    return { ...BASE_VARS, ...variant };
+const varSets = (t: Json): Vars[] => {
+    const variants = Array.isArray(t.variants) && t.variants.length > 0 ? t.variants : [{}];
+    return variants.map((v) => {
+        const entries = isObject(v) ? Object.entries(v) : [];
+        const bound = entries.filter((e): e is [string, string] => typeof e[1] === "string");
+        return { ...BASE_VARS, ...Object.fromEntries(bound) };
+    });
 };
 const placeholderProblem = (text: string, vars: Vars): string | null => {
     const unknown = [...text.matchAll(/\{(\w+)\}/g)].find(([, k]) => !(k && k in vars));
@@ -251,8 +252,14 @@ export function bankProblems(bank: unknown): string[] {
 
 /** Shape problems of one template: its text fields, files, variants, and checks. */
 function templateProblems(where: string, kind: string, t: Json): string[] {
+    const problems = varSets(t).flatMap((vars) => renderedProblems(where, kind, t, vars));
+    if ("variants" in t) problems.push(...variantProblems(where, t.variants));
+    return [...new Set(problems)];
+}
+
+/** Problems of one template rendered with one set of placeholder values. */
+function renderedProblems(where: string, kind: string, t: Json, vars: Vars): string[] {
     const problems: string[] = [];
-    const vars = varsOf(t);
     const required =
         kind === "plan"
             ? ["id", "task", "probe"]
@@ -279,7 +286,6 @@ function templateProblems(where: string, kind: string, t: Json): string[] {
             problems.push(`${where}: revise names an unknown placeholder`);
         }
     }
-    if ("variants" in t) problems.push(...variantProblems(where, t.variants));
     for (const field of ["example", "authority", "script"]) {
         if (!(field in t)) continue;
         const part = t[field];
@@ -302,6 +308,9 @@ function templateProblems(where: string, kind: string, t: Json): string[] {
         if (typeof t.out_probe !== "string" || t.out_probe.trim() === "") {
             problems.push(`${where}: out_probe missing`);
         }
+    }
+    if (kind === "plan" && !isStringList(check.must)) {
+        problems.push(`${where}: check needs must, which a clarify item names`);
     }
     if (kind === "scoped_update") {
         for (const field of ["update", "out_probe"]) {
@@ -377,6 +386,17 @@ function toolErrorProblems(where: string, t: Json, check: Json, vars: Vars): str
         problems.push(`${where}: command missing`);
     }
     if (t.form === "tool_result" && !isObject(t.script)) problems.push(`${where}: script missing`);
+    const script = isObject(t.script) ? fill(String(t.script.path ?? ""), vars) : "";
+    for (const field of ["command", "revise"]) {
+        const text = t[field];
+        if (
+            t.form === "tool_result" &&
+            typeof text === "string" &&
+            !fill(text, vars).includes(script)
+        ) {
+            problems.push(`${where}: ${field} does not run the committed script ${script}`);
+        }
+    }
     if (t.form === "pasted" && (typeof t.paste !== "string" || t.paste.trim() === "")) {
         problems.push(`${where}: paste missing`);
     }

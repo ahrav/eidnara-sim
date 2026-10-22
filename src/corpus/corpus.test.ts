@@ -168,19 +168,25 @@ describe("committed corpus", () => {
         const broken = structuredClone(bank);
         broken.rust.constraint[0].revise = "the {old_tokne} prefix is retired";
         broken.rust.scoped_update[0].variants = [{ level: "trace", LEVEL: "TRACE" }];
-        broken.typescript.scoped_update[0].variants[1] = { inner: "double", outer: "single" };
+        broken.rust.decision[0].variants = [{ unit: "rows" }, { unit: "rows" }];
         broken.rust.tool_error[0].form = "log";
         broken.rust.tool_error[1].paste = "no identity here";
         broken.typescript.tool_error[0].script.content = "exit 1";
         broken.typescript.plan = [broken.typescript.plan[0]];
         broken.any.framings = ["Next.", "Next."];
+        broken.rust.plan[1].check = { paths_must: ["x"] };
+        broken.typescript.tool_error[0].command = "true";
+        broken.typescript.scoped_update[0].variants[0].outer = "backtick";
         expect(bankProblems(broken)).toEqual([
             "fact-bank rust/constraint[0] rs-cmd-const-prefix: revise names an unknown placeholder",
+            "fact-bank rust/decision[0] rs-scan-page: variants repeat",
+            "fact-bank rust/plan[1] rs-plan-cmd: check needs must, which a clarify item names",
             "fact-bank rust/scoped_update[0] rs-scope-log-level: variants is not a list of at least two objects",
             "fact-bank rust/tool_error[0] rs-check-replay: form is not tool_result or pasted",
             "fact-bank rust/tool_error[1] rs-ci-paste: the pasted text does not carry the error the check names",
             "fact-bank typescript/plan: expected at least 2 templates",
-            "fact-bank typescript/scoped_update[0] ts-scope-quotes: variants repeat",
+            "fact-bank typescript/scoped_update[0] ts-scope-quotes out_check: check key quote_style_must is not double or single",
+            "fact-bank typescript/tool_error[0] ts-check-replay: command does not run the committed script scripts/check-quiet_vole.sh",
             "fact-bank typescript/tool_error[0] ts-check-replay: the tool_result text does not carry the error the check names",
             "fact-bank any/framings: expected a non-empty list of distinct non-blank strings",
         ]);

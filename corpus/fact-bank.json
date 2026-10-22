@@ -392,6 +392,9 @@
                 "check": {
                     "must": [
                         "\\b{Alt}Error\\b"
+                    ],
+                    "paths_must": [
+                        "^README\\.md$"
                     ]
                 }
             },
@@ -405,6 +408,9 @@
                 "check": {
                     "must": [
                         "\\b{Alt}Error\\b"
+                    ],
+                    "paths_must": [
+                        "^README\\.md$"
                     ]
                 }
             }
@@ -766,6 +772,9 @@
                 "check": {
                     "must": [
                         "\\b{Alt}Error\\b"
+                    ],
+                    "paths_must": [
+                        "^CONTRIBUTING\\.md$"
                     ]
                 }
             },
@@ -779,6 +788,9 @@
                 "check": {
                     "must": [
                         "\\b{Alt}Error\\b"
+                    ],
+                    "paths_must": [
+                        "^CONTRIBUTING\\.md$"
                     ]
                 }
             }
