@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import {
     existsSync,
     lstatSync,
@@ -24,6 +25,7 @@ import {
     nodeInstall,
     OpencodeSimHost,
     opencodeInstall,
+    PI_EXIT_EVENT_MS,
     PiSimHost,
 } from "./arms";
 
@@ -1363,6 +1365,47 @@ test("a Pi session whose shutdown is unconfirmed keeps its handle for another cl
         throw new Error("host tree 4242 survived SIGKILL");
     };
     await expect(host.closeSession()).rejects.toThrow(/survived SIGKILL/);
+    expect(host.hostPid()).toBe(4242);
+});
+
+test("a Pi close whose launch stopTree confirms gone ends without the launcher's exit event", async () => {
+    // The launcher's pid and start are real; its handle reports no exit, as the runtime did
+    // when a confirmed-gone Pi launch failed its close after 20 s of SIGTERM and SIGKILL waits.
+    const launched = Bun.spawn(["sleep", "30"]);
+    const start = processStart(launched.pid);
+    const child = Object.assign(new EventEmitter(), {
+        pid: launched.pid,
+        exitCode: null,
+        signalCode: null,
+        stdin: { end: () => undefined },
+    });
+    let signalled = 0;
+    const rpc = {
+        child,
+        shutdown: () => {
+            signalled++;
+            return new Promise(() => undefined);
+        },
+    };
+    const host = new PiSimHost(context(runDir()));
+    Object.assign(host as Untyped, { rpc, launchStart: start });
+    const began = Date.now();
+    await host.closeSession();
+    expect(Date.now() - began).toBeLessThan(PI_EXIT_EVENT_MS + 5_000);
+    expect(running(launched.pid, start ?? undefined)).toBe(false);
+    expect(signalled).toBe(0);
+    expect(host.hostPid()).toBeNull();
+    // A launch without a start identity stays unconfirmed, so the RPC client's shutdown decides.
+    const unconfirmed = {
+        child: { ...child, pid: 4242 },
+        shutdown: async () => {
+            signalled++;
+            throw new Error("did not exit");
+        },
+    };
+    Object.assign(host as Untyped, { rpc: unconfirmed, launchStart: null });
+    await expect(host.closeSession()).rejects.toThrow("did not exit");
+    expect(signalled).toBe(1);
     expect(host.hostPid()).toBe(4242);
 });
 

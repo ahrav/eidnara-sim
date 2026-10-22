@@ -409,6 +409,22 @@ export class DaemonStack {
 }
 
 /** Runs each step in order, whatever the earlier ones did, and returns their failures. */
+/** How long a close whose launch is confirmed gone waits for the runtime to report the exit. */
+export const PI_EXIT_EVENT_MS = 1_000;
+
+function exitEvent(child: ChildProcess, ms: number): Promise<void> {
+    if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+    return new Promise((resolve) => {
+        const done = () => {
+            clearTimeout(timer);
+            child.off("exit", done);
+            resolve();
+        };
+        const timer = setTimeout(done, ms);
+        child.once("exit", done);
+    });
+}
+
 async function settleAll(steps: Array<() => Promise<unknown>>): Promise<unknown[]> {
     const failures: unknown[] = [];
     for (const step of steps) {
@@ -851,13 +867,17 @@ export class PiSimHost extends SimHost {
     }
 
     // The handle is cleared only after the whole teardown succeeds, so a failed close can be retried.
+    // A stop that stopTree confirms is the proof of exit; the launcher's exit event can trail it.
     protected async shutdownSession(): Promise<void> {
         const rpc = this.rpc;
         if (!rpc) return;
         rpc.child.stdin?.end();
+        let confirmed = false;
         const failures = await settleAll([
-            () => this.stopTree(rpc.child.pid, this.launchStart),
-            () => rpc.shutdown(10_000),
+            async () => {
+                confirmed = await this.stopTree(rpc.child.pid, this.launchStart);
+            },
+            () => (confirmed ? exitEvent(rpc.child, PI_EXIT_EVENT_MS) : rpc.shutdown(10_000)),
         ]);
         if (failures.length > 0) throw failures[0];
         this.rpc = null;
