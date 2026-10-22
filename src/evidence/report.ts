@@ -15,17 +15,21 @@ const cell = (v: unknown) =>
         .replace(/\n/g, " ");
 const row = (cells: unknown[]) => `| ${cells.map(cell).join(" | ")} |`;
 
-export function flaggedTurn(
+/** Answers whether a turn falls in a flagged stretch, from indexes built once per run. */
+export function flaggedTurns(
     run: RunData,
     sessions: SessionHealth[],
-    arm: string,
-    session: string | null,
-    turn: string,
-): boolean {
-    const h = sessions.find((s) => s.arm === arm && s.session === session);
-    if (!h?.cause || h.flagged_from === null) return false;
+): (arm: string, session: string | null, turn: string) => boolean {
     const order = new Map(run.scenario.events.map((e, i) => [e.id, i]));
-    return (order.get(turn) ?? -1) >= (order.get(h.flagged_from) ?? Infinity);
+    const from = new Map<string, number>();
+    for (const h of sessions) {
+        if (!h.cause || h.flagged_from === null) continue;
+        from.set(`${h.arm}\u0000${h.session}`, order.get(h.flagged_from) ?? Infinity);
+    }
+    return (arm, session, turn) => {
+        const start = from.get(`${arm}\u0000${session}`);
+        return start !== undefined && (order.get(turn) ?? -1) >= start;
+    };
 }
 
 interface Side {
@@ -56,26 +60,24 @@ export function armComparison(r: RunEvidence): Map<string, { healthy: Side; flag
         return flagged ? sides.flagged : sides.healthy;
     };
     const sessionOf = new Map(r.run.scenario.events.map((e) => [e.id, e.session ?? null]));
+    const flaggedTurn = flaggedTurns(r.run, r.sessions);
     for (const e of r.run.journal) {
         if (e.kind !== "EndTurn" || e.arm === null) continue;
         const turn = String(e.event);
-        const s = side(
-            e.arm,
-            flaggedTurn(r.run, r.sessions, e.arm, sessionOf.get(turn) ?? null, turn),
-        );
+        const s = side(e.arm, flaggedTurn(e.arm, sessionOf.get(turn) ?? null, turn));
         s.turns++;
         if (typeof e.prompt_ms === "number") s.prompt_ms.push(e.prompt_ms);
     }
     for (const c of r.run.calls) {
         if (c.component !== "agent" || c.turn === null) continue;
-        const s = side(c.arm, flaggedTurn(r.run, r.sessions, c.arm, c.session, c.turn));
+        const s = side(c.arm, flaggedTurn(c.arm, c.session, c.turn));
         s.agent_calls++;
         s.prompt_tokens += c.input_tokens + c.cache_read_tokens + c.cache_write_tokens;
         s.output_tokens += c.output_tokens;
     }
     for (const p of r.probes) {
         if (p.verdict === "excluded" || p.event === null) continue;
-        const s = side(p.arm, flaggedTurn(r.run, r.sessions, p.arm, p.session, p.event));
+        const s = side(p.arm, flaggedTurn(p.arm, p.session, p.event));
         s.probes++;
         if (p.attributed.cause === "none") s.passed++;
     }

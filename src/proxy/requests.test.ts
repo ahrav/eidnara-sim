@@ -53,6 +53,8 @@ test("a growing conversation stores each message once and rebuilds every body", 
     expect(rebuildRequest(b, parts)).toEqual(second);
     expect(b.bytes).toBe(Buffer.byteLength(JSON.stringify(second)));
     expect(rebuildRequest({ ...b, parts: [...b.parts, "0".repeat(32)] }, parts)).toBeNull();
+    expect(rebuildRequest({ ...b, parts: [...b.parts].reverse() }, parts)).toBeNull();
+    expect(rebuildRequest({ ...b, bytes: b.bytes + 1 }, parts)).toBeNull();
 });
 
 test("a reopened store drops a cut line and writes no part twice", () => {
@@ -102,6 +104,20 @@ test("a corrupt line in the log is refused rather than read as a part", () => {
     const path = join(dir, "requests.jsonl");
     writeFileSync(path, '{"id":"short","part":{}}\n');
     expect(() => new RequestStore(path)).toThrow(/not a request part/);
+    const part = { field: "system", value: [{ text: "a" }] };
+    const other = partId({ field: "system", value: [{ text: "b" }] });
+    writeFileSync(path, `${JSON.stringify({ id: other, part })}\n`);
+    expect(() => readRequestParts(path)).toThrow(/does not match its part id/);
+});
+
+test("a body with no messages rebuilds to the same bytes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-requests-"));
+    const path = join(dir, "requests.jsonl");
+    const store = new RequestStore(path);
+    const body = { system: [{ text: "s" }], messages: [] };
+    const ref = store.store(body);
+    store.close();
+    expect(rebuildRequest(ref, readRequestParts(path))).toEqual(body);
 });
 
 test("the record names the body the proxy forwarded, after the fields it removed", async () => {

@@ -45,7 +45,7 @@ export function partId(part: RequestPart): string {
 export function requestParts(body: ConverseBody): RequestPart[] {
     const parts: RequestPart[] = [];
     for (const [field, value] of Object.entries(body)) {
-        if (field === "messages" && Array.isArray(value)) {
+        if (field === "messages" && Array.isArray(value) && value.length > 0) {
             for (const message of value) parts.push({ field, value: message });
         } else {
             parts.push({ field, value });
@@ -54,7 +54,10 @@ export function requestParts(body: ConverseBody): RequestPart[] {
     return parts;
 }
 
-/** The body a reference names, rebuilt from stored parts; null when a part is missing. */
+/**
+ * The body a reference names, rebuilt from stored parts; null when a part is missing or the
+ * rebuilt JSON differs from the reference's digest or length.
+ */
 export function rebuildRequest(
     ref: RequestRef,
     parts: ReadonlyMap<string, RequestPart>,
@@ -63,13 +66,17 @@ export function rebuildRequest(
     for (const id of ref.parts) {
         const part = parts.get(id);
         if (!part) return null;
-        if (part.field === "messages") {
+        // A message is an object; an array stands for the whole (empty) `messages` field.
+        if (part.field === "messages" && !Array.isArray(part.value)) {
             const messages = (body.messages ??= []) as unknown[];
             messages.push(part.value);
         } else {
             body[part.field] = part.value;
         }
     }
+    const json = JSON.stringify(body);
+    if (Buffer.byteLength(json) !== ref.bytes) return null;
+    if (createHash("sha256").update(json).digest("hex") !== ref.sha256) return null;
     return body as ConverseBody;
 }
 
@@ -189,6 +196,9 @@ export function readRequestLines(path: string): Array<{ id: string; part: Reques
                 };
                 if (typeof value.id !== "string" || !ID.test(value.id) || !value.part) {
                     throw new Error(`${path} line ${line} is not a request part`);
+                }
+                if (partId(value.part) !== value.id) {
+                    throw new Error(`${path} line ${line} does not match its part id`);
                 }
                 out.push({ id: value.id, part: value.part });
                 buf = buf.subarray(at + 1);

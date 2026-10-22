@@ -469,19 +469,31 @@ export function probeEvidence(
             };
         }
         const first = Math.min(...sources.map((s) => order.get(s.id) ?? Infinity));
-        const windowCalls = armCalls.filter((c) => {
+        // Each group's window opens at the earliest source that carries it, so a value seen
+        // before the source that conveys it does not count as observed.
+        const startOf = (g: string[]) => {
+            const carrying = sources.filter(
+                (s) => findGroups([g], `${s.text ?? ""}\n${s.content ?? ""}`)[0] !== null,
+            );
+            return carrying.length === 0
+                ? first
+                : Math.min(...carrying.map((s) => order.get(s.id) ?? Infinity));
+        };
+        const inWindow = (c: CallRecord, from: number) => {
             const t = turnOf(c);
             const at = t ? (order.get(t) ?? -1) : -1;
             return (
                 c.session !== null &&
                 projectSessions.has(c.session) &&
-                at >= first &&
+                at >= from &&
                 at < probeOrder
             );
-        });
+        };
+        const windowCalls = armCalls.filter((c) => inWindow(c, first));
         const seen = present.map((g) => {
+            const from = startOf(g);
             for (const c of windowCalls) {
-                if (c.component !== "agent") continue;
+                if (c.component !== "agent" || !inWindow(c, from)) continue;
                 const t = text(ctx, c);
                 if (t && findGroups([g], t)[0]) return c;
             }
@@ -706,11 +718,13 @@ export function probeEvidence(
                 });
             }
         }
-        if (!bodiesKept && arm.transcripts === null) {
+        // The probe turn's tool uses come from its request bodies; without them no transcript
+        // result can be tied to the turn.
+        if (!bodiesKept) {
             return {
                 stage: "retrieval",
                 status: "unobserved",
-                reason: "no request body or transcript for the probe turn",
+                reason: "no recorded request body for the probe turn",
                 pointers: [],
             };
         }

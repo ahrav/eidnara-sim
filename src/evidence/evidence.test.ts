@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
     existsSync,
     mkdirSync,
@@ -118,7 +119,12 @@ function build(spec: Spec): RunData {
         if (body && spec.parts !== false) {
             const split = requestParts(body);
             for (const p of split) parts.set(partId(p), p);
-            record.request = { sha256: "0".repeat(64), bytes: 1, parts: split.map(partId) };
+            const json = JSON.stringify(body);
+            record.request = {
+                sha256: createHash("sha256").update(json).digest("hex"),
+                bytes: Buffer.byteLength(json),
+                parts: split.map(partId),
+            };
         }
         return record;
     });
@@ -586,6 +592,19 @@ describe("context health", () => {
         });
     });
 
+    test("a refusal that finished after the oversized prompt was sent is no cause", () => {
+        const r = build({
+            arm: "host",
+            calls: [
+                { ...compaction(0, "content_filtered"), started_wall_ms: 5, wall_ms: 50 },
+                { ...big, started_wall_ms: 10, wall_ms: 90 },
+            ],
+        });
+        const h = sessionHealth(r).find((x) => x.session === "s-2");
+        expect(h?.cause).toBe("context-overflow");
+        expect(h?.compaction_refused).toBe(1);
+    });
+
     test("a prompt-too-long refusal alone is a context overflow", () => {
         const refused = {
             session: "s-2",
@@ -697,10 +716,14 @@ test("evidence-run reads a run directory and writes only under --out", () => {
         join(dir, "requests.jsonl"),
         [...(r.parts ?? [])].map(([id, part]) => `${JSON.stringify({ id, part })}\n`).join(""),
     );
-    writeFileSync(
-        join(dir, "grades.jsonl"),
-        `${JSON.stringify({ ...r.grades[0], verdict: "fail" })}\n`,
-    );
+    const graded = {
+        ...r.grades[0],
+        inputs: ["eidnara:q-1:e-5:diff"],
+        pair: "f-1",
+        verdict: "fail",
+        metrics: { "P1.pass": false },
+    };
+    writeFileSync(join(dir, "grades.jsonl"), `${JSON.stringify(graded)}\n`);
     writeFileSync(join(dir, "eidnara", "tools.jsonl"), "");
     const kernel = new Database(join(dir, "eidnara", "final-store", "kernel.sqlite"));
     kernel.run("create table commit_log(commit_seq integer primary key, recorded_at integer)");
@@ -738,6 +761,9 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     expect(report).toContain("| run | eidnara | q-1 | P1 | fail |");
     expect(loadRun(dir).arms.get("eidnara")?.objects?.[0]?.created_ms).toBe(5000);
     writeFileSync(join(dir, "eidnara", "final-store", "kernel.sqlite"), "not a database");
+    expect(loadRun(dir).arms.get("eidnara")?.objects).toBeNull();
     rmSync(join(dir, "eidnara", "final-store", "store.db"));
     expect(loadRun(dir).arms.get("eidnara")?.objects).toBeNull();
+    writeFileSync(join(dir, "grades.jsonl"), `${JSON.stringify({ ...graded, version: 2 })}\n`);
+    expect(() => loadRun(dir)).toThrow(/version 2/);
 });

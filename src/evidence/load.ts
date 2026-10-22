@@ -322,19 +322,21 @@ export function readStore(dir: string): Pick<ArmData, "objects" | "captures"> {
             db?.close();
         }
     }
-    return { objects: kernelRead || storeRead ? objects : null, captures };
+    // A negative answer needs every store: one database alone leaves the stage unobserved.
+    return { objects: kernelRead && storeRead ? objects : null, captures };
 }
 
 /**
- * The latest grade of each item, arm, and opponent. A log the current grader refuses, such as
- * one an earlier grader schema wrote, is read line by line for the fields the evidence path
- * uses, so a historical run can be attributed without being regraded.
+ * The latest grade of each item, arm, and opponent. For a legacy run, a log the current grader
+ * refuses (an earlier grader schema) is read line by line for the fields the evidence path
+ * uses, so the run can be attributed without being regraded.
  */
-export function readGrades(path: string): GradeRecord[] {
+export function readGrades(path: string, legacy: boolean): GradeRecord[] {
     try {
         return new GradeLog(path).latest();
     } catch (caught) {
-        if (!(caught instanceof GradeRefused)) throw caught;
+        // A current run's refused log is damaged or tampered, and its refusal stands.
+        if (!legacy || !(caught instanceof GradeRefused)) throw caught;
     }
     const latest = new Map<string, GradeRecord>();
     for (const g of readJsonl<GradeRecord>(path)) {
@@ -362,8 +364,10 @@ export function loadRun(dir: string): RunData {
     const scenario = readJsonFile<EvidenceScenario>(join(dir, "scenario.json"));
     if (!scenario) throw new Error(`${dir}: no scenario.json`);
     const requestsPath = join(dir, "requests.jsonl");
+    // A scenario without ground truth predates the current generator and grader.
+    const legacy = !scenario.probes.some((p) => p.ground_truth !== undefined);
     const grades = existsSync(join(dir, "grades.jsonl"))
-        ? readGrades(join(dir, "grades.jsonl"))
+        ? readGrades(join(dir, "grades.jsonl"), legacy)
         : [];
     const arms = new Map<string, ArmData>();
     for (const arm of manifest.order ?? Object.keys(manifest.arms ?? {})) {

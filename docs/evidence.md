@@ -20,7 +20,7 @@ a grade record).
 | Stage | Holds when | Evidence |
 |---|---|---|
 | `source` | Every `ground_truth.sources` event has a journaled `Event` with outcome `ok` before the probe's `BeginTurn`; for a P12 item whose sources commit a check script, `tools.jsonl` shows a run of that script with a recorded exit in a source session's turns (the S3 grader's rule); an agent request of the probe's project between the first source and the probe carries every `present` group; on a memory arm, a `memory_capture`, `history_summarizer`, or `memory_classifier` request in that window carries it too, or a stored object does | `journal.jsonl`, `<arm>/tools.jsonl`, `calls.jsonl` + `requests.jsonl` |
-| `persisted` | A kernel decision or proposition, a store note, or a user memory carries each group and was created before the probe began, on the daemon's clock | `<arm>/final-store/kernel.sqlite` (`object_registry`, `decisions`, `propositions`, `commit_log`), `store.db` (`notes`, `user_memories`) |
+| `persisted` | A kernel decision or proposition, a store note, or a user memory carries each group and was created before the probe began, on the daemon's clock; both databases must read, or the stage is `unobserved` | `<arm>/final-store/kernel.sqlite` (`object_registry`, `decisions`, `propositions`, `commit_log`), `store.db` (`notes`, `user_memories`) |
 | `eligibility` | One such object per group is live at the probe (not invalidated, not superseded) and in the probe project's scope: the kernel `project:<key>` scope whose key the project's capture jobs carry, or a note whose project path ends in the project | the same stores, `memory_capture_jobs` |
 | `retrieval` | An `eidnara_*` tool result new in the probe turn, or a block the plugin writes into the request (`<project-memory>`, `<memory-updates>`, `<project-note>`, `<eidnara-search-auto>`, `<eidnara-search-hint>`), carries each group; the detail gives each hit's source and line (its rank) and every search's input, route (`fused`, `legacy-scan` with the fallback reason, `errored`), and whether its result reached a request | Pi transcripts (what the tool returned), request bodies (what the model received) |
 | `delivery` / `context` | A probe-turn agent request carries each group, with the probe's own text removed first | `calls.jsonl` + `requests.jsonl` |
@@ -62,8 +62,9 @@ Each probe gets one `attributed` cause with a status and reason:
 answer with `finish_reason` `content_filtered` or zero output tokens), failed
 compactions, the peak agent prompt (input plus cache read and write tokens)
 against the manifest's `context_limit`, calls over it, and prompt-too-long
-refusals. The cause is `compaction-refused` when a refused compaction precedes
-the first over-window prompt or prompt-too-long refusal, and
+refusals. The cause is `compaction-refused` when a refused compaction finished
+(`wall_ms`) before the first over-window prompt or prompt-too-long refusal
+was sent (`started_wall_ms`), since records are numbered as calls finish, and
 `context-overflow` when such a prompt has no refused compaction before it; a
 refused compaction followed by prompts inside the window flags nothing.
 `flagged_from` is the turn of the mark that set the cause, or the session's
@@ -94,7 +95,9 @@ flagged sessions from `flagged_from` on, which get rows of their own.
 
 ## Historical runs
 
-A run whose grade log the current grader refuses is read line by line for
-item, arm, verdict, and version, and nothing is regraded. A run without
-`requests.jsonl` reports `source`, `retrieval` (without a transcript), and
-`delivery` as `unobserved`.
+A run whose scenario carries no ground truth predates the current generator;
+when the current grader refuses its grade log, the log is read line by line
+for item, arm, verdict, and version, and nothing is regraded. A current run's
+refused grade log refuses the evidence run. A run without `requests.jsonl`
+reports `source`, `retrieval`, and `delivery` as `unobserved`, since the probe
+turn's tool uses come from its request bodies.

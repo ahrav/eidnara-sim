@@ -1767,7 +1767,10 @@ async function runArms(
         if (session !== undefined) precedingTurn.set(`${e.arm}/${session}`, String(e.event));
     }
     const noteAgent = (r: CallRecord) => {
-        if (r.component === "agent" && r.turn !== null) answered.add(`${r.arm}/${r.turn}`);
+        const replied = r.status === 200 && r.error === null && r.finish_reason !== "stream_cut";
+        if (r.component === "agent" && r.turn !== null && replied) {
+            answered.add(`${r.arm}/${r.turn}`);
+        }
         const reply = agentReplyOf(r);
         if (reply) agentText.set(`${r.arm}/${r.session}`, reply);
         const counts = components.get(r.arm) ?? {};

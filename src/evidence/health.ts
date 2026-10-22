@@ -60,9 +60,9 @@ function nextTurn(run: RunData, arm: string, session: string, wall: number): str
 }
 
 /**
- * `cause` is `compaction-refused` when a refused compaction precedes the session's first prompt
- * over the window or prompt-too-long refusal, and `context-overflow` when such a prompt has no
- * refused compaction before it.
+ * `cause` is `compaction-refused` when a refused compaction finished before the session's first
+ * prompt over the window or prompt-too-long refusal was sent, and `context-overflow` when such a
+ * prompt has no refused compaction finished before it.
  */
 export function sessionHealth(run: RunData): SessionHealth[] {
     const projectOf = new Map(run.scenario.sessions.map((s) => [s.id, s.project]));
@@ -105,12 +105,15 @@ export function sessionHealth(run: RunData): SessionHealth[] {
         let over = 0;
         let tooLong = 0;
         let native = false;
+        const refusals: CallRecord[] = [];
+        let overflowCall: CallRecord | null = null;
         for (const c of sorted) {
             if (COMPACTION.has(c.component)) {
                 attempts++;
                 if (c.component === "native_compaction") native = true;
                 if (refusedCompaction(c)) {
                     refused++;
+                    refusals.push(c);
                     first_refused ??= mark(
                         c,
                         `${c.component} ${c.finish_reason ?? "no finish reason"}, ${c.output_tokens} output tokens`,
@@ -125,20 +128,31 @@ export function sessionHealth(run: RunData): SessionHealth[] {
             peak = Math.max(peak, tokens);
             if (tokens > run.contextLimit) {
                 over++;
+                overflowCall ??= c;
                 first_overflow ??= mark(c, `${tokens} prompt tokens over ${run.contextLimit}`);
             }
             if (c.error !== null && TOO_LONG.test(c.error)) {
                 tooLong++;
+                overflowCall ??= c;
                 first_overflow ??= mark(c, c.error.slice(0, 200));
             }
         }
-        const cause =
-            first_refused && first_overflow && first_refused.seq < first_overflow.seq
-                ? "compaction-refused"
-                : first_overflow
-                  ? "context-overflow"
-                  : null;
-        const from = cause === "compaction-refused" ? first_refused : first_overflow;
+        // Records are numbered as calls finish, so a refusal counts as the overflow's cause only
+        // when it finished before the overflowing request was sent.
+        const sent = overflowCall?.started_wall_ms;
+        const cause_refusal =
+            sent === undefined ? undefined : refusals.find((r) => r.wall_ms <= sent);
+        const cause = cause_refusal
+            ? "compaction-refused"
+            : first_overflow
+              ? "context-overflow"
+              : null;
+        const from = cause_refusal
+            ? mark(
+                  cause_refusal,
+                  `${cause_refusal.component} ${cause_refusal.finish_reason ?? "no finish reason"}, ${cause_refusal.output_tokens} output tokens`,
+              )
+            : first_overflow;
         out.push({
             schema: "sim-evidence-session/v1",
             arm,

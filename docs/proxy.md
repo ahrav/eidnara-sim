@@ -76,8 +76,11 @@ that names it, so a conversation that grows by one message per call adds one
 line per call. `rebuildRequest(ref, parts)` reassembles a body from the
 record's `request.parts`. A reopened log drops a line a kill cut and keeps the
 ids already written. The store opens the file without following a link once
-its directory resolves without one, and a line that is not a part refuses the
-log. A body the store cannot write leaves the record without `request` and
+its directory resolves without one, and a line that is not a part, or whose
+part does not hash to its id, refuses the log. A rebuilt body whose JSON
+differs from the record's `sha256` or `bytes` reads as absent. An append that
+fails part-way is truncated back to the last complete line, and the store
+refuses later writes when that truncation fails. A body the store cannot write leaves the record without `request` and
 adds a gateway failure, which fails the run at stop. An injected fault's
 request is stored too; its record's `fault_ref` shows that no provider saw it.
 
