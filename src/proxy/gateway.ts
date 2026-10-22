@@ -186,6 +186,9 @@ export function stripUnsupported(
     return Object.keys(removed).length > 0 ? removed : undefined;
 }
 
+/** The arm, session, and turn a record or diagnostic names, without the background origin. */
+const ownerScope = ({ arm, session, turn }: Scope): Scope => ({ arm, session, turn });
+
 interface Body {
     chunks: Buffer[];
     received: number;
@@ -342,7 +345,7 @@ export class Gateway {
             session.on("close", () => this.sessions.delete(session));
             const h2_session = sessions++;
             ids.set(session, h2_session);
-            const at = () => ({ ...this.options.scope(), h2_session });
+            const at = () => ({ ...ownerScope(this.options.scope()), h2_session });
             session.on("error", (e: Error) => log("session_error", { ...at(), error: e.message }));
             session.on("frameError", (type: number, code: number) =>
                 log("frame_error", { ...at(), type, code }),
@@ -359,7 +362,10 @@ export class Gateway {
             const release = this.arrive();
             const gone = new AbortController();
             this.aborts.add(gone);
-            const opened = { ...this.options.scope(), h2_session: ids.get(stream.session ?? {}) };
+            const opened = {
+                ...ownerScope(this.options.scope()),
+                h2_session: ids.get(stream.session ?? {}),
+            };
             stream.on("close", () => {
                 // A peer can cancel a response with RST_STREAM(NO_ERROR), whose rstCode is 0.
                 const cut = stream.aborted || !stream.writableFinished;
@@ -456,8 +462,9 @@ export class Gateway {
     private received(): Request["owner"] {
         let scope: Scope | undefined;
         try {
-            const { arm, session, turn, origin } = this.options.scope();
-            scope = { arm, session, turn };
+            const read = this.options.scope();
+            scope = ownerScope(read);
+            const origin = read.origin;
             return { scope, scenario_ms: this.options.clock.scenarioMs(), origin };
         } catch (error) {
             return { scope, error };
