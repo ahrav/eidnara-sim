@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { GradeLog } from "../src/grade/probes";
-import { armBase, requireOrder } from "../src/hosts/arms";
+import { armBase, requireSeedOrder } from "../src/hosts/arms";
 import { sha256Hex } from "../src/prereg/canonical";
 import type { Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
@@ -93,19 +93,15 @@ function report(dir: string) {
     const clusterOf = (metric: string) => (item: string) =>
         runLevel.has(probeType(metric)) ? "run" : (fact.get(item) ?? item);
     const order = manifest.order as string[];
-    requireOrder(order, prereg.arms.run, prereg.aa_controls?.pairs ?? []);
-    // The run arms keep the seed's pre-registered relative order, as the run command schedules them.
     const seedIndex = prereg.seeds.indexOf(manifest.seed);
     if (seedIndex < 0) {
         throw new Error(`${dir}: seed ${manifest.seed} is not pre-registered for ${manifest.tier}`);
     }
     const seedOrder: string[] = prereg.arms.order_by_seed[seedIndex] ?? prereg.arms.run;
-    const runArms = order.filter((a) => a === armBase(a));
-    const kept = seedOrder.filter((a) => runArms.includes(a));
-    if (JSON.stringify(kept) !== JSON.stringify(runArms)) {
-        throw new Error(
-            `${dir}: manifest order ${runArms.join(",")} is not the order seed ${manifest.seed} pre-registers (${seedOrder.join(",")})`,
-        );
+    try {
+        requireSeedOrder(order, seedOrder, prereg.aa_controls?.pairs ?? []);
+    } catch (caught) {
+        throw new Error(`${dir}: ${(caught as Error).message}`);
     }
     const count: unknown = manifest.events;
     if (

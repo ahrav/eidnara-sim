@@ -13,12 +13,17 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../src/config/config";
+import { loadRun as loadEvidence } from "../src/evidence/load";
 import type { CallView, Snapshot } from "../src/grade/artefacts";
 import { GradeLog } from "../src/grade/probes";
 import { armProfile } from "../src/hosts/profiles";
 import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
+import { tierInput } from "../src/report/observe";
+import { loadGraded, tierReport } from "../src/report/tier";
 import { type Entry, releaseLease, takeLease } from "../src/run/journal";
+import { tierPlan } from "../src/run/tier";
+import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 import { gradeRun, requireCapabilities } from "./grade-run";
 
@@ -54,6 +59,8 @@ interface RunOptions {
     cf_deletions?: { probe: string }[];
     /** Events of earlier sessions, scheduled before the probes' session. */
     prelude?: Record<string, unknown>[];
+    /** The scenario's scheduled faults; the tier report reads the list. */
+    faults?: Record<string, unknown>[];
 }
 
 function run(o: RunOptions): string {
@@ -85,6 +92,7 @@ function run(o: RunOptions): string {
         probes: o.probes.map((p, i) => ({ ...p, session: "s-1", event: `e-${i + 1}` })),
         events,
         ...(o.cf_deletions ? { cf_deletions: o.cf_deletions } : {}),
+        ...(o.faults ? { faults: o.faults } : {}),
     };
     const scenario = { ...body, scenario_hash: sha256Hex(canonicalJson(body)) };
     writeFileSync(join(dir, "scenario.json"), `${canonicalJson(scenario)}\n`);
@@ -780,23 +788,102 @@ describe("grade-run", () => {
     });
 
     test("a manifest whose arms are not a subsequence of the tier's order is refused", async () => {
-        const dir = run({ probes: [p5.probe] });
-        snapshot(dir, "eidnara", snap);
-        const manifestPath = join(dir, "manifest.json");
-        const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-        manifest.order = ["../other/host", "eidnara"];
-        writeFileSync(manifestPath, JSON.stringify(manifest));
+        const reorder = (dir: string, order: string[]) => {
+            const manifestPath = join(dir, "manifest.json");
+            const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+            manifest.order = order;
+            writeFileSync(manifestPath, JSON.stringify(manifest));
+            const journal = join(dir, "journal.jsonl");
+            const lines = readFileSync(journal, "utf8")
+                .trim()
+                .split("\n")
+                .map((l) => {
+                    const e = JSON.parse(l);
+                    if (e.kind === "StartRun") e.order = order;
+                    return JSON.stringify(e);
+                });
+            writeFileSync(journal, `${lines.join("\n")}\n`);
+        };
+        const refusals: [string[], string][] = [
+            [["../other/host", "eidnara"], "is not a pre-registered arm"],
+            [["eidnara", "host"], "does not keep the seed order"],
+            [["host", "eidnara~aa", "eidnara"], "eidnara~aa runs apart from eidnara"],
+            [["host", "eidnara-kl", "eidnara-kl~aa"], "eidnara-kl~aa is not a pre-registered arm"],
+            [["host~aa", "eidnara"], "host~aa runs without host"],
+            [["host", "host~aa", "host~bb"], "runs two A/A controls of host"],
+        ];
+        for (const [order, message] of refusals) {
+            const dir = run({ probes: [p5.probe] });
+            snapshot(dir, "eidnara", snap);
+            reorder(dir, order);
+            await expect(gradeRun(dir, null)).rejects.toThrow(message);
+        }
+    });
+
+    test("the tier plan's A/A run grades and loads into the tier report with its controls", async () => {
+        const prereg = loadPrereg("S");
+        const scenarios = new Map(
+            prereg.seeds.map((seed) => [
+                seed,
+                {
+                    events: [
+                        { id: "e-0", kind: "session_start", session: "s-1", scenario_ms: 0 },
+                        { id: "e-1", kind: "user_turn", session: "s-1", scenario_ms: 1 },
+                        { id: "e-2", kind: "session_end", session: "s-1", scenario_ms: 2 },
+                    ],
+                } as unknown as Scenario,
+            ]),
+        );
+        const job = tierPlan(prereg, scenarios, ["pi"], "/out", 60_000).find((j) => j.seed === 101);
+        const order = job?.arms ?? [];
+        expect(order).toEqual(["host", "host~aa", "eidnara", "eidnara~aa", "eidnara-kl"]);
+        const dir = run({ probes: [p5.probe], order, faults: [] });
+        writeFileSync(join(dir, "calls.jsonl"), "");
+        for (const arm of order) snapshot(dir, arm, snap);
+        const summary = await gradeRun(dir, null);
+        expect(Object.keys(summary.verdicts).sort()).toEqual(order.map((a) => `${a}/P5`).sort());
+        // The scheduler opens each probe turn with BeginTurn, ends it before its Event, and numbers
+        // journal lines by position; the tier report checks all three.
         const journal = join(dir, "journal.jsonl");
-        const lines = readFileSync(journal, "utf8")
+        const entries = readFileSync(journal, "utf8")
             .trim()
             .split("\n")
-            .map((l) => {
-                const e = JSON.parse(l);
-                if (e.kind === "StartRun") e.order = manifest.order;
-                return JSON.stringify(e);
+            .map((l) => JSON.parse(l) as Record<string, unknown>);
+        const turnMarks = (e: Record<string, unknown>) =>
+            (e.kind === "EndTurn" || e.kind === "SnapshotArtefacts") && e.arm !== null;
+        const rebuilt = entries
+            .filter((e) => !turnMarks(e))
+            .flatMap((e) => {
+                if (e.kind !== "Event" || e.event !== "e-1") return [e];
+                const marks = entries.filter((m) => turnMarks(m) && m.arm === e.arm);
+                return [{ ...e, kind: "BeginTurn", outcome: undefined }, ...marks, e];
             });
+        const lines = rebuilt.map((e, i) => JSON.stringify({ ...e, seq: i }));
         writeFileSync(journal, `${lines.join("\n")}\n`);
-        await expect(gradeRun(dir, null)).rejects.toThrow("is not a nonempty subsequence");
+        for (const arm of order) {
+            mkdirSync(join(dir, arm, "r"), { recursive: true });
+            writeFileSync(join(dir, arm, "tools.jsonl"), "");
+            if (arm === "host" || arm === "host~aa") continue;
+            writeFileSync(join(dir, arm, "daemon.log"), "");
+            writeFileSync(join(dir, arm, "r", "eidnara.log"), "");
+            writeFileSync(join(dir, arm, "resources.jsonl"), '{"scenario_ms":0,"rss":100}\n');
+        }
+        const graded = loadGraded(dir, prereg);
+        expect(graded.run.arms.map((a) => a.arm)).toEqual(order);
+        expect(new Set(graded.grades.map((g) => g.arm))).toEqual(new Set(order));
+        const incomplete = tierInput(prereg, [graded]).incomplete ?? [];
+        expect(incomplete.filter((x) => x.startsWith("A/A "))).toEqual([]);
+        expect(tierReport(prereg, [graded], "").prereg).toBe(prereg);
+        expect([...loadEvidence(dir).arms.keys()]).toEqual(order);
+        const manifestPath = join(dir, "manifest.json");
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+        manifest.order = ["host", "host~aa", "eidnara-kl", "eidnara-kl~aa"];
+        writeFileSync(manifestPath, JSON.stringify(manifest));
+        expect(() => loadEvidence(dir)).toThrow("eidnara-kl~aa is not a pre-registered arm");
+        delete manifest.tier;
+        manifest.order = order;
+        writeFileSync(manifestPath, JSON.stringify(manifest));
+        expect(() => loadEvidence(dir)).toThrow("A/A controls without a known tier");
     });
 
     test("a snapshot named by an EndTurn of another arm, item, or event is refused", async () => {

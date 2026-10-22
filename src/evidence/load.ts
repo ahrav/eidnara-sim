@@ -3,11 +3,14 @@ import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { GradeRefused } from "../grade/artefacts";
 import { GradeLog, type GradeRecord } from "../grade/probes";
+import { armBase, CONTROL_LABEL, requireOrder } from "../hosts/arms";
+import { ARMS, TIERS, type Tier } from "../prereg/schema";
 import type { ConverseBody } from "../proxy/classify";
 import { type CallRecord, recordProblems } from "../proxy/records";
 import { type RequestPart, readRequestParts, rebuildRequest } from "../proxy/requests";
 import { type Entry, readJournal, readJsonl } from "../run/journal";
 import { scenarioHash } from "../scenario/compile";
+import { loadPrereg } from "../scenario/inputs";
 
 /** The scenario fields the evidence path reads. */
 export interface EvidenceScenario {
@@ -374,6 +377,7 @@ export function loadRun(dir: string): RunData {
         host?: string;
         context_limit?: number;
         order?: string[];
+        tier?: unknown;
         arms?: Record<string, { profile?: ArmProfileView }>;
     }>(join(dir, "manifest.json"));
     if (!manifest) throw new Error(`${dir}: no manifest.json`);
@@ -392,11 +396,26 @@ export function loadRun(dir: string): RunData {
         ? readGrades(join(dir, "grades.jsonl"), legacy)
         : [];
     const arms = new Map<string, ArmData>();
-    for (const arm of manifest.order ?? Object.keys(manifest.arms ?? {})) {
+    const order = manifest.order ?? Object.keys(manifest.arms ?? {});
+    for (const arm of order) {
         // An arm is one directory of this run; a name or link that leaves it is refused.
-        if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(arm)) {
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(arm) && !CONTROL_LABEL.test(arm)) {
             throw new Error(`${dir}: arm ${JSON.stringify(arm)} is not a directory name`);
         }
+    }
+    // An A/A control label is admitted only for a pair the run's tier registers.
+    if (order.some((arm) => arm !== armBase(arm))) {
+        const tier = manifest.tier;
+        if (!TIERS.includes(tier as Tier)) {
+            throw new Error(`${dir}: manifest names A/A controls without a known tier`);
+        }
+        try {
+            requireOrder(order, ARMS, loadPrereg(tier as Tier).aa_controls?.pairs ?? []);
+        } catch (caught) {
+            throw new Error(`${dir}: ${(caught as Error).message}`);
+        }
+    }
+    for (const arm of order) {
         const root = join(dir, arm);
         if (lstatSync(root, { throwIfNoEntry: false })?.isSymbolicLink()) {
             throw new Error(`${root} is a link; an arm directory must be the run's own`);

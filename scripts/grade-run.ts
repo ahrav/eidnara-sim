@@ -38,7 +38,7 @@ import {
     type SourceEvent,
     verdictCounts,
 } from "../src/grade/probes";
-import { armBase } from "../src/hosts/arms";
+import { armBase, requireSeedOrder } from "../src/hosts/arms";
 import { canonicalJson } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
@@ -259,20 +259,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
         );
     }
     const permitted = (prereg.arms.order_by_seed[seedIndex] ?? prereg.arms.run) as string[];
-    const subsequence = (() => {
-        let at = 0;
-        for (const arm of arms) {
-            at = permitted.indexOf(arm, at);
-            if (at === -1) return false;
-            at++;
-        }
-        return true;
-    })();
-    if (!Array.isArray(arms) || arms.length === 0 || !subsequence) {
-        throw new Error(
-            `manifest order ${JSON.stringify(arms)} is not a nonempty subsequence of the ${String(manifest.tier)} order ${JSON.stringify(permitted)}`,
-        );
-    }
+    requireSeedOrder(arms, permitted, prereg.aa_controls?.pairs ?? []);
     const models = manifest.models as unknown;
     if (
         !Array.isArray(models) ||

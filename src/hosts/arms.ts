@@ -164,7 +164,8 @@ export function requireOrder(
         const base = armBase(arm);
         const known =
             arms.includes(base) &&
-            (arm === base || (CONTROL_LABEL.test(arm) && pairs.some(([x]) => x === base)));
+            (arm === base ||
+                (CONTROL_LABEL.test(arm) && pairs.some(([x, y]) => x === base && y === base)));
         if (!known) throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
     }
     const controls = order.filter((arm) => arm !== armBase(arm));
@@ -177,6 +178,29 @@ export function requireOrder(
         if (controls.filter((c) => armBase(c) === base).length > 1) {
             throw new Error(`manifest order runs two A/A controls of ${base}`);
         }
+    }
+}
+
+/**
+ * `requireSeedOrder` requires at least one run arm, the run arms in `seedOrder`'s relative
+ * order, and each A/A control right after its arm, once, for a registered `[arm, arm]` pair.
+ */
+export function requireSeedOrder(
+    order: unknown,
+    seedOrder: readonly string[],
+    pairs: readonly (readonly string[])[],
+): asserts order is string[] {
+    const shown = JSON.stringify(order);
+    if (!Array.isArray(order) || !order.every((a) => typeof a === "string")) {
+        throw new Error(`manifest order ${shown} is not a list of arm labels`);
+    }
+    requireOrder(order, seedOrder, pairs);
+    const runArms = order.filter((a) => a === armBase(a));
+    const kept = seedOrder.filter((a) => runArms.includes(a));
+    if (runArms.length === 0 || JSON.stringify(kept) !== JSON.stringify(runArms)) {
+        throw new Error(
+            `manifest order ${shown} does not keep the seed order ${JSON.stringify(seedOrder)}`,
+        );
     }
 }
 const modelRef = (model: string) => `amazon-bedrock/${model}`;

@@ -186,8 +186,10 @@ time allocates versions, refuses a run whose pre-registration or scenario no
 longer hashes to the digests in its manifest, whose `scenario.json` names a
 seed or tier other than the manifest's, whose seed the tier does not
 pre-register, whose manifest schedules more events than the scenario compiles,
-records no nonempty list of model names, or names arms that are not a nonempty
-subsequence of the tier's registered order for its seed, or whose journal
+records no nonempty list of model names, or names arms in an order the tier
+plan does not schedule for its seed (at least one registered arm, the arms in
+the seed's registered relative order, and an A/A control label `<arm>~<tag>`
+only right after its arm, once, for an `[arm, arm]` pair in `aa_controls`), or whose journal
 (a regular file, like every log grading reads) lacks `EndRun`
 or an arm's `EndArm` and one terminal `Event` per scheduled event, in the
 scheduled order (SIM-P67),
