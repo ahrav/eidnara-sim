@@ -318,6 +318,31 @@ describe("HostDriver lifecycle", () => {
         },
     );
 
+    test.skipIf(!sandbox)(
+        "apply_diff with remove commits the deletion of its own path and tolerates an absent one",
+        async () => {
+            const { driver } = fixture("host", { p: gitRepo() });
+            await driver.reset();
+            const ws = driver.workspace("p");
+            await driver.event(ev("apply_diff", { path: "src/a.txt", content: "A" }));
+            writeFileSync(join(ws, "agent-edit"), "mine");
+            const gone = ev("apply_diff", { path: "src/a.txt", remove: true });
+            await driver.event(gone);
+            await driver.event(gone);
+            expect(existsSync(join(ws, "src/a.txt"))).toBe(false);
+            const log = spawnSync("git", ["log", "--name-status", "--format=%s"], { cwd: ws });
+            expect(log.stdout.toString().trim().split("\n").slice(0, 3)).toEqual([
+                "Remove src/a.txt",
+                "",
+                "D\tsrc/a.txt",
+            ]);
+            const status = spawnSync("git", ["status", "--porcelain"], { cwd: ws });
+            expect(status.stdout.toString().trim()).toBe("?? agent-edit");
+            const outside = ev("apply_diff", { path: "../x", remove: true });
+            await expect(driver.event(outside)).rejects.toThrow("leaves");
+        },
+    );
+
     test("apply_diff runs no hook, filter, or monitor that the workspace repo's config names", async () => {
         const { driver } = fixture("host", { p: gitRepo() });
         await driver.reset();

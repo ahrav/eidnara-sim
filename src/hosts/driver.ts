@@ -1083,31 +1083,47 @@ export class HostDriver implements ArmDriver {
         if (target !== undefined && !target.isFile()) {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} is not a regular file`);
         }
-        mkdirSync(dirname(path), { recursive: true });
-        // The file is written whole and renamed into place, so a hard link the agent left at
-        // the path keeps its other name's content; the mode it had carries over.
-        writeWhole(path, String(e.content));
-        if (target !== undefined) chmodSync(path, target.mode & 0o7777);
+        const remove = e.remove === true;
+        if (remove) {
+            if (target !== undefined) rmSync(path);
+        } else {
+            mkdirSync(dirname(path), { recursive: true });
+            // The file is written whole and renamed into place, so a hard link the agent left at
+            // the path keeps its other name's content; the mode it had carries over.
+            writeWhole(path, String(e.content));
+            if (target !== undefined) chmodSync(path, target.mode & 0o7777);
+        }
         this.withPristineRepo(dir, this.project(e), () => {
-            const blob = this.workspaceGit(dir, ["hash-object", "-w", "--no-filters", "--", path]);
-            const executable = (lstatSync(path).mode & 0o111) !== 0;
-            const entry = `${executable ? "100755" : "100644"},${blob},${relative(dir, path)}`;
+            const rel = relative(dir, path);
+            let update = ["update-index", "--force-remove", "--", rel];
+            if (!remove) {
+                const blob = this.workspaceGit(dir, [
+                    "hash-object",
+                    "-w",
+                    "--no-filters",
+                    "--",
+                    path,
+                ]);
+                const executable = (lstatSync(path).mode & 0o111) !== 0;
+                const entry = `${executable ? "100755" : "100644"},${blob},${rel}`;
+                update = ["update-index", "--add", "--cacheinfo", entry];
+            }
             const head = this.workspaceGit(dir, ["rev-parse", "--verify", "HEAD"]);
             const scratch = { GIT_INDEX_FILE: join(this.armDir, "apply-diff.index") };
             rmSync(`${scratch.GIT_INDEX_FILE}.lock`, { force: true });
             this.workspaceGit(dir, ["read-tree", head], scratch);
-            this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry], scratch);
+            this.workspaceGit(dir, update, scratch);
             const tree = this.workspaceGit(dir, ["write-tree"], scratch);
             rmSync(scratch.GIT_INDEX_FILE, { force: true });
             try {
-                this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry]);
+                this.workspaceGit(dir, update);
             } catch (caught) {
                 if (caught instanceof GitBound)
                     rmSync(join(dir, ".git", "index.lock"), { force: true });
                 throw caught;
             }
             if (tree === this.workspaceGit(dir, ["rev-parse", `${head}^{tree}`])) return;
-            const message = `Add ${String(e.path)}`;
+            const message = `${remove ? "Remove" : "Add"} ${String(e.path)}`;
             // The commit carries the event's scenario instant, so paired arms and a resumed
             // delivery produce the same commit.
             const date = `@${Math.floor((this.o.baseMs + e.scenario_ms) / 1000)} +0000`;
