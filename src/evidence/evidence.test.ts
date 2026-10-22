@@ -307,10 +307,21 @@ describe("evidence stages on a memory arm", () => {
 
     test("a superseded memory fails eligibility", () => {
         const old = { ...STORED, superseded_by: "decision:2" };
+        const next = { ...STORED, id: "decision:2", text: "unrelated", created_ms: 6_000 };
         const p = evidence(
-            build({ calls: [SOURCE_READ, CAPTURED, searchTurn("nothing")], objects: [old] }),
+            build({ calls: [SOURCE_READ, CAPTURED, searchTurn("nothing")], objects: [old, next] }),
         );
         expect(p.attributed.cause).toBe("eligibility");
+    });
+
+    test("a successor written after the probe began leaves the memory eligible", () => {
+        const old = { ...STORED, superseded_by: "decision:2", retired_ms: BEGIN_WALL + 5 };
+        const next = { ...STORED, id: "decision:2", created_ms: BEGIN_WALL + 5 };
+        const p = evidence(
+            build({ calls: [SOURCE_READ, CAPTURED, searchTurn("nothing")], objects: [old, next] }),
+        );
+        expect(stage(p, "eligibility")?.status).toBe("ok");
+        expect(p.attributed.cause).toBe("retrieval");
     });
 
     test("a search whose results miss the literal fails retrieval and records its route", () => {

@@ -561,10 +561,20 @@ export function probeEvidence(
                 pointers: [],
             };
         }
+        const created = new Map((arm.objects ?? []).map((o) => [o.id, o.created_ms]));
+        // A successor written after the probe began had not yet replaced the object then.
+        const replaced = (o: StoreObject) => {
+            if (o.superseded_by === null || probeDaemon === null) return false;
+            const at = created.get(o.superseded_by);
+            if (at === undefined || at === null) {
+                return o.retired_ms !== null && o.retired_ms <= probeDaemon;
+            }
+            return at <= probeDaemon;
+        };
         const live = (o: StoreObject) =>
             probeDaemon !== null &&
             (o.retired_ms === null || o.retired_ms > probeDaemon) &&
-            o.superseded_by === null;
+            !replaced(o);
         const per = persistedHits().map((h) => h.filter(existsAt));
         const eligible = per.map((h) =>
             h.filter((o) => live(o) && inScope(o, project ?? "", scopes) === true),

@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { GradeRefused } from "../grade/artefacts";
 import { GradeLog, type GradeRecord } from "../grade/probes";
 import type { ConverseBody } from "../proxy/classify";
@@ -149,6 +149,16 @@ export function readPiTranscripts(sessionsDir: string): Map<string, TranscriptRe
     };
     walk(sessionsDir, 2);
     return out;
+}
+
+/** Transcript pointers relative to the run directory, so a copied run keeps them valid. */
+function relativeFiles(
+    dir: string,
+    results: Map<string, TranscriptResult> | null,
+): Map<string, TranscriptResult> | null {
+    if (!results) return null;
+    for (const r of results.values()) r.file = relative(dir, r.file);
+    return results;
 }
 
 const blobText = (v: unknown): string =>
@@ -349,7 +359,10 @@ export function loadRun(dir: string): RunData {
             tools,
             transcripts:
                 manifest.host === "pi"
-                    ? readPiTranscripts(join(root, "r", "home", ".pi", "agent", "sessions"))
+                    ? relativeFiles(
+                          dir,
+                          readPiTranscripts(join(root, "r", "home", ".pi", "agent", "sessions")),
+                      )
                     : null,
             pluginLog,
             ...readStore(join(root, "final-store")),
