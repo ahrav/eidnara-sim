@@ -194,7 +194,8 @@ function mentions(sentence: string, value: string, stale: string[]): Mention[] {
  * value beside another as equally possible fails; a competitor the sentence marks as replaced or
  * superseded stands aside. A later sentence with a correction word (`actually`, `instead`)
  * switches to a competitor it leaves standing, unless the sentence also asserts the value or
- * places the competitor in the past (`Y was only for testing`).
+ * places the competitor in the past (`Y was only for testing`). A decisive value placed in the past
+ * (`X was only for testing`) is turned down unless a later sentence asserts it.
  */
 export function uncommitted(answer: string, value: string, stale: string[] = []): string | null {
     if (!carries(answer, value)) return "answer lacks the value";
@@ -212,6 +213,9 @@ export function uncommitted(answer: string, value: string, stale: string[] = [])
     if (own.negated) return "answer turns the value down";
     const live = (found: Mention[]) => found.some((m) => !m.expected && !m.negated);
     const asserts = (found: Mention[]) => found.some((m) => m.expected && !m.negated && !m.past);
+    if (own.past && !all.slice(first + 1).some((x) => asserts(x.found))) {
+        return "answer turns the value down";
+    }
     if (live(decisive.found)) return "answer names a competing value beside it";
     for (const [i, { s, found }] of all.entries()) {
         if (found.some((m) => m.expected && m.negated)) return "answer turns the value down";
@@ -620,6 +624,8 @@ export function literalQuotes(lines: string[]): ("double" | "single")[] {
     return out;
 }
 
+/** A Rust raw string opener (`r"`, `r#"`, `br##"`); its hashes close it after a `"`. */
+const RUST_RAW = /^b?r(#{0,255})"/;
 const RUST_CHAR = /^'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^'\\\n])'/;
 
 /**
@@ -627,7 +633,8 @@ const RUST_CHAR = /^'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^'\\\n])'
  * length and with its line breaks kept, so offsets into the mask are offsets into the text. A
  * literal keeps its delimiters. One left-to-right scan decides each token, so a quote inside a
  * comment is comment text and a `//` inside a string is literal content. In Rust (`rust`), a `'`
- * opens a character literal only when one closes it; otherwise it is a lifetime and stays code.
+ * opens a character literal only when one closes it; otherwise it is a lifetime and stays code. A
+ * Rust raw string (`r#"..."#`) reads no escapes and closes only at a quote with its hashes.
  */
 export function codeMask(text: string, rust: boolean): string {
     const out = text.split("");
@@ -648,6 +655,15 @@ export function codeMask(text: string, rust: boolean): string {
             const stop = end < 0 ? text.length : end + 2;
             blank(i, stop);
             i = stop;
+        } else if (rust && (ch === "r" || ch === "b") && !/\w/.test(text[i - 1] ?? "")) {
+            const raw = RUST_RAW.exec(text.slice(i, i + 260));
+            if (raw) {
+                const close = `"${raw[1]}`;
+                const end = text.indexOf(close, i + raw[0].length);
+                const stop = end < 0 ? text.length : end;
+                blank(i + raw[0].length, stop);
+                i = end < 0 ? stop : stop + close.length;
+            } else i++;
         } else if (ch === "'" && rust) {
             const m = RUST_CHAR.exec(text.slice(i, i + 12));
             if (m) blank(i + 1, i + m[0].length - 1);

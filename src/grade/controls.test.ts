@@ -249,6 +249,26 @@ describe("P1 and P1-control: the rule holds on every construct it governs, in it
         expect(outcome(tag, get([`let doc = "${call.replaceAll('"', '\\"')}";`]))).toEqual(none);
     });
 
+    test("a format string and a raw string keep the unit whole", () => {
+        const tag = probeOf("P1", "rs-cmd-error-tag");
+        const word = literal(tag);
+        const get = (lines: string[]) => ({ files: [{ path: "src/cmd/get.rs", lines }] });
+        expect(outcome(tag, get([`return Err(format!("[${word}] bad {}", x));`]))).toEqual([
+            "pass",
+        ]);
+        expect(outcome(tag, get([`return Err(format!("bad {}", x));`]))).toEqual([
+            "fail",
+            "a governed construct breaks the rule",
+        ]);
+        const raw = (label: string) =>
+            get([`return Err(format!("{} {}", r#"say ")) "#,`, `    "[${label}]",`, "));"]);
+        expect(outcome(tag, raw(word))).toEqual(["pass"]);
+        expect(outcome(tag, raw("elsewhere"))).toEqual([
+            "fail",
+            "a governed construct breaks the rule",
+        ]);
+    });
+
     test("Rust lifetimes leave a multi-line statement's brackets intact", () => {
         const tag = probeOf("P1", "rs-cmd-error-tag");
         const word = literal(tag);
@@ -527,6 +547,7 @@ describe("P8: the answer commits to the value", () => {
             `The alias moved from the old default to ${v}.`,
             `Use ${v}; the old staging cluster alias brisk-otter-07 is gone.`,
             `It isn't brisk-otter-07; it's ${v}.`,
+            `${v} was only for testing at first. Use ${v} now.`,
             `It wasn’t brisk-otter-07 for long; use ${v}.`,
             `The alias is ${v}. Use ${v} instead, since brisk-otter-07 was only for testing.`,
             `Use ${v}. Actually, brisk-otter-07 was only used in the earlier session.`,
@@ -552,6 +573,8 @@ describe("P8: the answer commits to the value", () => {
             [`${v} should not be used.`, "answer turns the value down"],
             [`Avoid ${v}.`, "answer turns the value down"],
             [`It isn't ${v}.`, "answer turns the value down"],
+            [`${v} was only for testing.`, "answer turns the value down"],
+            [`${v} was used before.`, "answer turns the value down"],
             [
                 `Use ${v}. Actually, brisk-otter-07 is right.`,
                 "answer switches to a competing value",
