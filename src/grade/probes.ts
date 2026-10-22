@@ -960,7 +960,7 @@ const checkScripts = (sources: SourceEvent[]) =>
 export const needsSourceCommands = (probe: ProbeItem, sources: SourceEvent[]) =>
     probe.type === "P12" && checkScripts(sources).length > 0;
 /** Whether an executed segment runs the script at `path`, through a shell or as a program. */
-const runsScript = (path: string) => (x: Command) =>
+export const runsScript = (path: string) => (x: Command) =>
     executed(x).some((seg) => {
         const words = shellWords(seg);
         const named = (w: string | undefined) =>

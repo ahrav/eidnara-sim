@@ -2102,8 +2102,10 @@ Status: active
 Exercised: partial - `src/hosts/profiles.ts` declares the arm's configuration,
 the host stack writes it, and the run's capability check (`src/run/capabilities.ts`)
 refuses an `eidnara-kl` arm whose plugin disabled itself, booted with the
-transform, served a transform pass, or made a history summarizer call; no
-check asserts a `native_compaction` record in a p90 session
+transform, served a transform pass, or made a history summarizer call; the
+evidence path (`src/evidence/health.ts`) reports, after a run, whether each
+forced p90 session of such an arm holds a `native_compaction` record, and no
+run-time check refuses a run without one
 Guarantee: SIM-P76: `eidnara-kl` runs with Eidnara's `compaction.enabled=false`
 and host compaction enabled, and at least one `native_compaction` call record
 exists in a p90 session.
@@ -2119,7 +2121,9 @@ OpenCode the plugin logged `disabled due to conflicts` and the arm ran as a
 host arm.
 Existing check: `src/run/capabilities.ts` `bootMismatches` and `armMismatches`
 (unaudited), run at each `session_end` and before `EndArm`; the arm
-configuration in `src/hosts/arms.test.ts` (unaudited).
+configuration in `src/hosts/arms.test.ts` (unaudited); `sessionHealth`
+`p90_native_compaction` in `src/evidence/health.ts`, stated in the evidence
+report (`docs/evidence.md`), covers the call record (report only).
 Impact: The knowledge-layer comparison arm is not the configuration it claims.
 Open questions: None.
 
