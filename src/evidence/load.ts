@@ -4,9 +4,10 @@ import { join, relative } from "node:path";
 import { GradeRefused } from "../grade/artefacts";
 import { GradeLog, type GradeRecord } from "../grade/probes";
 import type { ConverseBody } from "../proxy/classify";
-import type { CallRecord } from "../proxy/records";
+import { type CallRecord, recordProblems } from "../proxy/records";
 import { type RequestPart, readRequestParts, rebuildRequest } from "../proxy/requests";
 import { type Entry, readJournal, readJsonl } from "../run/journal";
+import { scenarioHash } from "../scenario/compile";
 
 /** The scenario fields the evidence path reads. */
 export interface EvidenceScenario {
@@ -32,11 +33,13 @@ export interface EvidenceScenario {
         ground_truth?: {
             expect?: string;
             present?: string[][];
+            absent?: string[];
             stale?: string[];
             sources?: string[];
         };
     }>;
     sessions: Array<{ id: string; project: string; forced_p90?: boolean }>;
+    faults?: Array<{ id: string; type: string }>;
 }
 
 export interface ArmProfileView {
@@ -223,8 +226,9 @@ export function readStore(dir: string): Pick<ArmData, "objects" | "captures"> {
                     text: blobText(r.payload),
                     scope: r.scope,
                     created_ms: commits.get(r.created) ?? null,
-                    retired_ms:
-                        r.invalidated === null ? null : (commits.get(r.invalidated) ?? null),
+                    // An invalidation whose commit row is missing retired the object at an
+                    // unknown time, read as before any probe.
+                    retired_ms: r.invalidated === null ? null : (commits.get(r.invalidated) ?? 0),
                     superseded_by: r.superseded,
                 });
             }
@@ -355,6 +359,7 @@ export function readGrades(path: string, legacy: boolean): GradeRecord[] {
  */
 export function loadRun(dir: string): RunData {
     const manifest = readJsonFile<{
+        scenario_hash?: string;
         host?: string;
         context_limit?: number;
         order?: string[];
@@ -363,6 +368,12 @@ export function loadRun(dir: string): RunData {
     if (!manifest) throw new Error(`${dir}: no manifest.json`);
     const scenario = readJsonFile<EvidenceScenario>(join(dir, "scenario.json"));
     if (!scenario) throw new Error(`${dir}: no scenario.json`);
+    const digest = scenarioHash(scenario as unknown as Record<string, unknown>);
+    if (digest !== manifest.scenario_hash) {
+        throw new Error(
+            `${dir}: scenario_hash ${digest} differs from the manifest's ${manifest.scenario_hash}`,
+        );
+    }
     const requestsPath = join(dir, "requests.jsonl");
     // A scenario without ground truth predates the current generator and grader.
     const legacy = !scenario.probes.some((p) => p.ground_truth !== undefined);
@@ -404,13 +415,26 @@ export function loadRun(dir: string): RunData {
         contextLimit: manifest.context_limit ?? 200_000,
         scenario,
         journal: readJournal(join(dir, "journal.jsonl")),
-        calls: readJsonl<CallRecord>(join(dir, "calls.jsonl")),
+        calls: readCalls(join(dir, "calls.jsonl")),
         parts: lstatSync(requestsPath, { throwIfNoEntry: false })?.isFile()
             ? readRequestParts(requestsPath)
             : null,
         grades,
         arms,
     };
+}
+
+/** The call log, each record checked for its fields and its position. */
+export function readCalls(path: string): CallRecord[] {
+    const calls = readJsonl<CallRecord>(path);
+    calls.forEach((c, i) => {
+        const problems = recordProblems(c);
+        if (problems.length > 0) {
+            throw new Error(`${path} line ${i + 1}: ${problems.join(", ")}`);
+        }
+        if (c.seq !== i) throw new Error(`${path} line ${i + 1}: seq ${c.seq} at position ${i}`);
+    });
+    return calls;
 }
 
 /** A recorded request body, or null when the run kept none for that call. */

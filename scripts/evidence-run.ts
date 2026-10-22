@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { defaultConfigPath } from "../src/config/config";
 import { sessionHealth } from "../src/evidence/health";
 import { loadRun } from "../src/evidence/load";
 import { type RunEvidence, renderEvidence } from "../src/evidence/report";
@@ -9,16 +10,20 @@ import { contains, realExisting } from "../src/run/paths";
 
 const USAGE = "usage: bun scripts/evidence-run.ts <run dir>... [--out <dir>]";
 
-export function evidenceRun(dirs: string[], out: string | null): string {
+/** `checkout` is the configured eidnara checkout, which this tree never writes. */
+export function evidenceRun(dirs: string[], out: string | null, checkout: string | null): string {
     const runs: RunEvidence[] = [];
     const names = dirs.map((d) => basename(d));
-    if (out && new Set(names).size !== names.length) {
-        throw new Error("--out: two run directories share a name");
+    if (new Set(names).size !== names.length) {
+        throw new Error("two run directories share a name, so report rows would collide");
+    }
+    const targets = out ? [out, ...names.map((n) => join(out, n))] : dirs;
+    if (checkout && targets.some((t) => contains(realExisting(checkout), realExisting(t)))) {
+        throw new Error(`an output lies inside the eidnara checkout ${checkout}`);
     }
     // A target inside a run directory would put the files into the run it only reads.
     if (out) {
         const runs = dirs.map((d) => realpathSync(d));
-        const targets = [out, ...names.map((n) => join(out, n))];
         if (targets.some((t) => runs.some((r) => contains(r, realExisting(t))))) {
             throw new Error("--out lies inside a run directory; leave --out off to write there");
         }
@@ -30,6 +35,10 @@ export function evidenceRun(dirs: string[], out: string | null): string {
         const name = basename(dir);
         const target = out ? join(out, name) : dir;
         mkdirSync(target, { recursive: true });
+        // A linked output directory would route the files somewhere else.
+        if (realpathSync(target) !== resolve(target)) {
+            throw new Error(`${target} resolves through a link`);
+        }
         writeAtomic(
             join(target, "evidence.jsonl"),
             probes.map((p) => `${JSON.stringify(p)}\n`).join(""),
@@ -66,5 +75,10 @@ if (import.meta.main) {
         }
     }
     const outDir = out ? resolve(out) : null;
-    process.stdout.write(evidenceRun(dirs, outDir));
+    const configPath = defaultConfigPath();
+    const config = existsSync(configPath)
+        ? (JSON.parse(readFileSync(configPath, "utf8")) as { eidnara_checkout?: string })
+        : {};
+    const checkout = config.eidnara_checkout ? resolve(config.eidnara_checkout) : null;
+    process.stdout.write(evidenceRun(dirs, outDir, checkout));
 }

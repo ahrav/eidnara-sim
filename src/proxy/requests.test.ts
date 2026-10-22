@@ -99,6 +99,19 @@ test("an append that fails part-way is cut back, so the log reopens whole", () =
     expect(() => new RequestStore(path).close()).not.toThrow();
 });
 
+test("equal parts in another key order keep their own bytes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-requests-"));
+    const path = join(dir, "requests.jsonl");
+    const store = new RequestStore(path);
+    const a = store.store({ messages: [{ role: "user", content: [{ text: "x" }] }] });
+    const b = store.store({ messages: [{ content: [{ text: "x" }], role: "user" }] });
+    store.close();
+    const parts = readRequestParts(path);
+    expect(rebuildRequest(a, parts)).not.toBeNull();
+    expect(rebuildRequest(b, parts)).not.toBeNull();
+    expect(fs.statSync(path).mode & 0o777).toBe(0o600);
+});
+
 test("a corrupt line in the log is refused rather than read as a part", () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-requests-"));
     const path = join(dir, "requests.jsonl");

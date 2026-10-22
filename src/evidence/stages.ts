@@ -255,9 +255,10 @@ type Probe = EvidenceScenario["probes"][number];
 
 function sourceEvents(scenario: EvidenceScenario, probe: Probe): SourceEvent[] {
     const byId = new Map(scenario.events.map((e) => [e.id, e]));
-    return (probe.ground_truth?.sources ?? []).flatMap((id) => {
+    return (probe.ground_truth?.sources ?? []).map((id) => {
         const e = byId.get(id);
-        return e ? [{ ...e, session: e.session }] : [];
+        if (!e) throw new Error(`probe ${probe.id} names source ${id}, which the scenario lacks`);
+        return { ...e, session: e.session };
     });
 }
 
@@ -291,7 +292,12 @@ export function probeEvidence(
     const probeText = probe.text ?? "";
     const scrub = (t: string) => (probeText ? t.split(probeText).join("") : t);
 
-    const armCalls = run.calls.filter((c) => c.arm === armName);
+    // An injected fault answered the host locally, so its request reached no model; a slow
+    // stream forwarded the request and counts.
+    const faultType = new Map((run.scenario.faults ?? []).map((f) => [f.id, f.type]));
+    const reachedModel = (c: CallRecord) =>
+        c.fault_ref === null || faultType.get(c.fault_ref) === "slow_stream";
+    const armCalls = run.calls.filter((c) => c.arm === armName && reachedModel(c));
     const turnCalls = armCalls.filter((c) => c.component === "agent" && c.turn === event);
     const projectSessions = new Set(
         run.scenario.sessions.filter((s) => s.project === project).map((s) => s.id),
@@ -303,18 +309,27 @@ export function probeEvidence(
         const b = body(ctx, c);
         return { c, t: b ? contextText(b) : null };
     });
+    // Delivery needs one model request that carried every group at once.
+    const whole = turnTexts.find(
+        ({ t }) => t !== null && findGroups(present, scrub(t)).every((h) => h !== null),
+    );
     const contextHits = present.map((g) => {
-        for (const { c, t } of turnTexts) {
+        const pick = whole ? [whole] : turnTexts;
+        for (const { c, t } of pick) {
             if (t === null) continue;
             const alt = findGroups([g], scrub(t))[0];
             if (alt) return { alt, c };
         }
         return null;
     });
+    const absent = (gt.absent ?? []).filter((a) => a.length > 0);
+    const forbiddenInContext = absent.filter((a) =>
+        turnTexts.some(({ t }) => t !== null && scrub(t).includes(a)),
+    );
     const staleInContext = stale.filter((s) =>
         turnTexts.some(({ t }) => t !== null && scrub(t).includes(s)),
     );
-    const delivered = bodiesKept && present.length > 0 && contextHits.every((h) => h !== null);
+    const delivered = bodiesKept && present.length > 0 && whole !== undefined;
     const deliveryStage = (name: "delivery" | "context"): Stage => {
         if (!bodiesKept) {
             return {
@@ -330,7 +345,10 @@ export function probeEvidence(
                 status: "n/a",
                 reason: "the probe names no literal to deliver",
                 pointers: [],
-                detail: { stale_in_context: staleInContext },
+                detail: {
+                    stale_in_context: staleInContext,
+                    forbidden_in_context: forbiddenInContext,
+                },
             };
         }
         if (control) {
@@ -357,17 +375,25 @@ export function probeEvidence(
                       ...callPointer(h?.c as CallRecord),
                       at: `seq ${h?.c.seq} carries ${h?.alt}`,
                   })),
-                  detail: { stale_in_context: staleInContext },
+                  detail: {
+                      stale_in_context: staleInContext,
+                      forbidden_in_context: forbiddenInContext,
+                  },
               }
             : {
                   stage: name,
                   status: "failed",
-                  reason: `no probe-turn request carried ${present
-                      .filter((_, i) => contextHits[i] === null)
-                      .map((g) => g.join(" | "))
-                      .join(", ")}`,
+                  reason: contextHits.every((h) => h !== null)
+                      ? "each literal reached the probe context, in no single request together"
+                      : `no probe-turn request carried ${present
+                            .filter((_, i) => contextHits[i] === null)
+                            .map((g) => g.join(" | "))
+                            .join(", ")}`,
                   pointers: turnCalls.map(callPointer),
-                  detail: { stale_in_context: staleInContext },
+                  detail: {
+                      stale_in_context: staleInContext,
+                      forbidden_in_context: forbiddenInContext,
+                  },
               };
     };
 
@@ -523,7 +549,7 @@ export function probeEvidence(
             }
             return null;
         });
-        const stored = persistedHits().every((h) => h.length > 0);
+        const stored = persistedHits().every((h) => h.some(existsAt));
         if (!captured.every(Boolean) && !stored) {
             return {
                 stage: "source",
@@ -550,11 +576,14 @@ export function probeEvidence(
     const objectPointer = (o: StoreObject): Pointer => ({ path: storePath(o), at: o.id });
 
     const persistedStage = (): Stage => {
-        if (arm.objects === null) {
+        if (arm.objects === null || probeDaemon === null) {
             return {
                 stage: "persisted",
                 status: "unobserved",
-                reason: "no final store for the arm",
+                reason:
+                    arm.objects === null
+                        ? "no final store for the arm"
+                        : "the journal has no BeginTurn for the probe",
                 pointers: [],
             };
         }
@@ -589,10 +618,10 @@ export function probeEvidence(
 
     const scopes = projectScopes(run, arm);
     const eligibilityStage = (): Stage => {
-        if (arm.objects === null || present.length === 0) {
+        if (arm.objects === null || probeDaemon === null || present.length === 0) {
             return {
                 stage: "eligibility",
-                status: arm.objects === null ? "unobserved" : "n/a",
+                status: arm.objects === null || probeDaemon === null ? "unobserved" : "n/a",
                 pointers: [],
             };
         }
@@ -698,7 +727,8 @@ export function probeEvidence(
                 returned_from: t ? "transcript" : returned ? "request" : null,
                 delivered: results.has(u.id),
             });
-            if (returned) {
+            // An errored result can echo the query, which is no evidence the search found.
+            if (returned && !returned.error && route?.route !== "errored") {
                 candidates.push({
                     source: u.name,
                     text: returned.text,

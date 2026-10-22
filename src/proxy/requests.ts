@@ -11,7 +11,6 @@ import {
     writeSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { canonicalJson } from "../prereg/canonical";
 import { keepCompleteLines } from "../run/journal";
 import type { ConverseBody } from "./classify";
 
@@ -33,9 +32,12 @@ export interface RequestPart {
 
 const ID = /^[0-9a-f]{32}$/;
 
-/** The first 128 bits of the SHA-256 of the part's canonical JSON. */
+/**
+ * The first 128 bits of the SHA-256 of the part's JSON as serialized, key order included, so a
+ * stored part rebuilds the exact bytes of every body that names it.
+ */
 export function partId(part: RequestPart): string {
-    return createHash("sha256").update(canonicalJson(part)).digest("hex").slice(0, 32);
+    return createHash("sha256").update(JSON.stringify(part)).digest("hex").slice(0, 32);
 }
 
 /**
@@ -119,6 +121,7 @@ export class RequestStore {
         this.fd = openSync(
             full,
             constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW,
+            0o600,
         );
         const stat = fstatSync(this.fd);
         if (!stat.isFile()) {

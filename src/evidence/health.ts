@@ -44,6 +44,7 @@ export const refusedCompaction = (c: CallRecord) =>
     COMPACTION.has(c.component) &&
     c.status === 200 &&
     c.error === null &&
+    c.finish_reason !== "stream_cut" &&
     (c.finish_reason === "content_filtered" || c.output_tokens === 0);
 
 /** The first turn of the session the arm began at or after `wall`. */
@@ -118,7 +119,11 @@ export function sessionHealth(run: RunData): SessionHealth[] {
                         c,
                         `${c.component} ${c.finish_reason ?? "no finish reason"}, ${c.output_tokens} output tokens`,
                     );
-                } else if (c.status !== 200 || c.error !== null) {
+                } else if (
+                    c.status !== 200 ||
+                    c.error !== null ||
+                    c.finish_reason === "stream_cut"
+                ) {
                     failed++;
                 }
             }

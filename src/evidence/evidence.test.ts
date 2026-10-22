@@ -8,6 +8,7 @@ import {
     readdirSync,
     readFileSync,
     rmSync,
+    symlinkSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +19,7 @@ import type { ConverseBody } from "../proxy/classify";
 import type { CallRecord, Component } from "../proxy/records";
 import { partId, type RequestPart, requestParts } from "../proxy/requests";
 import type { Entry } from "../run/journal";
+import { scenarioHash } from "../scenario/compile";
 import { sessionHealth } from "./health";
 import {
     type ArmData,
@@ -469,6 +471,67 @@ describe("evidence stages on a memory arm", () => {
         expect(stage(p, "eligibility")?.status).toBe("failed");
     });
 
+    test("a probe naming a source the scenario lacks is refused", () => {
+        const scenario: EvidenceScenario = {
+            ...SCENARIO,
+            probes: SCENARIO.probes.map((p) => ({
+                ...p,
+                ground_truth: { ...p.ground_truth, sources: ["e-404"] },
+            })),
+        };
+        expect(() => evidence(build({ scenario, calls: [searchTurn("x")] }))).toThrow(/e-404/);
+    });
+
+    test("two literals delivered in different requests are no delivery", () => {
+        const scenario: EvidenceScenario = {
+            ...SCENARIO,
+            probes: SCENARIO.probes.map((p) => ({
+                ...p,
+                ground_truth: { ...p.ground_truth, present: [["TAG_X"], ["TAG_Y"]] },
+            })),
+        };
+        const p = evidence(
+            build({ scenario, calls: [SOURCE_READ, searchTurn("TAG_X"), searchTurn("TAG_Y")] }),
+        );
+        expect(stage(p, "delivery")?.status).toBe("failed");
+        expect(stage(p, "delivery")?.reason).toContain("no single request");
+    });
+
+    test("a request an injected fault answered locally carries no delivery", () => {
+        const scenario: EvidenceScenario = {
+            ...SCENARIO,
+            faults: [{ id: "f-1", type: "provider_5xx" }],
+        };
+        const faulted = { ...searchTurn("TAG_X"), fault_ref: "f-1" };
+        const p = evidence(
+            build({ scenario, calls: [SOURCE_READ, faulted, searchTurn("nothing")] }),
+        );
+        expect(stage(p, "delivery")?.status).toBe("failed");
+    });
+
+    test("an errored search that echoes the query is no retrieval", () => {
+        const p = evidence(
+            build({
+                calls: [SOURCE_READ, CAPTURED, searchTurn("Error: search for TAG_X failed")],
+                objects: [STORED],
+            }),
+        );
+        expect(stage(p, "retrieval")?.status).toBe("failed");
+        expect(p.probe_time.searches).toEqual([expect.objectContaining({ route: "errored" })]);
+    });
+
+    test("without the probe's BeginTurn the timed stages are unobserved", () => {
+        const p = evidence(
+            build({
+                calls: [SOURCE_READ, CAPTURED, searchTurn("nothing")],
+                objects: [STORED],
+                journal: [{ kind: "Event", event: "e-0", outcome: "ok" }],
+            }),
+        );
+        expect(stage(p, "persisted")?.status).toBe("unobserved");
+        expect(stage(p, "eligibility")?.status).toBe("unobserved");
+    });
+
     test("a run without request bodies reports the stages it cannot decide as unobserved", () => {
         const p = evidence(
             build({ calls: [SOURCE_READ, searchTurn("TAG_X")], parts: false, transcripts: null }),
@@ -605,6 +668,16 @@ describe("context health", () => {
         expect(h?.compaction_refused).toBe(1);
     });
 
+    test("a cut compaction is a failure, not a refusal", () => {
+        const r = build({ arm: "host", calls: [compaction(0, "stream_cut"), big] });
+        const h = sessionHealth(r).find((x) => x.session === "s-2");
+        expect(h).toMatchObject({
+            compaction_refused: 0,
+            compaction_failed: 1,
+            cause: "context-overflow",
+        });
+    });
+
     test("a prompt-too-long refusal alone is a context overflow", () => {
         const refused = {
             session: "s-2",
@@ -699,6 +772,7 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     writeFileSync(
         join(dir, "manifest.json"),
         JSON.stringify({
+            scenario_hash: scenarioHash(SCENARIO as unknown as Record<string, unknown>),
             host: "pi",
             context_limit: 200_000,
             order: ["eidnara"],
@@ -734,6 +808,8 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     kernel.run("create table propositions(object_id text, value blob, scope_id text)");
     kernel.run("insert into commit_log values (1, 5000)");
     kernel.run("insert into object_registry values ('decision:1', 1, null, null)");
+    kernel.run("insert into object_registry values ('decision:9', 1, 7, null)");
+    kernel.run("insert into decisions values ('decision:9', 'gone', 'project:KEY_A')");
     kernel.run("insert into decisions values ('decision:1', ?, 'project:KEY_A')", [
         Buffer.from("error strings use TAG_X"),
     ]);
@@ -744,12 +820,19 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     );
     store.run("insert into memory_capture_jobs values ('sim-s-1', 'KEY_A', 1, 1, null)");
     store.close();
-    expect(() => evidenceRun([dir, dir], join(root, "dup"))).toThrow(/share a name/);
-    expect(() => evidenceRun([dir], root)).toThrow(/inside a run directory/);
-    expect(() => evidenceRun([dir], join(dir, "ev"))).toThrow(/inside a run directory/);
+    expect(() => evidenceRun([dir, dir], join(root, "dup"), null)).toThrow(/share a name/);
+    expect(() => evidenceRun([dir], root, null)).toThrow(/inside a run directory/);
+    expect(() => evidenceRun([dir], join(dir, "ev"), null)).toThrow(/inside a run directory/);
     const before = readdirSync(dir).sort();
     const out = join(root, "out");
-    const report = evidenceRun([dir], out);
+    expect(() => evidenceRun([dir], join(root, "checkout", "ev"), join(root, "checkout"))).toThrow(
+        /eidnara checkout/,
+    );
+    mkdirSync(join(root, "elsewhere"));
+    mkdirSync(join(root, "linked"));
+    symlinkSync(join(root, "elsewhere"), join(root, "linked", "run"));
+    expect(() => evidenceRun([dir], join(root, "linked"), null)).toThrow(/through a link/);
+    const report = evidenceRun([dir], out, join(root, "checkout"));
     expect(readdirSync(dir).sort()).toEqual(before);
     const rows = readFileSync(join(out, "run", "evidence.jsonl"), "utf8")
         .trim()
@@ -759,7 +842,13 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     expect(existsSync(join(out, "run", "evidence-sessions.jsonl"))).toBe(true);
     expect(readFileSync(join(out, "evidence.md"), "utf8")).toBe(report);
     expect(report).toContain("| run | eidnara | q-1 | P1 | fail |");
-    expect(loadRun(dir).arms.get("eidnara")?.objects?.[0]?.created_ms).toBe(5000);
+    const objects = loadRun(dir).arms.get("eidnara")?.objects ?? [];
+    expect(objects.find((o) => o.id === "decision:1")?.created_ms).toBe(5000);
+    expect(objects.find((o) => o.id === "decision:9")?.retired_ms).toBe(0);
+    const calls = readFileSync(join(dir, "calls.jsonl"), "utf8");
+    writeFileSync(join(dir, "calls.jsonl"), calls.replace('"seq":1', '"seq":5'));
+    expect(() => loadRun(dir)).toThrow(/seq 5 at position 1/);
+    writeFileSync(join(dir, "calls.jsonl"), calls);
     writeFileSync(join(dir, "eidnara", "final-store", "kernel.sqlite"), "not a database");
     expect(loadRun(dir).arms.get("eidnara")?.objects).toBeNull();
     rmSync(join(dir, "eidnara", "final-store", "store.db"));
