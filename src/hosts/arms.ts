@@ -408,7 +408,6 @@ export class DaemonStack {
     }
 }
 
-/** Runs each step in order, whatever the earlier ones did, and returns their failures. */
 /** How long a close whose launch is confirmed gone waits for the runtime to report the exit. */
 export const PI_EXIT_EVENT_MS = 1_000;
 
@@ -425,6 +424,7 @@ function exitEvent(child: ChildProcess, ms: number): Promise<void> {
     });
 }
 
+/** Runs each step in order, whatever the earlier ones did, and returns their failures. */
 async function settleAll(steps: Array<() => Promise<unknown>>): Promise<unknown[]> {
     const failures: unknown[] = [];
     for (const step of steps) {
