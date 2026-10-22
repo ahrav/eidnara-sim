@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { defaultConfigPath } from "../src/config/config";
 import { sessionHealth } from "../src/evidence/health";
@@ -36,7 +36,7 @@ export function evidenceRun(dirs: string[], out: string | null, checkout: string
         const target = out ? join(out, name) : dir;
         mkdirSync(target, { recursive: true });
         // A linked output directory would route the files somewhere else.
-        if (realpathSync(target) !== resolve(target)) {
+        if (out && lstatSync(target).isSymbolicLink()) {
             throw new Error(`${target} resolves through a link`);
         }
         writeAtomic(
