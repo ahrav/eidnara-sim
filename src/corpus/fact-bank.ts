@@ -147,7 +147,11 @@ function checkProblems(where: string, check: unknown, kind: string, vars: Vars):
     const problems: string[] = [];
     for (const [key, value] of Object.entries(check)) {
         if (key === SCOPE_KEY) {
-            if (typeof value !== "string" || !/^[\w./-]+(?:\/|\.\w+)$/.test(value)) {
+            if (
+                typeof value !== "string" ||
+                !/^[\w./-]+(?:\/|\.\w+)$/.test(value) ||
+                !projectRelative(value.replace(/\/$/, ""), vars)
+            ) {
                 problems.push(
                     `${where}: check key scope is not a directory prefix ending in / or a file path`,
                 );
@@ -353,17 +357,30 @@ function renderedProblems(where: string, kind: string, t: Json, vars: Vars): str
         if (!satisfies(check.must, content, vars) || !satisfies(check.paths_must, path, vars)) {
             problems.push(`${where}: example content does not satisfy the check`);
         }
-        const governed = (patterns: unknown) =>
-            !Array.isArray(patterns) ||
-            patterns.some((pattern) => {
-                try {
-                    return new RegExp(fill(String(pattern), vars), "m").test(content);
-                } catch {
-                    return false;
-                }
+        const regex = (pattern: unknown, flags: string) => {
+            try {
+                return new RegExp(fill(String(pattern), vars), flags);
+            } catch {
+                return null;
+            }
+        };
+        if (Array.isArray(check.applies)) {
+            const starts = check.applies.flatMap((pattern) => {
+                const re = regex(pattern, "mg");
+                return re ? [...content.matchAll(re)].map((m) => m.index) : [];
             });
-        if (!governed(check.applies)) {
-            problems.push(`${where}: example content is no construct the check's applies governs`);
+            const lines = starts.map((at) => content.slice(at).split("\n")[0] as string);
+            if (lines.length === 0) {
+                problems.push(
+                    `${where}: example content is no construct the check's applies governs`,
+                );
+            } else if (!lines.every((line) => satisfies(check.must, line, vars))) {
+                problems.push(`${where}: an example construct the check governs breaks the rule`);
+            }
+        }
+        const scope = typeof check.scope === "string" ? check.scope : undefined;
+        if (scope && !(scope.endsWith("/") ? path.startsWith(scope) : path === scope)) {
+            problems.push(`${where}: example path lies outside the check's scope`);
         }
     }
     if (kind === "tool_error") problems.push(...toolErrorProblems(where, t, check, vars));

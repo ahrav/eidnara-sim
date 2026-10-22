@@ -112,6 +112,20 @@ describe("committed corpus", () => {
         ]);
     });
 
+    test("an example names a governed construct inside the check's scope, and every one carries the rule", () => {
+        const bank = JSON.parse(readFileSync(join(CORPUS_DIR, "fact-bank.json"), "utf8"));
+        const broken = structuredClone(bank);
+        broken.rust.constraint[0].example.content =
+            "pub const {TOKEN}_MAX_ARGS: usize = 4;\npub const MAX_KEYS: usize = 64;";
+        broken.rust.constraint[3].example.path = "src/{token}.rs";
+        broken.rust.constraint[2].check.scope = "src/../db.rs";
+        expect(bankProblems(broken)).toEqual([
+            "fact-bank rust/constraint[0] rs-cmd-const-prefix: an example construct the check governs breaks the rule",
+            "fact-bank rust/constraint[2] rs-db-helper-prefix: check key scope is not a directory prefix ending in / or a file path",
+            "fact-bank rust/constraint[3] rs-test-suffix: example path lies outside the check's scope",
+        ]);
+    });
+
     test("the fact bank gate names kind-specific omissions and unusable patterns", () => {
         const bank = JSON.parse(readFileSync(join(CORPUS_DIR, "fact-bank.json"), "utf8"));
         const broken = structuredClone(bank);
@@ -150,6 +164,7 @@ describe("committed corpus", () => {
             "fact-bank rust/constraint[0] rs-cmd-const-prefix: example content is no construct the check's applies governs",
             "fact-bank rust/constraint[1] rs-cmd-error-tag: example path escapes the project",
             "fact-bank rust/constraint[1] rs-cmd-error-tag: out_probe missing",
+            "fact-bank rust/constraint[1] rs-cmd-error-tag: example path lies outside the check's scope",
             "fact-bank rust/constraint[2] rs-db-helper-prefix: statement names an unknown placeholder",
             "fact-bank rust/constraint[3] rs-test-suffix: check needs must or paths_must",
             "fact-bank rust/constraint[4] rs-tracing-target: check key scope is not a directory prefix ending in / or a file path",

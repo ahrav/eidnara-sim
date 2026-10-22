@@ -17,6 +17,7 @@ const OFFERS = new RegExp(
         '\\b(?:[Pp]robably|[Ll]ikely|[Pp]resumably|[Mm]aybe|[Pp]erhaps|[Pp]ossibly)\\s+(?=[`*"]|(?!(?:I|It|Its|The|This|That|These|Those|There|They|We|You|He|She|A|An|If|In|On|At|Some|Any|No|Not)\\b)[A-Z0-9])',
         "\\bI (?:think|believe|suspect|assume|guess)\\s+(?:it'?s|it is|the answer is|that'?s|they|he|she)\\s+(?=[A-Z0-9\"'`*])",
         "\\b(?:[Mm]ight|[Cc]ould) be\\s+(?=[A-Z0-9\"'`*])",
+        "\\b(?:[Pp]robably|[Mm]aybe|[Pp]erhaps|[Ll]ikely|[Pp]ossibly|[Pp]resumably|[Mm]ight be|[Cc]ould be|I (?:think|guess|suspect))\\b[^.?!]{0,30}?\\b(?:\\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|thirty|ninety)\\s+(?:days?|weeks?|months?|years?|hours?|minutes?|seconds?|quarters?)\\b",
     ].join("|"),
     "g",
 );
@@ -46,8 +47,8 @@ const offersGuess = (sentence: string): boolean =>
  * line or by abstention wording, and guesses nothing. A guess is a value-shaped token, one of the
  * item's superseded values, an explicit guess phrase, or a sentence that offers a candidate under a
  * hedge. A hedge that qualifies something other than the answer (`the decision was probably made
- * elsewhere`) is no guess. The subject's own words are left out first, so restating the question
- * is no guess either.
+ * elsewhere`) is no guess. The value and phrase checks leave the subject's own words out first, so
+ * restating the question is no guess either.
  */
 export function abstains(answer: string, subject: string, stale: string[] = []): boolean {
     const rest = subject
@@ -60,7 +61,7 @@ export function abstains(answer: string, subject: string, stale: string[] = []):
         CANDIDATE_VALUE.test(rest) ||
         stale.some((v) => carries(rest, v)) ||
         EXPLICIT_GUESS.test(rest) ||
-        sentences(rest).some(offersGuess);
+        sentences(answer).some(offersGuess);
     return abstention && !guess;
 }
 
@@ -101,13 +102,22 @@ const shapeOf = (value: string): RegExp =>
 
 /** A word that turns down the next value it names within the clause. */
 const NEGATOR =
-    /\b(?:not|never|no longer|instead of|rather than|other than|except|replac(?:e|es|ed|ing)(?!\s+(?:by|with)\b)|supersed(?:e|es|ed|ing)(?!\s+by\b)|(?:changed|moved|renamed|switched|updated|went)\s+from)\b/gi;
-/** A word that marks the value right after it, at most two words on, as superseded. */
+    /\b(?:not|never|no longer|instead of|rather than|other than|except|replac(?:e|es|ed|ing)(?!\s+(?:by|with)\b)|supersed(?:e|es|ed|ing)(?!\s+by\b)|(?:changed|moved|renamed|switched|updated|went)\s+from|avoid(?:ing)?)\b/gi;
+/** A word that marks the value right after it, at most four words on, as superseded. */
 const STALE_ADJECTIVE =
-    /\b(?:old|older|earlier|previous|previously|prior|former|formerly|originally|retired|outdated|stale|deprecated|obsolete)\b(?=(?:\s+[\w-]+){0,2}?\s+$)/i;
+    /\b(?:old|older|earlier|previous|previously|prior|former|formerly|originally|retired|outdated|stale|deprecated|obsolete)\b(?=,?(?:\s+(?!(?:to|and|but|so)\b)[\w-]+,?){0,4}?\s+$)/i;
 /** What follows a value to say it is wrong or superseded. */
-const AFTER =
-    /^[^.?!]{0,30}?(?:\b(?:is|was|are|were|'s|is now)\s+(?:not\b|no longer|wrong|invalid|incorrect|stale|outdated|out of date|superseded|retired|obsolete|a typo|impossible)|\b(?:isn'?t|is not|wasn'?t|was not|can'?t be|cannot be|couldn'?t be)\s+(?:a\s+)?(?:valid|right|correct|real|current|usable)\b|\bmarked (?:as )?(?:out of date|stale|superseded|old|obsolete)|^\W*\((?:old|outdated|superseded|retired|stale|previous)\b)/i;
+const AFTER = new RegExp(
+    `^[^.?!;]{0,30}?(?:${[
+        "\\b(?:is|was|are|were|'s|is now)\\s+(?:not\\b|no longer|wrong|invalid|incorrect|stale|outdated|out of date|superseded|retired|obsolete|deprecated|replaced\\b|(?:renamed|changed|moved|updated|switched)\\s+to\\b|a typo|impossible)",
+        "\\b(?:isn'?t|is not|wasn'?t|was not|can'?t be|cannot be|couldn'?t be)\\s+(?:a\\s+)?(?:valid|right|correct|real|current|usable)\\b",
+        "\\b(?:should|must|shall)(?:n'?t|\\s+not|\\s+never)\\b",
+        "\\bis best avoided\\b",
+        "\\bmarked (?:as )?(?:out of date|stale|superseded|old|obsolete)",
+        "\\((?:now\\s+)?(?:old|outdated|superseded|retired|stale|previous|deprecated)\\b",
+    ].join("|")})`,
+    "i",
+);
 /** A sentence that says the answer cannot be given. */
 const DECLINE =
     /\b(?:can(?:no|')t|cannot|couldn'?t|unable to)\s+(?:tell|say|confirm|give|find|determine|know|be sure|pin|verify|recommend)\b|\b(?:don'?t|do not|didn'?t)\s+know\b|\bnot (?:sure|certain)\b|\bunsure\b|\bno record\b|\bunknown\b|\bunclear\b|\bnever (?:settled|recorded|named|given|decided|stated)\b|\b(?:rather not|won'?t|not going to) (?:guess|pick)\b|\bconflict(?:s|ing)?\b|\bcontradict\w*|\bdisagree\b/i;
@@ -115,6 +125,12 @@ const DECLINE =
 /** EQUALLY matches wording that signals competition between co-mentioned values. */
 const EQUALLY =
     /\b(?:either|conflict\w*|contradict\w*|disagree\w*|two different|which (?:one|of)|both (?:are|were|could|may|might)|equally)\b|\bcan'?t tell which\b/i;
+
+/** A word that ends the clause a negation governs before it reaches a value. */
+const CLAUSE = /\b(?:to|and|but|so)\b/i;
+/** A sentence after the answer that switches to another value: `Actually, use Y instead`. */
+const CORRECTION =
+    /\b(?:actually|instead|correction|on second thought|scratch that|I meant|rather)\b/i;
 
 interface Mention {
     token: string;
@@ -143,13 +159,17 @@ function mentions(sentence: string, value: string, stale: string[]): Mention[] {
     for (const n of sentence.matchAll(NEGATOR)) {
         const end = n.index + n[0].length;
         const next = list.find((m) => m.at >= end);
-        if (next && /^[^.?!,;:()\u2013\u2014]{0,40}$/.test(sentence.slice(end, next.at))) {
+        const between = sentence.slice(end, next?.at ?? end);
+        if (next && /^[^.?!,;:()\u2013\u2014]{0,40}$/.test(between) && !CLAUSE.test(between)) {
             next.negated = true;
         }
     }
-    for (const m of list) {
-        const before = sentence.slice(0, m.at);
-        const after = sentence.slice(m.at + m.token.length);
+    for (const [i, m] of list.entries()) {
+        const before = sentence.slice(
+            (list[i - 1]?.at ?? 0) + (list[i - 1]?.token.length ?? 0),
+            m.at,
+        );
+        const after = sentence.slice(m.at + m.token.length, list[i + 1]?.at ?? sentence.length);
         if (STALE_ADJECTIVE.test(before) || AFTER.test(after)) m.negated = true;
     }
     return list;
@@ -180,8 +200,11 @@ export function uncommitted(answer: string, value: string, stale: string[] = [])
     if (own.negated) return "answer turns the value down";
     const live = (found: Mention[]) => found.some((m) => !m.expected && !m.negated);
     if (live(decisive.found)) return "answer names a competing value beside it";
-    for (const { s, found } of all) {
+    for (const [i, { s, found }] of all.entries()) {
         if (found.some((m) => m.expected && m.negated)) return "answer turns the value down";
+        if (i > first && live(found) && CORRECTION.test(s)) {
+            return "answer switches to a competing value";
+        }
         if (found.some((m) => m.expected) && live(found) && EQUALLY.test(s)) {
             return "answer names a competing value beside it";
         }

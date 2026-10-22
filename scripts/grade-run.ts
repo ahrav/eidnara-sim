@@ -650,7 +650,9 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     const ledger = (arm: string) => {
         const cached = ledgers.get(arm);
         if (cached) return cached;
-        const rows = readJsonl<Record<string, unknown>>(join(dir, arm, "tools.jsonl"));
+        const path = join(dir, arm, "tools.jsonl");
+        if (!existsSync(path)) throw new Error(`arm ${arm} has no tools.jsonl`);
+        const rows = readJsonl<Record<string, unknown>>(path);
         const runs: { turn: string | null; run: Command }[] = [];
         rows.forEach((row, i) => {
             const { turn, command, exit, scenario_ms } = row;
@@ -659,7 +661,9 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
                 (turn !== null && typeof turn !== "string") ||
                 typeof command !== "string" ||
                 !exitOk ||
-                typeof scenario_ms !== "number"
+                typeof scenario_ms !== "number" ||
+                !Number.isFinite(scenario_ms) ||
+                scenario_ms < 0
             ) {
                 throw new Error(`${arm}/tools.jsonl line ${i + 1} is not a tool run`);
             }

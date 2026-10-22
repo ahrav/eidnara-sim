@@ -199,6 +199,34 @@ describe("P1 and P1-control: the rule holds on every construct it governs, in it
         expect(outcome(db, withTest)).toEqual(["pass"]);
         const plain = { files: [{ path: "src/db.rs", lines: [helper, "fn expiring() {}"] }] };
         expect(outcome(db, plain)).toEqual(["fail", "a governed construct breaks the rule"]);
+        const attributed = {
+            files: [
+                {
+                    path: "src/db.rs",
+                    lines: [
+                        helper,
+                        '#[tokio::test(flavor = "multi_thread")]',
+                        "#[ignore]",
+                        "async fn counts() {}",
+                    ],
+                },
+            ],
+        };
+        expect(outcome(db, attributed)).toEqual(["pass"]);
+    });
+
+    test("a delimiter inside a string or comment leaves a statement's unit alone", () => {
+        const tag = probeOf("P1", "rs-cmd-error-tag");
+        const word = literal(tag);
+        const braced = {
+            files: [
+                {
+                    path: "src/cmd/get.rs",
+                    lines: ['return Err("bad { input".into()); // {', `// "[${word}]" goes first`],
+                },
+            ],
+        };
+        expect(outcome(tag, braced)).toEqual(["fail", "a governed construct breaks the rule"]);
     });
 });
 
@@ -410,6 +438,8 @@ describe("P6: resume in code, or ask the user to choose", () => {
         const generic = { answer: `Both ${a} and ${b} are open. Anything else?` };
         expect(outcome(clarify, generic)[0]).toBe("fail");
         expect(outcome(clarify, { answer: `Both ${a} and ${b} are open.` })[0]).toBe("fail");
+        const vague = { answer: `Both ${a} and ${b} are open. Should we start?` };
+        expect(outcome(clarify, vague)[0]).toBe("fail");
         const built = {
             answer: asked,
             files: [{ path: "src/connection.rs", lines: [`    ${a}: u64,`] }],
@@ -438,6 +468,10 @@ describe("P8: the answer commits to the value", () => {
             `It is ${v} now (previously brisk-otter-07).`,
             `The alias moved from brisk-otter-07 to ${v}, so aim the script at ${v}.`,
             `It is ${v} now, not brisk-otter-07.`,
+            `Use ${v}; brisk-otter-07 was replaced by it.`,
+            `Use ${v} (brisk-otter-07 is now retired).`,
+            `The alias moved from the old default to ${v}.`,
+            `Use ${v}; the old staging cluster alias brisk-otter-07 is gone.`,
         ]) {
             expect(outcome(p8, { answer })).toEqual(["pass"]);
         }
@@ -457,6 +491,12 @@ describe("P8: the answer commits to the value", () => {
                 "answer declines before naming the value",
             ],
             [`Do you mean ${v}?`, "answer asks instead of answering"],
+            [`${v} should not be used.`, "answer turns the value down"],
+            [`Avoid ${v}.`, "answer turns the value down"],
+            [
+                `Use ${v}. Actually, use brisk-otter-07 instead.`,
+                "answer switches to a competing value",
+            ],
             ["Use brisk-otter-07, or maybe the other one.", "answer lacks the value"],
             [
                 `Memory has brisk-otter-07 and ${v}; I can't say which.`,
@@ -488,6 +528,8 @@ describe("P9: abstain without a guess; a hedge on something else is no guess", (
             "I can't find a decision on that. The decision was probably made somewhere outside this repo, like a chat or a ticket.",
             "No one has been named, and I'm not offering a likely candidate.",
             "I don't know. It's probably worth deciding before the next release.",
+            "We never decided; it is probably on GitHub somewhere.",
+            "I don't know; probably the README or a ticket outside this repo would say.",
         ]) {
             expect(outcome(p9, { answer })).toEqual(["pass"]);
         }
@@ -500,6 +542,8 @@ describe("P9: abstain without a guess; a hedge on something else is no guess", (
             "I don't know; my guess is a week.",
             "Not decided; maybe 86400 seconds.",
             "I don't know, but probably Alice owns it.",
+            "I don't know, but perhaps seven days.",
+            "I don't know; it could be around a month.",
             "We keep it for 30 days.",
         ]) {
             expect(outcome(p9, { answer })[0]).toBe("fail");
@@ -567,7 +611,13 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
 
     test("a tool-result item whose check never ran is excluded, a read included", () => {
         const entry = readme([`Issue #${issue}: ${idOf(tool)}.`]);
-        for (const source of [[], ["ls scripts"], [`cat ${script}`]]) {
+        for (const source of [
+            [],
+            ["ls scripts"],
+            [`cat ${script}`],
+            [`sh -n ${script}`],
+            [`sh -c 'true' ${script}`],
+        ]) {
             expect(outcome(tool, { files: [entry], source })).toEqual([
                 "excluded",
                 "source check never ran",
@@ -589,6 +639,20 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
             "entry does not tie the identity to the failure",
         ]);
         expect(outcome(tool, { source: ran })).toEqual(omits);
+        const apart = readme([
+            `${idOf(tool)} happens sometimes.`,
+            "",
+            `Updated links for issue #${issue}.`,
+        ]);
+        expect(outcome(tool, { files: [apart], source: ran })).toEqual([
+            "fail",
+            "entry does not tie the identity to the failure",
+        ]);
+        const headed = {
+            path: "README.md",
+            lines: [`### ${idOf(tool)}`, "", `Issue #${issue} reproduces it.`],
+        };
+        expect(outcome(tool, { files: [headed], source: ran })).toEqual(["pass"]);
     });
 
     test("a pasted failure needs no tool run and ties through its test or issue", () => {

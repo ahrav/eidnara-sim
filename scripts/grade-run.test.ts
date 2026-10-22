@@ -1164,6 +1164,13 @@ describe("tool-result evidence", () => {
         expect(grade?.inputs.some((id) => id.endsWith(":source-commands"))).toBe(true);
     });
 
+    test("an arm without a tool ledger refuses the tool-result item instead of excluding it", async () => {
+        const dir = run({ probes: [probe], prelude, order: ["eidnara"] });
+        snapshot(dir, "eidnara", entry);
+        rmSync(join(dir, "eidnara", "tools.jsonl"), { force: true });
+        await expect(gradeRun(dir, null)).rejects.toThrow("has no tools.jsonl");
+    });
+
     test("a check that never ran in its source session excludes the item", async () => {
         const dir = run({ probes: [probe], prelude, order: ["eidnara"] });
         ledger(dir, [

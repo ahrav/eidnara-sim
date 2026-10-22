@@ -54,7 +54,7 @@
                         "fn {token}_[a-z0-9_]+"
                     ],
                     "applies": [
-                        "(?<!#\\[(?:tokio::)?test\\][ \\t]*\\n)^[ \\t]*(?:pub(?:\\([^)\\n]*\\))?\\s+)?(?:async\\s+)?fn\\s+\\w+"
+                        "(?<!#\\[(?:tokio::)?test(?:\\([^)\\n]*\\))?\\][ \\t]*\\n(?:[ \\t]*#\\[[^\\]\\n]*\\][ \\t]*\\n)*)^[ \\t]*(?:pub(?:\\([^)\\n]*\\))?\\s+)?(?:async\\s+)?fn\\s+\\w+"
                     ]
                 },
                 "revise": "helper functions added to src/db.rs now take a {token}_ prefix in place of {old_token}_"
@@ -74,7 +74,7 @@
                         "fn [a-z0-9_]+_{token}\\b"
                     ],
                     "applies": [
-                        "(?<=#\\[(?:tokio::)?test[^\\]\\n]*\\][ \\t]*\\n[ \\t]*)(?:pub\\s+)?(?:async\\s+)?fn\\s+\\w+"
+                        "(?<=#\\[(?:tokio::)?test(?:\\([^)\\n]*\\))?\\][ \\t]*\\n(?:[ \\t]*#\\[[^\\]\\n]*\\][ \\t]*\\n)*[ \\t]*)(?:pub\\s+)?(?:async\\s+)?fn\\s+\\w+"
                     ]
                 },
                 "revise": "integration test functions added under tests/ now end in _{token} rather than _{old_token}"

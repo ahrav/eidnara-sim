@@ -318,8 +318,12 @@ function unitsOf(files: DiffFile[], patterns: string[]): string[] {
         for (const at of [...starts].sort((a, b) => a - b)) {
             const lines = text.slice(at).split("\n");
             let unit = lines[0] as string;
-            const open = (u: string) =>
-                (u.match(/[([{]/g)?.length ?? 0) - (u.match(/[)\]}]/g)?.length ?? 0);
+            const open = (u: string) => {
+                const code = u
+                    .replace(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g, "")
+                    .replace(/\/\/.*$/gm, "");
+                return (code.match(/[([{]/g)?.length ?? 0) - (code.match(/[)\]}]/g)?.length ?? 0);
+            };
             for (let i = 1; i < lines.length && i <= 10 && open(unit) > 0; i++) {
                 unit += `\n${lines[i]}`;
             }
@@ -765,7 +769,7 @@ function p4(r: ArtefactReader, c: Check): Outcome {
 }
 
 /** A question that asks the user to choose: the answer's last three sentences hold one. */
-const CHOICE = /\b(?:which|either|whether|or|first|order|prefer|rather|start)\b/i;
+const CHOICE = /\b(?:which|either|whether|or|first|order|prefer|rather)\b/i;
 /** A sentence that picks a task after all: `I'll start with`, `let me begin`. */
 const COMMITS =
     /\bI(?:'ll| will|'m going to| am going to) (?:start|begin|go|do|take|pick|work|tackle)\b|\blet me (?:start|begin)\b/i;
@@ -954,9 +958,12 @@ const runsScript = (path: string) => (x: Command) =>
         const words = shellWords(seg);
         const named = (w: string | undefined) =>
             w !== undefined && (w === path || w === `./${path}` || w.endsWith(`/${path}`));
+        if (named(words[0])) return true;
+        if (!/^(?:sh|bash|dash|zsh)$/.test(words[0] ?? "")) return false;
+        const options = words.slice(1).filter((w) => w.startsWith("-"));
+        const operand = words.slice(1).find((w) => !w.startsWith("-"));
         return (
-            named(words[0]) ||
-            (/^(?:sh|bash|dash|zsh)$/.test(words[0] ?? "") && words.slice(1).some(named))
+            !options.some((o) => /^-[a-z]*[nc]/i.test(o) && !o.startsWith("--")) && named(operand)
         );
     });
 /**
@@ -1001,9 +1008,39 @@ function p12(r: ArtefactReader, c: Check, probe: ProbeItem, sources: SourceEvent
     if (broken(w, c)) return binary("P12", false, {}, "named a superseded identity");
     const identity = (probe.ground_truth?.present ?? []).flat();
     const evidence = failureEvidence(probe, sources, identity);
-    const added = named.flatMap((f) => f.added).join("\n");
-    const tied = evidence.length === 0 || evidence.some((t) => carries(added, t));
+    const tied =
+        evidence.length === 0 ||
+        entriesOf(named).some(
+            (e) => matchesAll(e, c.must ?? []) && evidence.some((t) => carries(e, t)),
+        );
     return binary("P12", tied, {}, "entry does not tie the identity to the failure");
+}
+
+/**
+ * The entries of the files' added lines: each paragraph, joined to the heading above it, so an
+ * identity under a heading and its evidence in the paragraph below share one entry.
+ */
+function entriesOf(files: DiffFile[]): string[] {
+    const out: string[] = [];
+    for (const f of files) {
+        const before = out.length;
+        let heading = "";
+        let paragraph: string[] = [];
+        const flush = () => {
+            if (paragraph.length > 0) out.push([heading, ...paragraph].join("\n"));
+            paragraph = [];
+        };
+        for (const line of f.added) {
+            if (/^\s*#{1,6}\s/.test(line)) {
+                flush();
+                heading = line;
+            } else if (line.trim() === "") flush();
+            else paragraph.push(line);
+        }
+        flush();
+        if (out.length === before && heading) out.push(heading);
+    }
+    return out;
 }
 
 /** Negative-rule graders need a code change: a turn that changed no code had nothing to get wrong. */
