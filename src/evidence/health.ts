@@ -90,10 +90,11 @@ export function sessionHealth(run: RunData): SessionHealth[] {
         // A mark between turns covers the session's next turn, the first one it can affect.
         const mark = (c: CallRecord, why: string): HealthMark => ({
             seq: c.seq,
+            // A between-turn mark covers the first turn whose request left after it finished.
             turn:
                 c.turn ??
-                sorted.find((x) => x.seq > c.seq && x.turn !== null)?.turn ??
-                nextTurn(run, arm, session, c.started_wall_ms),
+                sorted.find((x) => x.started_wall_ms >= c.wall_ms && x.turn !== null)?.turn ??
+                nextTurn(run, arm, session, c.wall_ms),
             why,
         });
         let first_refused: HealthMark | null = null;

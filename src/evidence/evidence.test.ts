@@ -29,7 +29,14 @@ import {
     type StoreObject,
 } from "./load";
 import { armComparison } from "./report";
-import { bodyText, injectedBlocks, type ProbeEvidence, probeEvidence, searchRoute } from "./stages";
+import {
+    bodyText,
+    findGroups,
+    injectedBlocks,
+    type ProbeEvidence,
+    probeEvidence,
+    searchRoute,
+} from "./stages";
 
 const user = (text: string) => ({ role: "user", content: [{ text }] });
 const toolUse = (id: string, name: string, input: unknown) => ({
@@ -323,6 +330,25 @@ describe("evidence stages on a memory arm", () => {
         expect(p.attributed.cause).toBe("eligibility");
     });
 
+    test("a mixed path holds when one literal was captured and another stored", () => {
+        const scenario: EvidenceScenario = {
+            ...SCENARIO,
+            probes: SCENARIO.probes.map((p) => ({
+                ...p,
+                ground_truth: { ...p.ground_truth, present: [["TAG_X"], ["TAG_Y"]] },
+            })),
+        };
+        const read = {
+            ...SOURCE_READ,
+            body: { messages: [user("Read notes/n.md"), toolResult("t0", "use TAG_X and TAG_Y")] },
+        };
+        const storedY = { ...STORED, text: "TAG_Y" };
+        const p = evidence(
+            build({ scenario, calls: [read, CAPTURED, searchTurn("nothing")], objects: [storedY] }),
+        );
+        expect(stage(p, "source")?.status).toBe("ok");
+    });
+
     test("a successor written after the probe began leaves the memory eligible", () => {
         const old = { ...STORED, superseded_by: "decision:2", retired_ms: BEGIN_WALL + 5 };
         const next = { ...STORED, id: "decision:2", created_ms: BEGIN_WALL + 5 };
@@ -585,6 +611,23 @@ describe("evidence stages on the host arm", () => {
             cause: "source",
             status: "unavailable",
         });
+        const before = {
+            ...SCENARIO.events.find((e) => e.id === "e-2"),
+            id: "e-1b",
+            kind: "user_turn",
+        };
+        const early: EvidenceScenario = {
+            ...scenario,
+            events: [
+                ...scenario.events.slice(0, 2),
+                before as EvidenceScenario["events"][number],
+                ...scenario.events.slice(2),
+            ],
+        };
+        const tooEarly = [{ line: 1, turn: "e-1b", command: "sh scripts/check.sh", exit: 1 }];
+        expect(
+            evidence(build({ ...base, scenario: early, tools: tooEarly })).attributed.status,
+        ).toBe("unavailable");
         const ran = [{ line: 1, turn: "e-2", command: "sh scripts/check.sh", exit: 1 }];
         const p = evidence(build({ ...base, tools: ran }));
         expect(stage(p, "source")?.status).toBe("ok");
@@ -729,6 +772,23 @@ describe("context health", () => {
         );
     });
 
+    test("a flagged probe points at the call that set the cause", () => {
+        const r = build({ arm: "host", calls: [compaction(0, "content_filtered"), big] });
+        expect(evidence(r).attributed.pointers?.[0]).toEqual({ path: "calls.jsonl", at: "seq 0" });
+    });
+
+    test("a turn whose request left before the refusal finished stays unflagged", () => {
+        const r = build({
+            arm: "host",
+            calls: [
+                { ...compaction(0, "content_filtered"), started_wall_ms: 1, wall_ms: 30 },
+                { session: "s-2", turn: "e-5", started_wall_ms: 10, wall_ms: 60 },
+                { ...big, turn: "e-6", started_wall_ms: 70, wall_ms: 90 },
+            ],
+        });
+        expect(sessionHealth(r).find((x) => x.session === "s-2")?.flagged_from).toBe("e-6");
+    });
+
     test("the comparison keeps flagged turns apart", () => {
         const r = build({ arm: "host", calls: [compaction(0, "end_turn"), big] });
         const sessions = sessionHealth(r);
@@ -749,6 +809,12 @@ describe("context health", () => {
         (r.arms.get("eidnara") as ArmData).profile = { plugin: true, host_compaction: true };
         expect(sessionHealth(r).find((x) => x.session === "s-2")?.p90_native_compaction).toBe(true);
     });
+});
+
+test("literals match as the scenario compiler matches them", () => {
+    expect(findGroups([["12345"]], "id 9123456")).toEqual([null]);
+    expect(findGroups([["12345"]], "id 12345.")).toEqual(["12345"]);
+    expect(findGroups([["tag_x"]], "use TAG_X")).toEqual(["tag_x"]);
 });
 
 test("request text, injected blocks, and search routes read as documented", () => {
@@ -798,6 +864,11 @@ test("evidence-run reads a run directory and writes only under --out", () => {
         metrics: { "P1.pass": false },
     };
     writeFileSync(join(dir, "grades.jsonl"), `${JSON.stringify(graded)}\n`);
+    writeFileSync(
+        join(dir, "eidnara", "tools.jsonl"),
+        '{"turn":"e-2","command":"ls","exit":"0","scenario_ms":1}\n',
+    );
+    expect(() => loadRun(dir)).toThrow(/not a tool run/);
     writeFileSync(join(dir, "eidnara", "tools.jsonl"), "");
     const kernel = new Database(join(dir, "eidnara", "final-store", "kernel.sqlite"));
     kernel.run("create table commit_log(commit_seq integer primary key, recorded_at integer)");
@@ -809,6 +880,7 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     kernel.run("insert into commit_log values (1, 5000)");
     kernel.run("insert into object_registry values ('decision:1', 1, null, null)");
     kernel.run("insert into object_registry values ('decision:9', 1, 7, null)");
+    kernel.run("insert into object_registry values ('decision:8', 3, null, null)");
     kernel.run("insert into decisions values ('decision:9', 'gone', 'project:KEY_A')");
     kernel.run("insert into decisions values ('decision:1', ?, 'project:KEY_A')", [
         Buffer.from("error strings use TAG_X"),
@@ -842,6 +914,14 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     expect(existsSync(join(out, "run", "evidence-sessions.jsonl"))).toBe(true);
     expect(readFileSync(join(out, "evidence.md"), "utf8")).toBe(report);
     expect(report).toContain("| run | eidnara | q-1 | P1 | fail |");
+    expect(loadRun(dir).arms.get("eidnara")?.objects?.length).toBe(2);
+    const k = new Database(join(dir, "eidnara", "final-store", "kernel.sqlite"));
+    k.run("insert into decisions values ('decision:8', 'x', 'project:KEY_A')");
+    k.close();
+    expect(loadRun(dir).arms.get("eidnara")?.objects).toBeNull();
+    const k2 = new Database(join(dir, "eidnara", "final-store", "kernel.sqlite"));
+    k2.run("delete from decisions where object_id = 'decision:8'");
+    k2.close();
     const objects = loadRun(dir).arms.get("eidnara")?.objects ?? [];
     expect(objects.find((o) => o.id === "decision:1")?.created_ms).toBe(5000);
     expect(objects.find((o) => o.id === "decision:9")?.retired_ms).toBe(0);

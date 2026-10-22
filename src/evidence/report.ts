@@ -134,9 +134,10 @@ export function renderEvidence(runs: RunEvidence[]): string {
     );
     for (const r of runs) {
         for (const p of r.probes) {
-            const pointers = p.stages
-                .filter((s) => s.stage === p.attributed.cause)
-                .flatMap((s) => s.pointers)
+            const pointers = (
+                p.attributed.pointers ??
+                p.stages.filter((s) => s.stage === p.attributed.cause).flatMap((s) => s.pointers)
+            )
                 .slice(0, 2)
                 .map((x) => `${x.path}${x.at ? ` ${x.at}` : ""}`);
             out.push(

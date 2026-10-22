@@ -220,12 +220,14 @@ export function readStore(dir: string): Pick<ArmData, "objects" | "captures"> {
                 scope: string | null;
             }[];
             for (const r of rows) {
+                // A creation commit the log lacks leaves the store's timeline unknown.
+                if (!commits.has(r.created)) throw new StoreUnreadable();
                 objects.push({
                     store: "kernel",
                     id: r.id,
                     text: blobText(r.payload),
                     scope: r.scope,
-                    created_ms: commits.get(r.created) ?? null,
+                    created_ms: commits.get(r.created) as number,
                     // An invalidation whose commit row is missing retired the object at an
                     // unknown time, read as before any probe.
                     retired_ms: r.invalidated === null ? null : (commits.get(r.invalidated) ?? 0),
@@ -385,7 +387,7 @@ export function loadRun(dir: string): RunData {
         const root = join(dir, arm);
         const toolsPath = join(root, "tools.jsonl");
         const tools = lstatSync(toolsPath, { throwIfNoEntry: false })?.isFile()
-            ? readJsonl<Omit<ToolRun, "line">>(toolsPath).map((r, i) => ({ ...r, line: i + 1 }))
+            ? readTools(toolsPath)
             : null;
         const logPath = join(root, "r", "eidnara.log");
         const pluginLog = lstatSync(logPath, { throwIfNoEntry: false })?.isFile()
@@ -422,6 +424,30 @@ export function loadRun(dir: string): RunData {
         grades,
         arms,
     };
+}
+
+/** The tool ledger, each row checked as the grader checks it: an integer or null exit. */
+export function readTools(path: string): ToolRun[] {
+    return readJsonl<Record<string, unknown>>(path).map((r, i) => {
+        const { turn, command, exit, scenario_ms, call } = r;
+        if (
+            (turn !== null && typeof turn !== "string") ||
+            typeof command !== "string" ||
+            !(exit === null || Number.isInteger(exit)) ||
+            typeof scenario_ms !== "number" ||
+            !Number.isFinite(scenario_ms) ||
+            (call !== undefined && typeof call !== "string")
+        ) {
+            throw new Error(`${path} line ${i + 1} is not a tool run`);
+        }
+        return {
+            line: i + 1,
+            turn,
+            command,
+            exit: exit as number | null,
+            ...(call === undefined ? {} : { call }),
+        };
+    });
 }
 
 /** The call log, each record checked for its fields and its position. */

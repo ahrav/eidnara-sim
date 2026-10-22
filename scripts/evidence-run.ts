@@ -13,7 +13,7 @@ const USAGE = "usage: bun scripts/evidence-run.ts <run dir>... [--out <dir>]";
 /** `checkout` is the configured eidnara checkout, which this tree never writes. */
 export function evidenceRun(dirs: string[], out: string | null, checkout: string | null): string {
     const runs: RunEvidence[] = [];
-    const names = dirs.map((d) => basename(d));
+    const names = dirs.map((d) => basename(resolve(d)));
     if (new Set(names).size !== names.length) {
         throw new Error("two run directories share a name, so report rows would collide");
     }
@@ -32,7 +32,7 @@ export function evidenceRun(dirs: string[], out: string | null, checkout: string
         const run = loadRun(dir);
         const sessions = sessionHealth(run);
         const probes = runEvidence(run, sessions);
-        const name = basename(dir);
+        const name = basename(resolve(dir));
         const target = out ? join(out, name) : dir;
         mkdirSync(target, { recursive: true });
         // A linked output directory would route the files somewhere else.

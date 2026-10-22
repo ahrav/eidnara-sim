@@ -2,6 +2,7 @@ import { type GradeRecord, runsScript, type SourceEvent } from "../grade/probes"
 import type { ConverseBody } from "../proxy/classify";
 import type { CallRecord } from "../proxy/records";
 import type { Entry } from "../run/journal";
+import { holds } from "../scenario/compile";
 import type { SessionHealth } from "./health";
 import {
     type ArmData,
@@ -61,7 +62,12 @@ export interface ProbeEvidence {
     stale: string[];
     sources: string[];
     stages: Stage[];
-    attributed: { cause: Cause; status: StageStatus | "flagged"; reason: string };
+    attributed: {
+        cause: Cause;
+        status: StageStatus | "flagged";
+        reason: string;
+        pointers?: Pointer[];
+    };
     probe_time: Record<string, unknown>;
 }
 
@@ -166,13 +172,13 @@ export function injectedBlocks(text: string): Array<{ tag: string; body: string 
 
 /** The first group alternative each group finds in `text`, or null per group it misses. */
 export function findGroups(groups: string[][], text: string): Array<string | null> {
-    return groups.map((g) => g.find((alt) => alt.length > 0 && text.includes(alt)) ?? null);
+    return groups.map((g) => g.find((alt) => alt.length > 0 && holds(text, alt)) ?? null);
 }
 
 /** The 1-based line of `text` where the first found alternative first appears. */
 function rankOf(text: string, alts: string[]): number | null {
     const lines = text.split("\n");
-    const i = lines.findIndex((l) => alts.some((a) => a.length > 0 && l.includes(a)));
+    const i = lines.findIndex((l) => alts.some((a) => a.length > 0 && holds(l, a)));
     return i < 0 ? null : i + 1;
 }
 
@@ -189,10 +195,48 @@ interface Context {
     bodies: Map<number, ConverseBody | null>;
 }
 
-const caches = new WeakMap<
-    RunData,
-    { texts: Map<number, string | null>; bodies: Map<number, ConverseBody | null> }
->();
+interface RunCache {
+    texts: Map<number, string | null>;
+    bodies: Map<number, ConverseBody | null>;
+    order: Map<string, number>;
+    journal: (arm: string) => Entry[];
+    calls: (arm: string) => CallRecord[];
+}
+
+const caches = new WeakMap<RunData, RunCache>();
+
+/** Per-run indexes every probe of the run shares, built on first use. */
+function cacheOf(run: RunData): RunCache {
+    const known = caches.get(run);
+    if (known) return known;
+    const journals = new Map<string, Entry[]>();
+    const calls = new Map<string, CallRecord[]>();
+    // An injected fault answered the host locally, so its request reached no model; a slow
+    // stream forwarded the request and counts.
+    const faultType = new Map((run.scenario.faults ?? []).map((f) => [f.id, f.type]));
+    const reachedModel = (c: CallRecord) =>
+        c.fault_ref === null || faultType.get(c.fault_ref) === "slow_stream";
+    const cache: RunCache = {
+        texts: new Map(),
+        bodies: new Map(),
+        order: new Map(run.scenario.events.map((e, i) => [e.id, i])),
+        journal: (arm) => {
+            let mine = journals.get(arm);
+            if (!mine) journals.set(arm, (mine = run.journal.filter((e) => e.arm === arm)));
+            return mine;
+        },
+        calls: (arm) => {
+            let mine = calls.get(arm);
+            if (!mine) {
+                mine = run.calls.filter((c) => c.arm === arm && reachedModel(c));
+                calls.set(arm, mine);
+            }
+            return mine;
+        },
+    };
+    caches.set(run, cache);
+    return cache;
+}
 
 function body(ctx: Context, c: CallRecord): ConverseBody | null {
     if (!ctx.bodies.has(c.seq)) ctx.bodies.set(c.seq, requestOf(ctx.run, c));
@@ -272,11 +316,18 @@ export function probeEvidence(
     const arm = run.arms.get(armName) as ArmData;
     const memory = arm.profile?.plugin === true;
     const probe = run.scenario.probes.find((p) => p.id === grade.item) as Probe;
-    const order = new Map(run.scenario.events.map((e, i) => [e.id, i]));
-    const journal = run.journal.filter((e) => e.arm === armName);
-    const cached = caches.get(run) ?? { texts: new Map(), bodies: new Map() };
-    caches.set(run, cached);
-    const ctx: Context = { run, arm, order, journal, health, ...cached };
+    const cached = cacheOf(run);
+    const { order } = cached;
+    const journal = cached.journal(armName);
+    const ctx: Context = {
+        run,
+        arm,
+        order,
+        journal,
+        health,
+        texts: cached.texts,
+        bodies: cached.bodies,
+    };
     const gt = probe.ground_truth ?? {};
     const present = (gt.present ?? []).filter((g) => g.length > 0);
     const stale = gt.stale ?? [];
@@ -294,10 +345,7 @@ export function probeEvidence(
 
     // An injected fault answered the host locally, so its request reached no model; a slow
     // stream forwarded the request and counts.
-    const faultType = new Map((run.scenario.faults ?? []).map((f) => [f.id, f.type]));
-    const reachedModel = (c: CallRecord) =>
-        c.fault_ref === null || faultType.get(c.fault_ref) === "slow_stream";
-    const armCalls = run.calls.filter((c) => c.arm === armName && reachedModel(c));
+    const armCalls = cached.calls(armName);
     const turnCalls = armCalls.filter((c) => c.component === "agent" && c.turn === event);
     const projectSessions = new Set(
         run.scenario.sessions.filter((s) => s.project === project).map((s) => s.id),
@@ -324,10 +372,10 @@ export function probeEvidence(
     });
     const absent = (gt.absent ?? []).filter((a) => a.length > 0);
     const forbiddenInContext = absent.filter((a) =>
-        turnTexts.some(({ t }) => t !== null && scrub(t).includes(a)),
+        turnTexts.some(({ t }) => t !== null && holds(scrub(t), a)),
     );
     const staleInContext = stale.filter((s) =>
-        turnTexts.some(({ t }) => t !== null && scrub(t).includes(s)),
+        turnTexts.some(({ t }) => t !== null && holds(scrub(t), s)),
     );
     const delivered = bodiesKept && present.length > 0 && whole !== undefined;
     const deliveryStage = (name: "delivery" | "context"): Stage => {
@@ -447,16 +495,21 @@ export function probeEvidence(
             (e) => e.kind === "apply_diff" && !e.remove && /^#!/.test(e.content ?? ""),
         );
         if (probe.type === "P12" && scripts.length > 0) {
+            // The grader's window: user turns of a source turn's session, from the first
+            // source turn up to the probe.
+            const sourceTurns = sources.filter((s) => s.kind === "user_turn");
+            const from = Math.min(...sourceTurns.map((s) => order.get(s.id) ?? Infinity));
             const turns = new Set(
                 run.scenario.events
-                    .filter(
-                        (e) =>
+                    .filter((e) => {
+                        const at = order.get(e.id) ?? -1;
+                        return (
                             e.kind === "user_turn" &&
-                            sources.some(
-                                (s) => s.kind === "user_turn" && s.session === e.session,
-                            ) &&
-                            (order.get(e.id) ?? 0) < probeOrder,
-                    )
+                            sourceTurns.some((s) => s.session === e.session) &&
+                            at >= from &&
+                            at < probeOrder
+                        );
+                    })
                     .map((e) => e.id),
             );
             if (arm.tools === null) {
@@ -549,8 +602,8 @@ export function probeEvidence(
             }
             return null;
         });
-        const stored = persistedHits().every((h) => h.some(existsAt));
-        if (!captured.every(Boolean) && !stored) {
+        const stored = persistedHits().map((h) => h.some(existsAt));
+        if (!captured.every((c, i) => c !== null || stored[i])) {
             return {
                 stage: "source",
                 status: "failed",
@@ -649,7 +702,7 @@ export function probeEvidence(
                     existsAt(o) &&
                     live(o) &&
                     inScope(o, project ?? "", scopes) === true &&
-                    stale.some((s) => o.text.includes(s)),
+                    stale.some((s) => holds(o.text, s)),
             )
             .map((o) => o.id);
         if (control) {
@@ -976,6 +1029,10 @@ export function attribute(
             cause: o.flagged.cause,
             status: "flagged",
             reason: `session ${o.flagged.session} from ${o.flagged.flagged_from}: ${mark?.why ?? ""} (calls.jsonl seq ${mark?.seq})`,
+            pointers: [
+                ...(mark ? [{ path: "calls.jsonl", at: `seq ${mark.seq}` }] : []),
+                { path: "evidence-sessions.jsonl", at: `${o.flagged.arm}/${o.flagged.session}` },
+            ],
         };
     }
     if (o.staleOnly) {
