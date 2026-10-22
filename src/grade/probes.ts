@@ -32,6 +32,7 @@ import {
     abstains,
     addedLines,
     carries,
+    codeMask,
     type DiffFile,
     diffFiles,
     diffPaths,
@@ -304,28 +305,30 @@ const invokesAny = (patterns: string[]) => (x: Command) => patterns.some((p) => 
 /**
  * The statements an `applies` pattern finds in the files' added lines: each match extended to the
  * end of its line, and over following lines while a bracket it opened stays open (ten lines at most).
+ * Patterns and brackets read the code mask, so a comment or a string literal starts no unit and
+ * opens no bracket; the unit itself is the source text.
  */
 function unitsOf(files: DiffFile[], patterns: string[]): string[] {
     const units: string[] = [];
     for (const f of files) {
         const text = f.added.join("\n");
+        const mask = codeMask(text, f.path.endsWith(".rs"));
         const starts = new Set<number>();
         for (const p of patterns) {
             const re = pattern(p);
-            for (const m of text.matchAll(new RegExp(re.source, `${re.flags}g`)))
+            for (const m of mask.matchAll(new RegExp(re.source, `${re.flags}g`)))
                 starts.add(m.index);
         }
+        const open = (code: string) =>
+            (code.match(/[([{]/g)?.length ?? 0) - (code.match(/[)\]}]/g)?.length ?? 0);
         for (const at of [...starts].sort((a, b) => a - b)) {
             const lines = text.slice(at).split("\n");
+            const masked = mask.slice(at).split("\n");
             let unit = lines[0] as string;
-            const open = (u: string) => {
-                const code = u
-                    .replace(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g, "")
-                    .replace(/\/\/.*$/gm, "");
-                return (code.match(/[([{]/g)?.length ?? 0) - (code.match(/[)\]}]/g)?.length ?? 0);
-            };
-            for (let i = 1; i < lines.length && i <= 10 && open(unit) > 0; i++) {
+            let code = masked[0] as string;
+            for (let i = 1; i < lines.length && i <= 10 && open(code) > 0; i++) {
                 unit += `\n${lines[i]}`;
+                code += `\n${masked[i]}`;
             }
             units.push(unit);
         }
@@ -349,14 +352,15 @@ interface Assessed {
 /**
  * Every rule the check names holds in `w`. The `must` patterns read the target files' paths and
  * added lines; with `applies`, they read each governed unit instead, at least one unit must exist,
- * and every unit must match. `paths_must` reads the paths, `first_line_must` the first line of each
- * created target file (at least one), the quote style every string literal of the target files'
+ * and every unit must match. `paths_must` reads the paths, `first_line_must` the first line of every
+ * created file (a created target file at least, so a note alone carries no rule), the quote style every string literal of the target files'
  * added lines (at least one), and `commands_must` one executed segment.
  */
 function assess(w: Work, c: Check): Assessed {
     const targets = targetsOf(w.files, c);
     const paths = w.files.map((f) => f.path).join("\n");
     const created = targets.filter((f) => f.created);
+    const everyCreated = w.files.filter((f) => f.created);
     const quotes = literalQuotes(targets.flatMap((f) => f.added));
     const firstLines = c.first_line_must;
     const must = c.must ?? [];
@@ -372,7 +376,7 @@ function assess(w: Work, c: Check): Assessed {
         matchesAll(paths, c.paths_must ?? []) &&
         (firstLines === undefined ||
             (created.length > 0 &&
-                created.every((f) => matchesAll(f.added[0] ?? "", firstLines)))) &&
+                everyCreated.every((f) => matchesAll(f.added[0] ?? "", firstLines)))) &&
         (c.quote_style_must === undefined ||
             (quotes.length > 0 && quotes.every((q) => q === c.quote_style_must))) &&
         (c.commands_must === undefined || w.commands.some(invokes(c.commands_must)));
@@ -409,8 +413,8 @@ function leaked(w: Work, c: Check): boolean {
     return carriesRule || quotes.includes(style as "double" | "single");
 }
 
-/** Whether the turn changed a code file: a no-op or a notes-only turn has nothing to grade. */
-const codeChanged = (r: ArtefactReader) => diffFiles(r.diff()).some((f) => !isDoc(f.path));
+/** Whether the diff names a code file on either side, so a deleted code file counts as a change. */
+const codeChanged = (r: ArtefactReader) => diffPaths(r.diff()).some((p) => !isDoc(p));
 
 /** P6 requires the read and the prior-session path to occur in the same executed shell segment. */
 /**
@@ -987,13 +991,14 @@ function failureEvidence(probe: ProbeItem, sources: SourceEvent[], identity: str
  * P12 reads the file the probe names (`paths_must`). The entry passes when that file's added lines
  * name the error identity and tie it to the failure with one piece of evidence: the issue number,
  * the failing check's path or name, or a figure from the failure. A tool-result item whose check
- * script the agent never ran in its source session is excluded: the agent never saw the error.
+ * script the agent never ran to completion in its source session is excluded: the agent never saw
+ * the error. A run the host cut off (exit `null`) delivered no result to the agent.
  */
 function p12(r: ArtefactReader, c: Check, probe: ProbeItem, sources: SourceEvent[]): Outcome {
     const scripts = checkScripts(sources);
     if (
         scripts.length > 0 &&
-        !r.commands("source").some((x) => scripts.some((p) => runsScript(p)(x)))
+        !r.commands("source").some((x) => x.exit !== null && scripts.some((p) => runsScript(p)(x)))
     ) {
         return { verdict: "excluded", reason: "source check never ran", metrics: {} };
     }

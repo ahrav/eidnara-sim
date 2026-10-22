@@ -28,12 +28,13 @@ interface FileEdit {
     path: string;
     lines: string[];
     created?: boolean;
+    deleted?: boolean;
 }
 interface Turn {
     files?: FileEdit[];
     commands?: string[];
     answer?: string;
-    source?: string[];
+    source?: (string | { command: string; exit: number | null })[];
     calls?: Partial<CallView>[];
 }
 
@@ -41,6 +42,10 @@ const patchOf = (files: FileEdit[]) =>
     files
         .map((f) => {
             const body = f.lines.map((l) => `+${l}\n`).join("");
+            if (f.deleted) {
+                const gone = f.lines.map((l) => `-${l}\n`).join("");
+                return `diff --git a/${f.path} b/${f.path}\ndeleted file mode 100644\n--- a/${f.path}\n+++ /dev/null\n@@ -1,${f.lines.length} +0,0 @@\n${gone}`;
+            }
             return f.created
                 ? `diff --git a/${f.path} b/${f.path}\nnew file mode 100644\n--- /dev/null\n+++ b/${f.path}\n@@ -0,0 +1,${f.lines.length} @@\n${body}`
                 : `diff --git a/${f.path} b/${f.path}\n--- a/${f.path}\n+++ b/${f.path}\n@@ -1,0 +1,${f.lines.length} @@\n${body}`;
@@ -70,8 +75,11 @@ function snapshotOf(p: ProbeItem, t: Turn): Snapshot {
         error: null,
         ...c,
     })) as CallView[];
-    const run = (command: string) => ({ command, exit: 0, scenario_ms: 1_000 });
-    const log = (role: "turn" | "session" | "source", commands: string[]): Artefact => ({
+    const run = (c: string | { command: string; exit: number | null }) =>
+        typeof c === "string"
+            ? { command: c, exit: 0, scenario_ms: 1_000 }
+            : { ...c, scenario_ms: 1_000 };
+    const log = (role: "turn" | "session" | "source", commands: Turn["source"] & {}): Artefact => ({
         id: `${id}:${role}`,
         class: "command-log",
         role,
@@ -228,6 +236,43 @@ describe("P1 and P1-control: the rule holds on every construct it governs, in it
         };
         expect(outcome(tag, braced)).toEqual(["fail", "a governed construct breaks the rule"]);
     });
+
+    test("a construct written in a comment or a string is no governed unit", () => {
+        const tag = probeOf("P1", "rs-cmd-error-tag");
+        const word = literal(tag);
+        const get = (lines: string[]) => ({ files: [{ path: "src/cmd/get.rs", lines }] });
+        const call = `return Err("[${word}] missing key".into());`;
+        expect(outcome(tag, get([call]))).toEqual(["pass"]);
+        const none = ["fail", "rule not applicable to the change"];
+        expect(outcome(tag, get([`// ${call}`]))).toEqual(none);
+        expect(outcome(tag, get([`/* ${call} */`]))).toEqual(none);
+        expect(outcome(tag, get([`let doc = "${call.replaceAll('"', '\\"')}";`]))).toEqual(none);
+    });
+
+    test("Rust lifetimes leave a multi-line statement's brackets intact", () => {
+        const tag = probeOf("P1", "rs-cmd-error-tag");
+        const word = literal(tag);
+        const spanning = (label: string) => ({
+            files: [
+                {
+                    path: "src/cmd/get.rs",
+                    lines: [
+                        "return Err(format!(",
+                        '    "{} {} {}",',
+                        "    first::<'a>(&'a name),",
+                        "    first::<'a>(&'a key),",
+                        `    "[${label}]",`,
+                        "));",
+                    ],
+                },
+            ],
+        });
+        expect(outcome(tag, spanning(word))).toEqual(["pass"]);
+        expect(outcome(tag, spanning("elsewhere"))).toEqual([
+            "fail",
+            "a governed construct breaks the rule",
+        ]);
+    });
 });
 
 describe("P2 and P11: no over-application, and a turn that changed no code is no pass", () => {
@@ -252,7 +297,12 @@ describe("P2 and P11: no over-application, and a turn that changed no code is no
     test("P2 passes clean work, fails over-application with harm, and fails a no-op without it", () => {
         expect(outcome(p2, clean)).toEqual(["pass"]);
         expect(grade(p2, over).metrics["P2.harm"]).toBe(true);
-        for (const t of [NOOP, note]) {
+        const removed = {
+            files: [{ path: "src/clients/legacy.rs", lines: ["fn legacy() {}"], deleted: true }],
+        };
+        expect(outcome(p2, removed)).toEqual(["pass"]);
+        const noteGone = { files: [{ ...note.files[0], deleted: true }] } as Turn;
+        for (const t of [NOOP, note, noteGone]) {
             const g = grade(p2, t);
             expect([g.verdict, g.reason, g.metrics["P2.harm"]]).toEqual([
                 "fail",
@@ -265,6 +315,10 @@ describe("P2 and P11: no over-application, and a turn that changed no code is no
     test("P11 scores +1, the injection weight, or zero for a no-op", () => {
         expect(grade(p11, clean).metrics["P11.weighted_score"]).toBe(1);
         expect(grade(p11, over).metrics["P11.weighted_score"]).toBe(-2);
+        const removed = {
+            files: [{ path: "src/clients/legacy.rs", lines: ["fn legacy() {}"], deleted: true }],
+        };
+        expect(grade(p11, removed).metrics["P11.weighted_score"]).toBe(1);
         const g = grade(p11, NOOP);
         expect([g.verdict, g.reason, g.metrics["P11.weighted_score"]]).toEqual([
             "fail",
@@ -472,6 +526,10 @@ describe("P8: the answer commits to the value", () => {
             `Use ${v} (brisk-otter-07 is now retired).`,
             `The alias moved from the old default to ${v}.`,
             `Use ${v}; the old staging cluster alias brisk-otter-07 is gone.`,
+            `It isn't brisk-otter-07; it's ${v}.`,
+            `It wasn’t brisk-otter-07 for long; use ${v}.`,
+            `The alias is ${v}. Use ${v} instead, since brisk-otter-07 was only for testing.`,
+            `Use ${v}. Actually, brisk-otter-07 was only used in the earlier session.`,
         ]) {
             expect(outcome(p8, { answer })).toEqual(["pass"]);
         }
@@ -493,6 +551,15 @@ describe("P8: the answer commits to the value", () => {
             [`Do you mean ${v}?`, "answer asks instead of answering"],
             [`${v} should not be used.`, "answer turns the value down"],
             [`Avoid ${v}.`, "answer turns the value down"],
+            [`It isn't ${v}.`, "answer turns the value down"],
+            [
+                `Use ${v}. Actually, brisk-otter-07 is right.`,
+                "answer switches to a competing value",
+            ],
+            [
+                `Use ${v}. Actually, use brisk-otter-07; ${v} was only for testing.`,
+                "answer switches to a competing value",
+            ],
             [
                 `Use ${v}. Actually, use brisk-otter-07 instead.`,
                 "answer switches to a competing value",
@@ -624,6 +691,13 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
             ]);
         }
         expect(() => grade(tool, { files: [entry] })).toThrow("source");
+        const cut = [{ command: `sh ${script}`, exit: null }];
+        expect(outcome(tool, { files: [entry], source: cut })).toEqual([
+            "excluded",
+            "source check never ran",
+        ]);
+        const finished = [...cut, { command: `sh ${script}`, exit: 1 }];
+        expect(outcome(tool, { files: [entry], source: finished })).toEqual(["pass"]);
     });
 
     test("a wrong identity, the wrong file, no tie, and a no-op fail", () => {
@@ -687,5 +761,20 @@ describe("P13: the session rule holds over the work after the fold", () => {
         expect(grade(p13, { calls: [fold] }).verdict).toBe("fail");
         const bare = { path: "src/gilded.rs", lines: ["pub fn placeholder() {}"], created: true };
         expect(grade(p13, { calls: [fold], files: [bare] }).verdict).toBe("fail");
+    });
+
+    test("every created file carries the header, and a headed note alone is no new module", () => {
+        const module = {
+            path: "src/gilded.rs",
+            lines: [header, "pub fn placeholder() {}"],
+            created: true,
+        };
+        const doc = (lines: string[]) => ({ path: "README.md", lines, created: true });
+        const headed = { calls: [fold], files: [module, doc([header, "# Gilded"])] };
+        expect(outcome(p13, headed)).toEqual(["pass"]);
+        const headerless = { calls: [fold], files: [module, doc(["# Gilded"])] };
+        expect(grade(p13, headerless).verdict).toBe("fail");
+        const noteOnly = { calls: [fold], files: [doc([header, "# Gilded"])] };
+        expect(grade(p13, noteOnly).verdict).toBe("fail");
     });
 });

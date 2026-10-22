@@ -102,7 +102,7 @@ const shapeOf = (value: string): RegExp =>
 
 /** A word that turns down the next value it names within the clause. */
 const NEGATOR =
-    /\b(?:not|never|no longer|instead of|rather than|other than|except|replac(?:e|es|ed|ing)(?!\s+(?:by|with)\b)|supersed(?:e|es|ed|ing)(?!\s+by\b)|(?:changed|moved|renamed|switched|updated|went)\s+from|avoid(?:ing)?)\b/gi;
+    /\b(?:not|never|no longer|[a-z]+n['\u2019]t|instead of|rather than|other than|except|replac(?:e|es|ed|ing)(?!\s+(?:by|with)\b)|supersed(?:e|es|ed|ing)(?!\s+by\b)|(?:changed|moved|renamed|switched|updated|went)\s+from|avoid(?:ing)?)\b/gi;
 /** A word that marks the value right after it, at most four words on, as superseded. */
 const STALE_ADJECTIVE =
     /\b(?:old|older|earlier|previous|previously|prior|former|formerly|originally|retired|outdated|stale|deprecated|obsolete)\b(?=,?(?:\s+(?!(?:to|and|but|so)\b)[\w-]+,?){0,4}?\s+$)/i;
@@ -128,6 +128,8 @@ const EQUALLY =
 
 /** A word that ends the clause a negation governs before it reaches a value. */
 const CLAUSE = /\b(?:to|and|but|so)\b/i;
+/** What follows a value to place it in the past: `Y was only for testing`, `Y was used before`. */
+const HISTORY = /^[^.?!;]{0,30}?\b(?:was|were)\s+(?:only|used|for)\b/i;
 /** A sentence after the answer that switches to another value: `Actually, use Y instead`. */
 const CORRECTION =
     /\b(?:actually|instead|correction|on second thought|scratch that|I meant|rather)\b/i;
@@ -137,6 +139,7 @@ interface Mention {
     at: number;
     expected: boolean;
     negated: boolean;
+    past: boolean;
 }
 
 /** Every candidate value a sentence names, in order, with whether the sentence turns it down. */
@@ -147,7 +150,13 @@ function mentions(sentence: string, value: string, stale: string[]): Mention[] {
             const token = m[0];
             const own = token.toLowerCase() === value.toLowerCase();
             if (!found.has(m.index)) {
-                found.set(m.index, { token, at: m.index, expected: own, negated: false });
+                found.set(m.index, {
+                    token,
+                    at: m.index,
+                    expected: own,
+                    negated: false,
+                    past: false,
+                });
             }
             if (expected && own) (found.get(m.index) as Mention).expected = true;
         }
@@ -171,6 +180,7 @@ function mentions(sentence: string, value: string, stale: string[]): Mention[] {
         );
         const after = sentence.slice(m.at + m.token.length, list[i + 1]?.at ?? sentence.length);
         if (STALE_ADJECTIVE.test(before) || AFTER.test(after)) m.negated = true;
+        m.past = HISTORY.test(after);
     }
     return list;
 }
@@ -182,7 +192,9 @@ function mentions(sentence: string, value: string, stale: string[]): Mention[] {
  * (`not X`, `X is wrong`), and no sentence before that point may decline to answer. No sentence
  * that names the value may name a competing value it leaves standing, so an answer that lists the
  * value beside another as equally possible fails; a competitor the sentence marks as replaced or
- * superseded stands aside.
+ * superseded stands aside. A later sentence with a correction word (`actually`, `instead`)
+ * switches to a competitor it leaves standing, unless the sentence also asserts the value or
+ * places the competitor in the past (`Y was only for testing`).
  */
 export function uncommitted(answer: string, value: string, stale: string[] = []): string | null {
     if (!carries(answer, value)) return "answer lacks the value";
@@ -199,10 +211,12 @@ export function uncommitted(answer: string, value: string, stale: string[] = [])
     if (decisive.s.endsWith("?")) return "answer asks instead of answering";
     if (own.negated) return "answer turns the value down";
     const live = (found: Mention[]) => found.some((m) => !m.expected && !m.negated);
+    const asserts = (found: Mention[]) => found.some((m) => m.expected && !m.negated && !m.past);
     if (live(decisive.found)) return "answer names a competing value beside it";
     for (const [i, { s, found }] of all.entries()) {
         if (found.some((m) => m.expected && m.negated)) return "answer turns the value down";
-        if (i > first && live(found) && CORRECTION.test(s)) {
+        const current = found.filter((m) => !m.past);
+        if (i > first && live(current) && CORRECTION.test(s) && !asserts(found)) {
             return "answer switches to a competing value";
         }
         if (found.some((m) => m.expected) && live(found) && EQUALLY.test(s)) {
@@ -604,6 +618,52 @@ export function literalQuotes(lines: string[]): ("double" | "single")[] {
         }
     }
     return out;
+}
+
+const RUST_CHAR = /^'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^'\\\n])'/;
+
+/**
+ * `text` with every comment blanked and every string literal's contents blanked, at the same
+ * length and with its line breaks kept, so offsets into the mask are offsets into the text. A
+ * literal keeps its delimiters. One left-to-right scan decides each token, so a quote inside a
+ * comment is comment text and a `//` inside a string is literal content. In Rust (`rust`), a `'`
+ * opens a character literal only when one closes it; otherwise it is a lifetime and stays code.
+ */
+export function codeMask(text: string, rust: boolean): string {
+    const out = text.split("");
+    const blank = (from: number, to: number) => {
+        for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
+    };
+    let i = 0;
+    while (i < text.length) {
+        const ch = text[i] as string;
+        const next = text[i + 1];
+        if (ch === "/" && next === "/") {
+            const end = text.indexOf("\n", i);
+            const stop = end < 0 ? text.length : end;
+            blank(i, stop);
+            i = stop;
+        } else if (ch === "/" && next === "*") {
+            const end = text.indexOf("*/", i + 2);
+            const stop = end < 0 ? text.length : end + 2;
+            blank(i, stop);
+            i = stop;
+        } else if (ch === "'" && rust) {
+            const m = RUST_CHAR.exec(text.slice(i, i + 12));
+            if (m) blank(i + 1, i + m[0].length - 1);
+            i += m ? m[0].length : 1;
+        } else if (ch === '"' || ch === "'" || ch === "`") {
+            const multiline = ch === "`" || rust;
+            let j = i + 1;
+            while (j < text.length && text[j] !== ch && (multiline || text[j] !== "\n")) {
+                j += text[j] === "\\" ? 2 : 1;
+            }
+            const stop = Math.min(j, text.length);
+            blank(i + 1, stop);
+            i = text[stop] === ch ? stop + 1 : stop;
+        } else i++;
+    }
+    return out.join("");
 }
 
 export const matchesAny = (text: string, sources: string[]) =>
