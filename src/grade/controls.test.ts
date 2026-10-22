@@ -435,6 +435,9 @@ describe("P8: the answer commits to the value", () => {
             `Use ${v}; it replaced brisk-otter-07.`,
             `The deploy script should most likely aim at ${v}, assuming pre-production means staging.`,
             `Aim it at ${v}.\n\nAn earlier session also mentioned brisk-otter-07, now retired.`,
+            `It is ${v} now (previously brisk-otter-07).`,
+            `The alias moved from brisk-otter-07 to ${v}, so aim the script at ${v}.`,
+            `It is ${v} now, not brisk-otter-07.`,
         ]) {
             expect(outcome(p8, { answer })).toEqual(["pass"]);
         }

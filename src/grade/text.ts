@@ -101,10 +101,10 @@ const shapeOf = (value: string): RegExp =>
 
 /** A word that turns down the next value it names within the clause. */
 const NEGATOR =
-    /\b(?:not|never|no longer|instead of|rather than|other than|except|replac(?:e|es|ed|ing)(?!\s+(?:by|with)\b)|supersed(?:e|es|ed|ing)(?!\s+by\b))\b/gi;
-/** An adjective that marks the value right after it, at most two words on, as superseded. */
+    /\b(?:not|never|no longer|instead of|rather than|other than|except|replac(?:e|es|ed|ing)(?!\s+(?:by|with)\b)|supersed(?:e|es|ed|ing)(?!\s+by\b)|(?:changed|moved|renamed|switched|updated|went)\s+from)\b/gi;
+/** A word that marks the value right after it, at most two words on, as superseded. */
 const STALE_ADJECTIVE =
-    /\b(?:old|older|earlier|previous|prior|former|retired|outdated|stale|deprecated|obsolete)\b(?=(?:\s+[\w-]+){0,2}?\s+$)/i;
+    /\b(?:old|older|earlier|previous|previously|prior|former|formerly|originally|retired|outdated|stale|deprecated|obsolete)\b(?=(?:\s+[\w-]+){0,2}?\s+$)/i;
 /** What follows a value to say it is wrong or superseded. */
 const AFTER =
     /^[^.?!]{0,30}?(?:\b(?:is|was|are|were|'s|is now)\s+(?:not\b|no longer|wrong|invalid|incorrect|stale|outdated|out of date|superseded|retired|obsolete|a typo|impossible)|\b(?:isn'?t|is not|wasn'?t|was not|can'?t be|cannot be|couldn'?t be)\s+(?:a\s+)?(?:valid|right|correct|real|current|usable)\b|\bmarked (?:as )?(?:out of date|stale|superseded|old|obsolete)|^\W*\((?:old|outdated|superseded|retired|stale|previous)\b)/i;
