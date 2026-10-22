@@ -104,6 +104,8 @@ export interface RunData {
     scenario: EvidenceScenario;
     journal: Entry[];
     calls: CallRecord[];
+    /** The fault schedule the run used: the manifest's override, else the scenario's. */
+    faults: Array<{ id: string; type: string }>;
     /** The request part log, or null for a run recorded before the proxy stored bodies. */
     parts: Map<string, RequestPart> | null;
     grades: GradeRecord[];
@@ -368,6 +370,7 @@ export function readGrades(path: string, legacy: boolean): GradeRecord[] {
 export function loadRun(dir: string): RunData {
     const manifest = readJsonFile<{
         scenario_hash?: string;
+        fault_override?: Array<{ id: string; type: string }> | null;
         host?: string;
         context_limit?: number;
         order?: string[];
@@ -429,6 +432,7 @@ export function loadRun(dir: string): RunData {
         host: manifest.host ?? "pi",
         contextLimit: manifest.context_limit ?? 200_000,
         scenario,
+        faults: manifest.fault_override ?? scenario.faults ?? [],
         journal: readJournal(join(dir, "journal.jsonl")),
         calls: readCalls(join(dir, "calls.jsonl")),
         parts: lstatSync(requestsPath, { throwIfNoEntry: false })?.isFile()

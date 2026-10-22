@@ -88,12 +88,18 @@ export function sessionHealth(run: RunData): SessionHealth[] {
         const profile = run.arms.get(arm)?.profile;
         const sorted = [...calls].sort((a, b) => a.seq - b.seq);
         // A mark between turns covers the session's next turn, the first one it can affect.
+        // A compaction mark covers the first turn whose agent request left after the
+        // compaction finished; an agent call's own mark covers its turn.
         const mark = (c: CallRecord, why: string): HealthMark => ({
             seq: c.seq,
-            // A between-turn mark covers the first turn whose request left after it finished.
             turn:
-                c.turn ??
-                sorted.find((x) => x.started_wall_ms >= c.wall_ms && x.turn !== null)?.turn ??
+                (c.component === "agent" ? c.turn : null) ??
+                sorted.find(
+                    (x) =>
+                        x.component === "agent" &&
+                        x.started_wall_ms >= c.wall_ms &&
+                        x.turn !== null,
+                )?.turn ??
                 nextTurn(run, arm, session, c.wall_ms),
             why,
         });

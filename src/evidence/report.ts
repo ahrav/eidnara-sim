@@ -167,6 +167,7 @@ export function renderEvidence(runs: RunEvidence[]): string {
             "session",
             "compactions",
             "refused",
+            "failed",
             "peak prompt",
             "limit",
             "over window",
@@ -174,12 +175,17 @@ export function renderEvidence(runs: RunEvidence[]): string {
             "cause",
             "flagged from",
         ]),
-        row(["---", "---", "---", "---", "---", "---", "---", "---", "---", "---", "---"]),
+        row(["---", "---", "---", "---", "---", "---", "---", "---", "---", "---", "---", "---"]),
     );
     let any = false;
     for (const r of runs) {
         for (const s of r.sessions) {
-            if (!s.cause && s.compaction_refused === 0 && s.over_window_calls === 0) continue;
+            const quiet =
+                !s.cause &&
+                s.compaction_refused === 0 &&
+                s.compaction_failed === 0 &&
+                s.over_window_calls === 0;
+            if (quiet) continue;
             any = true;
             out.push(
                 row([
@@ -188,6 +194,7 @@ export function renderEvidence(runs: RunEvidence[]): string {
                     s.session,
                     s.compaction_attempts,
                     s.compaction_refused,
+                    s.compaction_failed,
                     s.peak_prompt_tokens,
                     s.context_limit,
                     s.over_window_calls,
@@ -198,7 +205,7 @@ export function renderEvidence(runs: RunEvidence[]): string {
             );
         }
     }
-    if (!any) out.push(row(["none", "", "", "", "", "", "", "", "", "", ""]));
+    if (!any) out.push(row(["none", "", "", "", "", "", "", "", "", "", "", ""]));
     const p76 = runs.flatMap((r) =>
         r.sessions.filter((s) => s.p90_native_compaction !== null).map((s) => ({ r, s })),
     );

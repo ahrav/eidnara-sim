@@ -161,6 +161,7 @@ function build(spec: Spec): RunData {
         host: "pi",
         contextLimit: spec.limit ?? 200_000,
         scenario: spec.scenario ?? SCENARIO,
+        faults: (spec.scenario ?? SCENARIO).faults ?? [],
         journal,
         calls,
         parts: spec.parts === false ? null : parts,
@@ -565,6 +566,32 @@ describe("evidence stages on a memory arm", () => {
         expect(stage(evidence(r), "delivery")?.status).toBe("unobserved");
     });
 
+    test("an item with no literal skips the stages that need bodies or stores", () => {
+        const scenario: EvidenceScenario = {
+            ...SCENARIO,
+            probes: SCENARIO.probes.map((p) => ({
+                ...p,
+                type: "P2",
+                ground_truth: { expect: "avoid", present: [], absent: ["TAG_X"], sources: ["e-0"] },
+            })),
+        };
+        const p = evidence(
+            build({ scenario, calls: [searchTurn("x")], parts: false, objects: null }),
+        );
+        expect(p.attributed.cause).toBe("application");
+    });
+
+    test("an unreadable store leaves an uncaptured source unobserved", () => {
+        const p = evidence(build({ calls: [SOURCE_READ, searchTurn("nothing")], objects: null }));
+        expect(p.attributed).toMatchObject({ cause: "source", status: "unobserved" });
+    });
+
+    test("the manifest's fault override decides which calls reached a model", () => {
+        const r = build({ calls: [SOURCE_READ, { ...searchTurn("TAG_X"), fault_ref: "f-1" }] });
+        r.faults = [{ id: "f-1", type: "slow_stream" }];
+        expect(stage(evidence(r), "delivery")?.status).toBe("ok");
+    });
+
     test("a run without request bodies reports the stages it cannot decide as unobserved", () => {
         const p = evidence(
             build({ calls: [SOURCE_READ, searchTurn("TAG_X")], parts: false, transcripts: null }),
@@ -716,6 +743,23 @@ describe("context health", () => {
         const h = sessionHealth(r).find((x) => x.session === "s-2");
         expect(h?.cause).toBe("context-overflow");
         expect(h?.compaction_refused).toBe(1);
+    });
+
+    test("a compaction in a turn that finished after the turn's last request flags the next turn", () => {
+        const r = build({
+            arm: "host",
+            calls: [
+                { session: "s-2", turn: "e-5", started_wall_ms: 1, wall_ms: 20 },
+                {
+                    ...compaction(0, "content_filtered"),
+                    turn: "e-5",
+                    started_wall_ms: 5,
+                    wall_ms: 30,
+                },
+                { ...big, turn: "e-6", started_wall_ms: 40, wall_ms: 50 },
+            ],
+        });
+        expect(sessionHealth(r).find((x) => x.session === "s-2")?.flagged_from).toBe("e-6");
     });
 
     test("a cut compaction is a failure, not a refusal", () => {

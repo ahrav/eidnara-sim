@@ -116,7 +116,7 @@ export class RequestStore {
         }
         if (existsSync(full)) {
             keepCompleteLines(full);
-            for (const part of readRequestLines(full)) this.ids.add(part.id);
+            eachRequestLine(full, (id) => this.ids.add(id));
         }
         this.fd = openSync(
             full,
@@ -179,6 +179,12 @@ export class RequestStore {
 /** Every complete line of a request part log, in file order; a cut last line is skipped. */
 export function readRequestLines(path: string): Array<{ id: string; part: RequestPart }> {
     const out: Array<{ id: string; part: RequestPart }> = [];
+    eachRequestLine(path, (id, part) => out.push({ id, part }));
+    return out;
+}
+
+/** Visits each complete line in turn, so a reader that keeps only ids holds one line at a time. */
+function eachRequestLine(path: string, visit: (id: string, part: RequestPart) => void): void {
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
         const size = fstatSync(fd).size;
@@ -203,7 +209,7 @@ export function readRequestLines(path: string): Array<{ id: string; part: Reques
                 if (partId(value.part) !== value.id) {
                     throw new Error(`${path} line ${line} does not match its part id`);
                 }
-                out.push({ id: value.id, part: value.part });
+                visit(value.id, value.part);
                 buf = buf.subarray(at + 1);
                 at = buf.indexOf(0x0a);
             }
@@ -212,7 +218,6 @@ export function readRequestLines(path: string): Array<{ id: string; part: Reques
     } finally {
         closeSync(fd);
     }
-    return out;
 }
 
 /** The parts of a request part log keyed by id. */

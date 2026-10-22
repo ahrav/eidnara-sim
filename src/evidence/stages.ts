@@ -213,7 +213,7 @@ function cacheOf(run: RunData): RunCache {
     const calls = new Map<string, CallRecord[]>();
     // An injected fault answered the host locally, so its request reached no model; a slow
     // stream forwarded the request and counts.
-    const faultType = new Map((run.scenario.faults ?? []).map((f) => [f.id, f.type]));
+    const faultType = new Map(run.faults.map((f) => [f.id, f.type]));
     const reachedModel = (c: CallRecord) =>
         c.fault_ref === null || faultType.get(c.fault_ref) === "slow_stream";
     const cache: RunCache = {
@@ -381,7 +381,7 @@ export function probeEvidence(
     );
     const delivered = bodiesKept && present.length > 0 && whole !== undefined;
     const deliveryStage = (name: "delivery" | "context"): Stage => {
-        if (!bodiesKept) {
+        if (!bodiesKept && present.length > 0) {
             return {
                 stage: name,
                 status: "unobserved",
@@ -541,6 +541,7 @@ export function probeEvidence(
                 ...ran.map((r) => ({ path: `${armName}/tools.jsonl`, at: `line ${r.line}` })),
             );
         }
+        if (present.length === 0) return { stage: "source", status: "ok", pointers };
         if (run.parts === null) {
             return {
                 stage: "source",
@@ -605,6 +606,14 @@ export function probeEvidence(
             return null;
         });
         const stored = persistedHits().map((h) => h.some(existsAt));
+        if (!captured.every((c, i) => c !== null || stored[i]) && arm.objects === null) {
+            return {
+                stage: "source",
+                status: "unobserved",
+                reason: "no capture request carried the literal, and the store is unreadable",
+                pointers,
+            };
+        }
         if (!captured.every((c, i) => c !== null || stored[i])) {
             return {
                 stage: "source",
@@ -631,6 +640,7 @@ export function probeEvidence(
     const objectPointer = (o: StoreObject): Pointer => ({ path: storePath(o), at: o.id });
 
     const persistedStage = (): Stage => {
+        if (present.length === 0) return { stage: "persisted", status: "n/a", pointers: [] };
         if (arm.objects === null || probeDaemon === null) {
             return {
                 stage: "persisted",
@@ -673,12 +683,9 @@ export function probeEvidence(
 
     const scopes = projectScopes(run, arm);
     const eligibilityStage = (): Stage => {
-        if (arm.objects === null || probeDaemon === null || present.length === 0) {
-            return {
-                stage: "eligibility",
-                status: arm.objects === null || probeDaemon === null ? "unobserved" : "n/a",
-                pointers: [],
-            };
+        if (present.length === 0) return { stage: "eligibility", status: "n/a", pointers: [] };
+        if (arm.objects === null || probeDaemon === null) {
+            return { stage: "eligibility", status: "unobserved", pointers: [] };
         }
         const created = new Map((arm.objects ?? []).map((o) => [o.id, o.created_ms]));
         // A successor written after the probe began had not yet replaced the object then.
@@ -805,6 +812,9 @@ export function probeEvidence(
         }
         // The probe turn's tool uses come from its request bodies; without them no transcript
         // result can be tied to the turn.
+        if (present.length === 0) {
+            return { stage: "retrieval", status: "n/a", pointers: [], detail: { searches } };
+        }
         if (!bodiesKept) {
             return {
                 stage: "retrieval",
@@ -812,9 +822,6 @@ export function probeEvidence(
                 reason: "no recorded request body for the probe turn",
                 pointers: [],
             };
-        }
-        if (present.length === 0) {
-            return { stage: "retrieval", status: "n/a", pointers: [], detail: { searches } };
         }
         const hits = present.map((g) => {
             for (const cand of candidates) {

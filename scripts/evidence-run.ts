@@ -28,12 +28,19 @@ export function evidenceRun(dirs: string[], out: string | null, checkout: string
             throw new Error("--out lies inside a run directory; leave --out off to write there");
         }
     }
+    // Every run is analysed before any file is written, so a refused run leaves no partial batch.
     for (const dir of dirs) {
         const run = loadRun(dir);
         const sessions = sessionHealth(run);
-        const probes = runEvidence(run, sessions);
-        const name = basename(resolve(dir));
-        const target = out ? join(out, name) : dir;
+        runs.push({
+            name: basename(resolve(dir)),
+            run,
+            probes: runEvidence(run, sessions),
+            sessions,
+        });
+    }
+    for (const [i, r] of runs.entries()) {
+        const target = out ? join(out, r.name) : (dirs[i] as string);
         mkdirSync(target, { recursive: true });
         // A linked output directory would route the files somewhere else.
         if (out && lstatSync(target).isSymbolicLink()) {
@@ -41,13 +48,12 @@ export function evidenceRun(dirs: string[], out: string | null, checkout: string
         }
         writeAtomic(
             join(target, "evidence.jsonl"),
-            probes.map((p) => `${JSON.stringify(p)}\n`).join(""),
+            r.probes.map((p) => `${JSON.stringify(p)}\n`).join(""),
         );
         writeAtomic(
             join(target, "evidence-sessions.jsonl"),
-            sessions.map((s) => `${JSON.stringify(s)}\n`).join(""),
+            r.sessions.map((s) => `${JSON.stringify(s)}\n`).join(""),
         );
-        runs.push({ name, run, probes, sessions });
     }
     const report = renderEvidence(runs);
     const reportDir = out ?? (dirs.length === 1 ? (dirs[0] as string) : null);
