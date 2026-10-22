@@ -2167,7 +2167,7 @@ async function runArms(
         if (unchecked.has(arm)) requireBoots(arm, armRoot);
         const observed = observeArm(arm, o.host, armRoot, components.get(arm) ?? {});
         const mode = deliveryOf(armProfile(arm));
-        if (backgrounds.size > 0 || mode === "explicit-search") {
+        if (manifest.order.some(oracle) || mode === "explicit-search") {
             const notes: ExpectedNote[] = oracle(arm)
                 ? userTurns(arm).flatMap((t) => {
                       const background = backgrounds.get(String(t.event));

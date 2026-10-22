@@ -46,7 +46,8 @@ the liveness bounds, user-sim, and grading rules. The manifest records
 manifest records `qualification_sha256`. A resume compares both;
 `grade-run`, `pairing-check`, and `oracle-run` require the scenario's digest
 to equal the manifest's (none for a tier run), the registration to still
-hash to it, and the host to be one it lists. `scripts/report.ts` refuses a
+hash to it, the host and seed to be ones it lists, and the order to be a
+subsequence of the seed's registered order. `scripts/report.ts` refuses a
 qualification run, since the tier report reads the tier's gates and the
 qualification registers descriptive contrasts. Each tape must come from a finished
 run (its journal holds `EndRun`) of the same seed, scenario,

@@ -133,6 +133,8 @@ interface Manifest {
     base_wall_ms: number;
     scenario_hash?: string;
     qualification?: { id: string; sha256: string } | null;
+    host?: string;
+    seed?: number;
     fault_override?: { id: string; type: string; params?: { duration_ms?: number } }[] | null;
     price_table?: unknown;
 }

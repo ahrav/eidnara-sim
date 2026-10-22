@@ -114,14 +114,16 @@ export function loadQualification(
 
 /**
  * The arms and A/A pairs a run's manifest is admitted under: those of the qualification it names,
- * whose current registration must hash to the recorded digest, bind the manifest's tier, and list
- * its host, or else its tier's. The scenario must name the same qualification digest, or none
+ * whose current registration must hash to the recorded digest, bind the manifest's tier, list
+ * its host and seed, and schedule its order for that seed, or else its tier's. The scenario must name the same qualification digest, or none
  * with a tier run.
  */
 export function admittedArms(
     manifest: {
         tier: Tier;
         host?: string;
+        seed?: number;
+        order?: string[];
         qualification?: { id: string; sha256: string } | null;
     },
     scenario: { manifest?: Record<string, unknown> },
@@ -144,6 +146,17 @@ export function admittedArms(
     if (q.tier !== manifest.tier) throw new Error(`qualification ${q.id} binds tier ${q.tier}`);
     if (manifest.host !== undefined && !q.hosts.includes(manifest.host)) {
         throw new Error(`qualification ${q.id} runs no ${manifest.host} host`);
+    }
+    if (manifest.seed !== undefined) {
+        const at = q.seeds.indexOf(manifest.seed);
+        if (at < 0) throw new Error(`qualification ${q.id} runs no seed ${manifest.seed}`);
+        const scheduled = q.arms.order_by_seed[at] ?? [];
+        const ranks = (manifest.order ?? []).map((arm) => scheduled.indexOf(arm));
+        if (ranks.some((r, i) => r < 0 || (i > 0 && r <= (ranks[i - 1] as number)))) {
+            throw new Error(
+                `manifest order ${(manifest.order ?? []).join(",")} is not a subsequence of qualification ${q.id}'s seed ${manifest.seed} order ${scheduled.join(",")}`,
+            );
+        }
     }
     return { run: q.arms.run, pairs: [] };
 }

@@ -182,6 +182,14 @@ describe("delivery check", () => {
         ]);
     });
 
+    test("an owed note also in a system block, or prefixed twice, is misplaced", () => {
+        const doubled = call("s-1", "e-2", `${note.background}${note.background}Which alias?`);
+        const system = call("s-1", "e-2", `${note.background}Which alias?`, note.background);
+        expect(check("host-oracle", [doubled, system], [note])).toEqual([
+            `agent requests ${doubled.seq}, ${system.seq} carry an oracle note before its probe turn, in another session, or matching no owed note`,
+        ]);
+    });
+
     test("a note before its turn, in another session, or matching no owed note is misplaced", () => {
         const early = call("s-1", "e-1", `${note.background}First task.`);
         const elsewhere = call("s-2", "e-4", `${note.background}Other task.`);
@@ -275,6 +283,11 @@ describe("persisted runs under a qualification", () => {
         expect(() =>
             admittedArms({ tier: "S", host: "opencode", qualification: ref }, qualified),
         ).toThrow(/qualification Q runs no opencode host/);
+        const run = (seed: number, order: string[]) =>
+            admittedArms({ tier: "S", host: "pi", seed, order, qualification: ref }, qualified);
+        expect(run(102, ["host-oracle", "host"]).run).toContain("host-oracle");
+        expect(() => run(102, ["host", "host-oracle"])).toThrow(/is not a subsequence/);
+        expect(() => run(201, ["host"])).toThrow(/qualification Q runs no seed 201/);
         const stale = { ...ref, sha256: "0".repeat(64) };
         const scenario = {
             manifest: { ...qualified.manifest, qualification_sha256: stale.sha256 },

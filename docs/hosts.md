@@ -181,9 +181,11 @@ complete evidence only when the two agree:
   owed note; any other arm is a mismatch when a request carries a note; an
   explicit-search arm is a mismatch when a request carries a plugin block;
   and every arm whose delivery is read is a mismatch when a body cannot be
-  rebuilt. Notes and openings are counted in the system blocks and user
-  messages, the text that enters the context; the agent's own replies may
-  quote a note.
+  rebuilt. Openings are counted in the system blocks and user messages, the
+  text that enters the context, since the agent's own replies may quote a
+  note; a note is owned only in a user message, at most as many times as
+  notes of the same text came due in the session by that turn, so a note in a
+  system block or prefixed twice is misplaced.
 
 The plugin writes its log inside the arm root, which the agent's tools can
 write too, so the evidence holds against an agent that leaves the log alone;

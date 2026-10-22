@@ -122,20 +122,23 @@ export function observeDelivery(
             if (n.event === call.turn && prompt.includes(n.background)) delivered.add(n.event);
         }
         const carried = backgrounds.filter((b) => text.includes(b));
-        const placed = carried.every((b) =>
-            notes.some(
+        const due = (b: string) =>
+            notes.filter(
                 (n) =>
                     n.background === b &&
                     n.session === call.session &&
                     index(n.event) <= index(call.turn),
-            ),
-        );
-        // The agent's own replies may quote a note, so only system and user text count.
+            ).length;
+        const placed = carried.every((b) => due(b) > 0);
+        // The agent's own replies may quote a note, so only system and user text count. User-message
+        // occurrences count toward owned, capped per background by the matching notes due in the
+        // call's session through its turn.
         const entered = bodyText({
             system: body.system,
             messages: (body.messages ?? []).filter((m) => m?.role === "user"),
         });
-        const owned = carried.reduce((sum, b) => sum + occurrences(entered, b), 0);
+        const user = users.join("\n");
+        const owned = carried.reduce((sum, b) => sum + Math.min(occurrences(user, b), due(b)), 0);
         if (!placed || occurrences(entered, ORACLE_OPENING) > owned) {
             out.notes.misplaced.push(call.seq);
         }
