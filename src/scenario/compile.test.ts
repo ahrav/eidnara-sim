@@ -464,7 +464,7 @@ describe("compiled S scenario", async () => {
             expect((g?.present.length ?? 0) + (g?.absent.length ?? 0)).toBeGreaterThan(0);
         }
         const revised = p4.filter((p) => (s.facts.find((f) => f.id === p.fact)?.revision ?? 0) > 0);
-        for (const p of revised) expect(p.ground_truth?.stale.length).toBeGreaterThan(0);
+        expect(revised.some((p) => (p.ground_truth?.stale.length ?? 0) > 0)).toBe(true);
     });
 
     test("a revised fact conveyed by a commit says it replaces the earlier one", () => {
@@ -577,6 +577,14 @@ describe("compiled S scenario", async () => {
                     seen: true,
                 });
             }
+        }
+    });
+
+    test("a probe's ground truth never lists a literal as both carried and forbidden", () => {
+        for (const p of s.probes.filter((x) => x.ground_truth)) {
+            const g = p.ground_truth as NonNullable<typeof p.ground_truth>;
+            const clash = g.present.filter((x) => g.absent.includes(x) || g.stale.includes(x));
+            expect({ probe: p.id, clash }).toEqual({ probe: p.id, clash: [] });
         }
     });
 

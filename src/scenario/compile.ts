@@ -875,7 +875,8 @@ export async function compileScenario(input: CompileInput) {
                 };
             }
             if (expect === "abstain") return { expect, present: [], absent: [], stale };
-            return { expect, present, absent, stale };
+            const apart = (xs: string[]) => xs.filter((x) => !present.includes(x));
+            return { expect, present, absent: apart(absent), stale: apart(stale) };
         };
         const probeText = render(tpl.probe, vars);
         const outText = render(tpl.out_probe ?? tpl.probe, vars);
