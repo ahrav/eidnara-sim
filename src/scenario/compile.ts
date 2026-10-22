@@ -7,7 +7,7 @@ import { scheduleFaults, validateFault } from "./faults";
 import { bm25Ratio, cosine, type Embedder, round4 } from "./similarity";
 import { Tokens } from "./tokens";
 
-export const GENERATOR_VERSION = "sim-scenario/v2";
+export const GENERATOR_VERSION = "sim-scenario/v3";
 
 export const MANNER_WEIGHTS = {
     correction: 0.35,
@@ -21,12 +21,21 @@ export type Manner = keyof typeof MANNER_WEIGHTS;
 
 export interface Template {
     id: string;
-    statement: string;
+    statement?: string;
+    /** A plan template's unit of work; the compiler composes plan statements from tasks. */
+    task?: string;
     probe: string;
     out_probe?: string;
     update?: string;
+    /** The conveyance of a later instance in the same project, with `{old_*}` naming the prior values. */
+    revise?: string;
+    variants?: Record<string, string>[];
     example?: { path: string; content: string };
     authority?: { path: string; content: string };
+    form?: "tool_result" | "pasted";
+    script?: { path: string; content: string };
+    command?: string;
+    paste?: string;
     check: Record<string, unknown>;
     out_check?: Record<string, unknown>;
 }
@@ -45,7 +54,6 @@ export interface CompileInput {
     bank: Bank;
     projects: Project[];
     pastes: { id: string; content: string }[];
-    errorCodes: { id: string; code: string; context: string }[];
     corpusInputsSha256: string;
     embedder: Embedder;
     items?: number;
@@ -63,12 +71,43 @@ interface Session {
 interface Turn {
     session: string;
     index: number;
-    role: "filler" | "paste" | "conveyance" | "update" | "reversal" | "probe";
+    role: "filler" | "paste" | "conveyance" | "update" | "reversal" | "probe" | "status";
     text: string;
     fact?: string;
+    /** Every fact whose commit this opening turn points at. */
+    facts?: string[];
     probe?: string;
     paste?: { sample_id: string; bytes: number };
 }
+
+/** One commit of an `apply_diff` event: a whole-file write, or the removal of the path. */
+interface Diff {
+    session: string;
+    path: string;
+    content?: string;
+    remove?: true;
+    fact: string;
+}
+interface Commits {
+    adds: { path: string; content: string }[];
+    removed: string[];
+}
+
+/**
+ * Where a fact's ground truth comes from: a user instruction, a convention the agent infers from
+ * a repository example, an incidental mention that must not be applied, or an observation (tool
+ * output or an authoritative file).
+ */
+export type Basis = "instruction" | "convention" | "incidental" | "observation";
+export type Expect =
+    | "apply"
+    | "baseline"
+    | "avoid"
+    | "answer"
+    | "abstain"
+    | "explain"
+    | "resume"
+    | "clarify";
 
 export interface Fact {
     id: string;
@@ -76,9 +115,32 @@ export interface Fact {
     kind: string;
     project: string;
     manner: Manner;
+    basis: Basis;
+    /** `<project>/<template>`, or `<project>/plan` for P6; later instances of a line supersede earlier ones. */
+    line: string;
+    revision: number;
+    supersedes: string | null;
     statement: string;
     cues: string[];
+    form?: "tool_result" | "pasted";
 }
+
+/**
+ * A probe's expected behaviour and its evidence. `present` lists the generated literals correct
+ * work carries, `absent` those it must not carry, and `stale` the superseded literals; `sources`
+ * names every event that exposes the fact, each before the probe.
+ */
+export interface GroundTruth {
+    expect: Expect;
+    basis: Basis;
+    present: string[];
+    absent: string[];
+    stale: string[];
+    supersedes: string[];
+    sources: string[];
+}
+type TruthOf = Pick<GroundTruth, "expect" | "present" | "absent" | "stale">;
+type Truth = Omit<GroundTruth, "sources"> & { fact: string };
 
 export interface ProbeItem {
     id: string;
@@ -89,6 +151,53 @@ export interface ProbeItem {
     text: string | null;
     check: unknown;
     event?: string;
+    ground_truth?: GroundTruth;
+}
+
+export type PlanStatus = "accepted" | "revised" | "completed";
+/** One P6 plan: each status change, the event that made it, and the next actions it leaves open. */
+export interface PlanRecord {
+    fact: string;
+    project: string;
+    expect: "resume" | "clarify";
+    history: { event: string; status: PlanStatus; next: string[] }[];
+}
+
+interface Line {
+    facts: Fact[];
+    vars: Record<string, string>[];
+    base: Record<string, unknown>[];
+    inherited: Record<string, unknown>;
+    outBase: Record<string, unknown>[];
+    outInherited: Record<string, unknown>;
+    /** Files the line has committed that the scenario-defined tree still holds. */
+    artifacts: Map<string, string>;
+    literals: string[];
+}
+
+/** Placeholders the compiler fills with generated values; every other one is template text. */
+const GENERATED = ["token", "TOKEN", "alt", "ALT", "Alt", "value", "value2", "codename"];
+const NEGATIVE = (k: string) => k.endsWith("must_not");
+const IGNORED = new Set(["scope", "side", "turns"]);
+
+const pascal = (word: string) =>
+    word
+        .split("_")
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join("");
+
+/** The placeholder names in a check's positive (or negative) grading keys. */
+export function placeholders(check: unknown, positive: boolean): string[] {
+    if (!check || typeof check !== "object") return [];
+    const out: string[] = [];
+    for (const [k, v] of Object.entries(check)) {
+        if (IGNORED.has(k) || NEGATIVE(k) === positive) continue;
+        for (const text of [v].flat()) {
+            if (typeof text !== "string") continue;
+            for (const [, name] of text.matchAll(/\{(\w+)\}/g)) if (name) out.push(name);
+        }
+    }
+    return [...new Set(out)];
 }
 
 const MARKERS = [
@@ -274,11 +383,14 @@ export async function compileScenario(input: CompileInput) {
     ): Turn => {
         if (candidates.length === 0)
             throw new Error(`no session can hold a ${turn.role} turn for ${turn.fact}`);
-        const open = candidates.flatMap((x) =>
+        const free = candidates.flatMap((x) =>
             where(x)
                 .filter((i) => !turns.has(key(x.id, i)))
                 .map((i) => [x, i] as const),
         );
+        // A session's first turn stays free for a commit's cue; a turn that finds no later slot
+        // extends its session instead.
+        const open = free.filter(([, i]) => i > 0);
         const [session, slot] =
             open.length > 0 ? place.pick(open) : [candidates[candidates.length - 1] as Session, -1];
         let index = slot;
@@ -294,9 +406,97 @@ export async function compileScenario(input: CompileInput) {
     const twinOf = (p: string) => input.projects.find((x) => x.twin_of === p)?.id ?? p;
     const facts: Fact[] = [];
     const probes: ProbeItem[] = [];
+    const plans: PlanRecord[] = [];
     const keys: string[] = [];
-    const diffs: { session: string; path: string; content: string; fact: string }[] = [];
-    const factSpecs = FACT_SPECS.flatMap((spec) => range(0, perType).map((i) => ({ ...spec, i })));
+    const diffs: Diff[] = [];
+    const framings = (bank.any?.framings ?? []) as string[];
+    const exposure = new Map<string, { turns: Turn[]; diffs: Diff[] }>();
+    const truths = new Map<string, Truth>();
+    const planTurns = new Map<string, { turn: Turn; status: PlanStatus; next: string[] }[]>();
+    /** A commit lands before a session, and its cue occupies that session's first turn. */
+    const openings = new Map<string, "commits" | "probe">();
+    const lines = new Map<string, Line>();
+    const probeTexts = new Map<string, string[]>();
+    const segments = new Map<Turn, string[]>();
+    /**
+     * The first turn of a session for `turn`. A probe takes a session opening of its own; a
+     * commit's cue joins any other commit cues of that session's opening, so every commit lands
+     * immediately before the turn that points at it.
+     */
+    const takeOpening = (
+        candidates: Session[],
+        turn: Omit<Turn, "session" | "index">,
+        owner: "commits" | "probe",
+        wider: Session[] = [],
+    ): Turn => {
+        const usable = (xs: Session[]) => {
+            const free = xs.filter((x) => !turns.has(key(x.id, 0)) && !openings.has(x.id));
+            const shared =
+                owner === "commits" ? xs.filter((x) => openings.get(x.id) === "commits") : [];
+            return free.length > 0 ? free : shared;
+        };
+        const near = usable(candidates);
+        const open = near.length > 0 ? near : usable(wider);
+        if (open.length === 0) {
+            throw new Error(
+                `no session opening is free for the ${turn.role} of ${turn.fact}: a commit lands only before a session, and its cue takes that session's first turn`,
+            );
+        }
+        const session = place.pick(open);
+        const existing = turns.get(key(session.id, 0));
+        if (existing && openings.get(session.id) === "commits") {
+            const parts = segments.get(existing) ?? [existing.text];
+            if (!parts.includes(turn.text)) parts.push(turn.text);
+            segments.set(existing, parts);
+            existing.text = parts.join("\n\n");
+            existing.facts = [...new Set([...(existing.facts ?? []), turn.fact as string])];
+            return existing;
+        }
+        openings.set(session.id, owner);
+        const t: Turn = {
+            ...turn,
+            session: session.id,
+            index: 0,
+            ...(owner === "commits" ? { facts: [turn.fact as string] } : {}),
+        };
+        turns.set(key(session.id, 0), t);
+        return t;
+    };
+    const expose = (fact: string, t?: Turn, d?: Diff) => {
+        const e = exposure.get(fact) ?? { turns: [], diffs: [] };
+        if (t) e.turns.push(t);
+        if (d) e.diffs.push(d);
+        exposure.set(fact, e);
+    };
+    const distinct = (project: string, fact: string, text: string): string => {
+        const k = `${project}\n${text}`;
+        const users = probeTexts.get(k) ?? [];
+        if (!users.includes(fact)) users.push(fact);
+        probeTexts.set(k, users);
+        const n = users.indexOf(fact);
+        if (n === 0) return text;
+        const framing = framings[n - 1];
+        if (framing === undefined) {
+            throw new Error(
+                `${project}: probe text "${text}" repeats for ${users.length} facts and the bank holds ${framings.length} framings`,
+            );
+        }
+        return `${framing} ${text}`;
+    };
+
+    const sessionIndex = new Map(sessions.map((x, i) => [x.id, i]));
+    const hostOf = (i: number) => p90[i % p90.length] as Session;
+    const allSpecs = FACT_SPECS.flatMap((spec) => range(0, perType).map((i) => ({ ...spec, i })));
+    const factSpecs = [
+        ...allSpecs
+            .filter((f) => f.inSession)
+            .sort(
+                (a, b) =>
+                    (sessionIndex.get(hostOf(a.i).id) ?? 0) -
+                        (sessionIndex.get(hostOf(b.i).id) ?? 0) || a.i - b.i,
+            ),
+        ...allSpecs.filter((f) => !f.inSession),
+    ];
     const pool = mannerQuota(factSpecs.length);
     for (const f of factSpecs) {
         if (!f.fixed) continue;
@@ -306,21 +506,70 @@ export async function compileScenario(input: CompileInput) {
     }
     shuffle(pool, rngFor("manners"));
 
+    type Check = Record<string, unknown>;
+    const lists = (c: Check, suffix: string) =>
+        Object.entries(c).flatMap(([k, v]) =>
+            k.endsWith(suffix) && Array.isArray(v) ? [[k, v as string[]] as const] : [],
+        );
+    const append = (a: Check, b: Check): Check => {
+        const merged = { ...a };
+        for (const [k, v] of lists(b, "must_not")) {
+            if (v.length === 0) continue;
+            const have = (merged[k] as string[] | undefined) ?? [];
+            merged[k] = [...have, ...v.filter((p) => !have.includes(p))];
+        }
+        return merged;
+    };
+    const negate = (c: Check): Check =>
+        Object.fromEntries(lists(c, "must").map(([k, v]) => [`${k}_not`, v]));
+    /** A later instance forbids its predecessor's requirements and everything that one forbade. */
+    const inherit = (base: Check, prev: Check | undefined, prevInherited: Check): Check => {
+        if (!prev) return {};
+        const forbidden = append(append(negate(prev), prev), prevInherited);
+        const required = (k: string) =>
+            (base[k.replace(/_not$/, "")] as string[] | undefined) ?? [];
+        return Object.fromEntries(
+            lists(forbidden, "must_not").map(([k, v]) => [
+                k,
+                v.filter((p) => !required(k).includes(p)),
+            ]),
+        );
+    };
+
     for (const f of factSpecs) {
         const owners = f.inSession ? p90 : bases;
         const slot = Math.floor(f.i / owners.length);
-        const host = f.inSession ? (p90[f.i % p90.length] as Session) : undefined;
+        const host = f.inSession ? hostOf(f.i) : undefined;
         const project = (
             host ? input.projects.find((x) => x.id === host.project) : bases[f.i % bases.length]
         ) as Project;
         const lang = f.kind in (bank[project.lang] ?? {}) ? project.lang : "any";
         const templates = (bank[lang]?.[f.kind] ?? []) as Template[];
         if (templates.length === 0) throw new Error(`fact bank has no ${f.kind} templates`);
+        const isPlan = f.kind === "plan";
         const tpl = templates[slot % templates.length] as Template;
+        const lineKey = `${project.id}/${isPlan ? "plan" : tpl.id}`;
+        const line: Line = lines.get(lineKey) ?? {
+            facts: [],
+            vars: [],
+            base: [],
+            inherited: {},
+            outBase: [],
+            outInherited: {},
+            artifacts: new Map(),
+            literals: [],
+        };
+        lines.set(lineKey, line);
+        const revision = line.facts.length;
+        if (revision > 0 && !isPlan && tpl.revise === undefined) {
+            throw new Error(
+                `template ${tpl.id} repeats in ${project.id} without a revise wording, so its later instance would be an unrelated duplicate`,
+            );
+        }
         const own = byProject(project.id);
         const perOwner = Math.ceil((perType - (f.i % owners.length)) / owners.length);
-        const windows = f.inSession ? perOwner : Math.ceil(perOwner / templates.length);
-        const w = f.inSession ? slot : Math.floor(slot / templates.length);
+        const windows = f.inSession || isPlan ? perOwner : Math.ceil(perOwner / templates.length);
+        const w = f.inSession || isPlan ? slot : Math.floor(slot / templates.length);
         const cut = (n: number, j: number) => Math.floor((j * n) / windows);
         const win = own.slice(cut(own.length, w), cut(own.length, w + 1));
         const winEnd = own[cut(own.length, w + 1)]?.start_ms ?? Number.POSITIVE_INFINITY;
@@ -333,20 +582,35 @@ export async function compileScenario(input: CompileInput) {
         const third = Math.max(1, Math.floor((turnHi - turnLo) / 3));
 
         const word = tokens.word();
-        const err = f.kind === "tool_error" ? place.pick(input.errorCodes) : undefined;
+        const alt = tokens.word();
+        const variant = tpl.variants?.[revision % tpl.variants.length] ?? {};
         const vars: Record<string, string> = {
             token: word,
             TOKEN: word.toUpperCase(),
+            alt,
+            ALT: alt.toUpperCase(),
+            Alt: pascal(alt),
             value: tokens.number(),
             value2: tokens.number(),
             codename: tokens.codename(),
-            code: err?.code ?? "",
-            context: err?.context ?? "",
-            code_re: (err?.code ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+            ...variant,
         };
-        const reversible = !f.inSession && /\{(?:token|TOKEN|value|codename)\}/.test(tpl.statement);
+        const old = Object.fromEntries(
+            Object.entries(line.vars[revision - 1] ?? {}).map(([k, v]) => [`old_${k}`, v]),
+        );
+        const withOld = { ...vars, ...old };
+        const statementTemplate = (revision > 0 && tpl.revise) || tpl.statement || "";
+        const reversible =
+            !f.inSession && !isPlan && /\{(?:token|TOKEN|value|codename)\}/.test(statementTemplate);
+        const planExpect: "resume" | "clarify" | undefined = isPlan
+            ? (slot + (f.i % owners.length) + seed) % 3 === 2
+                ? "clarify"
+                : "resume"
+            : undefined;
+        const planRevised = planExpect === "resume" && slot % 2 === 1;
+        const updated = Boolean(tpl.update) || planRevised;
         const allowed = (m: Manner) =>
-            !(f.inSession && m === "hand_applied_diff") &&
+            !((f.inSession || updated) && m === "hand_applied_diff") &&
             (reversible || m !== "stated_then_reversed") &&
             (MANNER_KINDS[m]?.includes(f.kind) ?? true);
         const at = pool.findIndex(allowed);
@@ -354,27 +618,81 @@ export async function compileScenario(input: CompileInput) {
             f.fixed ?? (at < 0 ? "correction" : (pool.splice(at, 1)[0] as Manner));
         const id = pad("f", facts.length);
         keys.push(id, tpl.id);
-        const statement = render(tpl.statement, vars);
-        const targets = f.type === "P1" ? [project.id, twinOf(project.id)] : [project.id];
-        const deadline = Math.min(...targets.map((t) => inWindow(t).at(-1)?.start_ms ?? 0));
-        const open = win.slice(win.length > 2 ? 1 : 0).filter((x) => x.start_ms < deadline);
-        const early = host ? [host] : open.slice(0, Math.max(1, Math.ceil(open.length * 0.6)));
-        const where = host ? () => range(turnLo, turnLo + third) : all;
+
+        const second = templates[(slot + 1) % templates.length] as Template;
+        const tasks = [
+            { tpl, vars },
+            { tpl: second, vars: { ...vars, token: alt, TOKEN: vars.ALT as string } },
+        ] as const;
+        const taskText = (k: 0 | 1) => render(tasks[k].tpl.task ?? "", tasks[k].vars);
+        const nextStep = (task: string) => `when we pick this back up, the next step is ${task}`;
+        const statement = isPlan
+            ? planExpect === "clarify"
+                ? `two items are open for next time, ${taskText(0)} and ${taskText(1)}, and I have not decided which comes first`
+                : nextStep(taskText(0))
+            : render(statementTemplate, withOld);
+        const basis: Basis =
+            f.kind === "anchor"
+                ? "incidental"
+                : f.kind === "tool_error" || f.kind === "decision"
+                  ? "observation"
+                  : manner === "hand_applied_diff" && tpl.example
+                    ? "convention"
+                    : "instruction";
+        const form = f.kind === "tool_error" ? tpl.form : undefined;
         const fact: Fact = {
             id,
             template: tpl.id,
             kind: f.kind,
             project: project.id,
             manner,
+            basis,
+            line: lineKey,
+            revision,
+            supersedes: line.facts[revision - 1]?.id ?? null,
             statement,
             cues: [],
+            ...(form ? { form } : {}),
         };
-        const cue = (text: string, cueText = text, role: Turn["role"] = "conveyance") => {
-            fact.cues.push(cueText);
-            return take(early, where, { role, text, fact: id });
-        };
+        const targets = f.type === "P1" ? [project.id, twinOf(project.id)] : [project.id];
+        const deadline = Math.min(...targets.map((t) => inWindow(t).at(-1)?.start_ms ?? 0));
+        const open = win.slice(win.length > 2 ? 1 : 0).filter((x) => x.start_ms < deadline);
+        const early = host ? [host] : open.slice(0, Math.max(1, Math.ceil(open.length * 0.6)));
+        const where = host ? () => range(turnLo, turnLo + third) : all;
         const after = (t: Turn) => (x: Session) =>
             all(x).filter((i) => x.id !== t.session || i > t.index);
+
+        const commits = (adds: { path: string; content: string }[]): Commits => {
+            const kept = new Set(adds.map((a) => a.path));
+            return { adds, removed: [...line.artifacts.keys()].filter((p) => !kept.has(p)) };
+        };
+        const land = (session: string, c: Commits) => {
+            for (const path of c.removed) {
+                diffs.push({ session, path, remove: true, fact: id });
+                line.artifacts.delete(path);
+            }
+            for (const a of c.adds) {
+                const d: Diff = { session, path: a.path, content: a.content, fact: id };
+                diffs.push(d);
+                line.artifacts.set(a.path, a.content);
+                expose(id, undefined, d);
+            }
+        };
+        const committing = (c: Commits) => c.adds.length + c.removed.length > 0;
+        const cue = (
+            text: string,
+            c: Commits,
+            cueText: string | string[] = text,
+            role: Turn["role"] = "conveyance",
+        ) => {
+            fact.cues.push(...[cueText].flat());
+            const t = committing(c)
+                ? takeOpening(early, { role, text, fact: id }, "commits", open.slice(0, -1))
+                : take(early, where, { role, text, fact: id });
+            land(t.session, c);
+            expose(id, t);
+            return t;
+        };
 
         const decoy = manner === "stated_then_reversed" ? tokens.word() : undefined;
         const swap = decoy
@@ -385,20 +703,35 @@ export async function compileScenario(input: CompileInput) {
                   codename: tokens.codename(),
               }
             : undefined;
+        const written = isPlan ? statement : render(tpl.statement ?? "", vars);
+        const note = (text: string) =>
+            `# Note\n\n${text.charAt(0).toUpperCase()}${text.slice(1)}.\n`;
         let conveyed: Turn;
-        if (manner === "hand_applied_diff") {
-            const content = tpl.example
-                ? `${render(tpl.example.content, vars)}\n`
-                : `# Note\n\n${statement.charAt(0).toUpperCase()}${statement.slice(1)}.\n`;
+        if (form === "tool_result") {
+            const script = renderDeep(tpl.script ?? { path: "", content: "" }, vars);
+            const text = render((revision > 0 && tpl.revise) || tpl.command || "", withOld);
+            conveyed = cue(text, commits([script]), [text, script.content]);
+        } else if (form === "pasted") {
+            const text = render((revision > 0 && tpl.revise) || tpl.paste || "", withOld);
+            conveyed = cue(text, commits([]));
+        } else if (manner === "hand_applied_diff") {
+            const content = tpl.example ? `${render(tpl.example.content, vars)}\n` : note(written);
             const path = tpl.example ? render(tpl.example.path, vars) : `notes/${word}.md`;
             conveyed = cue(
                 "I pushed a small change to the repo. Look over the latest commit before we continue.",
+                commits([{ path, content }]),
                 content,
             );
-            diffs.push({ session: conveyed.session, path, content, fact: id });
+        } else if (manner === "tool_error") {
+            const path = `scripts/check_${word}.sh`;
+            const said = written.replace(/["\\`$]/g, "\\$&");
+            const content = `#!/bin/sh\n# Pre-merge check.\necho "error: ${said}" >&2\nexit 1\n`;
+            const text = `Run \`sh ${path}\` from the repo root before you start and tell me what it reports.`;
+            conveyed = cue(text, commits([{ path, content }]), [text, content]);
         } else if (manner === "stated_then_reversed") {
             const first = cue(
-                `For the record, ${render(tpl.statement, { ...vars, ...swap })}.`,
+                `For the record, ${render(statementTemplate, { ...withOld, ...swap })}.`,
+                commits([]),
                 undefined,
                 "reversal",
             );
@@ -409,29 +742,33 @@ export async function compileScenario(input: CompileInput) {
                 fact: id,
             });
             fact.cues.push(text);
+            expose(id, conveyed);
         } else {
-            const block = `The check failed with this:\n\`\`\`\nerror: ${statement}\n\`\`\``;
-            conveyed = cue(
-                {
-                    correction: `Quick correction before you carry on: ${statement}.`,
-                    tool_error: f.kind === "tool_error" ? `Heads up, ${statement}` : block,
-                    rejected_approach: `We went down another road before and undid it: ${statement}.`,
-                    direct_statement: `For the record, ${statement}.`,
-                }[manner],
-            );
+            const said: Partial<Record<Manner, string>> = {
+                correction: `Quick correction before you carry on: ${statement}.`,
+                rejected_approach: `We went down another road before and undid it: ${statement}.`,
+                direct_statement: `For the record, ${statement}.`,
+            };
+            conveyed = cue(said[manner] ?? "", commits([]));
         }
+        const accepted = conveyed;
         const startOf = (t: Turn) => sessionOf(t.session).start_ms;
         const opened = startOf(conveyed);
         const later = (p: string) => inWindow(p).filter((x) => x.start_ms > startOf(conveyed));
-        if (tpl.update) {
-            const text = `One change: ${render(tpl.update, vars)}.`;
+        const updateText = planRevised
+            ? `Change of plan for next time: drop ${taskText(0)}; the next step is ${taskText(1)} instead.`
+            : tpl.update && revision === 0
+              ? `One change: ${render(tpl.update, vars)}.`
+              : undefined;
+        if (updateText) {
             const updatePool = [sessionOf(conveyed.session), ...later(project.id)];
             conveyed = take(
                 updatePool.slice(0, Math.max(1, Math.ceil(updatePool.length / 2))),
                 after(conveyed),
-                { role: "update", text, fact: id },
+                { role: "update", text: updateText, fact: id },
             );
-            fact.cues.push(text);
+            fact.cues.push(updateText);
+            expose(id, conveyed);
         }
         facts.push(fact);
 
@@ -441,46 +778,52 @@ export async function compileScenario(input: CompileInput) {
             text: string,
             check: unknown,
             candidates: Session[],
+            truth: TruthOf,
             at = all,
             factOf: string | null = id,
+            opens = false,
         ) => {
             const pid = pad("q", probes.length);
             keys.push(pid);
-            const t = take(candidates, at, {
-                role: "probe",
-                text,
+            const shown = distinct(projectId, id, text);
+            const turn = {
+                role: "probe" as const,
+                text: shown,
                 ...(factOf ? { fact: factOf } : {}),
                 probe: pid,
-            });
+            };
+            const t = opens ? takeOpening(candidates, turn, "probe") : take(candidates, at, turn);
             probes.push({
                 id: pid,
                 type,
                 fact: id,
                 project: projectId,
                 session: t.session,
-                text,
+                text: shown,
                 check,
+            });
+            truths.set(pid, {
+                ...truth,
+                basis,
+                supersedes: line.facts.map((x) => x.id),
+                fact: id,
             });
             return t;
         };
-        type Check = Record<string, unknown>;
-        const lists = (c: Check, suffix: string) =>
-            Object.entries(c).flatMap(([k, v]) =>
-                k.endsWith(suffix) && Array.isArray(v) ? [[k, v as string[]] as const] : [],
-            );
-        const append = (a: Check, b: Check): Check => {
-            const merged = { ...a };
-            for (const [k, v] of lists(b, "must_not")) {
-                merged[k] = [...((merged[k] as string[] | undefined) ?? []), ...v];
-            }
-            return merged;
-        };
-        const negate = (c: Check): Check =>
-            Object.fromEntries(lists(c, "must").map(([k, v]) => [`${k}_not`, v]));
+        const planCheck = (k: 0 | 1) => renderDeep<Check>(tasks[k].tpl.check, tasks[k].vars);
+        const musts = (k: 0 | 1) => (planCheck(k).must as string[] | undefined) ?? [];
+        const base: Check = isPlan
+            ? planExpect === "clarify"
+                ? { clarify: [...musts(0), ...musts(1)], must_not: [...musts(0), ...musts(1)] }
+                : planRevised
+                  ? append(planCheck(1), negate(planCheck(0)))
+                  : planCheck(0)
+            : renderDeep<Check>(tpl.check, vars);
+        const inherited = inherit(base, line.base[revision - 1], line.inherited);
         const superseded = swap ? renderDeep<Check>(tpl.check, { ...vars, ...swap }) : {};
         const swappedOnly = (pattern: string) => {
-            const keys = [...pattern.matchAll(/\{(\w+)\}/g)].map(([, k]) => k ?? "");
-            return swap !== undefined && keys.length > 0 && keys.every((k) => k in swap);
+            const names = [...pattern.matchAll(/\{(\w+)\}/g)].map(([, k]) => k ?? "");
+            return swap !== undefined && names.length > 0 && names.every((k) => k in swap);
         };
         const obsolete: Check = Object.fromEntries(
             lists(tpl.check as Check, "must").flatMap(([k, patterns]) =>
@@ -489,40 +832,157 @@ export async function compileScenario(input: CompileInput) {
                     : [],
             ),
         );
-        const base = renderDeep<Check>(tpl.check, vars);
-        const check = append(append(base, superseded), negate(obsolete));
-        const mustNot = append(negate(base), negate(superseded));
+        const check = append(append(append(base, superseded), negate(obsolete)), inherited);
+        const mustNot = append(append(negate(base), negate(superseded)), inherited);
+        const outBase = renderDeep<Check>(tpl.out_check ?? tpl.check, vars);
+        const outInherited = inherit(outBase, line.outBase[revision - 1], line.outInherited);
+
+        const litsOf = (c: unknown, v: Record<string, string>, positive: boolean) =>
+            placeholders(c, positive)
+                .filter((k) => GENERATED.includes(k))
+                .map((k) => v[k] as string);
+        const taskLits = (k: 0 | 1) => litsOf(tasks[k].tpl.check, tasks[k].vars, true);
+        const ownPresent = isPlan
+            ? planExpect === "clarify"
+                ? [...taskLits(0), ...taskLits(1)]
+                : taskLits(planRevised ? 1 : 0)
+            : litsOf(tpl.check, vars, true);
+        const ownAbsent = isPlan ? [] : litsOf(tpl.check, vars, false);
+        const replaced = [
+            ...line.literals,
+            ...(swap ? Object.values(swap) : []),
+            ...(planRevised ? taskLits(0) : []),
+            ...(f.kind === "decision" ? ownAbsent : []),
+        ];
+        const stale = [...new Set(replaced)].filter((x) => !ownPresent.includes(x));
+        const truthFor = (expect: Expect, outSide = false): TruthOf => {
+            const present = outSide ? litsOf(tpl.out_check, vars, true) : ownPresent;
+            const absent = outSide ? litsOf(tpl.out_check, vars, false) : ownAbsent;
+            if (expect === "avoid") {
+                return {
+                    expect,
+                    present: [],
+                    absent: [...new Set([...present, ...absent])],
+                    stale,
+                };
+            }
+            if (expect === "abstain") return { expect, present: [], absent: [], stale };
+            return { expect, present, absent, stale };
+        };
         const probeText = render(tpl.probe, vars);
         const outText = render(tpl.out_probe ?? tpl.probe, vars);
         const fromConveyed = later(project.id);
         if (f.type === "P1") {
             const before = win.filter((x) => x.start_ms < opened);
-            addProbe("P1-control", project.id, probeText, check, before, all, null);
-            addProbe("P1", project.id, probeText, check, fromConveyed);
-            addProbe("P2", project.id, outText, mustNot, fromConveyed);
-            addProbe("P11", twinOf(project.id), probeText, mustNot, later(twinOf(project.id)));
+            const control = truthFor("baseline");
+            addProbe("P1-control", project.id, probeText, check, before, control, all, null);
+            addProbe("P1", project.id, probeText, check, fromConveyed, truthFor("apply"));
+            addProbe("P2", project.id, outText, mustNot, fromConveyed, truthFor("avoid"));
+            const twin = twinOf(project.id);
+            addProbe("P11", twin, probeText, mustNot, later(twin), truthFor("avoid"));
         } else if (host) {
             const turns: [number, number] = [conveyed.index + 1, turnHi];
-            const ranged = { ...(check as Record<string, unknown>), turns };
-            const placed = addProbe("P13", project.id, probeText, ranged, [host], () =>
-                range(turnHi - third, turnHi),
+            const ranged = { ...check, turns };
+            const placed = addProbe(
+                "P13",
+                project.id,
+                probeText,
+                ranged,
+                [host],
+                truthFor("apply"),
+                () => range(turnHi - third, turnHi),
             );
             turns[1] = placed.index + 1;
         } else if (f.type === "P4") {
             const out = (slot + (f.i % owners.length) + (seed % 2)) % 2 === 1;
-            const scoped = out ? renderDeep(tpl.out_check ?? tpl.check, vars) : check;
-            const c = { ...(scoped as Record<string, unknown>), side: out ? "out" : "in" };
-            addProbe("P4", project.id, out ? outText : probeText, c, fromConveyed);
+            const scoped = out ? append(outBase, outInherited) : check;
+            const c = { ...scoped, side: out ? "out" : "in" };
+            const truth = truthFor("apply", out);
+            addProbe("P4", project.id, out ? outText : probeText, c, fromConveyed, truth);
         } else if (f.type === "P6") {
-            const opening = fromConveyed.filter((x) => !turns.has(key(x.id, 0)));
-            const t = addProbe("P6", project.id, probeText, check, opening, () => [0]);
+            const t = addProbe(
+                "P6",
+                project.id,
+                probeText,
+                check,
+                fromConveyed,
+                truthFor(planExpect ?? "resume"),
+                all,
+                id,
+                true,
+            );
             sessionOf(t.session).min_gap_ms = HOUR;
-        } else if (tpl.authority) {
-            const [target, ...rest] = fromConveyed;
+            const next =
+                planExpect === "clarify"
+                    ? [taskText(0), taskText(1)]
+                    : [taskText(planRevised ? 1 : 0)];
+            const text =
+                planExpect === "clarify"
+                    ? `Let's set both of those aside for now; consider ${taskText(0)} and ${taskText(1)} closed.`
+                    : `That covers ${next[0]}; consider that plan finished.`;
+            const done = take([sessionOf(t.session)], after(t), {
+                role: "status",
+                text,
+                fact: id,
+            });
+            const history: { turn: Turn; status: PlanStatus; next: string[] }[] = [
+                { turn: accepted, status: "accepted", next: planRevised ? [taskText(0)] : next },
+            ];
+            if (planRevised) history.push({ turn: conveyed, status: "revised", next });
+            history.push({ turn: done, status: "completed", next: [] });
+            planTurns.set(id, history);
+            plans.push({
+                fact: id,
+                project: project.id,
+                expect: planExpect ?? "resume",
+                history: [],
+            });
+        } else if (f.kind === "decision" && tpl.authority) {
             const { path, content } = renderDeep(tpl.authority, vars);
-            if (target) diffs.push({ session: target.id, path, content, fact: id });
-            addProbe(f.type, project.id, probeText, check, rest);
-        } else addProbe(f.type, project.id, probeText, check, fromConveyed);
+            const text = `I committed ${path}. Its figure replaces the one I gave you before, so go by that file.`;
+            fact.cues.push(text, content);
+            const target = takeOpening(
+                fromConveyed.slice(0, -1),
+                { role: "conveyance", text, fact: id },
+                "commits",
+            );
+            land(target.session, commits([{ path, content }]));
+            expose(id, target);
+            const rest = fromConveyed.filter(
+                (x) => x.start_ms > sessionOf(target.session).start_ms,
+            );
+            addProbe(f.type, project.id, probeText, check, rest, truthFor("apply"));
+        } else if (form === "tool_result") {
+            const fix = commits([]);
+            const gone = fix.removed.map((path) => `\`${path}\``).join(" and ");
+            const text = `I took ${gone} out of the repo now that the fix is in.`;
+            const turn = { role: "conveyance" as const, text, fact: id };
+            const fixed = takeOpening(fromConveyed.slice(0, -1), turn, "commits");
+            land(fixed.session, fix);
+            const rest = fromConveyed.filter(
+                (x) => x.start_ms >= sessionOf(fixed.session).start_ms,
+            );
+            addProbe(f.type, project.id, probeText, check, rest, truthFor("apply"), after(fixed));
+        } else {
+            const expect: Expect =
+                f.type === "P5" || f.type === "P10"
+                    ? "avoid"
+                    : f.type === "P7"
+                      ? "explain"
+                      : f.type === "P8"
+                        ? "answer"
+                        : f.type === "P9"
+                          ? "abstain"
+                          : "apply";
+            addProbe(f.type, project.id, probeText, check, fromConveyed, truthFor(expect));
+        }
+        line.facts.push(fact);
+        line.vars.push(vars);
+        line.base.push(base);
+        line.inherited = inherited;
+        line.outBase.push(outBase);
+        line.outInherited = outInherited;
+        line.literals.push(...ownPresent, ...ownAbsent);
     }
     for (const i of range(0, perType)) {
         const session = p90[i % p90.length] as Session;
@@ -568,18 +1028,22 @@ export async function compileScenario(input: CompileInput) {
         }
     }
 
-    const authorities = diffs.filter(
-        (d) => !facts.find((f) => f.id === d.fact)?.cues.includes(d.content),
+    const withContent = diffs.filter((d) => d.content !== undefined);
+    const authorities = withContent.filter(
+        (d) => !facts.find((f) => f.id === d.fact)?.cues.includes(d.content as string),
     );
-    const allCues = [...facts.flatMap((f) => f.cues), ...authorities.map((d) => d.content)];
+    const allCues = [
+        ...facts.flatMap((f) => f.cues),
+        ...authorities.map((d) => d.content as string),
+    ];
     const pairs = probes.flatMap((p) => {
         const fact = facts.find((f) => f.id === p.fact);
         const text = p.text;
         if (!fact || !text) return [];
-        const authority = diffs
-            .filter((d) => d.fact === fact.id && !fact.cues.includes(d.content))
-            .map((d) => d.content);
-        return [...fact.cues, ...authority].map((cue) => ({
+        const authority = authorities
+            .filter((d) => d.fact === fact.id)
+            .map((d) => d.content as string);
+        return [...new Set([...fact.cues, ...authority])].map((cue) => ({
             probe: p.id,
             fact: fact.id,
             cue,
@@ -622,19 +1086,24 @@ export async function compileScenario(input: CompileInput) {
     }));
     const delivered = [...turns.values()].map((t) => [`${t.session}#${t.index}`, t.text]);
     for (const d of diffs)
-        delivered.push([`${d.session} diff ${d.path}`, `${d.path}\n${d.content}`]);
+        delivered.push([`${d.session} diff ${d.path}`, `${d.path}\n${d.content ?? ""}`]);
     for (const [where, text] of delivered) {
         const hits = markerHits(text ?? "", keys).join(", ");
         if (hits) throw new Error(`${where}: delivered text carries markers ${hits}`);
     }
 
     schedule();
-    const raw: { at: number; order: number; event: Record<string, unknown> }[] = [];
+    const raw: {
+        at: number;
+        order: number;
+        event: Record<string, unknown>;
+        ref?: Turn | Diff;
+    }[] = [];
     for (const session of sessions) {
         const { id, project } = session;
         const at = session.start_ms;
         for (const d of diffs.filter((x) => x.session === id)) {
-            raw.push({ at, order: 0, event: { kind: "apply_diff", project, ...d } });
+            raw.push({ at, order: 0, event: { kind: "apply_diff", project, ...d }, ref: d });
         }
         const forced_p90 = session.forced_p90;
         raw.push({
@@ -643,10 +1112,12 @@ export async function compileScenario(input: CompileInput) {
             event: { kind: "session_start", session: id, project, forced_p90 },
         });
         session.turn_ms.forEach((t, i) => {
+            const turn = turns.get(key(id, i));
             raw.push({
                 at: at + t,
                 order: 2 + i,
-                event: { kind: "user_turn", ...turns.get(key(id, i)) },
+                event: { kind: "user_turn", ...turn },
+                ref: turn,
             });
         });
         raw.push({
@@ -661,6 +1132,10 @@ export async function compileScenario(input: CompileInput) {
         scenario_ms: r.at,
         ...r.event,
     }));
+    const indexOf = new Map<Turn | Diff, number>();
+    raw.forEach((r, i) => {
+        if (r.ref) indexOf.set(r.ref, i);
+    });
     const probeEvent = new Map(
         events.flatMap((e) =>
             e.kind === "user_turn" && e.probe ? [[e.probe as string, e.id]] : [],
@@ -674,9 +1149,11 @@ export async function compileScenario(input: CompileInput) {
     const firstCue = new Map<unknown, number>();
     const lastCue = new Map<unknown, number>();
     events.forEach((e, i) => {
-        if (!e.fact || e.role === "probe") return;
-        if (!firstCue.has(e.fact)) firstCue.set(e.fact, i);
-        lastCue.set(e.fact, i);
+        if (!e.fact || e.role === "probe" || e.role === "status") return;
+        for (const fact of [e.fact, ...((e.facts as string[] | undefined) ?? [])]) {
+            if (!firstCue.has(fact)) firstCue.set(fact, i);
+            lastCue.set(fact, i);
+        }
     });
     events.forEach((e, i) => {
         if (e.role === "probe" && e.fact && i < (lastCue.get(e.fact) ?? 0)) {
@@ -690,6 +1167,28 @@ export async function compileScenario(input: CompileInput) {
             throw new Error(`${p.id}: P1 control follows a conveyance of ${p.fact}`);
         }
     }
+    const sourcesOf = (fact: string) => {
+        const e = exposure.get(fact) ?? { turns: [], diffs: [] };
+        return [...e.turns, ...e.diffs].map((ref) => indexOf.get(ref) ?? -1).sort((a, b) => a - b);
+    };
+    const projectOfSession = new Map(sessions.map((x) => [x.id, x.project]));
+    proveExposure({
+        probes,
+        facts,
+        events,
+        truths,
+        sourcesOf,
+        projectOf: (e) =>
+            (e.project as string | undefined) ?? projectOfSession.get(e.session as string) ?? "",
+    });
+    for (const plan of plans) {
+        plan.history = (planTurns.get(plan.fact) ?? []).map((h) => ({
+            event: events[indexOf.get(h.turn) ?? -1]?.id ?? "",
+            status: h.status,
+            next: h.next,
+        }));
+    }
+    proveTwoPlansNeverOpen(plans, probes, order);
 
     const summary = sessions.map(({ turn_ms, ...x }, i) => {
         const prev = sessions[i - 1];
@@ -697,9 +1196,23 @@ export async function compileScenario(input: CompileInput) {
         return { ...x, requests: turn_ms.length, gap_before_ms };
     });
     const diffSessions = new Set(diffs.map((d) => d.session));
+    const guarded = new Map<string, number>();
+    for (const p of probes) {
+        if (!p.text) continue;
+        const sources = (p.ground_truth?.sources ?? []).map((id) => events[order.get(id) ?? -1]);
+        for (const e of [events[order.get(p.event ?? "") ?? -1], ...sources]) {
+            if (e?.kind !== "user_turn") continue;
+            const n = (e.index as number) + 1;
+            guarded.set(e.session as string, Math.max(guarded.get(e.session as string) ?? 0, n));
+        }
+    }
     const faults = scheduleFaults(
         prereg.tier,
-        summary.map((x) => ({ ...x, has_diff: diffSessions.has(x.id) })),
+        summary.map((x) => ({
+            ...x,
+            has_diff: diffSessions.has(x.id),
+            guarded_turns: guarded.get(x.id) ?? 0,
+        })),
         rngFor("faults"),
     );
     const turnCounts = new Map(summary.map((x) => [x.id, x.requests]));
@@ -731,6 +1244,7 @@ export async function compileScenario(input: CompileInput) {
         sessions: summary,
         facts,
         probes,
+        plans,
         similarity,
         events,
         faults,
@@ -768,4 +1282,146 @@ export function scenarioInputMismatch(scenario: Scenario, inputs: ScenarioInputs
         return `scenario.json was compiled from corpus ${m.corpus_inputs_sha256}, not ${inputs.corpus_inputs_sha256}`;
     }
     return null;
+}
+
+type ScenarioEvent = Record<string, unknown> & { id: string };
+
+interface Exposure {
+    probes: ProbeItem[];
+    facts: Fact[];
+    events: ScenarioEvent[];
+    truths: Map<string, Truth>;
+    sourcesOf: (fact: string) => number[];
+    projectOf: (e: ScenarioEvent) => string;
+}
+
+/** Lower-cased, since a generated word and its upper-case form name one value. */
+const eventText = (e: ScenarioEvent) =>
+    e.kind === "user_turn" || e.kind === "apply_diff"
+        ? String(e.text ?? e.content ?? "").toLowerCase()
+        : "";
+/** A number occurs as a whole value, with no digit beside it; a generated word occurs anywhere. */
+const holds = (text: string, lit: string) =>
+    /^\d+$/.test(lit)
+        ? new RegExp(`(?<!\\d)${lit}(?!\\d)`).test(text)
+        : text.toLowerCase().includes(lit.toLowerCase());
+
+/**
+ * Fills each probe's `ground_truth` and refuses a probe whose ground truth the event sequence
+ * does not support: every source precedes the probe in the fact's project, each generated literal
+ * the probe turns on appears in a source, the scenario-defined tree at the probe holds no
+ * superseded literal, no superseded literal reaches the agent after the current state, a P3
+ * item's authoritative value is in the tree, a tool-result P12 item's failing check is not, and
+ * no project asks one probe text for two facts.
+ */
+export function proveExposure(o: Exposure): void {
+    const order = new Map(o.events.map((e, i) => [e.id, i]));
+    const asked = new Map<string, string>();
+    for (const p of o.probes) {
+        const truth = o.truths.get(p.id);
+        if (!p.text || !truth) continue;
+        const { fact: factId, ...rest } = truth;
+        const k = `${p.project}\n${p.text}`;
+        const earlier = asked.get(k);
+        if (earlier !== undefined && earlier !== factId) {
+            throw new Error(`${p.id}: ${p.project} asks this probe text for ${earlier} too`);
+        }
+        asked.set(k, factId);
+        const at = order.get(p.event ?? "");
+        const fact = o.facts.find((f) => f.id === factId);
+        if (at === undefined || !fact) throw new Error(`${p.id}: probe has no event or fact`);
+        const all = o.sourcesOf(fact.id);
+        if (all.some((i) => i < 0)) throw new Error(`${p.id}: a source of ${fact.id} has no event`);
+        if (truth.expect === "baseline") {
+            if (all.some((i) => i < at)) {
+                throw new Error(`${p.id}: the control follows a source of ${fact.id}`);
+            }
+            p.ground_truth = { ...rest, sources: [] };
+            continue;
+        }
+        if (all.length === 0) throw new Error(`${p.id}: no event exposes ${fact.id}`);
+        const sources = all.map((i) => o.events[i] as ScenarioEvent);
+        for (const [n, e] of sources.entries()) {
+            if ((all[n] as number) >= at) {
+                throw new Error(`${p.id}: source ${e.id} of ${fact.id} does not precede the probe`);
+            }
+            if (o.projectOf(e) !== fact.project) {
+                throw new Error(
+                    `${p.id}: source ${e.id} of ${fact.id} lies outside ${fact.project}`,
+                );
+            }
+        }
+        const own = [...truth.present, ...truth.absent].filter((x) => !truth.stale.includes(x));
+        for (const lit of own) {
+            if (!sources.some((e) => holds(eventText(e), lit))) {
+                throw new Error(`${p.id}: no source of ${fact.id} exposes ${lit}`);
+            }
+        }
+        const tree = new Map<string, string>();
+        for (const e of o.events.slice(0, at)) {
+            if (e.kind !== "apply_diff" || e.project !== p.project) continue;
+            if (e.remove) tree.delete(String(e.path));
+            else tree.set(String(e.path), String(e.content));
+        }
+        for (const lit of truth.stale) {
+            for (const [path, content] of tree) {
+                if (holds(content, lit)) {
+                    throw new Error(
+                        `${p.id}: ${path} still holds the superseded ${lit} at the probe`,
+                    );
+                }
+            }
+        }
+        if (truth.present.length > 0) {
+            const carries = all.filter((i) =>
+                truth.present.some((lit) => holds(eventText(o.events[i] as ScenarioEvent), lit)),
+            );
+            const current = Math.max(...carries);
+            for (const e of o.events.slice(current + 1, at)) {
+                const lit = truth.stale.find((x) => holds(eventText(e), x));
+                if (lit && o.projectOf(e) === fact.project) {
+                    throw new Error(
+                        `${p.id}: ${e.id} exposes the superseded ${lit} after the current state`,
+                    );
+                }
+            }
+        }
+        if (fact.form === "tool_result") {
+            const lit = truth.present.find((x) => [...tree.values()].some((c) => holds(c, x)));
+            if (lit) throw new Error(`${p.id}: the tree still holds the check that prints ${lit}`);
+        }
+        if (p.type === "P3") {
+            const files = [...tree.values()];
+            const missing = truth.present.find((lit) => !files.some((c) => holds(c, lit)));
+            if (missing)
+                throw new Error(`${p.id}: the authoritative ${missing} is not in the tree`);
+        }
+        p.ground_truth = { ...rest, sources: sources.map((e) => e.id) };
+    }
+}
+
+/** Refuses a P6 item whose probe finds another plan of its project accepted and not completed. */
+export function proveTwoPlansNeverOpen(
+    plans: PlanRecord[],
+    probes: ProbeItem[],
+    order: Map<string, number>,
+): void {
+    const at = (event: string) => order.get(event) ?? Number.POSITIVE_INFINITY;
+    for (const p of probes.filter((x) => x.type === "P6")) {
+        const when = at(p.event ?? "");
+        for (const plan of plans.filter((x) => x.project === p.project)) {
+            const accepted = plan.history.find((h) => h.status === "accepted");
+            const completed = plan.history.find((h) => h.status === "completed");
+            if (plan.fact === p.fact) {
+                if (!accepted || at(accepted.event) >= when) {
+                    throw new Error(`${p.id}: its plan ${plan.fact} is not accepted before it`);
+                }
+                continue;
+            }
+            const open = accepted && at(accepted.event) < when;
+            if (open && (!completed || at(completed.event) >= when)) {
+                throw new Error(`${p.id}: plan ${plan.fact} is still open at the probe`);
+            }
+        }
+    }
 }

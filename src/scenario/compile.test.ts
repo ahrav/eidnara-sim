@@ -21,6 +21,9 @@ import {
     type Manner,
     mannerQuota,
     markerHits,
+    type ProbeItem,
+    proveExposure,
+    proveTwoPlansNeverOpen,
     type Scenario,
     scenarioInputMismatch,
     shuffle,
@@ -87,7 +90,7 @@ describe("SIM-P01: deterministic compile across processes", () => {
             expect(body.manifest).toMatchObject({
                 seed,
                 tier,
-                generator_version: "sim-scenario/v2",
+                generator_version: "sim-scenario/v3",
             });
         }, 180_000);
     }
@@ -131,7 +134,13 @@ describe("compiled S scenario", async () => {
         for (const p of s.probes) {
             if (!p.text || p.type === "P1-control") continue;
             const probeTurn = all.find((t) => t.probe === p.id);
-            const cues = s.events.filter((e) => e.fact === p.fact && e.role !== "probe");
+            const cues = s.events.filter(
+                (e) =>
+                    (e.fact === p.fact ||
+                        (e.facts as string[] | undefined)?.includes(p.fact ?? "")) &&
+                    e.role !== "probe" &&
+                    e.role !== "status",
+            );
             expect(cues.length).toBeGreaterThan(0);
             for (const c of cues) {
                 expect(order.get(c.id) ?? Infinity).toBeLessThan(
@@ -156,13 +165,22 @@ describe("compiled S scenario", async () => {
 
     test("a scoped update and a reversal follow their first statement", () => {
         for (const f of s.facts) {
-            const own = all.filter((t) => t.fact === f.id && t.role !== "probe");
+            const own = all.filter(
+                (t) =>
+                    (t.fact === f.id || (t as { facts?: string[] }).facts?.includes(f.id)) &&
+                    t.role !== "probe" &&
+                    t.role !== "status",
+            );
             const roles = own.map((t) => t.role);
-            if (f.kind === "scoped_update") expect(roles.at(-1)).toBe("update");
+            if (f.kind === "scoped_update") {
+                expect(roles.at(-1)).toBe(f.revision === 0 ? "update" : "conveyance");
+            }
             if (f.manner === "stated_then_reversed") {
                 expect(roles[0]).toBe("reversal");
                 expect(own[0]?.text).not.toContain(f.statement);
-                expect(own.at(-1)?.text).toContain(f.statement);
+                expect(
+                    own.some((t) => t.text.includes(`Scratch what I said earlier: ${f.statement}`)),
+                ).toBe(true);
             }
         }
     });
@@ -232,7 +250,10 @@ describe("compiled S scenario", async () => {
             const lang = s.projects.find((x) => x.id === p.project)?.lang ?? "";
             const [tpl] = (input.bank[lang]?.scoped_update ?? []) as Template[];
             const { side, ...rest } = p.check as Record<string, unknown>;
-            if (side === "out") expect(rest).toEqual(tpl?.out_check as Record<string, unknown>);
+            if (side === "out") {
+                expect(rest.scope).toBeUndefined();
+                for (const k of Object.keys(tpl?.out_check ?? {})) expect(k in rest).toBe(true);
+            }
             return side === "out";
         };
         const scopes = new Set(p4.map((p) => `${p.project}/${outOf(p)}`));
@@ -378,7 +399,9 @@ describe("compiled S scenario", async () => {
     });
 
     test("the BM25 collection holds each delivered cue once", () => {
-        const diffs = s.events.filter((e) => e.kind === "apply_diff") as unknown as {
+        const diffs = s.events.filter(
+            (e) => e.kind === "apply_diff" && e.content !== undefined,
+        ) as unknown as {
             fact: string;
             content: string;
         }[];
@@ -400,36 +423,43 @@ describe("compiled S scenario", async () => {
         }
     });
 
+    const scoredCues = (fact: string) => {
+        const f = s.facts.find((x) => x.id === fact);
+        const extra = s.events.flatMap((e) =>
+            e.kind === "apply_diff" &&
+            e.fact === fact &&
+            typeof e.content === "string" &&
+            !f?.cues.includes(e.content)
+                ? [e.content]
+                : [],
+        );
+        return new Set([...(f?.cues ?? []), ...extra]);
+    };
+
     test("SIM-P08: an authoritative P3 diff is scored against its fact's probes", () => {
-        const diffs = s.events.filter((e) => e.kind === "apply_diff") as unknown as {
-            fact: string;
-            content: string;
-        }[];
         for (const f of s.facts.filter((x) => x.kind === "decision")) {
-            const authority = diffs.find((d) => d.fact === f.id && !f.cues.includes(d.content));
-            expect(authority).toBeDefined();
+            const authority = s.events.find(
+                (e) =>
+                    e.kind === "apply_diff" &&
+                    e.fact === f.id &&
+                    !e.remove &&
+                    String(e.path).startsWith("src/limits/"),
+            );
+            expect(f.cues).toContain(authority?.content as string);
             for (const p of s.probes.filter((x) => x.fact === f.id && x.text)) {
                 const scored = s.similarity.filter((x) => x.probe === p.id);
-                expect(scored.length).toBe(f.cues.length + 1);
+                expect(scored.map((x) => x.cue_sha256)).toContain(
+                    sha256Hex(authority?.content as string),
+                );
+                expect(scored.length).toBe(scoredCues(f.id).size);
             }
         }
     });
 
     test("SIM-P08: every cue/probe pair is journaled below both thresholds", () => {
-        const authorities = s.events.filter(
-            (e) =>
-                e.kind === "apply_diff" &&
-                e.role === undefined &&
-                s.facts.find((f) => f.id === e.fact)?.cues.includes(e.content as string) === false,
-        ).length;
         const expected = s.probes
             .filter((p) => p.text)
-            .reduce((n, p) => {
-                const fact = s.facts.find((f) => f.id === p.fact);
-                const authority = fact?.kind === "decision" ? 1 : 0;
-                return n + (fact?.cues.length ?? 0) + authority;
-            }, 0);
-        expect(authorities).toBeGreaterThan(0);
+            .reduce((n, p) => n + scoredCues(p.fact ?? "").size, 0);
         expect(s.similarity.length).toBe(expected);
         const t = s.manifest.cue_probe_similarity;
         for (const x of s.similarity) {
@@ -443,12 +473,12 @@ describe("compiled S scenario", async () => {
         const diffs = s.events.filter((e) => e.kind === "apply_diff") as unknown as {
             id: string;
             path: string;
-            content: string;
+            content?: string;
         }[];
         expect(diffs.length).toBeGreaterThan(0);
         const delivered = [
             ...all.map((t) => ({ id: t.id, text: t.text })),
-            ...diffs.map((d) => ({ id: d.id, text: `${d.path}\n${d.content}` })),
+            ...diffs.map((d) => ({ id: d.id, text: `${d.path}\n${d.content ?? ""}` })),
         ];
         for (const t of delivered)
             expect({ id: t.id, hits: markerHits(t.text, keys) }).toEqual({ id: t.id, hits: [] });
@@ -466,6 +496,151 @@ describe("compiled S scenario", async () => {
             .map((e) => e.scenario_ms as number);
         for (const [i, x] of s.sessions.slice(1).entries())
             expect(x.start_ms).toBeGreaterThan(ends[i] ?? Infinity);
+    });
+
+    const factsOf = (e: Record<string, unknown>) => [
+        ...new Set([e.fact, ...((e.facts as string[] | undefined) ?? [])].filter(Boolean)),
+    ];
+    const textOf = (e: Record<string, unknown>) => String(e.text ?? e.content ?? "");
+
+    test("every text probe records its expectation, basis, and sources before it", () => {
+        for (const p of s.probes.filter((x) => x.text)) {
+            const g = p.ground_truth;
+            expect({ probe: p.id, has: g !== undefined }).toEqual({ probe: p.id, has: true });
+            if (!g) continue;
+            const at = order.get(p.event ?? "") ?? -1;
+            if (p.type === "P1-control") {
+                expect(g.expect).toBe("baseline");
+                expect(g.sources).toEqual([]);
+                continue;
+            }
+            expect(g.sources.length).toBeGreaterThan(0);
+            const fact = s.facts.find((f) => f.id === p.fact);
+            expect(g.basis).toBe(fact?.basis ?? "instruction");
+            for (const id of g.sources) expect(order.get(id) ?? Infinity).toBeLessThan(at);
+            const exposed = g.sources.map((id) => textOf(s.events[order.get(id) ?? -1] ?? {}));
+            for (const lit of g.present) {
+                expect({
+                    probe: p.id,
+                    lit,
+                    seen: exposed.some((t) => t.toLowerCase().includes(lit.toLowerCase())),
+                }).toEqual({
+                    probe: p.id,
+                    lit,
+                    seen: true,
+                });
+            }
+        }
+    });
+
+    test("the ledger separates instructions, conventions, incidental mentions, and observations", async () => {
+        const bases = new Set<string>();
+        for (let seed = 101; seed < 111 && bases.size < 4; seed++) {
+            const x = seed === 101 ? s : await compileScenario(inputS(seed));
+            for (const f of x.facts) {
+                bases.add(f.basis);
+                if (f.kind === "anchor") expect(f.basis).toBe("incidental");
+                if (f.kind === "decision" || f.kind === "tool_error") {
+                    expect(f.basis).toBe("observation");
+                }
+                if (f.basis === "convention") expect(f.manner).toBe("hand_applied_diff");
+            }
+            for (const p of x.probes.filter((y) => y.type === "P10")) {
+                expect(p.ground_truth?.expect).toBe("avoid");
+            }
+        }
+        expect([...bases].sort()).toEqual([
+            "convention",
+            "incidental",
+            "instruction",
+            "observation",
+        ]);
+    });
+
+    test("a later instance of a template in one project supersedes the earlier one in its own words", () => {
+        const byLine = new Map<string, typeof s.facts>();
+        for (const f of s.facts) byLine.set(f.line, [...(byLine.get(f.line) ?? []), f]);
+        let revised = 0;
+        for (const chain of byLine.values()) {
+            for (const [i, f] of chain.entries()) {
+                expect(f.revision).toBe(i);
+                expect(f.supersedes).toBe(i === 0 ? null : (chain[i - 1]?.id ?? "missing"));
+                if (i > 0 && f.kind !== "plan") revised++;
+            }
+        }
+        expect(revised).toBeGreaterThan(0);
+    });
+
+    test("no project asks one probe text for two facts", () => {
+        const owner = new Map<string, string>();
+        for (const p of s.probes.filter((x) => x.text)) {
+            const key = `${p.project}\n${p.text}`;
+            expect(owner.get(key) ?? p.fact).toBe(p.fact ?? "");
+            owner.set(key, p.fact ?? "");
+        }
+    });
+
+    test("every commit lands at the start of the session whose first turn points at it", () => {
+        const diffs = s.events.filter((e) => e.kind === "apply_diff");
+        expect(diffs.some((e) => e.remove === true)).toBe(true);
+        for (const d of diffs) {
+            const first = all.find((t) => t.session === d.session && t.index === 0) as TurnEvent;
+            expect({ diff: d.id, points: factsOf(first).includes(d.fact) }).toEqual({
+                diff: d.id,
+                points: true,
+            });
+        }
+    });
+
+    test("P6 items are resume or clarify, each with one plan open at its probe", () => {
+        const p6 = s.probes.filter((x) => x.type === "P6");
+        const kinds = new Set(p6.map((p) => p.ground_truth?.expect));
+        expect([...kinds].sort()).toEqual(["clarify", "resume"]);
+        for (const p of p6) {
+            const plan = s.plans.find((x) => x.fact === p.fact);
+            expect(plan?.expect).toBe(p.ground_truth?.expect as "resume" | "clarify");
+            const open = plan?.history.filter((h) => h.status !== "completed").at(-1)?.next ?? [];
+            expect(open.length).toBe(plan?.expect === "clarify" ? 2 : 1);
+            const c = p.check as { clarify?: string[]; must?: string[] };
+            expect(plan?.expect === "clarify" ? c.clarify?.length : c.must?.length).toBeGreaterThan(
+                0,
+            );
+            expect(plan?.history.at(-1)?.status).toBe("completed");
+            expect(order.get(plan?.history.at(-1)?.event ?? "") ?? -1).toBeGreaterThan(
+                order.get(p.event ?? "") ?? Infinity,
+            );
+        }
+        expect(s.plans.some((x) => x.history.some((h) => h.status === "revised"))).toBe(true);
+    });
+
+    test("P12 exercises a tool run in the project apart from a pasted failure of its own command", () => {
+        const forms = new Map<string, number>();
+        for (const p of s.probes.filter((x) => x.type === "P12")) {
+            const f = s.facts.find((x) => x.id === p.fact);
+            forms.set(f?.form ?? "", (forms.get(f?.form ?? "") ?? 0) + 1);
+            const sources = (p.ground_truth?.sources ?? []).map(
+                (id) => s.events[order.get(id) ?? -1],
+            );
+            const [identity] = p.ground_truth?.present ?? [];
+            expect(identity).toMatch(/^[A-Z][a-z]+[A-Z][a-z]+$/);
+            const lang = s.projects.find((x) => x.id === p.project)?.lang;
+            if (f?.form === "tool_result") {
+                const script = sources.find((e) => e?.kind === "apply_diff");
+                expect(textOf(script ?? {})).toContain(`${identity}Error`);
+                const removed = s.events.find(
+                    (e) => e.kind === "apply_diff" && e.remove && e.path === script?.path,
+                );
+                expect(order.get(removed?.id ?? "") ?? Infinity).toBeLessThan(
+                    order.get(p.event ?? "") ?? -1,
+                );
+            } else {
+                const paste = sources.find((e) => e?.kind === "user_turn");
+                expect(textOf(paste ?? {})).toContain(`${identity}Error`);
+                expect(textOf(paste ?? {})).toContain(lang === "rust" ? "cargo test" : "bun test");
+                expect(textOf(paste ?? {})).not.toContain("Traceback");
+            }
+        }
+        expect([...forms.keys()].sort()).toEqual(["pasted", "tool_result"]);
     });
 
     test("paste turns name a corpus sample and carry its exact bytes", () => {
@@ -594,9 +769,11 @@ describe("fact bank checks", () => {
             value: "12345",
             value2: "54321",
             codename: "brisk-otter-07",
-            code: "ValueError",
-            context: "x",
-            code_re: "ValueError",
+            alt: "brisk_heron",
+            ALT: "BRISK_HERON",
+            Alt: "BriskHeron",
+            level: "trace",
+            LEVEL: "TRACE",
         };
         const render = (t: string) =>
             t.replace(/\{(\w+)\}/g, (_, k: string) => vars[k as keyof typeof vars] ?? "");
@@ -678,8 +855,12 @@ describe("fact bank checks", () => {
 
     test("the quote-style rule is a structural check over string literals", () => {
         const t = templates("scoped_update").find((x) => x.id === "ts-scope-quotes");
-        expect(t?.check).toEqual({ scope: "src/ws/", quote_style_must: "double" });
-        expect(t?.out_check).toEqual({ quote_style_must: "single" });
+        expect(t?.check).toEqual({ scope: "src/ws/", quote_style_must: "{inner}" });
+        expect(t?.out_check).toEqual({ quote_style_must: "{outer}" });
+        expect(t?.variants).toEqual([
+            { inner: "double", outer: "single" },
+            { inner: "single", outer: "double" },
+        ]);
     });
 
     test("tag and prefix conventions require the tag at the start of the string", () => {
@@ -754,7 +935,9 @@ describe("fact bank checks", () => {
             return new RegExp(
                 (c[key]?.[0] ?? "$^")
                     .replaceAll("{TOKEN}", "QUIET_VOLE")
-                    .replaceAll("{code_re}", "ValueError"),
+                    .replaceAll("{Alt}", "BriskHeron")
+                    .replaceAll("{level}", "trace")
+                    .replaceAll("{LEVEL}", "TRACE"),
             );
         };
         expect(
@@ -771,9 +954,9 @@ describe("fact bank checks", () => {
             must("constraint", "ts-const-prefix").test("export const DEFAULT_QUIET_VOLE_X = 1"),
         ).toBe(false);
         expect(
-            must("tool_error", "error-recurred").test("Fix the ValueError raised by parse()"),
+            must("tool_error", "rs-check-replay").test("Fix the BriskHeronError raised by parse()"),
         ).toBe(true);
-        expect(must("tool_error", "error-recurred").test("Fix the NotAValueErrorsWrapper")).toBe(
+        expect(must("tool_error", "rs-check-replay").test("Fix the NotABriskHeronErrors")).toBe(
             false,
         );
         expect(
@@ -983,12 +1166,161 @@ describe("compile-time refusals", () => {
         ).rejects.toThrow(/diff .* delivered text carries markers/);
     });
 
+    test("a template that repeats in a project without a revise wording is refused", async () => {
+        await expect(
+            withInput((bank) => {
+                for (const t of (bank.rust?.decision ?? []) as Template[]) delete t.revise;
+            }),
+        ).rejects.toThrow(/template rs-\S+ repeats in mini-redis without a revise wording/);
+    });
+
+    test("a probe text that repeats past the bank's framings is refused", async () => {
+        await expect(
+            withInput((bank) => {
+                (bank.any as Record<string, string[]>).framings = [];
+            }),
+        ).rejects.toThrow(/probe text .* repeats for 2 facts and the bank holds 0 framings/);
+    });
+
     test("a template carrying its own ledger key is refused", async () => {
         await expect(
             withInput((bank) => {
                 for (const t of lookups(bank)) t.probe = `${t.probe} (${t.id})`;
             }),
         ).rejects.toThrow(/delivered text carries markers lookup-/);
+    });
+});
+
+describe("exposure proof", () => {
+    type Ev = Record<string, unknown> & { id: string };
+    const fact = {
+        id: "f-1",
+        template: "t",
+        kind: "decision",
+        project: "p",
+        manner: "correction" as Manner,
+        basis: "observation" as const,
+        line: "p/t",
+        revision: 0,
+        supersedes: null,
+        statement: "",
+        cues: [],
+    };
+    const truth = {
+        fact: "f-1",
+        expect: "apply" as const,
+        basis: "observation" as const,
+        present: ["54321"],
+        absent: [],
+        stale: ["12345"],
+        supersedes: [],
+    };
+    const run = (
+        events: Ev[],
+        sources: string[],
+        over: Partial<typeof truth> = {},
+        type = "P3",
+    ) => {
+        const probe = {
+            id: "q-1",
+            type,
+            fact: "f-1",
+            project: "p",
+            session: "s",
+            text: "Do it.",
+            check: {},
+            event: "e-probe",
+        } as ProbeItem;
+        const all = [...events, { id: "e-probe", kind: "user_turn", session: "s", text: "Do it." }];
+        proveExposure({
+            probes: [probe],
+            facts: [fact],
+            events: all,
+            truths: new Map([["q-1", { ...truth, ...over }]]),
+            sourcesOf: () => sources.map((id) => all.findIndex((e) => e.id === id)),
+            projectOf: () => "p",
+        });
+        return probe.ground_truth;
+    };
+    const said = (id: string, text: string): Ev => ({ id, kind: "user_turn", session: "s", text });
+    const file = (id: string, path: string, content?: string): Ev =>
+        content === undefined
+            ? { id, kind: "apply_diff", project: "p", path, remove: true }
+            : { id, kind: "apply_diff", project: "p", path, content };
+
+    test("a probe whose sources expose its value and whose tree is current gets its ground truth", () => {
+        const events = [said("e-1", "it is 12345"), file("e-2", "a.rs", "54321")];
+        expect(run(events, ["e-1", "e-2"])?.sources).toEqual(["e-1", "e-2"]);
+    });
+
+    test("a source after the probe, an unexposed value, or no source at all is refused", () => {
+        expect(() => run([file("e-2", "a.rs", "54321")], ["e-probe"])).toThrow(
+            /does not precede the probe/,
+        );
+        expect(() => run([said("e-1", "it is 99999")], ["e-1"])).toThrow(
+            /no source of f-1 exposes 54321/,
+        );
+        expect(() => run([], [])).toThrow(/no event exposes f-1/);
+    });
+
+    test("a superseded value left in the tree or exposed after the current state is refused", () => {
+        expect(() =>
+            run([file("e-1", "n.md", "12345"), file("e-2", "a.rs", "54321")], ["e-2"]),
+        ).toThrow(/n.md still holds the superseded 12345/);
+        const removed = [
+            file("e-1", "n.md", "12345"),
+            file("e-2", "a.rs", "54321"),
+            file("e-3", "n.md"),
+        ];
+        expect(run(removed, ["e-2"])?.sources).toEqual(["e-2"]);
+        expect(() =>
+            run([file("e-2", "a.rs", "54321"), said("e-3", "use 12345")], ["e-2"]),
+        ).toThrow(/e-3 exposes the superseded 12345 after the current state/);
+        expect(() => run([said("e-1", "it is 54321")], ["e-1"])).toThrow(
+            /the authoritative 54321 is not in the tree/,
+        );
+    });
+
+    test("a number matches only as a whole value", () => {
+        const events = [file("e-2", "a.rs", "54321"), said("e-3", "seed 9123456 ran")];
+        expect(run(events, ["e-2"])?.sources).toEqual(["e-2"]);
+    });
+
+    test("a control that follows a source is refused", () => {
+        expect(() =>
+            run([said("e-1", "54321")], ["e-1"], { expect: "baseline" as never }, "P1-control"),
+        ).toThrow(/the control follows a source of f-1/);
+    });
+
+    test("a P6 probe that finds another plan of its project still open is refused", () => {
+        const probe = {
+            id: "q-6",
+            type: "P6",
+            fact: "f-2",
+            project: "p",
+            event: "e-3",
+        } as ProbeItem;
+        const plan = (fact: string, accepted: string, completed?: string) => ({
+            fact,
+            project: "p",
+            expect: "resume" as const,
+            history: [
+                { event: accepted, status: "accepted" as const, next: ["x"] },
+                ...(completed
+                    ? [{ event: completed, status: "completed" as const, next: [] }]
+                    : []),
+            ],
+        });
+        const order = new Map(["e-1", "e-2", "e-3", "e-4"].map((e, i) => [e, i]));
+        expect(() =>
+            proveTwoPlansNeverOpen([plan("f-1", "e-1", "e-2"), plan("f-2", "e-2")], [probe], order),
+        ).not.toThrow();
+        expect(() =>
+            proveTwoPlansNeverOpen([plan("f-1", "e-1", "e-4"), plan("f-2", "e-2")], [probe], order),
+        ).toThrow(/plan f-1 is still open at the probe/);
+        expect(() => proveTwoPlansNeverOpen([plan("f-2", "e-4")], [probe], order)).toThrow(
+            /is not accepted before it/,
+        );
     });
 });
 
@@ -1159,7 +1491,7 @@ describe("fault schedule", () => {
         });
         const few = [session("s-0000", 3), session("s-0001", 3), session("s-0002", 1)];
         expect(() => scheduleFaults("M", few, new Rng(1))).toThrow(
-            /8 provider faults need 8 sessions with two or more turns; 2 available/,
+            /8 provider faults need 8 sessions with two or more turns and a turn after every probe and source; 2 available/,
         );
         const noP90 = Array.from({ length: 9 }, (_, i) => session(`s-${i}`, 3));
         expect(() => scheduleFaults("L", noP90, new Rng(1))).toThrow(/no forced p90 session/);
@@ -1167,6 +1499,25 @@ describe("fault schedule", () => {
         expect(() => scheduleFaults("L", allDiffs, new Rng(1))).toThrow(
             /no session starts without a hand-applied diff/,
         );
+    });
+
+    test("a provider fault fires only after the last probe or source turn of its session", () => {
+        const sessions = Array.from({ length: 12 }, (_, i) => ({
+            id: `s-${i}`,
+            requests: 6,
+            forced_p90: i === 0,
+            has_diff: false,
+            gap_before_ms: 1000,
+            guarded_turns: i % 3 === 0 ? 6 : 4,
+        }));
+        for (let seed = 0; seed < 20; seed++) {
+            for (const f of scheduleFaults("M", sessions, new Rng(seed))) {
+                if (f.trigger.kind !== "user_turn") continue;
+                const s = sessions.find((x) => x.id === f.trigger.session);
+                expect(s?.guarded_turns).toBe(4);
+                expect(f.trigger.n).toBeGreaterThan(4);
+            }
+        }
     });
 
     test("every seam entry names its layer, outcomes, in-flight fate, surviving state, and oracle", () => {

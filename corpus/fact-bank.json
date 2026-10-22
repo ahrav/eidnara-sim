@@ -1,6 +1,6 @@
 {
-    "schema": "sim-fact-bank/v1",
-    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {value} and {value2} are distinct five-digit numbers, {codename} is an adjective-noun-NN codename, and {code} and {context} come from corpus/tool-outputs/error-codes.jsonl. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, and an optional scope (a directory prefix ending in /) restricts a check's diff-channel keys to files under that prefix; and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures.",
+    "schema": "sim-fact-bank/v2",
+    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {alt}, {ALT}, and {Alt} a second word in lower, upper, and Pascal case, {value} and {value2} distinct five-digit numbers, and {codename} an adjective-noun-NN codename. A template's variants list binds further placeholders, one entry per instance in turn. When a template repeats in one project, the later instance is conveyed through revise, whose {old_*} placeholders name the previous instance's values. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, and an optional scope (a directory prefix ending in /) restricts a check's diff-channel keys to files under that prefix; and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures. A plan template names a task; the compiler composes plan statements from one or two tasks. A tool_error template has form tool_result (a committed script the agent runs) or pasted (a failure transcript the user pastes).",
     "rust": {
         "constraint": [
             {
@@ -16,7 +16,8 @@
                     "must": [
                         "\\b{TOKEN}_[A-Z0-9_]+"
                     ]
-                }
+                },
+                "revise": "the {old_TOKEN}_ prefix for new public constants under src/cmd is retired; they carry the {TOKEN}_ prefix now, for example {TOKEN}_MAX_ARGS"
             },
             {
                 "id": "rs-cmd-error-tag",
@@ -31,7 +32,8 @@
                     "must": [
                         "[\"']\\[{token}\\]"
                     ]
-                }
+                },
+                "revise": "error strings returned from src/cmd now start with the tag [{token}] instead of [{old_token}]"
             },
             {
                 "id": "rs-db-helper-prefix",
@@ -42,7 +44,8 @@
                     "must": [
                         "fn {token}_[a-z0-9_]+"
                     ]
-                }
+                },
+                "revise": "helper functions added to src/db.rs now take a {token}_ prefix in place of {old_token}_"
             },
             {
                 "id": "rs-test-suffix",
@@ -57,7 +60,8 @@
                     "must": [
                         "fn [a-z0-9_]+_{token}\\b"
                     ]
-                }
+                },
+                "revise": "integration test functions added under tests/ now end in _{token} rather than _{old_token}"
             },
             {
                 "id": "rs-tracing-target",
@@ -68,7 +72,8 @@
                     "must": [
                         "target:\\s*\"{token}\""
                     ]
-                }
+                },
+                "revise": "tracing events added in src/server.rs now use target \"{token}\" instead of \"{old_token}\""
             }
         ],
         "decision": [
@@ -87,7 +92,8 @@
                     "must_not": [
                         "(?<!\\d){value}(?!\\d)"
                     ]
-                }
+                },
+                "revise": "we are reopening the page size for listing replies; for now treat it as {value}"
             },
             {
                 "id": "rs-conn-buffer",
@@ -104,13 +110,14 @@
                     "must_not": [
                         "(?<!\\d){value}(?!\\d)"
                     ]
-                }
+                },
+                "revise": "we are reopening the connection read buffer size; for now it starts at {value} bytes"
             }
         ],
         "plan": [
             {
                 "id": "rs-plan-field",
-                "statement": "when we pick this back up, the next step is adding a {token}_count field to the Connection struct",
+                "task": "adding a {token}_count field to the Connection struct",
                 "probe": "Let's carry on from where we stopped last time.",
                 "check": {
                     "must": [
@@ -120,7 +127,7 @@
             },
             {
                 "id": "rs-plan-cmd",
-                "statement": "the next piece of work is a {TOKEN} command that returns the server's uptime",
+                "task": "a {TOKEN} command that returns the server's uptime",
                 "probe": "Pick up the outstanding item from our earlier session.",
                 "check": {
                     "must": [
@@ -136,7 +143,8 @@
                 "probe": "Remind me what drove us to keep frame decoding free of heap use?",
                 "check": {
                     "judge": "The {codename} load test showed allocation dominating p99 latency."
-                }
+                },
+                "revise": "correction on why the frame parser stays allocation-free: it was the {codename} load test, not {old_codename}, that showed allocation dominating p99 latency"
             },
             {
                 "id": "rs-why-broadcast",
@@ -144,7 +152,8 @@
                 "probe": "What was the reasoning behind the channel type that fan-out uses?",
                 "check": {
                     "judge": "The {codename} incident showed per-subscriber mpsc queues growing without bound."
-                }
+                },
+                "revise": "correction on the pub/sub channel history: the {codename} incident, not {old_codename}, showed per-subscriber mpsc queues growing without bound"
             }
         ],
         "rejected": [
@@ -169,32 +178,195 @@
                         "spawn_blocking"
                     ]
                 }
+            },
+            {
+                "id": "rs-no-regex-parse",
+                "statement": "parsing inline commands with a regex was tried and backed out because it rejected binary-safe arguments",
+                "probe": "Accept plain-text commands typed into a telnet session without RESP framing.",
+                "check": {
+                    "must_not": [
+                        "Regex::new",
+                        "\\bregex::"
+                    ]
+                }
+            },
+            {
+                "id": "rs-no-utf8-values",
+                "statement": "converting stored values to String with from_utf8 was tried and reverted because binary payloads were corrupted",
+                "probe": "Add a STRLEN command that reports how many bytes a key holds.",
+                "check": {
+                    "must_not": [
+                        "from_utf8(?:_lossy)?\\s*\\("
+                    ]
+                }
+            },
+            {
+                "id": "rs-no-os-threads",
+                "statement": "giving each connection its own OS thread was tried and backed out because thread counts exploded under load",
+                "probe": "Serve every new client concurrently without stalling the accept loop.",
+                "check": {
+                    "must_not": [
+                        "std::thread::spawn",
+                        "\\bthread::spawn\\s*\\(",
+                        "thread::Builder::new"
+                    ]
+                }
+            },
+            {
+                "id": "rs-no-thread-sleep",
+                "statement": "calling std::thread::sleep inside async code was tried and reverted because it froze the runtime worker",
+                "probe": "Wait a moment before retrying a failed accept on the listener.",
+                "check": {
+                    "must_not": [
+                        "std::thread::sleep",
+                        "\\bthread::sleep\\s*\\("
+                    ]
+                }
+            },
+            {
+                "id": "rs-no-lazy-global",
+                "statement": "a lazily initialised global configuration was tried and backed out because tests could not run with different settings",
+                "probe": "Make the default port configurable from one place in the crate.",
+                "check": {
+                    "must_not": [
+                        "lazy_static!",
+                        "once_cell::sync::Lazy",
+                        "\\bLazyLock\\s*<",
+                        "static\\s+\\w+\\s*:\\s*(?:std::sync::)?OnceLock\\s*<"
+                    ]
+                }
+            },
+            {
+                "id": "rs-no-unbounded-shutdown",
+                "statement": "an unbounded mpsc channel for shutdown notices was tried and reverted because it hid backpressure from slow tasks",
+                "probe": "Let background tasks learn when the server begins winding down.",
+                "check": {
+                    "must_not": [
+                        "unbounded_channel\\s*(?:::<[^>]*>)?\\s*\\("
+                    ]
+                }
+            },
+            {
+                "id": "rs-no-purge-interval",
+                "statement": "waking the expiry task on a fixed tokio interval was tried and backed out because it burned CPU on idle servers",
+                "probe": "Remove lapsed keys sooner after their deadline passes.",
+                "check": {
+                    "must_not": [
+                        "time::interval\\s*\\(",
+                        "\\binterval\\s*\\(\\s*Duration",
+                        "interval_at\\s*\\("
+                    ]
+                }
+            },
+            {
+                "id": "rs-no-rwlock-db",
+                "statement": "swapping the store's Mutex for an RwLock was tried and reverted because writers starved behind long reads",
+                "probe": "Let many clients fetch values at the same moment with less waiting.",
+                "check": {
+                    "must_not": [
+                        "RwLock\\s*<"
+                    ]
+                }
+            },
+            {
+                "id": "rs-no-json-frames",
+                "statement": "dumping frames through serde_json was tried and backed out because it pulled a heavy dependency into the hot path",
+                "probe": "Add a debug rendering of each parsed frame to the trace output.",
+                "check": {
+                    "must_not": [
+                        "serde_json",
+                        "serde::Serialize",
+                        "derive\\([^)]*\\bSerialize\\b"
+                    ]
+                }
+            },
+            {
+                "id": "rs-no-async-trait",
+                "statement": "dispatching commands through an async_trait object was tried and reverted because every call boxed a future",
+                "probe": "Make it easier to add new command types behind one shared interface.",
+                "check": {
+                    "must_not": [
+                        "async_trait",
+                        "#\\[async_trait"
+                    ]
+                }
+            },
+            {
+                "id": "rs-no-tokio-mutex",
+                "statement": "guarding the shared state with tokio's async Mutex was tried and backed out because it held locks across awaits",
+                "probe": "Protect the subscriber table from concurrent modification.",
+                "check": {
+                    "must_not": [
+                        "tokio::sync::Mutex",
+                        "sync::\\{[^}]*\\bMutex\\b[^}]*\\}"
+                    ]
+                }
+            },
+            {
+                "id": "rs-no-read-to-end",
+                "statement": "reading requests with read_to_end was tried and reverted because it never returned while a connection stayed open",
+                "probe": "Collect a full request even when it arrives split across several packets.",
+                "check": {
+                    "must_not": [
+                        "read_to_end\\s*\\(",
+                        "read_to_string\\s*\\("
+                    ]
+                }
+            },
+            {
+                "id": "rs-no-process-exit",
+                "statement": "ending the server with std::process::exit was tried and backed out because it skipped flushing open connections",
+                "probe": "Stop the server with a clear message when it cannot bind its port.",
+                "check": {
+                    "must_not": [
+                        "process::exit\\s*\\("
+                    ]
+                }
             }
         ],
         "scoped_update": [
             {
                 "id": "rs-scope-log-level",
                 "statement": "log lines you add use the debug level",
-                "update": "inside src/cmd only, log lines you add use the trace level instead",
+                "update": "inside src/cmd only, log lines you add use the {level} level instead",
                 "probe": "Record each command name as the parser in src/cmd reads it.",
                 "out_probe": "Log the bound address when the server starts listening.",
                 "check": {
                     "scope": "src/cmd/",
                     "must": [
-                        "trace!|event!\\(\\s*(?:tracing::)?Level::TRACE\\b"
+                        "\\b{level}!|event!\\(\\s*(?:tracing::)?Level::{LEVEL}\\b"
                     ],
                     "must_not": [
-                        "debug!|event!\\(\\s*(?:tracing::)?Level::DEBUG\\b"
+                        "\\bdebug!|event!\\(\\s*(?:tracing::)?Level::DEBUG\\b"
                     ]
                 },
                 "out_check": {
                     "must": [
-                        "debug!|event!\\(\\s*(?:tracing::)?Level::DEBUG\\b"
+                        "\\bdebug!|event!\\(\\s*(?:tracing::)?Level::DEBUG\\b"
                     ],
                     "must_not": [
-                        "trace!|event!\\(\\s*(?:tracing::)?Level::TRACE\\b"
+                        "\\b{level}!|event!\\(\\s*(?:tracing::)?Level::{LEVEL}\\b"
                     ]
-                }
+                },
+                "variants": [
+                    {
+                        "level": "trace",
+                        "LEVEL": "TRACE"
+                    },
+                    {
+                        "level": "info",
+                        "LEVEL": "INFO"
+                    },
+                    {
+                        "level": "warn",
+                        "LEVEL": "WARN"
+                    },
+                    {
+                        "level": "error",
+                        "LEVEL": "ERROR"
+                    }
+                ],
+                "revise": "the src/cmd logging exception changes: log lines you add there now use the {level} level instead of {old_level}, and everywhere else stays at debug"
             }
         ],
         "filler": [
@@ -203,6 +375,38 @@
             "Walk me through how a SET request travels from the socket to the store.",
             "Tidy the README section on running the examples.",
             "Check whether the blocking client handles a closed connection cleanly."
+        ],
+        "tool_error": [
+            {
+                "id": "rs-check-replay",
+                "form": "tool_result",
+                "statement": "the {token} replay check fails with {Alt}Error",
+                "script": {
+                    "path": "scripts/check_{token}.sh",
+                    "content": "#!/bin/sh\n# Replays the recorded {token} session against the frame decoder.\necho \"replaying {token} fixture (412 frames)\"\necho \"error: {Alt}Error: frame 318 declares a bulk length of {value} bytes, above the decoder limit\" >&2\nexit 1\n"
+                },
+                "command": "Run `sh scripts/check_{token}.sh` from the repo root and tell me what it reports; it reproduces issue #{value2}.",
+                "revise": "Issue #{value2} has a new repro now that the {old_token} script is gone: run `sh scripts/check_{token}.sh` and tell me what it reports.",
+                "probe": "Issue #{value2} is open again: CI broke the same way after the fix landed. Add a troubleshooting entry to the README naming the exact error type it raised.",
+                "check": {
+                    "must": [
+                        "\\b{Alt}Error\\b"
+                    ]
+                }
+            },
+            {
+                "id": "rs-ci-paste",
+                "form": "pasted",
+                "statement": "the {token} branch integration test fails with {Alt}Error",
+                "paste": "CI went red on my branch for issue #{value2}:\n```\n$ cargo test --test server\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.27s\n     Running tests/server.rs (target/debug/deps/server-3f9c2a1e7b5d4c60)\n\nrunning 7 tests\ntest {token}_roundtrip ... FAILED\n\nfailures:\n\n---- {token}_roundtrip stdout ----\n\nthread '{token}_roundtrip' panicked at tests/server.rs:212:44:\ncalled `Result::unwrap()` on an `Err` value: {Alt}Error { key_len: {value} }\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\ntest result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n```",
+                "revise": "Issue #{value2} failed again on my branch, differently this time:\n```\n$ cargo test --test server\nrunning 7 tests\ntest {token}_roundtrip ... FAILED\n\n---- {token}_roundtrip stdout ----\n\nthread '{token}_roundtrip' panicked at tests/server.rs:212:44:\ncalled `Result::unwrap()` on an `Err` value: {Alt}Error { key_len: {value} }\n\ntest result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n```",
+                "probe": "Issue #{value2} is open again, failing the way that log showed. Add a troubleshooting an entry to the README naming the exact error type it raised.",
+                "check": {
+                    "must": [
+                        "\\b{Alt}Error\\b"
+                    ]
+                }
+            }
         ]
     },
     "typescript": {
@@ -220,7 +424,8 @@
                     "must": [
                         "\\b{TOKEN}_[A-Z0-9_]+"
                     ]
-                }
+                },
+                "revise": "the {old_TOKEN}_ prefix for new exported constants under src/adapter is retired; they carry {TOKEN}_ now"
             },
             {
                 "id": "ts-error-tag",
@@ -231,7 +436,8 @@
                     "must": [
                         "[\"'`]\\[{token}\\]"
                     ]
-                }
+                },
+                "revise": "error messages you throw from src/cookies.ts now start with the tag [{token}] instead of [{old_token}]"
             },
             {
                 "id": "ts-utils-prefix",
@@ -242,7 +448,8 @@
                     "must": [
                         "(?<![A-Za-z0-9_$]){token}[A-Za-z0-9_]*\\s*[=(]"
                     ]
-                }
+                },
+                "revise": "helpers added to src/utils.ts are now named starting with {token} rather than {old_token}"
             },
             {
                 "id": "ts-test-name",
@@ -257,7 +464,8 @@
                     "paths_must": [
                         "\\.{token}\\.test\\.ts$"
                     ]
-                }
+                },
+                "revise": "new test files now take the .{token}.test.ts suffix instead of .{old_token}.test.ts"
             },
             {
                 "id": "ts-warn-prefix",
@@ -268,7 +476,8 @@
                     "must": [
                         "[\"'`]\\({token}\\)"
                     ]
-                }
+                },
+                "revise": "console warnings you add in src/compose.ts now start with ({token}) instead of ({old_token})"
             }
         ],
         "decision": [
@@ -287,7 +496,8 @@
                     "must_not": [
                         "(?<!\\d){value}(?!\\d)"
                     ]
-                }
+                },
+                "revise": "we are reopening the default body size limit; for now it is {value} bytes"
             },
             {
                 "id": "ts-cookie-age",
@@ -304,13 +514,14 @@
                     "must_not": [
                         "(?<!\\d){value}(?!\\d)"
                     ]
-                }
+                },
+                "revise": "we are reopening the session cookie lifetime; for now the default max age is {value} seconds"
             }
         ],
         "plan": [
             {
                 "id": "ts-plan-hook",
-                "statement": "the next step is adding an on{TOKEN} lifecycle hook beside onRequest",
+                "task": "adding an on{TOKEN} lifecycle hook beside onRequest",
                 "probe": "Let's continue with what we left unfinished.",
                 "check": {
                     "must": [
@@ -320,7 +531,7 @@
             },
             {
                 "id": "ts-plan-option",
-                "statement": "the remaining task is a {token} option on the app constructor that disables strict paths",
+                "task": "a {token} option on the app constructor that disables strict paths",
                 "probe": "Carry on with the open item from before.",
                 "check": {
                     "must": [
@@ -336,7 +547,8 @@
                 "probe": "Remind me what pushed the framework toward its code-generation design?",
                 "check": {
                     "judge": "The {codename} benchmark showed dynamic dispatch costing a third of throughput."
-                }
+                },
+                "revise": "correction on the code-generation history: the {codename} benchmark, not {old_codename}, showed dynamic dispatch costing a third of throughput"
             },
             {
                 "id": "ts-why-sucrose",
@@ -344,7 +556,8 @@
                 "probe": "Why does the framework inspect handler source before serving?",
                 "check": {
                     "judge": "The {codename} audit found unused context fields allocated on every request."
-                }
+                },
+                "revise": "correction on the static analysis history: the {codename} audit, not {old_codename}, found unused context fields allocated on every request"
             }
         ],
         "rejected": [
@@ -367,22 +580,168 @@
                         "new\\s+Proxy(?:<[^(]*>)?\\s*\\("
                     ]
                 }
+            },
+            {
+                "id": "ts-no-set-interval",
+                "statement": "a module-wide setInterval sweeper was tried and backed out because it kept test processes alive",
+                "probe": "Clear stale entries out of the store every so often.",
+                "check": {
+                    "must_not": [
+                        "setInterval\\s*\\("
+                    ]
+                }
+            },
+            {
+                "id": "ts-no-string-throw",
+                "statement": "throwing plain strings was tried and reverted because callers lost the stack trace",
+                "probe": "Fail loudly when the same route is registered twice.",
+                "check": {
+                    "must_not": [
+                        "throw\\s+['\"`]"
+                    ]
+                }
+            },
+            {
+                "id": "ts-no-any-cast",
+                "statement": "silencing type errors with as any casts was tried and backed out because it hid broken handler signatures",
+                "probe": "Tighten the typing of the context's store field.",
+                "check": {
+                    "must_not": [
+                        "\\bas\\s+any\\b",
+                        "<any>"
+                    ]
+                }
+            },
+            {
+                "id": "ts-no-lodash",
+                "statement": "deep-merging config with lodash was tried and reverted because of a prototype pollution report",
+                "probe": "Combine a user's nested settings with the defaults, key by key.",
+                "check": {
+                    "must_not": [
+                        "from\\s+['\"]lodash",
+                        "require\\s*\\(\\s*['\"]lodash"
+                    ]
+                }
+            },
+            {
+                "id": "ts-no-runtime-regexp",
+                "statement": "building route matchers with new RegExp at registration was tried and backed out because it slowed cold starts",
+                "probe": "Support a wildcard segment in the middle of a route path.",
+                "check": {
+                    "must_not": [
+                        "new\\s+RegExp\\s*\\(",
+                        "\\bRegExp\\s*\\("
+                    ]
+                }
+            },
+            {
+                "id": "ts-no-next-tick",
+                "statement": "deferring hooks with process.nextTick was tried and reverted because Bun ordered them differently from Node",
+                "probe": "Run the after-response hook once the reply has gone out.",
+                "check": {
+                    "must_not": [
+                        "process\\.nextTick"
+                    ]
+                }
+            },
+            {
+                "id": "ts-no-node-buffer",
+                "statement": "parsing bodies through Node's Buffer was tried and backed out because it broke the web-standard adapter",
+                "probe": "Read a raw binary upload fully into memory.",
+                "check": {
+                    "must_not": [
+                        "Buffer\\.(?:from|concat|alloc|allocUnsafe)\\s*\\("
+                    ]
+                }
+            },
+            {
+                "id": "ts-no-static-registry",
+                "statement": "a plugin registry kept in static class fields was tried and reverted because state leaked between apps",
+                "probe": "Let plugins register shared helpers that other plugins can find.",
+                "check": {
+                    "must_not": [
+                        "\\bstatic\\s+(?:readonly\\s+)?\\w+\\s*(?::[^=;(\\n]+)?="
+                    ]
+                }
+            },
+            {
+                "id": "ts-no-instanceof-response",
+                "statement": "checking instanceof Response was tried and backed out because replies built in another realm failed it",
+                "probe": "Pass a handler result straight through when it is already a finished reply object.",
+                "check": {
+                    "must_not": [
+                        "instanceof\\s+Response\\b"
+                    ]
+                }
+            },
+            {
+                "id": "ts-no-weakref",
+                "statement": "caching compiled schemas behind WeakRef was tried and reverted because entries vanished between requests",
+                "probe": "Keep the parsed schema for each route without holding it forever.",
+                "check": {
+                    "must_not": [
+                        "new\\s+WeakRef\\s*\\(",
+                        "FinalizationRegistry"
+                    ]
+                }
+            },
+            {
+                "id": "ts-no-date-ids",
+                "statement": "request ids built from Date.now() were tried and backed out because they collided under load",
+                "probe": "Give each incoming call a unique identifier for tracing.",
+                "check": {
+                    "must_not": [
+                        "Date\\.now\\s*\\("
+                    ]
+                }
+            },
+            {
+                "id": "ts-no-sync-fs",
+                "statement": "reading files synchronously inside handlers was tried and reverted because it blocked the event loop",
+                "probe": "Serve a file from disk for a static route.",
+                "check": {
+                    "must_not": [
+                        "readFileSync\\s*\\(",
+                        "existsSync\\s*\\("
+                    ]
+                }
+            },
+            {
+                "id": "ts-no-structured-clone",
+                "statement": "copying the store with structuredClone was tried and backed out because it dropped class instances",
+                "probe": "Give each derived context its own copy of the shared store.",
+                "check": {
+                    "must_not": [
+                        "structuredClone\\s*\\("
+                    ]
+                }
             }
         ],
         "scoped_update": [
             {
                 "id": "ts-scope-quotes",
-                "statement": "string literals you add use single quotes",
-                "update": "inside src/ws only, string literals you add use double quotes instead",
+                "statement": "string literals you add use {outer} quotes",
+                "update": "inside src/ws only, string literals you add use {inner} quotes instead",
                 "probe": "Add a close reason string when the websocket server rejects a frame.",
                 "out_probe": "Add an error message string when a route handler is missing.",
                 "check": {
                     "scope": "src/ws/",
-                    "quote_style_must": "double"
+                    "quote_style_must": "{inner}"
                 },
                 "out_check": {
-                    "quote_style_must": "single"
-                }
+                    "quote_style_must": "{outer}"
+                },
+                "variants": [
+                    {
+                        "inner": "double",
+                        "outer": "single"
+                    },
+                    {
+                        "inner": "single",
+                        "outer": "double"
+                    }
+                ],
+                "revise": "the quote rule flips: string literals you add now use {outer} quotes, except inside src/ws, where they use {inner} quotes"
             }
         ],
         "filler": [
@@ -391,6 +750,38 @@
             "Walk me through how cookies are parsed.",
             "Tidy the contributing notes in the README.",
             "Check how the adapter handles a thrown error inside a handler."
+        ],
+        "tool_error": [
+            {
+                "id": "ts-check-replay",
+                "form": "tool_result",
+                "statement": "the {token} replay check fails with {Alt}Error",
+                "script": {
+                    "path": "scripts/check-{token}.sh",
+                    "content": "#!/bin/sh\n# Replays the captured {token} request log through the cookie parser.\necho \"replaying {token} request log (96 requests)\"\necho \"{Alt}Error: cookie header on request 71 holds {value} bytes, above the parser limit\" >&2\necho \"    at parseCookie (src/cookies.ts:142:15)\" >&2\nexit 1\n"
+                },
+                "command": "Run `sh scripts/check-{token}.sh` from the repo root and tell me what it reports; it reproduces issue #{value2}.",
+                "revise": "Issue #{value2} has a new repro now that the {old_token} script is gone: run `sh scripts/check-{token}.sh` and tell me what it reports.",
+                "probe": "Issue #{value2} is open again: CI broke the same way after the fix landed. Add a troubleshooting section to CONTRIBUTING.md naming the exact error type it raised.",
+                "check": {
+                    "must": [
+                        "\\b{Alt}Error\\b"
+                    ]
+                }
+            },
+            {
+                "id": "ts-ci-paste",
+                "form": "pasted",
+                "statement": "the {token} branch test fails with {Alt}Error",
+                "paste": "CI went red on my branch for issue #{value2}:\n```\n$ bun test test/core/handle-error.test.ts\nbun test v1.2.21\n\ntest/core/handle-error.test.ts:\n18 |   it('keeps the {token} handler typed', async () => {\n19 |     const app = new Elysia().get('/', () => 'ok')\n20 |     const res = await app.handle(req('/'))\n                                  ^\n{Alt}Error: route table rejected a handler after {value} registrations\n      at add (src/index.ts:812:23)\n(fail) keeps the {token} handler typed [3.41ms]\n\n 0 pass\n 1 fail\n```",
+                "revise": "Issue #{value2} failed again on my branch, with a different error:\n```\n$ bun test test/core/handle-error.test.ts\n{Alt}Error: route table rejected a handler after {value} registrations\n      at add (src/index.ts:812:23)\n(fail) keeps the {token} handler typed [2.87ms]\n\n 0 pass\n 1 fail\n```",
+                "probe": "Issue #{value2} is open again, failing the way that log showed. Add a troubleshooting a section to CONTRIBUTING.md naming the exact error type it raised.",
+                "check": {
+                    "must": [
+                        "\\b{Alt}Error\\b"
+                    ]
+                }
+            }
         ]
     },
     "any": {
@@ -401,7 +792,8 @@
                 "probe": "Which alias should the deploy script aim at for pre-production?",
                 "check": {
                     "answer": "{codename}"
-                }
+                },
+                "revise": "the staging cluster alias changed: it is {codename} now, not {old_codename}"
             },
             {
                 "id": "lookup-port",
@@ -409,7 +801,8 @@
                 "probe": "Where do I point my scraper to read numbers from my dev machine?",
                 "check": {
                     "answer": "{value}"
-                }
+                },
+                "revise": "the local metrics port moved from {old_value} to {value}"
             },
             {
                 "id": "lookup-bucket",
@@ -417,7 +810,8 @@
                 "probe": "Where should the release job upload its build outputs?",
                 "check": {
                     "answer": "{codename}"
-                }
+                },
+                "revise": "the artifacts bucket was renamed from {old_codename} to {codename}"
             }
         ],
         "never_settled": [
@@ -444,6 +838,102 @@
                 "check": {
                     "abstain": true
                 }
+            },
+            {
+                "id": "open-support-window",
+                "statement": "we have not agreed how long the previous major version keeps getting fixes",
+                "probe": "How many months do older releases stay patched?",
+                "check": {
+                    "abstain": true
+                }
+            },
+            {
+                "id": "open-oncall",
+                "statement": "nobody has been put on the pager rotation for the cache service yet",
+                "probe": "Who gets woken up when the cache misbehaves at night?",
+                "check": {
+                    "abstain": true
+                }
+            },
+            {
+                "id": "open-asset-license",
+                "statement": "the license for the bundled example assets is still unresolved",
+                "probe": "Which terms cover the sample files we ship?",
+                "check": {
+                    "abstain": true
+                }
+            },
+            {
+                "id": "open-telemetry",
+                "statement": "nobody has decided whether usage reporting is opt-in or opt-out",
+                "probe": "Do people have to switch the usage numbers on, or are they collected by default?",
+                "check": {
+                    "abstain": true
+                }
+            },
+            {
+                "id": "open-toolchain",
+                "statement": "the minimum supported compiler version is still an open question",
+                "probe": "What is the oldest toolchain release we promise to build with?",
+                "check": {
+                    "abstain": true
+                }
+            },
+            {
+                "id": "open-release-date",
+                "statement": "we have not picked a date for the next release",
+                "probe": "When does the next version go out?",
+                "check": {
+                    "abstain": true
+                }
+            },
+            {
+                "id": "open-config-sunset",
+                "statement": "when the legacy settings format stops being read is still undecided",
+                "probe": "When do we drop support for the old configuration file layout?",
+                "check": {
+                    "abstain": true
+                }
+            },
+            {
+                "id": "open-security-triage",
+                "statement": "who triages incoming security reports has not been settled",
+                "probe": "Who looks at vulnerability disclosures when they arrive?",
+                "check": {
+                    "abstain": true
+                }
+            },
+            {
+                "id": "open-demo-limit",
+                "statement": "the request cap for the public demo endpoint is still undecided",
+                "probe": "How many calls a minute does the hosted sandbox allow?",
+                "check": {
+                    "abstain": true
+                }
+            },
+            {
+                "id": "open-cache-backup",
+                "statement": "how often the build cache gets backed up has not been decided",
+                "probe": "How frequently do we snapshot the CI artifact store?",
+                "check": {
+                    "abstain": true
+                }
+            },
+            {
+                "id": "open-branch-naming",
+                "statement": "the naming scheme for release branches is still open",
+                "probe": "What do we call the branch we cut for each version?",
+                "check": {
+                    "abstain": true
+                }
+            },
+            {
+                "id": "open-tag-signing",
+                "statement": "whether release tags get signed has not been decided",
+                "probe": "Do our version tags carry a cryptographic signature?",
+                "check": {
+                    "abstain": true
+                }
             }
         ],
         "anchor": [
@@ -458,7 +948,8 @@
                     "answer_must_not": [
                         "(?<!\\d){value}(?!\\d)"
                     ]
-                }
+                },
+                "revise": "the internal ticket for the cache rewrite was renumbered from {old_value} to {value}"
             },
             {
                 "id": "anchor-codename",
@@ -471,19 +962,8 @@
                     "answer_must_not": [
                         "{codename}"
                     ]
-                }
-            }
-        ],
-        "tool_error": [
-            {
-                "id": "error-recurred",
-                "statement": "this came out of the suite run:\n```\n{context}\n```",
-                "probe": "The failure from the other day showed up again in CI. Add a troubleshooting note naming the exact exception class we hit.",
-                "check": {
-                    "must": [
-                        "\\b{code_re}\\b"
-                    ]
-                }
+                },
+                "revise": "next quarter's work was renamed from {old_codename} to {codename}"
             }
         ],
         "session_rule": [
@@ -498,7 +978,8 @@
                     "commands_must_not": [
                         "git(?:\\s+(?:-[cC]\\s+\\S+|-[pP]|--[\\w-]+(?:=\\S+)?))*\\s+commit\\b(?!(?:[^\"'\\n]*(?:\"[^\"\\n]*\"|'[^'\\n]*'))*[^\"'\\n]*\\s--dry-run(?:\\s|$))(?!(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])\\s*[\"']?\\[{token}\\])"
                     ]
-                }
+                },
+                "revise": "change of rule: from now on every commit message starts with [{token}] instead of [{old_token}]"
             },
             {
                 "id": "session-file-header",
@@ -508,8 +989,27 @@
                     "first_line_must": [
                         "^// {token}"
                     ]
-                }
+                },
+                "revise": "change of rule: new files you create now open with a // {token} header line instead of // {old_token}"
             }
+        ],
+        "framings": [
+            "New request.",
+            "Next item.",
+            "Another one for you.",
+            "Separate task.",
+            "When you have a moment.",
+            "Moving on.",
+            "One more thing.",
+            "Different topic.",
+            "Fresh task.",
+            "Next on the list.",
+            "Something else now.",
+            "Quick job.",
+            "Small request.",
+            "Another piece of work.",
+            "Next up.",
+            "Over to a new task."
         ]
     }
 }

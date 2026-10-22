@@ -5,7 +5,7 @@ scenario to `runs/scenarios/<tier>-<seed>.json`; a `--embedder local` compile
 defaults to `runs/scenarios/<tier>-<seed>.local.json`, so a stand-in never
 replaces a Titan scenario. The inputs are the seed, the
 tier's pre-registration in `prereg/<tier>.json`, the corpus under `corpus/`,
-and the generator version `sim-scenario/v2`. The same inputs produce the same
+and the generator version `sim-scenario/v3`. The same inputs produce the same
 bytes in any process, and a run reuses a cached `scenario.json` only when its
 top-level `schema`, generator version, pre-registration hash, and corpus
 inputs hash match the current inputs. The compiler scores cue and probe pairs with
@@ -32,13 +32,14 @@ The scenario file is canonical JSON with these sections:
 
 | Section | Contents |
 |---|---|
-| `manifest` | Seed, tier, generator and random-schema versions, one sha256 over the bytes of every corpus file the compiler parsed (`manifest.json`, `fact-bank.json`, `repos.json`, `distributions.json`, and the two `tool-outputs` files, read once), the sha256 of the pre-registration, the embedding model, the similarity thresholds, the gap scale factors, and the probe count per type |
+| `manifest` | Seed, tier, generator and random-schema versions, one sha256 over the bytes of every corpus file the compiler parsed (`manifest.json`, `fact-bank.json`, `repos.json`, `distributions.json`, and `tool-outputs/samples.jsonl`, read once), the sha256 of the pre-registration, the embedding model, the similarity thresholds, the gap scale factors, and the probe count per type |
 | `projects` | Each repository in `corpus/repos.json` and its twin |
 | `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
-| `facts` | Ledger facts with template, kind, project, conveyance manner, statement, and the cue texts that carry it |
-| `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` and `commands_must_not` over the command log, an optional `scope` (a directory prefix) that limits the diff-channel keys to files under it, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, `side` (`in` or `out`) for P4, `turns` for P13, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
-| `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, and for a decision fact's authoritative diff content against its probes, each record naming its cue by `cue_sha256`, journaled to four decimals; the threshold gate compares the full-precision values |
-| `events` | `apply_diff`, `session_start`, `user_turn`, and `session_end` events in scenario time |
+| `facts` | Ledger facts with template, kind, project, conveyance manner, `basis`, `line`, `revision`, `supersedes`, statement, the cue texts that carry it, and for P12 facts the `form` (`tool_result` or `pasted`) |
+| `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, the event that delivers it, and, for every probe with user text, its `ground_truth`. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` and `commands_must_not` over the command log, an optional `scope` (a directory prefix) that limits the diff-channel keys to files under it, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, `clarify` for a P6 item whose right response is a question (patterns the final answer must all carry), `side` (`in` or `out`) for P4, `turns` for P13, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
+| `plans` | One record per P6 fact: project, `expect` (`resume` or `clarify`), and its history, each entry an event with the status it set (`accepted`, `revised`, `completed`) and the next actions it leaves open |
+| `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, each committed file of the fact counted as a cue, each record naming its cue by `cue_sha256`, journaled to four decimals; the threshold gate compares the full-precision values |
+| `events` | `apply_diff` (a whole-file `content`, or `remove: true`), `session_start`, `user_turn`, and `session_end` events in scenario time |
 | `faults` | Fault episodes with type, strategy, trigger, parameters, and seam-table entry |
 | `cf_deletions` | Counterfactual deletions before 20% of the P1, P3, and P5 probes (L only) |
 | `scenario_hash` | sha256 of the canonical JSON of every other section |
@@ -79,34 +80,85 @@ pre-registered seeds end between 0.2 and 1.2 days past it.
 ## Facts, conveyance, and probes
 
 Each probe type gets `paired_items_per_probe_type / (seeds * hosts)` items;
-the pre-registration validator requires that division to be exact. Facts come from the templates in `corpus/fact-bank.json`, filled with
-generated tokens: `adjective_noun` words, five-digit numbers, and
-`adjective-noun-NN` codenames, from the v1 harness word lists.
+the pre-registration validator requires that division to be exact. Facts come
+from the templates in `corpus/fact-bank.json` (`sim-fact-bank/v2`), filled
+with generated tokens: `adjective_noun` words in lower, upper, and Pascal
+case, five-digit numbers, and `adjective-noun-NN` codenames, from the v1
+harness word lists.
 
-A project holds more facts of one kind than the bank holds templates, so
-templates repeat with fresh tokens. The compiler splits each project's
-sessions into consecutive windows, one per round of templates, and conveys
-and probes every fact inside its window. Two facts that share a template and
-a project therefore never overlap: the later one starts after every probe of
-the earlier one and supersedes it.
+### Lines and supersession
+
+A fact's `line` is its project and template (`<project>/<template>`), or
+`<project>/plan` for P6. The compiler splits each project's sessions into
+consecutive windows, one per round of templates, and conveys and probes every
+fact inside its window, so instance `k + 1` of a line starts after every probe
+of instance `k`. Instance `k + 1` supersedes instance `k` explicitly:
+
+- its cue is the template's `revise` wording, which names the old value and
+  the new one (`{old_*}` placeholders bind instance `k`'s values); a template
+  that would repeat in a project without a `revise` wording is a compile
+  refusal, so a rejected approach or an open question never repeats in a
+  project, and the bank holds enough of them for XL;
+- a template without generated state that still repeats (the two scoped
+  updates) draws a different `variants` entry per instance, such as the next
+  log level or the flipped quote rule;
+- `supersedes` names instance `k`, and the check forbids what instance `k`
+  required and everything it forbade, except a pattern the new check
+  requires;
+- the session that conveys instance `k + 1` opens with commits that remove
+  every file the line committed earlier and the new instance does not
+  rewrite, so the repository never holds two live states of one line.
+
+When a project reuses a probe text for another fact, the later probe gets a
+neutral framing from the bank's `framings` list (`New request.`, `Next
+item.`, ...); a probe text asked for two facts of one project is a compile
+refusal.
+
+### Basis
+
+Every fact and probe records its `basis`: `instruction` (the user stated it,
+in conversation, a committed note, or a check script's output),
+`convention` (a committed example file the agent generalises from),
+`incidental` (an anchor value mentioned in passing that the agent must not
+apply), or `observation` (a P12 error the agent's tool run printed or the user
+pasted, and a P3 value read from its authoritative file).
+
+### Placement
 
 | Probe | Fact kind | Placement |
 |---|---|---|
 | P1 | constraint | Later session of the same project, inside the constraint's scope |
-| P1 control | the P1 fact | The same task as the P1 item, in the same window before the fact is conveyed |
+| P1 control | the P1 fact | The same task as the P1 item, in the same window before the fact is conveyed; `ground_truth.expect` is `baseline` and its `sources` are empty |
 | P2 | the P1 fact | Later session of the same project, outside the scope; the check forbids the convention |
-| P3 | decision | A diff adds or replaces the template's authoritative file (one stable path per template, so a repeated decision supersedes the earlier file) before a later session; the check requires the new value |
+| P3 | decision | A later session opens with a commit of the template's authoritative file (one stable path per template) and a first turn naming that path and saying it replaces the stated figure; the commit removes the line's notes and check scripts, and the probe follows in a later session; the check requires the file's value and forbids the stated one |
 | P4 | scoped update | A second conveyance narrows the rule to one module; items alternate inside and outside it, with the alternation offset by seed parity so the pooled counts balance per language across seeds, and `check.side` says which (`in` or `out`) |
 | P5 | rejected approach | Later session; the check forbids the rejected approach |
-| P6 | plan | First turn of a later session, at least one hour after the previous session ends |
+| P6 | plan | First turn of a later session, at least one hour after the previous session ends; see Plans below |
 | P7 | rationale | Later session; judge-graded against the reference reason |
 | P8 | lookup | Later session; the answer must carry the value |
 | P9 | never settled | Later session; the answer must abstain |
 | P10 | anchor | Later, unrelated task; the value must not appear |
 | P11 | the P1 fact | A session of the twin project after the conveyance; the check forbids the convention |
-| P12 | tool error | A real error from `corpus/tool-outputs/error-codes.jsonl`; the check requires the exception name |
-| P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe, and `check.turns` gives the turn after the cue and the turn after the probe, so the range holds exactly the folds the probe turn's snapshot can carry. A session rule holds "until I say otherwise", so a later instance in the same session supersedes it |
+| P12 | tool error | `tool_result`: a session opens with a commit of a check script under `scripts/`, and its first turn asks the agent to run it, so the error reaches the agent as its own tool result; a later session opens with a commit removing the script once "the fix is in", and the probe follows. `pasted`: the user pastes a failure of this project's own test command (`cargo test` or `bun test`) on a branch. Items alternate between the forms; the error identity (`<Word>Error`) is generated per fact, the probe names the failure by its issue number, and the check requires the identity |
+| P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe, and `check.turns` gives the turn after the cue and the turn after the probe, so the range holds exactly the folds the probe turn's snapshot can carry. Session rules are placed in scenario order, and a later rule of a template in the project supersedes the earlier one through its `revise` wording |
 | P14 | none | The last third of a forced p90 session, split into one window of at least ten turns per item (`window_from_turn` to `window_to_turn`), measured from user-sim labels; the item's `event` is the session's last user turn, where its snapshot is taken |
+
+### Plans (P6)
+
+Each project's P6 facts get one window each, so plans run one after another.
+A plan template is a `task`; a fact states one task (`resume`) or two tasks
+with no order (`clarify`) when `(slot + project index + seed) mod 3` is 2,
+where `slot` counts the project's P6 facts. A resume item in an odd slot is
+revised before its probe ("Change of plan for
+next time: drop A; the next step is B instead"). After the probe, a status
+turn closes the plan. `plans` records each step. A resume item's check
+requires the current next step and forbids the dropped one and earlier
+plans' steps; a clarify item's check sets `clarify` to both tasks' patterns
+and forbids both in the diff, so the item passes on a question that names
+both tasks and no edit toward either. The compiler refuses a P6 probe that
+finds another plan of its project accepted and not completed.
+
+### Conveyance
 
 Conveyance manners follow the fixed weights 35/20/15/10/10/10 for correction,
 hand-applied diff, tool error, rejected approach, direct statement, and stated
@@ -114,26 +166,63 @@ then reversed. The compiler rounds each weight with largest remainders over
 the scenario's facts. P5 facts take the rejected-approach manner, P8 facts the
 direct statement, and P12 facts the tool error. Only rejected facts take the
 rejected-approach wording, and only constraint, decision, and tool-error facts
-take the tool-error wording. P13 facts, which convey and probe within one
-session, take neither the diff nor the reversal manner, and a template whose
-statement has no generated token takes no reversal, since its decoy would
-equal the statement. A reversed fact's checks forbid the decoy's rendering
-beside the final value: the decoy's `*_must_not` lists join every check, its
-`*_must` lists join the P2 and P11 forbids, and a `*_must` pattern whose
-placeholders were all swapped joins the fact's own `*_must_not`, so applying
-or leaking the superseded value scores as harm. A fact whose remaining pool holds no permitted manner
-takes a correction, so the realised mix sits a little off the weights; the
-100-seed test keeps it within 5 percentage points. A
-hand-applied diff is an `apply_diff` event before the session, adding a file
-whose content implies the fact, followed by a user turn that points at the
-latest commit without stating the fact. A constraint template whose scope is
-a directory names an example path inside that scope (`src/cmd/{token}.rs`,
-`src/adapter/{token}.ts`, `tests/{token}.rs`, `test/{codename}.{token}.test.ts`);
-every other template adds `notes/{token}.md`, a note that states the fact in
-its own words, so a diff cue always carries the fact's scope.
+take the tool-error manner. P13 facts, scoped updates, and P6 facts in odd
+slots take no diff, so no committed note goes stale before an update, and a template whose statement has no
+generated token takes no reversal, since its decoy would equal the statement.
+A reversed fact's checks forbid the decoy's rendering beside the final value:
+the decoy's `*_must_not` lists join every check, its `*_must` lists join the
+P2 and P11 forbids, and a `*_must` pattern whose placeholders were all swapped
+joins the fact's own `*_must_not`, so applying or leaking the superseded value
+scores as harm. A fact whose remaining pool holds no permitted manner takes a
+correction, so the realised mix sits a little off the weights; the 100-seed
+test keeps it within 5 percentage points.
 
-Every request that carries no conveyance or probe is a filler task from the
-fact bank, or, with probability 0.1, a paste of a corpus tool-output sample.
+Commits fire only between sessions, so every commit lands at the start of
+the session whose first turn points at it:
+
+- a hand-applied diff adds a file whose content implies the fact, and the
+  first turn asks the agent to look over the latest commit without stating
+  the fact. A constraint template whose scope is a directory names an example
+  path inside that scope (`src/cmd/{token}.rs`, `src/adapter/{token}.ts`,
+  `tests/{token}.rs`, `test/{codename}.{token}.test.ts`); every other template
+  adds `notes/{token}.md`, a note that states the fact's current state;
+- a tool-error conveyance of a constraint or decision commits
+  `scripts/check_{token}.sh`, which prints the rule as an error and exits 1,
+  and the first turn asks the agent to run it;
+- the commits of several facts may share one session opening; its first turn
+  then joins each fact's cue, and `facts` names them all. A probe that opens
+  a session (P6) holds that opening alone.
+
+Every other turn avoids a session's first turn, extending its session when no
+later slot is free. Every request that carries no conveyance or probe is a
+filler task from the fact bank, or, with probability 0.1, a paste of a corpus
+tool-output sample.
+
+## Ground truth and exposure
+
+Each probe with user text carries `ground_truth`: `expect` (`apply`,
+`baseline`, `avoid`, `answer`, `abstain`, `explain`, `resume`, or
+`clarify`), `basis`, `present` (the generated literals correct work
+carries), `absent` (those it must not carry), `stale` (literals of
+superseded instances, decoys, a dropped plan step, and a P3 fact's stated
+figure), `supersedes`, and `sources` (every event that exposes the fact). The
+compiler proves each record against the event sequence and refuses the
+scenario when:
+
+- a source does not precede the probe, or lies outside the fact's project (a
+  P11 item's sources are its base project's);
+- a `present` or own `absent` literal appears in no source, compared
+  case-insensitively, with a number matched as a whole value;
+- the scenario-defined tree at the probe, every `apply_diff` before it
+  replayed, holds a `stale` literal;
+- a `stale` literal reaches the agent after the last source that carries a
+  `present` literal;
+- a P3 item's authoritative value is missing from the tree, or a
+  `tool_result` P12 item's check script is still in it;
+- a P1 control follows a source of its fact.
+
+Provider faults trigger after the last probe or source turn of their session,
+so a fault never withholds a source a probe depends on.
 
 ## Compile-time refusals
 
@@ -151,13 +240,18 @@ The compiler throws, and writes nothing, when:
   (SIM-P07);
 - a probe turn precedes any conveyance, update, or diff of its fact, or a P1
   control follows the first conveyance of its fact (SIM-P06);
+- a template repeats in a project without a `revise` wording, or a probe text
+  repeats for more facts of one project than the bank holds framings;
+- a commit finds no free session opening in its window;
+- a probe's ground truth fails a check in Ground truth and exposure, or a P6
+  probe finds another plan of its project open;
 - `validateFault`, which the compiler runs on every scheduled episode,
   refuses a trigger other than a session start, the Nth user turn of a
   session, or the first summarizer call of a session; a trigger that names an
   unknown session or a turn the session lacks; and an episode whose seam entry
   differs from the seam table (SIM-P05);
-- `scheduleFaults` finds fewer sessions with two or more turns than provider
-  episodes, no forced p90 session for the mid-fold SIGKILL, or no session
+- `scheduleFaults` finds fewer sessions with two or more turns and a turn
+  after every probe and source than provider episodes, no forced p90 session for the mid-fold SIGKILL, or no session
   after the first that starts without a hand-applied diff for the sleep.
 
 ## Faults
@@ -170,7 +264,7 @@ daemon. Each type gets one episode.
 
 | Layer | Trigger | Strategy |
 |---|---|---|
-| Proxy sink (provider faults) | The Nth user turn of a session with at least two turns; each provider episode gets its own session | single (1 call), burst (3 calls), intermittent (probability 0.3 over 10 calls), or persistent (to the end of the session) |
+| Proxy sink (provider faults) | The Nth user turn of a session with at least two turns, after its last probe or source turn; each provider episode gets its own session | single (1 call), burst (3 calls), intermittent (probability 0.3 over 10 calls), or persistent (to the end of the session) |
 | Scheduler, mid-fold SIGKILL | The first observed summarizer call of a forced p90 session (OQ-8, schedule half) | single |
 | Clock, laptop sleep | The start of the session after the widest idle gap, among sessions that start without a hand-applied diff | single, with `duration_ms` equal to that gap, so the jump holds no events (SIM-P18) |
 | Scheduler, every other type | The start of a session after the first | single; the store-full fault is persistent for that one session (`sessions: 1`) |
@@ -216,9 +310,11 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 - SWE-chat's per-prompt intent labels are gated, so sessions carry no intent
   kind.
-- The corpus error codes are Python exceptions from the OpenHands
-  trajectories, so P12 pastes a Python failure into a Rust or TypeScript
-  project.
+- Filler pastes still come from the OpenHands tool-output samples, which are
+  Python runs; no probe depends on them.
+- The exposure proof covers delivery: a source turn was sent and its commit
+  landed. Whether the agent ran the check script or read the commit is run
+  evidence, outside the compiler.
 - At the current pre-registration sizes, an S scenario holds about 50 sessions
   and 500 user turns per arm. That is larger than the two-hour S wall budget
   admits, and M8 resizes S through a pre-registration revision.

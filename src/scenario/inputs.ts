@@ -18,7 +18,6 @@ const CORPUS_INPUTS = [
     "repos.json",
     "distributions.json",
     "tool-outputs/samples.jsonl",
-    "tool-outputs/error-codes.jsonl",
 ] as const;
 type CorpusInput = (typeof CORPUS_INPUTS)[number];
 
@@ -54,7 +53,6 @@ export const CONSUMED_FILES = [
     "distributions.json",
     "fact-bank.json",
     "repos.json",
-    "tool-outputs/error-codes.jsonl",
     "tool-outputs/samples.jsonl",
 ] as const;
 
@@ -113,7 +111,6 @@ const DIRECT_INPUTS = [
     "repos.json",
     "distributions.json",
     "tool-outputs/samples.jsonl",
-    "tool-outputs/error-codes.jsonl",
 ];
 
 /** One digest over the bytes of every corpus file the compiler reads. */
@@ -144,9 +141,6 @@ export function loadCompileInput(
         bank: parseText(texts["fact-bank.json"], join(CORPUS_DIR, "fact-bank.json")) as Bank,
         projects,
         pastes: parseJsonl(texts["tool-outputs/samples.jsonl"]) as CompileInput["pastes"],
-        errorCodes: parseJsonl(
-            texts["tool-outputs/error-codes.jsonl"],
-        ) as CompileInput["errorCodes"],
         corpusInputsSha256: corpusInputsSha256(texts),
         embedder,
     };

@@ -11,11 +11,20 @@ const KINDS = [
     "tool_error",
     "session_rule",
 ];
-const SCHEMA = "sim-fact-bank/v1";
+const SCHEMA = "sim-fact-bank/v2";
 const LANGUAGES = ["rust", "typescript", "any"];
 /** Kinds every language object carries; `any` holds the kinds without a language-specific template set. */
 const REQUIRED_KINDS: Record<string, string[]> = {
-    rust: ["constraint", "decision", "plan", "rationale", "rejected", "scoped_update", "filler"],
+    rust: [
+        "constraint",
+        "decision",
+        "plan",
+        "rationale",
+        "rejected",
+        "scoped_update",
+        "tool_error",
+        "filler",
+    ],
     typescript: [
         "constraint",
         "decision",
@@ -23,22 +32,25 @@ const REQUIRED_KINDS: Record<string, string[]> = {
         "rationale",
         "rejected",
         "scoped_update",
+        "tool_error",
         "filler",
     ],
-    any: ["lookup", "never_settled", "anchor", "tool_error", "session_rule"],
+    any: ["lookup", "never_settled", "anchor", "session_rule", "framings"],
 };
-const SAMPLE_VARS: Record<string, string> = {
+/** Lists of plain strings a language object may carry beside its fact kinds. */
+const TEXT_LISTS = ["filler", "framings"];
+const FORMS = ["tool_result", "pasted"];
+const BASE_VARS: Record<string, string> = {
     token: "quiet_vole",
     TOKEN: "QUIET_VOLE",
+    alt: "brisk_heron",
+    ALT: "BRISK_HERON",
+    Alt: "BriskHeron",
     value: "12345",
     value2: "54321",
     codename: "brisk-otter-07",
-    code: "ValueError",
-    context: "x",
-    code_re: "ValueError",
 };
 const QUOTE_STYLES = ["double", "single"];
-const ERROR_VARS = ["code", "code_re", "context"];
 /** The grading channel each fact kind must use; every other kind grades the diff or command log. */
 const REQUIRED_CHECK: Record<string, string> = {
     decision: "must",
@@ -84,42 +96,50 @@ const isObject = (v: unknown): v is Json =>
     typeof v === "object" && v !== null && !Array.isArray(v);
 const isStringList = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === "string");
 
-const placeholderProblem = (text: string, kind: string): string | null => {
-    const known = (k: string) =>
-        k in SAMPLE_VARS && (kind === "tool_error" || !ERROR_VARS.includes(k));
-    const unknown = [...text.matchAll(/\{(\w+)\}/g)].find(([, k]) => !(k && known(k)));
+/** The values a sample rendering of one template fills in: the base set and its first variant. */
+type Vars = Record<string, string>;
+const varsOf = (t: Json): Vars => {
+    const first = Array.isArray(t.variants) && isObject(t.variants[0]) ? t.variants[0] : {};
+    const variant = Object.fromEntries(
+        Object.entries(first).filter((e): e is [string, string] => typeof e[1] === "string"),
+    );
+    return { ...BASE_VARS, ...variant };
+};
+const placeholderProblem = (text: string, vars: Vars): string | null => {
+    const unknown = [...text.matchAll(/\{(\w+)\}/g)].find(([, k]) => !(k && k in vars));
     return unknown ? "names an unknown placeholder" : null;
 };
 
-const fill = (text: string) => text.replace(/\{(\w+)\}/g, (m, k: string) => SAMPLE_VARS[k] ?? m);
+const fill = (text: string, vars: Vars) =>
+    text.replace(/\{(\w+)\}/g, (m, k: string) => vars[k] ?? m);
 /** A normalised path inside the project: relative, with no empty, `.`, or `..` segment. */
-const projectRelative = (path: string) => {
-    const parts = fill(path).split("/");
+const projectRelative = (path: string, vars: Vars) => {
+    const parts = fill(path, vars).split("/");
     return parts.length > 0 && parts.every((p) => p !== "" && p !== "." && p !== "..");
 };
-const satisfies = (patterns: unknown, text: string) =>
+const satisfies = (patterns: unknown, text: string, vars: Vars) =>
     !Array.isArray(patterns) ||
     patterns.every((pattern) => {
         try {
-            return new RegExp(fill(String(pattern))).test(text);
+            return new RegExp(fill(String(pattern), vars)).test(text);
         } catch {
             return false;
         }
     });
 
-const patternProblem = (pattern: string, kind: string): string | null => {
+const patternProblem = (pattern: string, vars: Vars): string | null => {
     if (pattern.trim() === "") return "is blank";
-    const unknown = placeholderProblem(pattern, kind);
+    const unknown = placeholderProblem(pattern, vars);
     if (unknown) return `${pattern} ${unknown}`;
     try {
-        new RegExp(pattern.replace(/\{(\w+)\}/g, (_m, k: string) => SAMPLE_VARS[k] ?? ""));
+        new RegExp(pattern.replace(/\{(\w+)\}/g, (_m, k: string) => vars[k] ?? ""));
         return null;
     } catch {
         return `${pattern} is not a regular expression`;
     }
 };
 
-function checkProblems(where: string, check: unknown, kind: string): string[] {
+function checkProblems(where: string, check: unknown, kind: string, vars: Vars): string[] {
     if (!isObject(check)) return [`${where}: check is not an object`];
     const problems: string[] = [];
     for (const [key, value] of Object.entries(check)) {
@@ -138,19 +158,19 @@ function checkProblems(where: string, check: unknown, kind: string): string[] {
                 problems.push(`${where}: check key ${key} is not a non-empty list of strings`);
             } else {
                 for (const pattern of value) {
-                    const problem = patternProblem(pattern, kind);
+                    const problem = patternProblem(pattern, vars);
                     if (problem) problems.push(`${where}: check key ${key} pattern ${problem}`);
                 }
             }
         } else if (key === "quote_style_must") {
-            if (typeof value !== "string" || !QUOTE_STYLES.includes(value)) {
+            if (typeof value !== "string" || !QUOTE_STYLES.includes(fill(value, vars))) {
                 problems.push(`${where}: check key ${key} is not double or single`);
             }
         } else if (SCALAR_CHECKS.includes(key)) {
             if (typeof value !== "string")
                 problems.push(`${where}: check key ${key} is not a string`);
             else if (value.trim() === "") problems.push(`${where}: check key ${key} is blank`);
-            else if (placeholderProblem(value, kind))
+            else if (placeholderProblem(value, vars))
                 problems.push(`${where}: check key ${key} names an unknown placeholder`);
         } else if (FLAG_CHECKS.includes(key)) {
             if (value !== true) problems.push(`${where}: check key ${key} is not true`);
@@ -187,14 +207,15 @@ export function bankProblems(bank: unknown): string[] {
             if (!(kind in kinds)) problems.push(`fact-bank ${lang}/${kind}: kind missing`);
         }
         for (const [kind, templates] of Object.entries(kinds)) {
-            if (kind === "filler") {
+            if (TEXT_LISTS.includes(kind)) {
                 const ok =
                     isStringList(templates) &&
                     templates.length > 0 &&
-                    templates.every((t) => t.trim() !== "");
+                    templates.every((t) => t.trim() !== "") &&
+                    new Set(templates).size === templates.length;
                 if (!ok) {
                     problems.push(
-                        `fact-bank ${lang}/filler: expected a non-empty list of non-blank strings`,
+                        `fact-bank ${lang}/${kind}: expected a non-empty list of distinct non-blank strings`,
                     );
                 }
                 continue;
@@ -207,8 +228,9 @@ export function bankProblems(bank: unknown): string[] {
                 problems.push(`fact-bank ${lang}/${kind}: expected a list of templates`);
                 continue;
             }
-            if (templates.length === 0) {
-                problems.push(`fact-bank ${lang}/${kind}: expected at least one template`);
+            const least = kind === "plan" ? 2 : 1;
+            if (templates.length < least) {
+                problems.push(`fact-bank ${lang}/${kind}: expected at least ${least} templates`);
                 continue;
             }
             templates.forEach((t, i) => {
@@ -218,97 +240,153 @@ export function bankProblems(bank: unknown): string[] {
                     problems.push(`${where}: expected a template object`);
                     return;
                 }
+                problems.push(...templateProblems(where, kind, t));
                 if (ids.has(id)) problems.push(`${where}: duplicate template id`);
                 ids.add(id);
-                for (const field of ["id", "statement", "probe"]) {
-                    if (typeof t[field] !== "string" || t[field].trim() === "")
-                        problems.push(`${where}: ${field} missing`);
-                }
-                for (const field of ["statement", "probe", "out_probe", "update"]) {
-                    const text = t[field];
-                    if (typeof text === "string" && placeholderProblem(text, kind)) {
-                        problems.push(`${where}: ${field} names an unknown placeholder`);
-                    }
-                }
-                for (const field of ["example", "authority"]) {
-                    const part = t[field];
-                    if (isObject(part)) {
-                        const text = `${part.path ?? ""}\n${part.content ?? ""}`;
-                        if (placeholderProblem(text, kind)) {
-                            problems.push(`${where}: ${field} names an unknown placeholder`);
-                        }
-                        if (typeof part.path === "string" && part.path.trim() === "") {
-                            problems.push(`${where}: ${field} path is blank`);
-                        } else if (typeof part.path === "string" && !projectRelative(part.path)) {
-                            problems.push(`${where}: ${field} path escapes the project`);
-                        }
-                    }
-                }
-                if (kind === "constraint") {
-                    const positive = ["must", "paths_must"];
-                    const check = t.check;
-                    if (!isObject(check) || !positive.some((k) => k in check)) {
-                        problems.push(`${where}: check needs must or paths_must`);
-                    }
-                }
-                if (
-                    kind === "constraint" &&
-                    (typeof t.out_probe !== "string" || t.out_probe.trim() === "")
-                ) {
-                    problems.push(`${where}: out_probe missing`);
-                }
-                for (const field of ["out_probe", "update"]) {
-                    if (field in t && typeof t[field] !== "string")
-                        problems.push(`${where}: ${field} is not a string`);
-                }
-                if (kind === "scoped_update") {
-                    for (const field of ["update", "out_probe"]) {
-                        if (typeof t[field] !== "string" || t[field].trim() === "") {
-                            problems.push(`${where}: ${field} missing`);
-                        }
-                    }
-                    if (!("out_check" in t)) problems.push(`${where}: out_check missing`);
-                }
-                if (kind === "decision" && !("authority" in t)) {
-                    problems.push(`${where}: authority missing`);
-                }
-                if (kind === "decision" && isObject(t.authority) && isObject(t.check)) {
-                    const content = fill(String(t.authority.content ?? ""));
-                    if (!satisfies(t.check.must, content)) {
-                        problems.push(`${where}: authority content does not satisfy the check`);
-                    }
-                }
-                if (kind === "constraint" && isObject(t.example) && isObject(t.check)) {
-                    const content = fill(String(t.example.content ?? ""));
-                    const path = fill(String(t.example.path ?? ""));
-                    if (!satisfies(t.check.must, content) || !satisfies(t.check.paths_must, path)) {
-                        problems.push(`${where}: example content does not satisfy the check`);
-                    }
-                }
-                if ("example" in t) {
-                    const e = t.example;
-                    if (
-                        !isObject(e) ||
-                        typeof e.path !== "string" ||
-                        typeof e.content !== "string"
-                    ) {
-                        problems.push(`${where}: example needs path and content`);
-                    }
-                }
-                if ("authority" in t) {
-                    const a = t.authority;
-                    if (
-                        !isObject(a) ||
-                        typeof a.path !== "string" ||
-                        typeof a.content !== "string"
-                    ) {
-                        problems.push(`${where}: authority needs path and content`);
-                    }
-                }
-                problems.push(...checkProblems(where, t.check, kind));
-                if ("out_check" in t)
-                    problems.push(...checkProblems(`${where} out_check`, t.out_check, kind));
             });
+        }
+    }
+    return problems;
+}
+
+/** Shape problems of one template: its text fields, files, variants, and checks. */
+function templateProblems(where: string, kind: string, t: Json): string[] {
+    const problems: string[] = [];
+    const vars = varsOf(t);
+    const required =
+        kind === "plan"
+            ? ["id", "task", "probe"]
+            : kind === "tool_error"
+              ? ["id", "statement", "probe", "form"]
+              : ["id", "statement", "probe"];
+    for (const field of required) {
+        if (typeof t[field] !== "string" || t[field].trim() === "")
+            problems.push(`${where}: ${field} missing`);
+    }
+    for (const field of ["out_probe", "update", "revise", "task", "command", "paste"]) {
+        if (field in t && typeof t[field] !== "string")
+            problems.push(`${where}: ${field} is not a string`);
+    }
+    for (const field of ["statement", "task", "probe", "out_probe", "update", "command", "paste"]) {
+        const text = t[field];
+        if (typeof text === "string" && placeholderProblem(text, vars)) {
+            problems.push(`${where}: ${field} names an unknown placeholder`);
+        }
+    }
+    if (typeof t.revise === "string") {
+        if (t.revise.trim() === "") problems.push(`${where}: revise is blank`);
+        else if (placeholderProblem(t.revise, { ...vars, ...oldOf(vars) })) {
+            problems.push(`${where}: revise names an unknown placeholder`);
+        }
+    }
+    if ("variants" in t) problems.push(...variantProblems(where, t.variants));
+    for (const field of ["example", "authority", "script"]) {
+        if (!(field in t)) continue;
+        const part = t[field];
+        if (!isObject(part) || typeof part.path !== "string" || typeof part.content !== "string") {
+            problems.push(`${where}: ${field} needs path and content`);
+            continue;
+        }
+        if (placeholderProblem(`${part.path}\n${part.content}`, vars)) {
+            problems.push(`${where}: ${field} names an unknown placeholder`);
+        }
+        if (part.path.trim() === "") problems.push(`${where}: ${field} path is blank`);
+        else if (!projectRelative(part.path, vars))
+            problems.push(`${where}: ${field} path escapes the project`);
+    }
+    const check = isObject(t.check) ? t.check : {};
+    if (kind === "constraint") {
+        if (!["must", "paths_must"].some((k) => k in check)) {
+            problems.push(`${where}: check needs must or paths_must`);
+        }
+        if (typeof t.out_probe !== "string" || t.out_probe.trim() === "") {
+            problems.push(`${where}: out_probe missing`);
+        }
+    }
+    if (kind === "scoped_update") {
+        for (const field of ["update", "out_probe"]) {
+            if (typeof t[field] !== "string" || t[field].trim() === "") {
+                problems.push(`${where}: ${field} missing`);
+            }
+        }
+        if (!("out_check" in t)) problems.push(`${where}: out_check missing`);
+    }
+    if (kind === "decision") {
+        if (!("authority" in t)) problems.push(`${where}: authority missing`);
+        else if (isObject(t.authority)) {
+            const content = fill(String(t.authority.content ?? ""), vars);
+            if (!satisfies(check.must, content, vars)) {
+                problems.push(`${where}: authority content does not satisfy the check`);
+            }
+        }
+    }
+    if (kind === "constraint" && isObject(t.example)) {
+        const content = fill(String(t.example.content ?? ""), vars);
+        const path = fill(String(t.example.path ?? ""), vars);
+        if (!satisfies(check.must, content, vars) || !satisfies(check.paths_must, path, vars)) {
+            problems.push(`${where}: example content does not satisfy the check`);
+        }
+    }
+    if (kind === "tool_error") problems.push(...toolErrorProblems(where, t, check, vars));
+    problems.push(...checkProblems(where, t.check, kind, vars));
+    if ("out_check" in t)
+        problems.push(...checkProblems(`${where} out_check`, t.out_check, kind, vars));
+    return problems;
+}
+
+const oldOf = (vars: Vars): Vars =>
+    Object.fromEntries(Object.entries(vars).map(([k, v]) => [`old_${k}`, v]));
+
+/** Variants bind the same non-generated placeholders, and consecutive instances differ. */
+function variantProblems(where: string, variants: unknown): string[] {
+    if (!Array.isArray(variants) || variants.length < 2 || !variants.every(isObject)) {
+        return [`${where}: variants is not a list of at least two objects`];
+    }
+    const keys = Object.keys(variants[0] as Json)
+        .sort()
+        .join(",");
+    const problems: string[] = [];
+    for (const v of variants as Json[]) {
+        if (Object.keys(v).sort().join(",") !== keys) {
+            problems.push(`${where}: variants bind different placeholders`);
+        }
+        if (!Object.values(v).every((x) => typeof x === "string" && x.trim() !== "")) {
+            problems.push(`${where}: a variant value is not a non-blank string`);
+        }
+        if (Object.keys(v).some((k) => k in BASE_VARS)) {
+            problems.push(`${where}: a variant rebinds a generated placeholder`);
+        }
+    }
+    if (new Set(variants.map((v) => JSON.stringify(v))).size !== variants.length) {
+        problems.push(`${where}: variants repeat`);
+    }
+    return problems;
+}
+
+/** A tool error names its form, and the text the agent meets carries the identity the check grades. */
+function toolErrorProblems(where: string, t: Json, check: Json, vars: Vars): string[] {
+    if (!FORMS.includes(String(t.form))) return [`${where}: form is not ${FORMS.join(" or ")}`];
+    const problems: string[] = [];
+    const shown =
+        t.form === "tool_result"
+            ? isObject(t.script)
+                ? String(t.script.content ?? "")
+                : ""
+            : String(t.paste ?? "");
+    if (t.form === "tool_result" && (typeof t.command !== "string" || t.command.trim() === "")) {
+        problems.push(`${where}: command missing`);
+    }
+    if (t.form === "tool_result" && !isObject(t.script)) problems.push(`${where}: script missing`);
+    if (t.form === "pasted" && (typeof t.paste !== "string" || t.paste.trim() === "")) {
+        problems.push(`${where}: paste missing`);
+    }
+    if (!("must" in check)) problems.push(`${where}: check needs must`);
+    else if (!satisfies(check.must, fill(shown, vars), vars)) {
+        problems.push(`${where}: the ${t.form} text does not carry the error the check names`);
+    }
+    if (typeof t.revise === "string" && !satisfies(check.must, fill(t.revise, vars), vars)) {
+        if (t.form === "pasted") {
+            problems.push(`${where}: revise does not carry the error the check names`);
         }
     }
     return problems;
