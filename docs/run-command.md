@@ -68,7 +68,7 @@ is refused.
 `--out` may not overlap the Pi install either. An `--out` inside this checkout must be
 ignored by git (`runs/` is), and may not overlap a corpus checkout, since
 both trees are part of the run identity. Before taking the lease, every artifact the run appends to or
-replaces (`journal.jsonl`, `calls.jsonl`, the manifest, the scenario, the
+replaces (`journal.jsonl`, `calls.jsonl`, `requests.jsonl`, the manifest, the scenario, the
 fault and preflight files, `tape.jsonl`, `pairing.jsonl`, `downstream.jsonl`, this process's staging names for the lease, the
 scenario, and the manifest, and each arm's `resources.jsonl`, clock offset,
 `state.json`, `daemon.log`, `store.img`, `transcripts.json`, and the snapshot
@@ -188,7 +188,8 @@ toolchain wrappers are created exclusively after removing any planted name.
    values, so omitted options inherit. Every invocation
    then journals a `Preflight` entry with its interception results and host
    identities before `StartRun` or `ResumeRun` (SIM-P16).
-4. Start the capture proxy; its records append to `calls.jsonl`, and a
+4. Start the capture proxy; its records append to `calls.jsonl`, each
+   forwarded body's parts to `requests.jsonl` (`docs/proxy.md`), and a
    reopened writer continues the sequence after the last complete record. A
    cut last line is dropped; a complete line that is not a record in
    sequence refuses the run. The writer advances its sequence only after an

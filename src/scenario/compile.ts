@@ -1369,7 +1369,7 @@ const eventText = (e: ScenarioEvent) =>
         ? String(e.text ?? e.content ?? "").toLowerCase()
         : "";
 /** A number occurs as a whole value, with no digit beside it; a generated word occurs anywhere. */
-const holds = (text: string, lit: string) =>
+export const holds = (text: string, lit: string) =>
     /^\d+$/.test(lit)
         ? new RegExp(`(?<!\\d)${lit}(?!\\d)`).test(text)
         : text.toLowerCase().includes(lit.toLowerCase());

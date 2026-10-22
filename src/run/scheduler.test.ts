@@ -6694,6 +6694,39 @@ test("the call index reads one arm and session's records by position, seeded fro
     expect(callsOf(index, "host", "s-9", new Map())).toEqual([]);
 });
 
+test("a background call credited to the preceding turn takes that turn's index", () => {
+    const path = join(dir(), "calls.jsonl");
+    const base = {
+        wall_ms: 1,
+        scenario_ms: 5,
+        arm: "eidnara",
+        session: "s-1",
+        componentSource: "inferred",
+        model: "m",
+        status: 200,
+        finish_reason: "end_turn",
+        error: null,
+        input_tokens: 1,
+        output_tokens: 1,
+        proxy_retries: 0,
+        first_byte_ms: 1,
+        fault_ref: null,
+    };
+    const rows = [
+        { ...base, seq: 0, turn: "e-1", component: "agent" },
+        { ...base, seq: 1, turn: "e-2", component: "memory_capture", origin_turn: "e-1" },
+        { ...base, seq: 2, turn: "e-2", component: "agent" },
+        { ...base, seq: 3, turn: null, component: "memory_capture" },
+    ];
+    writeFileSync(path, rows.map((r) => `${JSON.stringify(r)}\n`).join(""));
+    const turns = new Map([
+        ["e-1", 0],
+        ["e-2", 1],
+    ]);
+    const calls = callsOf(new CallIndex(path), "eidnara", "s-1", turns);
+    expect(calls.map((c) => c.turn_index)).toEqual([0, 0, 1, 1]);
+});
+
 /**
  * Stands in for a harness kill: runs the scheduler until `journal` holds an entry `at` matches,
  * with the driver call then in flight never returning, and leaves the run there unfinished.

@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { keepCompleteLines } from "../run/journal";
+import { isRequestRef, type RequestRef } from "./requests";
 
 export const COMPONENTS = [
     "agent",
@@ -64,6 +65,14 @@ export interface CallRecord {
     response_sha256?: string;
     /** The last 6,000 characters of the relayed text, present when `response_text` cut it. */
     response_tail?: string;
+    /** The forwarded body's digest, length, and stored part ids (`requests.jsonl`). */
+    request?: RequestRef;
+    /**
+     * The turn a background call belongs to when it differs from `turn`: the session's preceding
+     * turn, for a call received between turns, or after the next turn began and before that
+     * turn's first answer.
+     */
+    origin_turn?: string;
 }
 
 /** Characters of relayed response text a record keeps; a text this long may have been cut. */
@@ -106,9 +115,11 @@ export function recordProblems(input: Partial<CallRecord> | Record<string, unkno
     if (arrival !== undefined && (!Number.isInteger(arrival) || (arrival as number) < 0)) {
         problems.push("arrival invalid");
     }
-    for (const k of ["response_sha256", "response_tail"] as const) {
+    for (const k of ["response_sha256", "response_tail", "origin_turn"] as const) {
         if (value[k] !== undefined && typeof value[k] !== "string") problems.push(`${k} invalid`);
     }
+    if (value.request !== undefined && !isRequestRef(value.request))
+        problems.push("request invalid");
     return problems;
 }
 

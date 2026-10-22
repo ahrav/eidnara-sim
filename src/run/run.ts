@@ -30,6 +30,7 @@ import { preregistrationHash } from "../prereg/validate";
 import { bedrockUpstream, Gateway } from "../proxy/gateway";
 import { FaultInjector, restoreOrder } from "../proxy/inject";
 import { type CallRecord, RecordWriter, recordProblems } from "../proxy/records";
+import { RequestStore } from "../proxy/requests";
 import { Rng } from "../rng";
 import { compileScenario, type Scenario, scenarioInputMismatch } from "../scenario/compile";
 import { type FaultEpisode, type FaultType, SEAMS, validateFault } from "../scenario/faults";
@@ -171,6 +172,7 @@ const ARTIFACTS = [
     `manifest.json.${process.pid}`,
     "preflight.jsonl",
     "calls.jsonl",
+    "requests.jsonl",
     "faults.jsonl",
     "tape.jsonl",
     "pairing.jsonl",
@@ -462,6 +464,7 @@ export function requireFreshArmRoots(out: string, arms: readonly string[]): void
     }
     const evidence = [
         "calls.jsonl",
+        "requests.jsonl",
         "faults.jsonl",
         "preflight.jsonl",
         "tape.jsonl",
@@ -1589,7 +1592,15 @@ export function callsOf(
 ): CallView[] {
     let turn: number | undefined;
     return index.records(arm, session).map((r) => {
-        turn = (r.turn ? turnIndex.get(r.turn) : undefined) ?? turn;
+        const own = r.origin_turn ?? r.turn;
+        const at = own ? turnIndex.get(own) : undefined;
+        // A background call credited to an earlier turn takes that turn's index without moving
+        // the running index later calls without a turn take.
+        if (r.origin_turn !== undefined && at !== undefined) {
+            const view = projectCall(r);
+            return { ...view, turn_index: at };
+        }
+        turn = at ?? turn;
         const view = projectCall(r);
         return turn === undefined ? view : { ...view, turn_index: turn };
     });
@@ -1744,7 +1755,22 @@ async function runArms(
     const agentText = new Map<string, AgentReply>();
     /** Each arm's call records by component, for the capability check at its finish. */
     const components = new Map<string, Record<string, number>>();
+    // A background call received after a turn began and before that turn's first agent answer
+    // came from the turn before it, so the record names that turn as its origin. A resume reads
+    // both from the call log and the journal.
+    const answered = new Set<string>();
+    const precedingTurn = new Map<string, string>();
+    const eventSession = new Map(allEvents.map((e) => [e.id, String(e.session)]));
+    for (const e of journal.entries) {
+        if (e.kind !== "EndTurn" || typeof e.arm !== "string") continue;
+        const session = eventSession.get(String(e.event));
+        if (session !== undefined) precedingTurn.set(`${e.arm}/${session}`, String(e.event));
+    }
     const noteAgent = (r: CallRecord) => {
+        const replied = r.status === 200 && r.error === null && r.finish_reason !== "stream_cut";
+        if (r.component === "agent" && r.turn !== null && replied) {
+            answered.add(`${r.arm}/${r.turn}`);
+        }
         const reply = agentReplyOf(r);
         if (reply) agentText.set(`${r.arm}/${r.session}`, reply);
         const counts = components.get(r.arm) ?? {};
@@ -1836,6 +1862,10 @@ async function runArms(
     });
     const now = () => scheduler.clock?.now() ?? 0;
     const scope = { arm: "", session: null as string | null, turn: null as string | null };
+    const origin = (): string | null => {
+        if (scope.turn !== null && answered.has(`${scope.arm}/${scope.turn}`)) return scope.turn;
+        return precedingTurn.get(`${scope.arm}/${scope.session}`) ?? scope.turn;
+    };
     let jobSeq = journal.entries.filter((e) => e.kind === "RegisterJob").length;
     class RunRecords extends RecordWriter {
         override write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
@@ -1853,13 +1883,15 @@ async function runArms(
         join(o.out, "downstream.jsonl"),
         fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
     );
+    const requests = new RequestStore(join(o.out, "requests.jsonl"));
     const gateway = new Gateway({
         upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
         records: new RunRecords(callsPath, { resume: true, retain: false }),
         injector,
         rng: new Rng((seed ^ 0x27d4eb2f) >>> 0),
         clock: { scenarioMs: now },
-        scope: () => ({ ...scope }),
+        scope: () => ({ ...scope, origin: origin() }),
+        requests,
         downstream: (e) => {
             // The sink runs inside an HTTP/2 event listener; a failed write ends the run through
             // its signal path rather than escaping as an uncaught exception.
@@ -1895,6 +1927,7 @@ async function runArms(
     };
     cleanup.push(async () => {
         await gateway.stop();
+        requests.close();
         writeWitnesses();
         handlersFailed();
     });
@@ -2155,6 +2188,7 @@ async function runArms(
                         };
                     } finally {
                         scope.turn = null;
+                        if (e.kind === "user_turn") precedingTurn.set(`${arm}/${e.session}`, e.id);
                         if (e.kind === "user_turn") holdForCpu(sampler, arm);
                     }
                 }),

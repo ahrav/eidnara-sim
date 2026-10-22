@@ -1,6 +1,11 @@
 # Tier report
 
-`src/report/` turns finished run directories into the per-tier report.
+`src/report/` turns finished run directories into the per-tier report. The
+evidence-path section (`## Evidence path`: per-probe stages and attributed
+causes, session context health, and an arm comparison with flagged sessions
+apart) comes from `bun scripts/evidence-run.ts` and `src/evidence/`
+(`docs/evidence.md`); the gated panels below still count flagged-session
+turns.
 
 ## Soak
 
