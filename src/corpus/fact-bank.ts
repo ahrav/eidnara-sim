@@ -11,7 +11,7 @@ const KINDS = [
     "tool_error",
     "session_rule",
 ];
-const SCHEMA = "sim-fact-bank/v2";
+const SCHEMA = "sim-fact-bank/v3";
 const LANGUAGES = ["rust", "typescript", "any"];
 /** Kinds every language object carries; `any` holds the kinds without a language-specific template set. */
 const REQUIRED_KINDS: Record<string, string[]> = {
@@ -68,6 +68,7 @@ const DIFF_KEYS = [
     "commands_must",
     "commands_must_not",
     "quote_style_must",
+    "applies",
 ];
 /** Check keys each fact kind may grade with; kinds absent here grade the diff or command log. */
 const ALLOWED_KEYS: Record<string, string[]> = {
@@ -87,6 +88,7 @@ const LIST_CHECKS = [
     "first_line_must",
     "commands_must",
     "answer_must_not",
+    "applies",
 ];
 const SCALAR_CHECKS = ["answer", "judge", "quote_style_must"];
 const FLAG_CHECKS = ["abstain"];
@@ -145,8 +147,10 @@ function checkProblems(where: string, check: unknown, kind: string, vars: Vars):
     const problems: string[] = [];
     for (const [key, value] of Object.entries(check)) {
         if (key === SCOPE_KEY) {
-            if (typeof value !== "string" || !/^[\w./-]+\/$/.test(value)) {
-                problems.push(`${where}: check key scope is not a directory prefix ending in /`);
+            if (typeof value !== "string" || !/^[\w./-]+(?:\/|\.\w+)$/.test(value)) {
+                problems.push(
+                    `${where}: check key scope is not a directory prefix ending in / or a file path`,
+                );
             }
             continue;
         }
@@ -182,6 +186,9 @@ function checkProblems(where: string, check: unknown, kind: string, vars: Vars):
     }
     const required = REQUIRED_CHECK[kind];
     if (required && !(required in check)) problems.push(`${where}: check needs ${required}`);
+    if ("applies" in check && !("must" in check)) {
+        problems.push(`${where}: check key applies needs must, which every governed unit matches`);
+    }
     return problems;
 }
 
@@ -345,6 +352,18 @@ function renderedProblems(where: string, kind: string, t: Json, vars: Vars): str
         const path = fill(String(t.example.path ?? ""), vars);
         if (!satisfies(check.must, content, vars) || !satisfies(check.paths_must, path, vars)) {
             problems.push(`${where}: example content does not satisfy the check`);
+        }
+        const governed = (patterns: unknown) =>
+            !Array.isArray(patterns) ||
+            patterns.some((pattern) => {
+                try {
+                    return new RegExp(fill(String(pattern), vars), "m").test(content);
+                } catch {
+                    return false;
+                }
+            });
+        if (!governed(check.applies)) {
+            problems.push(`${where}: example content is no construct the check's applies governs`);
         }
     }
     if (kind === "tool_error") problems.push(...toolErrorProblems(where, t, check, vars));

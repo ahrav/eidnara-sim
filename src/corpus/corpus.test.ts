@@ -98,7 +98,7 @@ describe("committed corpus", () => {
         broken.any.anchor[1].id = "lookup-port";
         delete broken.any.never_settled;
         expect(bankProblems(broken)).toEqual([
-            "fact-bank schema: sim-fact-bank/v0 is not sim-fact-bank/v2",
+            "fact-bank schema: sim-fact-bank/v0 is not sim-fact-bank/v3",
             "fact-bank rust/plan[0] rs-plan-field: probe missing",
             "fact-bank rust/rationale: expected at least 1 templates",
             "fact-bank rust/filler: expected a non-empty list of distinct non-blank strings",
@@ -138,14 +138,22 @@ describe("committed corpus", () => {
         broken.typescript.decision[1].authority.path = "  ";
         broken.rust.constraint[1].example.path = "../../outside.rs";
         broken.rust.constraint[0].example.content = "pub const WRONG = 1;";
+        broken.rust.constraint[4].check = {
+            scope: "src/server",
+            applies: ["\\bx!"],
+            paths_must: ["x"],
+        };
         expect(bankProblems(broken)).toEqual([
             "fact-bank any: language missing",
             "fact-bank rust/constraint[0] rs-cmd-const-prefix: statement missing",
             "fact-bank rust/constraint[0] rs-cmd-const-prefix: example content does not satisfy the check",
+            "fact-bank rust/constraint[0] rs-cmd-const-prefix: example content is no construct the check's applies governs",
             "fact-bank rust/constraint[1] rs-cmd-error-tag: example path escapes the project",
             "fact-bank rust/constraint[1] rs-cmd-error-tag: out_probe missing",
             "fact-bank rust/constraint[2] rs-db-helper-prefix: statement names an unknown placeholder",
             "fact-bank rust/constraint[3] rs-test-suffix: check needs must or paths_must",
+            "fact-bank rust/constraint[4] rs-tracing-target: check key scope is not a directory prefix ending in / or a file path",
+            "fact-bank rust/constraint[4] rs-tracing-target: check key applies needs must, which every governed unit matches",
             "fact-bank rust/decision[0] rs-scan-page: authority missing",
             "fact-bank rust/decision[1] rs-conn-buffer: authority content does not satisfy the check",
             "fact-bank rust/plan[0] rs-plan-field: a plan task binds only {token} and {TOKEN}, which a second task rebinds",

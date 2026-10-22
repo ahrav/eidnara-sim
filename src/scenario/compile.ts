@@ -7,7 +7,7 @@ import { scheduleFaults, validateFault } from "./faults";
 import { bm25Ratio, cosine, type Embedder, round4 } from "./similarity";
 import { Tokens } from "./tokens";
 
-export const GENERATOR_VERSION = "sim-scenario/v3";
+export const GENERATOR_VERSION = "sim-scenario/v4";
 
 export const MANNER_WEIGHTS = {
     correction: 0.35,
@@ -182,7 +182,7 @@ interface Line {
 /** Placeholders the compiler fills with generated values; every other one is template text. */
 const GENERATED = ["token", "TOKEN", "alt", "ALT", "Alt", "value", "value2", "codename"];
 const NEGATIVE = (k: string) => k.endsWith("must_not");
-const IGNORED = new Set(["scope", "side", "turns"]);
+const IGNORED = new Set(["scope", "side", "turns", "applies"]);
 
 const pascal = (word: string) =>
     word
@@ -948,7 +948,9 @@ export async function compileScenario(input: CompileInput) {
         } else if (f.type === "P4") {
             const out = (slot + (f.i % owners.length) + (seed % 2)) % 2 === 1;
             const scoped = out ? append(outBase, outInherited) : check;
-            const c = { ...scoped, side: out ? "out" : "in" };
+            // An out item's rules hold outside the narrowed scope, so it names that scope too.
+            const scope = (base as { scope?: string }).scope;
+            const c = { ...scoped, ...(out && scope ? { scope } : {}), side: out ? "out" : "in" };
             const truth = truthFor("apply", out);
             addProbe("P4", project.id, out ? outText : probeText, c, fromConveyed, truth);
         } else if (f.type === "P6") {

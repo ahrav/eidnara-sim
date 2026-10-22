@@ -1,6 +1,6 @@
 {
-    "schema": "sim-fact-bank/v2",
-    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {alt}, {ALT}, and {Alt} a second word in lower, upper, and Pascal case, {value} and {value2} distinct five-digit numbers, and {codename} an adjective-noun-NN codename. A template's variants list binds further placeholders, one entry per instance in turn. When a template repeats in one project, the later instance is conveyed through revise, whose {old_*} placeholders name the previous instance's values. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, and an optional scope (a directory prefix ending in /) restricts a check's diff-channel keys to files under that prefix; and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures. A plan template names a task; the compiler composes plan statements from one or two tasks. A tool_error template has form tool_result (a committed script the agent runs) or pasted (a failure transcript the user pastes).",
+    "schema": "sim-fact-bank/v3",
+    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {alt}, {ALT}, and {Alt} a second word in lower, upper, and Pascal case, {value} and {value2} distinct five-digit numbers, and {codename} an adjective-noun-NN codename. A template's variants list binds further placeholders, one entry per instance in turn. When a template repeats in one project, the later instance is conveyed through revise, whose {old_*} placeholders name the previous instance's values. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, an optional scope (a directory prefix ending in /, or one file path) restricts a check's diff-channel keys to files under that prefix or to that file, and an optional applies lists regexes for the constructs a rule governs (a new public constant, a returned error string, a log call): each match in the scoped added lines, extended over its open brackets, is one unit, and the rule holds only when a unit exists and every unit matches every must regex; and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures. A plan template names a task; the compiler composes plan statements from one or two tasks. A tool_error template has form tool_result (a committed script the agent runs) or pasted (a failure transcript the user pastes).",
     "rust": {
         "constraint": [
             {
@@ -13,8 +13,12 @@
                     "content": "pub const {TOKEN}_RETRY_DELAY_MS: u64 = 50;"
                 },
                 "check": {
+                    "scope": "src/cmd/",
                     "must": [
                         "\\b{TOKEN}_[A-Z0-9_]+"
+                    ],
+                    "applies": [
+                        "^\\s*pub(?:\\([^)\\n]*\\))?\\s+const\\s+[A-Za-z_]\\w*\\s*:"
                     ]
                 },
                 "revise": "the {old_TOKEN}_ prefix for new public constants under src/cmd is retired; they carry the {TOKEN}_ prefix now, for example {TOKEN}_MAX_ARGS"
@@ -29,8 +33,12 @@
                     "content": "return Err(\"[{token}] unknown subcommand\".into());"
                 },
                 "check": {
+                    "scope": "src/cmd/",
                     "must": [
                         "[\"']\\[{token}\\]"
+                    ],
+                    "applies": [
+                        "\\b(?:Err|Error)\\(\\s*(?:format!\\(\\s*)?[\"']"
                     ]
                 },
                 "revise": "error strings returned from src/cmd now start with the tag [{token}] instead of [{old_token}]"
@@ -41,8 +49,12 @@
                 "probe": "Add a way to count how many stored entries currently have an expiry time.",
                 "out_probe": "Add a function to the frame module that reports the encoded length of a frame.",
                 "check": {
+                    "scope": "src/db.rs",
                     "must": [
                         "fn {token}_[a-z0-9_]+"
+                    ],
+                    "applies": [
+                        "(?<!#\\[(?:tokio::)?test\\][ \\t]*\\n)^[ \\t]*(?:pub(?:\\([^)\\n]*\\))?\\s+)?(?:async\\s+)?fn\\s+\\w+"
                     ]
                 },
                 "revise": "helper functions added to src/db.rs now take a {token}_ prefix in place of {old_token}_"
@@ -54,11 +66,15 @@
                 "out_probe": "Write a doc example on the Frame enum showing how to build a bulk string.",
                 "example": {
                     "path": "tests/{token}.rs",
-                    "content": "async fn set_overwrites_{token}() {}"
+                    "content": "#[tokio::test]\nasync fn set_overwrites_{token}() {}"
                 },
                 "check": {
+                    "scope": "tests/",
                     "must": [
                         "fn [a-z0-9_]+_{token}\\b"
+                    ],
+                    "applies": [
+                        "(?<=#\\[(?:tokio::)?test[^\\]\\n]*\\][ \\t]*\\n[ \\t]*)(?:pub\\s+)?(?:async\\s+)?fn\\s+\\w+"
                     ]
                 },
                 "revise": "integration test functions added under tests/ now end in _{token} rather than _{old_token}"
@@ -69,8 +85,12 @@
                 "probe": "Emit a log record whenever the listener accepts a new connection.",
                 "out_probe": "Print a message from the CLI binary when it finishes a command.",
                 "check": {
+                    "scope": "src/server.rs",
                     "must": [
                         "target:\\s*\"{token}\""
+                    ],
+                    "applies": [
+                        "\\b(?:tracing::)?(?:trace|debug|info|warn|error|event)!\\s*\\("
                     ]
                 },
                 "revise": "tracing events added in src/server.rs now use target \"{token}\" instead of \"{old_token}\""
@@ -339,6 +359,9 @@
                     ],
                     "must_not": [
                         "\\bdebug!|event!\\(\\s*(?:tracing::)?Level::DEBUG\\b"
+                    ],
+                    "applies": [
+                        "\\b(?:tracing::)?(?:trace|debug|info|warn|error)!\\s*\\(|\\bevent!\\s*\\("
                     ]
                 },
                 "out_check": {
@@ -347,6 +370,9 @@
                     ],
                     "must_not": [
                         "\\b{level}!|event!\\(\\s*(?:tracing::)?Level::{LEVEL}\\b"
+                    ],
+                    "applies": [
+                        "\\b(?:tracing::)?(?:trace|debug|info|warn|error)!\\s*\\(|\\bevent!\\s*\\("
                     ]
                 },
                 "variants": [
@@ -428,8 +454,12 @@
                     "content": "export const {TOKEN}_FLUSH_INTERVAL = 50"
                 },
                 "check": {
+                    "scope": "src/adapter/",
                     "must": [
                         "\\b{TOKEN}_[A-Z0-9_]+"
+                    ],
+                    "applies": [
+                        "^\\s*export\\s+const\\s+[A-Za-z_$][\\w$]*"
                     ]
                 },
                 "revise": "the {old_TOKEN}_ prefix for new exported constants under src/adapter is retired; they carry {TOKEN}_ now"
@@ -440,8 +470,12 @@
                 "probe": "Reject a cookie whose name contains a semicolon.",
                 "out_probe": "Reject a route path that holds a double slash when it is registered.",
                 "check": {
+                    "scope": "src/cookies.ts",
                     "must": [
                         "[\"'`]\\[{token}\\]"
+                    ],
+                    "applies": [
+                        "\\bthrow\\s+new\\s+\\w*Error\\s*\\("
                     ]
                 },
                 "revise": "error messages you throw from src/cookies.ts now start with the tag [{token}] instead of [{old_token}]"
@@ -452,8 +486,12 @@
                 "probe": "Add a helper that strips a trailing slash from a path.",
                 "out_probe": "Add a small function to the trace module that formats a duration in milliseconds.",
                 "check": {
+                    "scope": "src/utils.ts",
                     "must": [
-                        "(?<![A-Za-z0-9_$]){token}[A-Za-z0-9_]*\\s*[=(]"
+                        "(?<![A-Za-z0-9_$]){token}[A-Za-z0-9_$]*\\s*[=(:<]"
+                    ],
+                    "applies": [
+                        "^(?:export\\s+)?(?:const|let|function\\*?|async\\s+function\\*?)\\s+[A-Za-z_$][\\w$]*"
                     ]
                 },
                 "revise": "helpers added to src/utils.ts are now named starting with {token} rather than {old_token}"
@@ -480,8 +518,12 @@
                 "probe": "Warn when a handler returns undefined during composition.",
                 "out_probe": "Warn when the websocket module receives a frame it does not recognise.",
                 "check": {
+                    "scope": "src/compose.ts",
                     "must": [
                         "[\"'`]\\({token}\\)"
+                    ],
+                    "applies": [
+                        "\\bconsole\\.warn\\s*\\("
                     ]
                 },
                 "revise": "console warnings you add in src/compose.ts now start with ({token}) instead of ({old_token})"
