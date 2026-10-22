@@ -310,6 +310,50 @@ describe("grading harness", () => {
         expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("excluded");
     });
 
+    test("a P6 clarify item passes on a question naming both tasks and no edit toward either", () => {
+        const f = fixture("P6-pass");
+        const probe = structuredClone(f.probe);
+        const tasks = ["jaunty_yak_count", "lunar_heron|LUNAR_HERON"];
+        probe.check = { clarify: tasks, must_not: tasks };
+        const answerWith = (text: string, patch?: string) => {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            for (const a of snap.artefacts) {
+                if (a.class === "proxy-call") for (const c of a.calls) c.response_text = text;
+                if (a.class === "diff" && a.role === "turn" && patch !== undefined) a.patch = patch;
+            }
+            return gradeItem(probe, [snap], rules)?.verdict;
+        };
+        const both =
+            "Two items are open: jaunty_yak_count and the LUNAR_HERON command.\nWhich first?";
+        expect(answerWith(both, "")).toBe("pass");
+        expect(answerWith(`${both}\nI will start with the first one.`, "")).toBe("fail");
+        expect(answerWith("Which one should I start with?", "")).toBe("fail");
+        expect(answerWith("I added jaunty_yak_count and LUNAR_HERON.", "")).toBe("fail");
+        expect(answerWith(both)).toBe("fail");
+        const searched = structuredClone(f.snapshots[0]) as Snapshot;
+        for (const a of searched.artefacts) {
+            if (a.class === "proxy-call") for (const c of a.calls) c.response_text = both;
+            if (a.class === "diff" && a.role === "turn") a.patch = "";
+            if (a.class === "command-log") {
+                a.commands = [
+                    { command: "grep -rn jaunty_yak_count src", exit: 1, scenario_ms: 0 },
+                ];
+            }
+        }
+        expect(gradeItem(probe, [searched], rules)?.verdict).toBe("pass");
+        const committed = structuredClone(searched);
+        for (const a of committed.artefacts) {
+            if (a.class === "command-log") {
+                a.commands = [{ command: "git commit -m wip", exit: 0, scenario_ms: 0 }];
+            }
+        }
+        const forbids = {
+            ...probe,
+            check: { clarify: tasks, must_not: tasks, commands_must_not: ["git commit"] },
+        };
+        expect(gradeItem(forbids, [committed], rules)?.verdict).toBe("fail");
+    });
+
     test("P6 recognises a package-script test command", () => {
         const f = fixture("P6-pass");
         const snap = structuredClone(f.snapshots[0]) as Snapshot;

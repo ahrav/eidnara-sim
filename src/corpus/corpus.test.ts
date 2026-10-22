@@ -98,12 +98,12 @@ describe("committed corpus", () => {
         broken.any.anchor[1].id = "lookup-port";
         delete broken.any.never_settled;
         expect(bankProblems(broken)).toEqual([
-            "fact-bank schema: sim-fact-bank/v0 is not sim-fact-bank/v1",
+            "fact-bank schema: sim-fact-bank/v0 is not sim-fact-bank/v2",
             "fact-bank rust/plan[0] rs-plan-field: probe missing",
-            "fact-bank rust/rationale: expected at least one template",
-            "fact-bank rust/filler: expected a non-empty list of non-blank strings",
+            "fact-bank rust/rationale: expected at least 1 templates",
+            "fact-bank rust/filler: expected a non-empty list of distinct non-blank strings",
             "fact-bank typescript/scoped_update[0] ts-scope-quotes: check key quote_style_must is not double or single",
-            "fact-bank typescript/filler: expected a non-empty list of non-blank strings",
+            "fact-bank typescript/filler: expected a non-empty list of distinct non-blank strings",
             "fact-bank any/never_settled: kind missing",
             "fact-bank any/lookup[0] lookup-staging-alias: check key musts is not a check kind",
             "fact-bank any/anchor[0] anchor-ticket: check key must_not pattern [unclosed is not a regular expression",
@@ -148,7 +148,9 @@ describe("committed corpus", () => {
             "fact-bank rust/constraint[3] rs-test-suffix: check needs must or paths_must",
             "fact-bank rust/decision[0] rs-scan-page: authority missing",
             "fact-bank rust/decision[1] rs-conn-buffer: authority content does not satisfy the check",
+            "fact-bank rust/plan[0] rs-plan-field: a plan task binds only {token} and {TOKEN}, which a second task rebinds",
             "fact-bank rust/plan[0] rs-plan-field: check key must pattern {tokne} names an unknown placeholder",
+            "fact-bank rust/plan[1] rs-plan-cmd: a plan task binds only {token} and {TOKEN}, which a second task rebinds",
             "fact-bank rust/plan[1] rs-plan-cmd: check key must pattern {code} names an unknown placeholder",
             "fact-bank rust/rationale[0] rs-why-noalloc: check key judge is blank",
             "fact-bank rust/rejected[0] rs-no-global-mutex: check key answer is not graded for rejected facts",
@@ -160,6 +162,35 @@ describe("committed corpus", () => {
             "fact-bank typescript/scoped_update[0] ts-scope-quotes: update missing",
             "fact-bank typescript/scoped_update[0] ts-scope-quotes: out_probe missing",
             "fact-bank typescript/scoped_update[0] ts-scope-quotes: out_check missing",
+        ]);
+    });
+
+    test("the fact bank gate names revision, variant, plan, framing, and tool-error problems", () => {
+        const bank = JSON.parse(readFileSync(join(CORPUS_DIR, "fact-bank.json"), "utf8"));
+        const broken = structuredClone(bank);
+        broken.rust.constraint[0].revise = "the {old_tokne} prefix is retired";
+        broken.rust.scoped_update[0].variants = [{ level: "trace", LEVEL: "TRACE" }];
+        broken.rust.decision[0].variants = [{ unit: "rows" }, { unit: "rows" }];
+        broken.rust.tool_error[0].form = "log";
+        broken.rust.tool_error[1].paste = "no identity here";
+        broken.typescript.tool_error[0].script.content = "exit 1";
+        broken.typescript.plan = [broken.typescript.plan[0]];
+        broken.any.framings = ["Next.", "Next."];
+        broken.rust.plan[1].check = { paths_must: ["x"] };
+        broken.typescript.tool_error[0].command = "true";
+        broken.typescript.scoped_update[0].variants[0].outer = "backtick";
+        expect(bankProblems(broken)).toEqual([
+            "fact-bank rust/constraint[0] rs-cmd-const-prefix: revise names an unknown placeholder",
+            "fact-bank rust/decision[0] rs-scan-page: variants repeat",
+            "fact-bank rust/plan[1] rs-plan-cmd: check needs must, which a clarify item names",
+            "fact-bank rust/scoped_update[0] rs-scope-log-level: variants is not a list of at least two objects",
+            "fact-bank rust/tool_error[0] rs-check-replay: form is not tool_result or pasted",
+            "fact-bank rust/tool_error[1] rs-ci-paste: the pasted text does not carry the error the check names",
+            "fact-bank typescript/plan: expected at least 2 templates",
+            "fact-bank typescript/scoped_update[0] ts-scope-quotes out_check: check key quote_style_must is not double or single",
+            "fact-bank typescript/tool_error[0] ts-check-replay: command does not run the committed script scripts/check-quiet_vole.sh",
+            "fact-bank typescript/tool_error[0] ts-check-replay: the tool_result text does not carry the error the check names",
+            "fact-bank any/framings: expected a non-empty list of distinct non-blank strings",
         ]);
     });
 

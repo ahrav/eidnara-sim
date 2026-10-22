@@ -101,6 +101,10 @@ first occurrence with its message and the eight lines before it; a name
 without a message counts only directly below a traceback frame. Every entry
 carries `license` and `source_id`; `bun run corpus:check` rejects an entry
 missing either. `corpus/tool-outputs/NOTICE.md` gives the attribution.
+The scenario compiler reads `samples.jsonl` for filler pastes; P12 error
+identities are generated per fact from the fact bank's language-specific
+`tool_error` templates, so `error-codes.jsonl` is corpus evidence the
+compiler does not read.
 
 ## Repositories
 

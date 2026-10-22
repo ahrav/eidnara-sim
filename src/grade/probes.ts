@@ -59,6 +59,11 @@ export interface Check {
     answer?: string;
     answer_must_not?: string | string[];
     abstain?: boolean;
+    /**
+     * A P6 item whose right response is a question: the final answer asks one and carries every
+     * pattern, and the diff applies none of the open tasks.
+     */
+    clarify?: string[];
     /** A directory prefix ending in `/`; the diff-channel keys read only files under it. */
     scope?: string;
     /** Which side of a P4 scoped update the item probes: inside the narrowed scope or outside it. */
@@ -156,6 +161,7 @@ const CHECK_FIELDS: Record<keyof Check, Field> = {
     commands_must_not: patternList,
     answer_must_not: (v: unknown) => compiles(v) || patternList(v),
     abstain: (v: unknown) => v === true,
+    clarify: patternList,
     scope: (v: unknown) =>
         text(v) &&
         (v as string).endsWith("/") &&
@@ -209,6 +215,7 @@ const changed = (r: ArtefactReader) => {
 };
 
 const POSITIVE_KEYS = [
+    "clarify",
     "must",
     "paths_must",
     "first_line_must",
@@ -649,7 +656,13 @@ function p6(r: ArtefactReader, c: Check): Outcome {
     }
     const tokens = turnCalls.reduce((n, x) => n + x.input_tokens + x.output_tokens, 0);
     const w = workFor(r, c, commands, commandText);
-    return binary("P6", held(w, c) && !broken(w, c), {
+    const asks = (answer: string) => (answer.trim().split("\n").at(-1) ?? "").trim().endsWith("?");
+    const pass = c.clarify
+        ? asks(r.answer()) &&
+          matchesAll(r.answer(), c.clarify) &&
+          !broken(workFor(r, c, commands), c)
+        : held(w, c) && !broken(w, c);
+    return binary("P6", pass, {
         "P6.reread_files": reread.length,
         "P6.ran_tests": commands.some(ranTests),
         "P6.rediscovery_tokens": tokens,

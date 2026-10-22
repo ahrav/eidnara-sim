@@ -138,15 +138,18 @@ export interface FaultSession {
     forced_p90: boolean;
     has_diff: boolean;
     gap_before_ms: number;
+    /** The last turn (1-based) that delivers a probe, a source, a plan status, or a P14 window; 0 when none. */
+    guarded_turns?: number;
 }
 
 export function scheduleFaults(tier: string, sessions: FaultSession[], rng: Rng): FaultEpisode[] {
     const types = TIER_FAULTS[tier] ?? [];
-    const providerSessions = sessions.filter((x) => x.requests >= 2);
+    const guarded = (x: FaultSession) => x.guarded_turns ?? 0;
+    const providerSessions = sessions.filter((x) => x.requests >= 2 && x.requests - 1 > guarded(x));
     const providerCount = types.filter((t) => SEAMS[t].layer === "proxy-sink").length;
     if (providerSessions.length < providerCount) {
         throw new Error(
-            `tier ${tier}: ${providerCount} provider faults need ${providerCount} sessions with two or more turns; ${providerSessions.length} available`,
+            `tier ${tier}: ${providerCount} provider faults need ${providerCount} sessions with two or more turns and two turns after every probe and source; ${providerSessions.length} available`,
         );
     }
     for (let i = providerSessions.length - 1; i > 0; i--) {
@@ -201,7 +204,7 @@ export function scheduleFaults(tier: string, sessions: FaultSession[], rng: Rng)
         const trigger = {
             kind: "user_turn",
             session: s.id,
-            n: 1 + Math.floor(rng.next() * s.requests),
+            n: 1 + guarded(s) + Math.floor(rng.next() * (s.requests - 1 - guarded(s))),
         } as const;
         const strategy = rng.pick(["single", "burst", "intermittent", "persistent"] as const);
         const params: Record<string, number> = {
