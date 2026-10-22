@@ -1332,7 +1332,7 @@ describe("exposure proof", () => {
         expect: "apply" as const,
         basis: "observation" as const,
         present: [["54321"]],
-        absent: [],
+        absent: [] as string[],
         stale: ["12345"],
         supersedes: [],
         words: [],
@@ -1401,6 +1401,15 @@ describe("exposure proof", () => {
         expect(() => run([said("e-1", "it is 54321")], ["e-1"])).toThrow(
             /the authoritative 54321 is not in the tree/,
         );
+    });
+
+    test("an avoid item's superseded value exposed after its current one is refused", () => {
+        const avoid = { expect: "avoid" as never, present: [], absent: ["54321"] };
+        const events = [said("e-1", "renumbered 12345 to 54321"), said("e-2", "it is 12345")];
+        expect(() => run(events, ["e-1"], avoid, "P10")).toThrow(
+            /e-2 exposes the superseded 12345 after the current state/,
+        );
+        expect(run([events[0] as Ev], ["e-1"], avoid, "P10")?.sources).toEqual(["e-1"]);
     });
 
     test("a number matches only as a whole value", () => {

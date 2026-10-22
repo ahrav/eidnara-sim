@@ -1355,7 +1355,8 @@ const holds = (text: string, lit: string) =>
  * Fills each probe's `ground_truth` and refuses a probe whose ground truth the event sequence
  * does not support: every source precedes the probe in the fact's project, each generated literal
  * the probe turns on appears in a source, the scenario-defined tree at the probe holds no
- * superseded generated literal, none reaches the agent after the current state, a P3
+ * superseded generated literal, none reaches the agent after the last source carrying the item's
+ * own literals (an avoid item's forbidden ones included), a P3
  * item's authoritative value is in the tree, a tool-result P12 item's failing check is not, and
  * no project asks one probe text for two facts.
  */
@@ -1419,10 +1420,10 @@ export function proveExposure(o: Exposure): void {
                 }
             }
         }
-        if (present.length > 0) {
-            const carries = all.filter((i) =>
-                present.some((lit) => holds(eventText(o.events[i] as ScenarioEvent), lit)),
-            );
+        const carries = all.filter((i) =>
+            own.some((lit) => holds(eventText(o.events[i] as ScenarioEvent), lit)),
+        );
+        if (carries.length > 0) {
             const current = Math.max(...carries);
             for (const e of o.events.slice(current + 1, at)) {
                 const lit = tracked.find((x) => holds(eventText(e), x));
