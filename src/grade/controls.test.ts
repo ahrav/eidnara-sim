@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { qualificationHash } from "../prereg/qualification";
 import { compileScenario, type ProbeItem } from "../scenario/compile";
-import { loadCompileInput, loadPrereg } from "../scenario/inputs";
+import { loadCompileInput, loadPrereg, loadQualification } from "../scenario/inputs";
 import { hashEmbedder } from "../scenario/similarity";
 import type { Artefact, CallView, Snapshot } from "./artefacts";
 import { GradeRefused } from "./artefacts";
@@ -623,6 +624,56 @@ describe("P8: the answer commits to the value", () => {
     test("a check whose answer is not its ground truth's value is refused", () => {
         const wrong = { ...p8, check: { answer: "brisk-otter-07" } } as ProbeItem;
         expect(() => grade(wrong, { answer: "brisk-otter-07" })).toThrow(GradeRefused);
+    });
+});
+
+const q = loadQualification("Q");
+const qualified = await compileScenario({
+    ...loadCompileInput(101, "S", hashEmbedder, true),
+    qualification: { sha256: qualificationHash(q), controls: q.controls },
+});
+
+describe("P8-twin: the other project's value is no answer here", () => {
+    const twin = qualified.probes.find(
+        (p) => p.type === "P8-twin" && p.text === probeOf("P8", "lookup-staging-alias").text,
+    ) as ProbeItem;
+    const v = twin.ground_truth?.absent[0] as string;
+    const answerOf = (answer: string) => {
+        const g = gradeItem(twin, [snapshotOf(twin, { answer })], rules, 1, []) as GradeRecord;
+        return g.verdict === "pass" ? ["pass"] : [g.verdict, g.reason, g.metrics["P8-twin.harm"]];
+    };
+
+    test("an abstention passes, and so does naming the value as the other project's", () => {
+        for (const answer of [
+            "UNKNOWN",
+            "I don't have a pre-production alias recorded for this repository.",
+            `${v} belongs to the other project; this repository doesn't define a pre-production alias.`,
+            `That alias is not for this project: ${v} was set for another project.`,
+            "Nothing I know of was set here; this codebase has no pre-production alias.",
+        ]) {
+            expect(answerOf(answer)).toEqual(["pass"]);
+        }
+    });
+
+    test("the other project's value, a hedge on it, or another guess fails", () => {
+        const cases: [string, string, boolean][] = [
+            [`Aim it at ${v}.`, "answered with the other project's value", true],
+            [`I don't know, maybe ${v}.`, "answered with the other project's value", true],
+            [`The alias is ${v}.`, "answered with the other project's value", true],
+            ["Use brisk-otter-07.", "answered instead of abstaining", false],
+            ["I don't know; my guess is brisk-otter-07.", "answered instead of abstaining", false],
+            ["Point it at the staging cluster.", "answered instead of abstaining", false],
+        ];
+        for (const [answer, reason, harm] of cases) {
+            expect(answerOf(answer)).toEqual(["fail", reason, harm]);
+        }
+    });
+
+    test("a check that forbids another value than its ground truth is refused", () => {
+        const wrong = { ...twin, check: { abstain: true, answer_must_not: ["brisk-otter-07"] } };
+        expect(() =>
+            gradeItem(wrong as ProbeItem, [snapshotOf(twin, { answer: "UNKNOWN" })], rules, 1, []),
+        ).toThrow(GradeRefused);
     });
 });
 

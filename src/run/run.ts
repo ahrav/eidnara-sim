@@ -23,18 +23,35 @@ import type { SimConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
 import { armBase, CONTROL_LABEL, eidnaraUserConfig, fixtureDaemonConfig } from "../hosts/arms";
 import { driverSupports, HostDriver } from "../hosts/driver";
-import { type ArmProfile, armProfile, capabilityGaps, isArmName } from "../hosts/profiles";
+import {
+    type ArmProfile,
+    armProfile,
+    capabilityGaps,
+    deliveryOf,
+    isArmName,
+} from "../hosts/profiles";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
+import { type Qualification, qualificationHash } from "../prereg/qualification";
 import type { Preregistration, Tier } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import { bedrockUpstream, Gateway } from "../proxy/gateway";
 import { FaultInjector, restoreOrder } from "../proxy/inject";
 import { type CallRecord, RecordWriter, recordProblems } from "../proxy/records";
-import { RequestStore } from "../proxy/requests";
+import { RequestStore, readRequestParts } from "../proxy/requests";
 import { Rng } from "../rng";
-import { compileScenario, type Scenario, scenarioInputMismatch } from "../scenario/compile";
+import {
+    compileScenario,
+    markerHits,
+    type Scenario,
+    scenarioInputMismatch,
+} from "../scenario/compile";
 import { type FaultEpisode, type FaultType, SEAMS, validateFault } from "../scenario/faults";
-import { corpusInputsSha256, loadCompileInput, loadPrereg } from "../scenario/inputs";
+import {
+    corpusInputsSha256,
+    loadCompileInput,
+    loadPrereg,
+    loadQualification,
+} from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
 import {
     beganAt,
@@ -59,13 +76,23 @@ import { writeAtomic } from "./atomic";
 import {
     armMismatches,
     bootMismatches,
+    type ExpectedNote,
     logLength,
     observeArm,
+    observeDelivery,
     readPluginLog,
     requireAuditedVariants,
 } from "./capabilities";
-import { type Entry, Journal, releaseLease, requireAppendable, takeLease } from "./journal";
+import {
+    type Entry,
+    Journal,
+    readJsonl,
+    releaseLease,
+    requireAppendable,
+    takeLease,
+} from "./journal";
 import { plainPath } from "./launcher";
+import { ORACLE_OPENING, oracleBackground } from "./oracle-note";
 import { contains, realExisting } from "./paths";
 import { type Preflight, piCli, preflight, preflightDrift } from "./preflight";
 import { PRICE_TABLE, type PriceTable } from "./price";
@@ -92,6 +119,8 @@ export interface RunOptions {
     userSimModel?: string;
     /** Every user turn waits for background work to finish, as runs before turns ran on schedule did. */
     turnsAwaitJobs?: boolean;
+    /** The qualification registration (`prereg/<id>.json`) whose arms and controls the run takes. */
+    qualification?: string;
 }
 
 export interface Manifest {
@@ -132,6 +161,8 @@ export interface Manifest {
     user_sim_model: string;
     turns_await_jobs: boolean;
     prereg_sha256: string;
+    /** The qualification the run took its arms and controls from; null for a tier run. */
+    qualification?: { id: string; sha256: string } | null;
     base_wall_ms: number;
     /** The rates the cost panel prices this run's calls at, fixed when the run starts. */
     price_table: PriceTable;
@@ -627,12 +658,43 @@ function preregOf(o: Pick<RunOptions, "tier">): Preregistration {
     return loaded;
 }
 
+const qualifications = new WeakMap<object, Qualification | null>();
+/** The run's qualification registration, which must bind the run's tier; null for a tier run. */
+function qualificationOf(o: Pick<RunOptions, "tier" | "qualification">): Qualification | null {
+    if (qualifications.has(o)) return qualifications.get(o) ?? null;
+    let loaded: Qualification | null = null;
+    if (o.qualification !== undefined) {
+        try {
+            loaded = loadQualification(o.qualification);
+        } catch (caught) {
+            throw new HarnessFailure((caught as Error).message);
+        }
+        if (loaded.tier !== o.tier) {
+            throw new HarnessFailure(
+                `qualification ${loaded.id} runs over tier ${loaded.tier}, not ${o.tier}`,
+            );
+        }
+    }
+    qualifications.set(o, loaded);
+    return loaded;
+}
+
+/** What the manifest and the scenario record for the qualification; null for a tier run. */
+const qualificationRef = (o: Pick<RunOptions, "tier" | "qualification">) => {
+    const q = qualificationOf(o);
+    return q ? { id: q.id, sha256: qualificationHash(q) } : null;
+};
+
+/** The arms the run's registration lists: the qualification's, or the tier's. */
+const registeredArms = (o: Pick<RunOptions, "tier" | "qualification">) =>
+    (qualificationOf(o) ?? preregOf(o)).arms.run;
+
 /**
  * `items` supplies L's resized paired-item count per probe type. A tier that pre-registers
  * resizing compiles only with that count.
  */
 export async function loadScenario(
-    o: Pick<RunOptions, "config" | "out" | "seed" | "tier">,
+    o: Pick<RunOptions, "config" | "out" | "seed" | "tier" | "qualification">,
     items?: number,
 ): Promise<Scenario> {
     const path = join(o.out, "scenario.json");
@@ -647,8 +709,13 @@ export async function loadScenario(
         mkdirSync(dirname(cache), { recursive: true });
         requirePlainCache(cache, o.config.eidnara_checkout);
         const embedder = bedrockEmbedder(aws_profile, region, cache);
-        const input = loadCompileInput(o.seed, o.tier, embedder);
-        const compiled = await compileScenario(items === undefined ? input : { ...input, items });
+        const q = qualificationOf(o);
+        const input = {
+            ...loadCompileInput(o.seed, o.tier, embedder),
+            ...(items === undefined ? {} : { items }),
+            ...(q ? { qualification: { sha256: qualificationHash(q), controls: q.controls } } : {}),
+        };
+        const compiled = await compileScenario(input);
         writeAtomic(path, `${canonicalJson(compiled)}\n`);
     }
     const scenario = readJsonFile<Scenario>(path);
@@ -673,6 +740,7 @@ export async function loadScenario(
     const stale = scenarioInputMismatch(scenario, {
         preregistration_sha256: preregistrationHash(preregOf(o)),
         corpus_inputs_sha256: corpusInputsSha256(),
+        qualification_sha256: qualificationRef(o)?.sha256 ?? null,
     });
     if (stale) throw new HarnessFailure(stale);
     const { seed, tier } = scenario.manifest as { seed: number; tier: string };
@@ -866,27 +934,68 @@ function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): v
     });
 }
 
+/**
+ * The oracle note of each probe turn whose ground truth names sources, keyed by event. A scenario
+ * whose own text holds the note's opening would make notes unattributable, and a note carrying a
+ * marker would show the agent what is measured, so both refuse the run.
+ */
+export function oracleBackgrounds(
+    scenario: Scenario,
+    keys: readonly string[],
+): Map<string, string> {
+    const notes = new Map<string, string>();
+    for (const e of scenario.events as Record<string, unknown>[]) {
+        const text = String(e.text ?? e.content ?? "");
+        if (text.includes(ORACLE_OPENING)) {
+            throw new HarnessFailure(`${String(e.id)} holds the oracle note's opening`);
+        }
+        if (e.kind !== "user_turn" || typeof e.probe !== "string") continue;
+        const note = oracleBackground(scenario, e.probe);
+        if (note === null) continue;
+        const hits = markerHits(note, keys);
+        if (hits.length > 0) {
+            throw new HarnessFailure(
+                `${String(e.id)}: oracle note carries markers ${hits.join(", ")}`,
+            );
+        }
+        notes.set(String(e.id), note);
+    }
+    return notes;
+}
+
 /** Arm startup requires a daemon variant that supplies every capability the arm's profile declares. */
 function refuseCapabilityGaps(arms: readonly string[]): void {
     const gaps = arms.filter((a) => isArmName(armBase(a))).flatMap((a) => capabilityGaps(a));
     if (gaps.length > 0) throw new HarnessFailure(`arm capability refused: ${gaps.join("; ")}`);
 }
 
-/** An A/A control label `<arm>~<tag>` runs right after its arm when the tier pre-registers the `[arm, arm]` pair. */
-export function armOrder(o: Pick<RunOptions, "tier" | "seed" | "arms">): string[] {
+/**
+ * An A/A control label `<arm>~<tag>` runs right after its arm when the tier pre-registers the
+ * `[arm, arm]` pair. Under a qualification the seed, its arm order, and the host come from the
+ * qualification, which registers no A/A pair.
+ */
+export function armOrder(
+    o: Pick<RunOptions, "tier" | "seed" | "arms" | "qualification"> & { host?: string },
+): string[] {
     refuseCapabilityGaps(o.arms ?? []);
     const prereg = preregOf(o);
-    const index = prereg.seeds.indexOf(o.seed);
-    if (index < 0) throw new HarnessFailure(`seed ${o.seed} is not pre-registered for ${o.tier}`);
-    const order: string[] = prereg.arms.order_by_seed[index] ?? prereg.arms.run;
-    const pairs = prereg.aa_controls?.pairs ?? [];
+    const q = qualificationOf(o);
+    const registry = q ?? prereg;
+    const name = q ? `qualification ${q.id}` : o.tier;
+    const index = registry.seeds.indexOf(o.seed);
+    if (index < 0) throw new HarnessFailure(`seed ${o.seed} is not pre-registered for ${name}`);
+    if (q && o.host !== undefined && !q.hosts.includes(o.host)) {
+        throw new HarnessFailure(`qualification ${q.id} runs no ${o.host} host`);
+    }
+    const order: string[] = registry.arms.order_by_seed[index] ?? registry.arms.run;
+    const pairs = q ? [] : (prereg.aa_controls?.pairs ?? []);
     const control = (a: string) =>
         CONTROL_LABEL.test(a) && pairs.some(([x, y]) => x === armBase(a) && y === armBase(a));
     if (new Set(o.arms).size !== (o.arms ?? []).length) {
         throw new HarnessFailure("--arms lists an arm twice");
     }
     const unknown = (o.arms ?? []).filter((a) => !order.includes(a) && !control(a));
-    if (unknown.length > 0) throw new HarnessFailure(`arms not in the ${o.tier} order: ${unknown}`);
+    if (unknown.length > 0) throw new HarnessFailure(`arms not in the ${name} order: ${unknown}`);
     const kept = order
         .filter((a) => !o.arms || o.arms.includes(a))
         .flatMap((a) => [a, ...(o.arms ?? []).filter((c) => control(c) && armBase(c) === a)]);
@@ -907,7 +1016,7 @@ export function armOrder(o: Pick<RunOptions, "tier" | "seed" | "arms">): string[
  * in the seed's relative order, each control right after its arm, once, for a registered pair.
  */
 export function requireAdmittedOrder(
-    o: Pick<RunOptions, "tier" | "seed">,
+    o: Pick<RunOptions, "tier" | "seed" | "qualification">,
     order: readonly string[],
 ): void {
     if (!sameJson(armOrder({ ...o, arms: [...order] }), order)) {
@@ -1190,6 +1299,7 @@ export async function loadManifest(
         side_model: o.sideModel ?? null,
         user_sim_model: o.userSimModel ?? preregOf(o).user_sim.model,
         turns_await_jobs: o.turnsAwaitJobs ?? false,
+        qualification: qualificationRef(o),
     };
     /** Computed once the inputs it hashes exist: before the probe on a resume, after it on a first run. */
     const digests = () => ({
@@ -1240,7 +1350,12 @@ export async function loadManifest(
         const order = Array.isArray(manifest.order) ? manifest.order : [];
         const canonical = (() => {
             try {
-                return armOrder({ tier: o.tier, seed: o.seed, arms: order });
+                return armOrder({
+                    tier: o.tier,
+                    seed: o.seed,
+                    arms: order,
+                    qualification: o.qualification,
+                });
             } catch {
                 return null;
             }
@@ -1261,8 +1376,10 @@ export async function loadManifest(
             user_sim_model: o.userSimModel !== undefined,
             turns_await_jobs: o.turnsAwaitJobs !== undefined,
         };
+        // A manifest from before qualifications names none.
+        const recorded = { ...manifest, qualification: manifest.qualification ?? null };
         const differs = Object.entries(wanted).filter(
-            ([k, v]) => given[k] !== false && !sameJson(manifest[k as keyof Manifest], v),
+            ([k, v]) => given[k] !== false && !sameJson(recorded[k as keyof Manifest], v),
         );
         if (differs.length > 0) {
             const names = differs.map(([k]) => k).join(", ");
@@ -1381,7 +1498,7 @@ export async function runTier(o: RunOptions): Promise<void> {
     requireOutsideIdentity(o.out);
     requirePinnedPath(o.config);
     mkdirSync(o.out, { recursive: true });
-    requirePlainArtifacts(o.out, [...preregOf(o).arms.run, ...(o.arms ?? [])]);
+    requirePlainArtifacts(o.out, [...registeredArms(o), ...(o.arms ?? [])]);
     const lease = takeLease(o.out);
     const cleanup: Array<() => Promise<void> | void> = [() => releaseLease(o.out, lease)];
     let done: Promise<void> | null = null;
@@ -1689,7 +1806,7 @@ async function runArms(
                 `${journalPath} holds no complete entry; refusing to truncate it`,
             );
         }
-        requireFreshArmRoots(o.out, [...preregOf(o).arms.run, ...(o.arms ?? [])]);
+        requireFreshArmRoots(o.out, [...registeredArms(o), ...(o.arms ?? [])]);
         writeAtomic(
             join(o.out, ATTEMPT),
             `${JSON.stringify({ pid: process.pid, started_wall_ms: Date.now() })}\n`,
@@ -1975,6 +2092,14 @@ async function runArms(
         facts: scenario.facts.flatMap((f) => [f.statement, ...f.cues]),
     });
     const scriptedById = new Map(scripted.map((t) => [t.id, t]));
+    const eventOrder = new Map(allEvents.map((e, i) => [e.id, i]));
+    const oracle = (arm: string) => deliveryOf(armProfile(arm)) === "oracle-context";
+    const backgrounds = manifest.order.some(oracle)
+        ? oracleBackgrounds(scenario, [
+              ...scenario.facts.flatMap((f) => [f.id, f.template]),
+              ...scenario.probes.map((p) => p.id),
+          ])
+        : new Map<string, string>();
     const startOf = new Map(
         scenario.events
             .filter((e) => e.kind === "session_start")
@@ -2041,6 +2166,23 @@ async function runArms(
     const verifyArm = (arm: string, armRoot: string) => {
         if (unchecked.has(arm)) requireBoots(arm, armRoot);
         const observed = observeArm(arm, o.host, armRoot, components.get(arm) ?? {});
+        const mode = deliveryOf(armProfile(arm));
+        if (backgrounds.size > 0 || mode === "explicit-search") {
+            const notes: ExpectedNote[] = oracle(arm)
+                ? userTurns(arm).flatMap((t) => {
+                      const background = backgrounds.get(String(t.event));
+                      return background
+                          ? [{ event: String(t.event), session: String(t.session), background }]
+                          : [];
+                  })
+                : [];
+            observed.delivery = observeDelivery(
+                readJsonl<CallRecord>(callsPath).filter((c) => c.arm === arm),
+                readRequestParts(join(o.out, "requests.jsonl")),
+                notes,
+                eventOrder,
+            );
+        }
         const mismatches = armMismatches(observed);
         const record = { profile: armProfile(arm), observed, mismatches };
         writeAtomic(join(o.out, arm, "capabilities.json"), `${JSON.stringify(record, null, 2)}\n`);
@@ -2168,9 +2310,12 @@ async function runArms(
                         guard();
                         const user = { session: e.session, label: d.label, delivered: d.delivered };
                         if (!d.delivered) return { user };
+                        // An oracle arm's probe turn carries its sources ahead of the user's text;
+                        // the pairing log already holds the text the user-sim delivered.
+                        const note = oracle(arm) ? backgrounds.get(e.id) : undefined;
                         const out = await driver.event({
                             ...e,
-                            text: d.text,
+                            text: note && d.label !== "abandon" ? `${note}${d.text}` : d.text,
                             interrupt_ms: d.interruptMs,
                             deadline_ms:
                                 prereg.liveness_bounds.turn_deadline_ms - (Date.now() - opened),

@@ -57,6 +57,8 @@ export interface CompileInput {
     corpusInputsSha256: string;
     embedder: Embedder;
     items?: number;
+    /** The qualification registration a campaign compiles under, with the controls it adds. */
+    qualification?: { sha256: string; controls: readonly string[] };
 }
 
 interface Session {
@@ -412,6 +414,7 @@ export async function compileScenario(input: CompileInput) {
     };
 
     const twinOf = (p: string) => input.projects.find((x) => x.twin_of === p)?.id ?? p;
+    const controls = new Set(input.qualification?.controls ?? []);
     const facts: Fact[] = [];
     const probes: ProbeItem[] = [];
     const plans: PlanRecord[] = [];
@@ -1029,6 +1032,14 @@ export async function compileScenario(input: CompileInput) {
                           ? "abstain"
                           : "apply";
             addProbe(f.type, project.id, probeText, check, fromConveyed, truthFor(expect));
+            if (f.type === "P8" && controls.has("wrong-project-lookup")) {
+                // The twin asks the same lookup: the value is the base project's, never the twin's.
+                const value = (check as { answer: string }).answer;
+                const twin = twinOf(project.id);
+                const twinCheck = { abstain: true, answer_must_not: [value] };
+                const truth: TruthOf = { expect: "abstain", present: [], absent: [value], stale };
+                addProbe("P8-twin", twin, probeText, twinCheck, later(twin), truth);
+            }
         }
         line.facts.push(fact);
         line.vars.push(vars);
@@ -1307,6 +1318,7 @@ export async function compileScenario(input: CompileInput) {
             within_session_gap_scale: Math.round(withinScale * 1e6) / 1e6,
             between_session_gap_scale: Math.round(gapScale * 1e6) / 1e6,
             probes_per_type: perType,
+            ...(input.qualification ? { qualification_sha256: input.qualification.sha256 } : {}),
         },
         projects: input.projects,
         sessions: summary,
@@ -1332,6 +1344,8 @@ export type Scenario = Awaited<ReturnType<typeof compileScenario>>;
 export interface ScenarioInputs {
     preregistration_sha256: string;
     corpus_inputs_sha256: string;
+    /** Null for a tier scenario, whose manifest names no qualification. */
+    qualification_sha256: string | null;
 }
 
 /** A cached scenario is reusable only when the current generator and the named inputs produced it. */
@@ -1348,6 +1362,10 @@ export function scenarioInputMismatch(scenario: Scenario, inputs: ScenarioInputs
     }
     if (m.corpus_inputs_sha256 !== inputs.corpus_inputs_sha256) {
         return `scenario.json was compiled from corpus ${m.corpus_inputs_sha256}, not ${inputs.corpus_inputs_sha256}`;
+    }
+    const qualification = (m as { qualification_sha256?: string }).qualification_sha256 ?? null;
+    if (qualification !== inputs.qualification_sha256) {
+        return `scenario.json was compiled under qualification ${qualification ?? "none"}, not ${inputs.qualification_sha256 ?? "none"}`;
     }
     return null;
 }

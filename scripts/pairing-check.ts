@@ -8,7 +8,7 @@ import { readJournal, requireComplete } from "../src/run/journal";
 import { CallIndex, referenceArm, requireAdmittedOrder } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
 import { scenarioHash } from "../src/scenario/compile";
-import { loadPrereg } from "../src/scenario/inputs";
+import { admittedArms, loadPrereg } from "../src/scenario/inputs";
 import {
     behaviourPlan,
     deliveredTurns,
@@ -80,16 +80,17 @@ if (scenarioHash(scenarioJson as Record<string, unknown>) !== manifest.scenario_
 const records = readPairing(join(dir, "pairing.jsonl"));
 // The order's control structure, as the run command admits it; the arms it names are the
 // manifest's own, which the oracle loader and the A/A report bind to the tier.
-requireOrder(
-    manifest.order as string[],
-    loadPrereg(manifest.tier).arms.run,
-    loadPrereg(manifest.tier).aa_controls?.pairs ?? [],
-);
+const admitted = admittedArms(manifest);
+requireOrder(manifest.order as string[], admitted.run, admitted.pairs);
 // The order is one the runner schedules for the tier and seed, so the reference arm is the
 // seed's.
 try {
     requireAdmittedOrder(
-        { tier: manifest.tier, seed: manifest.seed as number },
+        {
+            tier: manifest.tier,
+            seed: manifest.seed as number,
+            qualification: manifest.qualification?.id,
+        },
         manifest.order as string[],
     );
 } catch (caught) {

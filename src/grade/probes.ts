@@ -33,6 +33,7 @@ import {
     addedLines,
     carries,
     codeMask,
+    DISOWNS,
     type DiffFile,
     diffFiles,
     diffPaths,
@@ -199,6 +200,7 @@ const REQUIRED: Record<string, (keyof Check)[]> = {
     P5: [],
     P8: ["answer"],
     P9: ["abstain"],
+    "P8-twin": ["abstain", "answer_must_not"],
     P10: ["must_not", "answer_must_not"],
     P11: [],
     P13: ["turns"],
@@ -1097,6 +1099,17 @@ const GRADERS: Record<string, Grader> = {
         const extra = { "P9.cross_session_pass_rate": hit };
         return binary("P9", hit, extra, "answered instead of abstaining");
     },
+    "P8-twin": (r, _c, _rules, p) => {
+        const answer = r.answer();
+        const values = p.ground_truth?.absent ?? [];
+        const subject = [p.text ?? "", ...values].join(" ");
+        const abstained = abstains(answer, subject, p.ground_truth?.stale ?? [], DISOWNS);
+        const harm = values.some((v) => carries(answer, v)) && !DISOWNS.test(answer);
+        const why = harm
+            ? "answered with the other project's value"
+            : "answered instead of abstaining";
+        return binary("P8-twin", abstained && !harm, { "P8-twin.harm": harm }, why);
+    },
     P10: (r, c) => {
         const fold = (p: string) => (p.startsWith("(?i)") ? p : `(?i)${p}`);
         const inDiff = matchesAny(changed(r), (c.must_not ?? []).map(fold));
@@ -1133,7 +1146,7 @@ const EXPECTS: Record<string, string[]> = {
     P6: ["resume", "clarify"],
     P8: ["answer"],
     P9: ["abstain"],
-    P10: ["avoid"],
+    "P8-twin": ["abstain"],
     P11: ["avoid"],
     P12: ["apply"],
     P13: ["apply"],
@@ -1150,6 +1163,14 @@ function requireTruth(probe: ProbeItem, check: Check, truth: GroundTruth | undef
     }
     if (probe.type === "P8" && !truth.present.flat().includes(check.answer ?? "")) {
         throw new GradeRefused(`P8 item ${probe.id} answer is not its ground truth's value`);
+    }
+    const forbidden = [check.answer_must_not ?? []].flat();
+    const same = (a: string[], b: string[]) =>
+        a.length === b.length && a.every((x) => b.includes(x)) && b.every((x) => a.includes(x));
+    if (probe.type === "P8-twin" && !same(forbidden, truth.absent)) {
+        throw new GradeRefused(
+            `P8-twin item ${probe.id} forbids other values than its ground truth`,
+        );
     }
 }
 
@@ -1214,6 +1235,7 @@ function evidenceFor(probe: ProbeItem, sources: SourceEvent[]): Evidence[] {
             return [TURN_DIFF, ["diff", "prior-session"], TURN_COMMANDS, CALLS];
         case "P7":
         case "P8":
+        case "P8-twin":
         case "P9":
         case "P14":
             return [CALLS];
@@ -1361,6 +1383,7 @@ const METRIC_FIELDS: Record<string, Record<string, (v: unknown) => boolean>> = {
     P6: { "P6.reread_files": count, "P6.ran_tests": bool, "P6.rediscovery_tokens": count },
     P8: { "P8.cross_session_pass_rate": bool },
     P9: { "P9.cross_session_pass_rate": bool },
+    "P8-twin": { "P8-twin.harm": bool },
     P10: { "P10.harm": bool },
     P11: { "P11.harm": bool, "P11.weighted_score": num },
     P13: {
@@ -1397,6 +1420,7 @@ const METRIC_RULES: Record<string, (m: Metrics, pass: boolean) => boolean> = {
     P4: (m, pass) => m["P4.harm"] === m["P4.collapsed"] && !(pass && m["P4.collapsed"] === true),
     P8: (m, pass) => m["P8.cross_session_pass_rate"] === pass,
     P9: (m, pass) => m["P9.cross_session_pass_rate"] === pass,
+    "P8-twin": (m, pass) => !(pass && m["P8-twin.harm"]),
     P10: (m, pass) => !(pass && m["P10.harm"]),
     P11: (m, pass) =>
         !(pass && m["P11.harm"]) &&

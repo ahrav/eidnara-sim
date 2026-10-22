@@ -5,7 +5,8 @@ import { parseJsonl } from "../corpus/entries";
 import { loadRepos } from "../corpus/repos";
 import { CORPUS_DIR } from "../corpus/sources";
 import { sha256Hex } from "../prereg/canonical";
-import type { Tier } from "../prereg/schema";
+import { parseQualification, type Qualification, qualificationHash } from "../prereg/qualification";
+import { TIERS, type Tier } from "../prereg/schema";
 import { parsePreregistration } from "../prereg/validate";
 import type { Bank, CompileInput, Project } from "./compile";
 import type { Embedder } from "./similarity";
@@ -94,6 +95,42 @@ export function loadPrereg(tier: Tier, dir = join(CORPUS_DIR, "..", "prereg")) {
         throw new Error(`prereg/${tier}.json names tier ${prereg.tier}`);
     }
     return prereg;
+}
+
+/** `prereg/<id>.json`, accepted only over the current `prereg/<tier>.json` it binds. */
+export function loadQualification(
+    id: string,
+    dir = join(CORPUS_DIR, "..", "prereg"),
+): Qualification {
+    if (!/^[A-Z]+$/.test(id)) throw new Error(`qualification id ${id} is not a registration name`);
+    const value = readJson(join(dir, `${id}.json`)) as { tier?: unknown; id?: unknown };
+    if (typeof value?.tier !== "string" || !(TIERS as readonly string[]).includes(value.tier)) {
+        throw new Error(`prereg/${id}.json names no tier`);
+    }
+    const q = parseQualification(value, loadPrereg(value.tier as Tier, dir));
+    if (q.id !== id) throw new Error(`prereg/${id}.json names registration ${q.id}`);
+    return q;
+}
+
+/**
+ * The arms and A/A pairs a run's manifest is admitted under: those of the qualification it names,
+ * whose current registration must hash to the recorded digest, or else its tier's.
+ */
+export function admittedArms(manifest: {
+    tier: Tier;
+    qualification?: { id: string; sha256: string } | null;
+}): { run: string[]; pairs: string[][] } {
+    const ref = manifest.qualification ?? null;
+    if (ref === null) {
+        const prereg = loadPrereg(manifest.tier);
+        return { run: prereg.arms.run, pairs: prereg.aa_controls?.pairs ?? [] };
+    }
+    const q = loadQualification(ref.id);
+    if (qualificationHash(q) !== ref.sha256) {
+        throw new Error(`prereg/${ref.id}.json changed since the run recorded ${ref.sha256}`);
+    }
+    if (q.tier !== manifest.tier) throw new Error(`qualification ${q.id} binds tier ${q.tier}`);
+    return { run: q.arms.run, pairs: [] };
 }
 
 export function langOf(role: string): Project["lang"] {
