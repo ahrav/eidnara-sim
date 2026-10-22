@@ -1260,7 +1260,7 @@ describe("aa-report", () => {
         const order = ["eidnara", "host", "host~aa"];
         writeFileSync(join(dir, "manifest.json"), JSON.stringify({ ...m, order }));
         writeFileSync(join(dir, "journal.jsonl"), journalText(journal(order, N_EVENTS)));
-        expect(() => aaReport(dir)).toThrow(/seed 101/);
+        expect(() => aaReport(dir)).toThrow(/does not keep the seed order/);
     });
 
     test("a script-sourced turn of any role must carry the compiled text", () => {

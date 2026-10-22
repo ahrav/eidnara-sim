@@ -38,7 +38,7 @@ import {
     type SourceEvent,
     verdictCounts,
 } from "../src/grade/probes";
-import { armBase } from "../src/hosts/arms";
+import { armBase, requireSeedOrder } from "../src/hosts/arms";
 import { canonicalJson } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
@@ -254,7 +254,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     const arms = manifest.order as string[];
     // A qualification run's arms come from the registration it recorded, which must still hash
     // to the recorded digest.
-    admittedArms(manifest, scenario as { manifest?: Record<string, unknown> });
+    const admitted = admittedArms(manifest, scenario as { manifest?: Record<string, unknown> });
     const registry = manifest.qualification ? loadQualification(manifest.qualification.id) : prereg;
     const name = manifest.qualification
         ? `qualification ${String(manifest.qualification.id)}`
@@ -264,20 +264,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
         throw new Error(`seed ${String(manifest.seed)} is not pre-registered for ${name}`);
     }
     const permitted = (registry.arms.order_by_seed[seedIndex] ?? registry.arms.run) as string[];
-    const subsequence = (() => {
-        let at = 0;
-        for (const arm of arms) {
-            at = permitted.indexOf(arm, at);
-            if (at === -1) return false;
-            at++;
-        }
-        return true;
-    })();
-    if (!Array.isArray(arms) || arms.length === 0 || !subsequence) {
-        throw new Error(
-            `manifest order ${JSON.stringify(arms)} is not a nonempty subsequence of the ${name} order ${JSON.stringify(permitted)}`,
-        );
-    }
+    requireSeedOrder(arms, permitted, admitted.pairs);
     const models = manifest.models as unknown;
     if (
         !Array.isArray(models) ||

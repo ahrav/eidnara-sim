@@ -164,7 +164,8 @@ export function requireOrder(
         const base = armBase(arm);
         const known =
             arms.includes(base) &&
-            (arm === base || (CONTROL_LABEL.test(arm) && pairs.some(([x]) => x === base)));
+            (arm === base ||
+                (CONTROL_LABEL.test(arm) && pairs.some(([x, y]) => x === base && y === base)));
         if (!known) throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
     }
     const controls = order.filter((arm) => arm !== armBase(arm));
@@ -177,6 +178,29 @@ export function requireOrder(
         if (controls.filter((c) => armBase(c) === base).length > 1) {
             throw new Error(`manifest order runs two A/A controls of ${base}`);
         }
+    }
+}
+
+/**
+ * `requireSeedOrder` requires at least one run arm, the run arms in `seedOrder`'s relative
+ * order, and each A/A control right after its arm, once, for a registered `[arm, arm]` pair.
+ */
+export function requireSeedOrder(
+    order: unknown,
+    seedOrder: readonly string[],
+    pairs: readonly (readonly string[])[],
+): asserts order is string[] {
+    const shown = JSON.stringify(order);
+    if (!Array.isArray(order) || !order.every((a) => typeof a === "string")) {
+        throw new Error(`manifest order ${shown} is not a list of arm labels`);
+    }
+    requireOrder(order, seedOrder, pairs);
+    const runArms = order.filter((a) => a === armBase(a));
+    const kept = seedOrder.filter((a) => runArms.includes(a));
+    if (runArms.length === 0 || JSON.stringify(kept) !== JSON.stringify(runArms)) {
+        throw new Error(
+            `manifest order ${shown} does not keep the seed order ${JSON.stringify(seedOrder)}`,
+        );
     }
 }
 const modelRef = (model: string) => `amazon-bedrock/${model}`;
@@ -383,6 +407,22 @@ export class DaemonStack {
             throw new Error(`daemon stop failed: ${failures.map(String).join("; ")}`);
         }
     }
+}
+
+/** How long a close whose launch is confirmed gone waits for the runtime to report the exit. */
+export const PI_EXIT_EVENT_MS = 1_000;
+
+function exitEvent(child: ChildProcess, ms: number): Promise<void> {
+    if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+    return new Promise((resolve) => {
+        const done = () => {
+            clearTimeout(timer);
+            child.off("exit", done);
+            resolve();
+        };
+        const timer = setTimeout(done, ms);
+        child.once("exit", done);
+    });
 }
 
 /** Runs each step in order, whatever the earlier ones did, and returns their failures. */
@@ -828,13 +868,17 @@ export class PiSimHost extends SimHost {
     }
 
     // The handle is cleared only after the whole teardown succeeds, so a failed close can be retried.
+    // A stop that stopTree confirms is the proof of exit; the launcher's exit event can trail it.
     protected async shutdownSession(): Promise<void> {
         const rpc = this.rpc;
         if (!rpc) return;
         rpc.child.stdin?.end();
+        let confirmed = false;
         const failures = await settleAll([
-            () => this.stopTree(rpc.child.pid, this.launchStart),
-            () => rpc.shutdown(10_000),
+            async () => {
+                confirmed = await this.stopTree(rpc.child.pid, this.launchStart);
+            },
+            () => (confirmed ? exitEvent(rpc.child, PI_EXIT_EVENT_MS) : rpc.shutdown(10_000)),
         ]);
         if (failures.length > 0) throw failures[0];
         this.rpc = null;
