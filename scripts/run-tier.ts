@@ -6,7 +6,8 @@ import { runTier } from "../src/run/run";
 
 const USAGE = `usage: --tier S --seed 101 --out <run dir> [--host pi|opencode] [--arms a,b]
     [--events N] [--faults <episodes.json>] [--context-limit N] [--models a,b]
-    [--tapes <tape.jsonl>,...] [--side-model <id>] [--user-sim-model <id>] [--turns-await-jobs true|false]`;
+    [--tapes <tape.jsonl>,...] [--side-model <id>] [--user-sim-model <id>] [--turns-await-jobs true|false]
+    [--qualification Q]`;
 const arg = (name: string) => {
     const i = process.argv.indexOf(`--${name}`);
     if (i < 0) return undefined;
@@ -39,6 +40,7 @@ const KNOWN = [
     "side-model",
     "user-sim-model",
     "turns-await-jobs",
+    "qualification",
 ];
 const unknown = process.argv
     .slice(2)
@@ -82,4 +84,5 @@ await runTier({
     sideModel: arg("side-model"),
     userSimModel: arg("user-sim-model"),
     turnsAwaitJobs: awaitJobs(arg("turns-await-jobs")),
+    qualification: arg("qualification"),
 });

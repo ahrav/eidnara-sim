@@ -1,6 +1,8 @@
 const SENTINEL = /^\W*UNKNOWN\W*$/i;
 const ABSTAIN =
     /\b(don'?t|do not) (know|have|see)\b|\bnever (settled|decided|discussed|set|mentioned)\b|\bnot (sure|aware)\b|\bno record\b|\bcan(no|')t find\b|\b(nobody|no one|no-one|none)\b[^.\n]{0,60}\b(named|assigned|decided|chosen|set|owns|recorded)\b|\b(isn'?t|wasn'?t|hasn'?t been|not been|not) (named|assigned|decided|chosen|recorded)\b|\b(doesn'?t|does not|don'?t|do not) (name|say|record|specify|state)\b/i;
+export const DISOWNS =
+    /\b(?:belongs? to|is (?:for|from)|came from|comes from|applies to|was (?:set|given|stated) for)\s+(?:the\s+)?(?:other|another|a different|the twin)\s+(?:project|repo(?:sitory)?|codebase)\b|\b(?:not|isn'?t|wasn'?t)\s+(?:for|from|in|part of|set for|set in|defined in|defined for)\s+this\s+(?:project|repo(?:sitory)?|codebase)\b|\b(?:doesn'?t|does not)\s+apply\s+(?:here|to this (?:project|repo(?:sitory)?|codebase))\b|\b(?:this|the current) (?:project|repo(?:sitory)?|codebase)\s+(?:doesn'?t|does not|has no|hasn'?t)\b/i;
 const CANDIDATE_VALUE = /\b\d{5}\b|\b[a-z]+-[a-z]+-\d{2}\b|\b[a-z]{2}-[a-z]+(-[a-z]+)?-\d\b/i;
 /** A guess said as one, wherever it sits in the answer. */
 const EXPLICIT_GUESS =
@@ -44,19 +46,24 @@ const offersGuess = (sentence: string): boolean =>
 
 /**
  * The P9 rule (`abstention-without-guess`): the answer abstains, by `UNKNOWN` alone on its first
- * line or by abstention wording, and guesses nothing. A guess is a value-shaped token, one of the
+ * line, by abstention wording, or by a match of `wording`, and guesses nothing. A guess is a value-shaped token, one of the
  * item's superseded values, an explicit guess phrase, or a sentence that offers a candidate under a
  * hedge. A hedge that qualifies something other than the answer (`the decision was probably made
  * elsewhere`) is no guess. The value and phrase checks leave the subject's own words out first, so
  * restating the question is no guess either.
  */
-export function abstains(answer: string, subject: string, stale: string[] = []): boolean {
+export function abstains(
+    answer: string,
+    subject: string,
+    stale: string[] = [],
+    wording: RegExp = ABSTAIN,
+): boolean {
     const rest = subject
         .split(/\s+/)
         .filter((word) => word.length > 0)
         .reduce((text, word) => text.replace(standalone(word), " "), answer);
     const lead = answer.trim().split("\n", 1)[0] ?? "";
-    const abstention = SENTINEL.test(lead) || ABSTAIN.test(answer);
+    const abstention = SENTINEL.test(lead) || ABSTAIN.test(answer) || wording.test(answer);
     const guess =
         CANDIDATE_VALUE.test(rest) ||
         stale.some((v) => carries(rest, v)) ||

@@ -1,0 +1,24 @@
+{
+    "schema": "sim-qualification/v1",
+    "id": "Q",
+    "revision": 1,
+    "frozen": true,
+    "tier": "S",
+    "tier_preregistration_sha256": "583e428d34781097acacc4f302f9e857ed2037517a0f463492e963f1f106efca",
+    "seeds": [101, 102],
+    "hosts": ["pi"],
+    "arms": {
+        "run": ["host", "eidnara", "host-oracle"],
+        "order_by_seed": [
+            ["host", "eidnara", "host-oracle"],
+            ["host-oracle", "eidnara", "host"]
+        ]
+    },
+    "contrasts": [
+        ["eidnara", "host"],
+        ["host-oracle", "host"],
+        ["host-oracle", "eidnara"]
+    ],
+    "controls": ["wrong-project-lookup"],
+    "claim": "descriptive"
+}

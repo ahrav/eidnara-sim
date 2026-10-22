@@ -145,6 +145,7 @@ pasted, and a P3 value read from its authoritative file).
 | P6 | plan | First turn of a later session, at least one hour after the previous session ends; see Plans below |
 | P7 | rationale | Later session; judge-graded against the reference reason |
 | P8 | lookup | Later session; the answer must carry the value |
+| P8-twin | the P8 fact | Qualification control `wrong-project-lookup` only: the same question in a session of the twin project after the conveyance; `ground_truth.expect` is `abstain`, `absent` holds the base project's value, `check.owner` names the base project, and `sources` are the base project's |
 | P9 | never settled | Later session; the answer must abstain |
 | P10 | anchor | Later, unrelated task; the value must not appear |
 | P11 | the P1 fact | A session of the twin project after the conveyance; the check forbids the convention |
@@ -208,6 +209,23 @@ later slot is free. Every request that carries no conveyance or probe is a
 filler task from the fact bank, or, with probability 0.1, a paste of a corpus
 tool-output sample.
 
+## Controls
+
+Every tier scenario carries four control classes, and a qualification
+registration adds its own items on top (`docs/run-command.md`):
+
+| Class | Items | What makes the right answer |
+|---|---|---|
+| stale | `ground_truth.stale` on reversed facts (the decoy), on revised instances (the predecessor's literals), on a revised P6 plan (the dropped step), and on P3 (the stated figure) | the current value, with the stale one absent; the compiler proves no stale literal reaches the agent after the current one or sits in the tree at the probe |
+| superseded | revised instances of a line (`supersedes` non-empty), on P3, P4, P6, P7, P10, P12, and P13 at S | the latest instance's rule or value |
+| wrong project | P11 (a P1 rule's task in the twin project), and with `wrong-project-lookup` P8-twin (a P8 question in the twin project) | the other project's rule stays out of the code; the other project's value is no answer |
+| should not apply | P1-control (the task before the rule is conveyed), P2 (outside the rule's scope), a P4 `out` item, P5 (a rejected approach), P9 (a question nobody settled), P10 (an incidental anchor) | the baseline behaviour, the rule absent, an abstention |
+
+The compiler adds P8-twin items only when its input names the qualification
+and the control; the manifest then records `qualification_sha256`, and a run
+reuses a cached `scenario.json` only under the same qualification. Without one
+the compiled bytes are those of the tier scenario.
+
 ## Ground truth and exposure
 
 Each probe with user text carries `ground_truth`: `expect` (`apply`,
@@ -221,7 +239,7 @@ compiler proves each record against the event sequence and refuses the
 scenario when:
 
 - a source does not precede the probe, or lies outside the fact's project (a
-  P11 item's sources are its base project's);
+  P11 or P8-twin item's sources are its base project's);
 - a `present` or own `absent` literal appears in no source, compared
   case-insensitively, with a number matched as a whole value;
 - the scenario-defined tree at the probe, every `apply_diff` before it

@@ -5,7 +5,8 @@ import { parseJsonl } from "../corpus/entries";
 import { loadRepos } from "../corpus/repos";
 import { CORPUS_DIR } from "../corpus/sources";
 import { sha256Hex } from "../prereg/canonical";
-import type { Tier } from "../prereg/schema";
+import { parseQualification, type Qualification, qualificationHash } from "../prereg/qualification";
+import { TIERS, type Tier } from "../prereg/schema";
 import { parsePreregistration } from "../prereg/validate";
 import type { Bank, CompileInput, Project } from "./compile";
 import type { Embedder } from "./similarity";
@@ -94,6 +95,78 @@ export function loadPrereg(tier: Tier, dir = join(CORPUS_DIR, "..", "prereg")) {
         throw new Error(`prereg/${tier}.json names tier ${prereg.tier}`);
     }
     return prereg;
+}
+
+/** `prereg/<id>.json`, accepted only over the current `prereg/<tier>.json` it binds. */
+export function loadQualification(
+    id: string,
+    dir = join(CORPUS_DIR, "..", "prereg"),
+): Qualification {
+    if (!/^[A-Z]+$/.test(id)) throw new Error(`qualification id ${id} is not a registration name`);
+    const value = readJson(join(dir, `${id}.json`)) as { tier?: unknown; id?: unknown };
+    if (typeof value?.tier !== "string" || !(TIERS as readonly string[]).includes(value.tier)) {
+        throw new Error(`prereg/${id}.json names no tier`);
+    }
+    const q = parseQualification(value, loadPrereg(value.tier as Tier, dir));
+    if (q.id !== id) throw new Error(`prereg/${id}.json names registration ${q.id}`);
+    return q;
+}
+
+/**
+ * The arms and A/A pairs a run's manifest is admitted under: those of the qualification it names,
+ * whose current registration must hash to the recorded digest, bind the manifest's tier, list
+ * its host and seed, and schedule its order for that seed, or else its tier's. The scenario must
+ * name the manifest's seed and the same qualification digest, or none with a tier run.
+ */
+export function admittedArms(
+    manifest: {
+        tier: Tier;
+        host?: string;
+        seed?: number;
+        order?: string[];
+        qualification?: { id: string; sha256: string } | null;
+    },
+    scenario: { manifest?: Record<string, unknown> },
+): { run: string[]; pairs: string[][] } {
+    const ref = manifest.qualification ?? null;
+    const compiledSeed = scenario.manifest?.seed;
+    if (
+        compiledSeed !== undefined &&
+        manifest.seed !== undefined &&
+        compiledSeed !== manifest.seed
+    ) {
+        throw new Error(
+            `scenario.json was compiled for seed ${String(compiledSeed)}, but the manifest names ${manifest.seed}`,
+        );
+    }
+    const compiled = scenario.manifest?.qualification_sha256 ?? null;
+    if (compiled !== (ref?.sha256 ?? null)) {
+        throw new Error(
+            `scenario.json was compiled under qualification ${String(compiled ?? "none")}, but the manifest names ${ref?.sha256 ?? "none"}`,
+        );
+    }
+    if (ref === null) {
+        const prereg = loadPrereg(manifest.tier);
+        return { run: prereg.arms.run, pairs: prereg.aa_controls?.pairs ?? [] };
+    }
+    const q = loadQualification(ref.id);
+    if (qualificationHash(q) !== ref.sha256) {
+        throw new Error(`prereg/${ref.id}.json changed since the run recorded ${ref.sha256}`);
+    }
+    if (q.tier !== manifest.tier) throw new Error(`qualification ${q.id} binds tier ${q.tier}`);
+    if (manifest.host !== undefined && !q.hosts.includes(manifest.host)) {
+        throw new Error(`qualification ${q.id} runs no ${manifest.host} host`);
+    }
+    const at = manifest.seed === undefined ? -1 : q.seeds.indexOf(manifest.seed);
+    if (at < 0) throw new Error(`qualification ${q.id} runs no seed ${manifest.seed}`);
+    const scheduled = q.arms.order_by_seed[at] ?? [];
+    const ranks = (manifest.order ?? []).map((arm) => scheduled.indexOf(arm));
+    if (ranks.some((r, i) => r < 0 || (i > 0 && r <= (ranks[i - 1] as number)))) {
+        throw new Error(
+            `manifest order ${(manifest.order ?? []).join(",")} is not a subsequence of qualification ${q.id}'s seed ${manifest.seed} order ${scheduled.join(",")}`,
+        );
+    }
+    return { run: q.arms.run, pairs: [] };
 }
 
 export function langOf(role: string): Project["lang"] {

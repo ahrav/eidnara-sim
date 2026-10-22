@@ -42,7 +42,7 @@ describe("catalog checker", () => {
         ]);
     });
 
-    test("accepts the sim-v2 catalog with 77 proposed records and 3 liveness records", () => {
+    test("accepts the sim-v2 catalog with 80 property records and 3 liveness records", () => {
         expect(checkCatalog(copy(), METHOD, IDS)).toEqual([]);
     });
 
@@ -262,7 +262,7 @@ describe("catalog checker", () => {
     test("refuses a record without its evidence file and an id that is missing", () => {
         const path = copy();
         unlinkSync(join(dir, "evidence/sim-p05-scheduled-events-identical-across-arms.md"));
-        edit(path, /### sim-p77-two-hosts-one-store-attributed[\s\S]*?(?=\n## Liveness)/, "");
+        edit(path, /### sim-p77-two-hosts-one-store-attributed[\s\S]*?(?=\n### )/, "");
         const errors = checkCatalog(path, METHOD, IDS);
         expect(errors).toContain(
             "sim-p05-scheduled-events-identical-across-arms: evidence/sim-p05-scheduled-events-identical-across-arms.md missing",

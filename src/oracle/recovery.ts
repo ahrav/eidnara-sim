@@ -1,4 +1,4 @@
-import { armBase } from "../hosts/arms";
+import { runsEidnara } from "../hosts/profiles";
 import { DIGEST_FORMAT, parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
 import type { Entry } from "../run/journal";
 import { INFRA_FAULTS } from "../scenario/faults";
@@ -434,7 +434,7 @@ export function recoveries(run: RunLogs): Recovery[] {
             if (built) return built;
             // An arm whose verdicts depend on the plugin log needs that log on disk; the host
             // control arm runs no plugin, so its faults are judged on its calls and turns alone.
-            if (arm.pluginLogMissing && armBase(arm.arm) !== "host") {
+            if (arm.pluginLogMissing && runsEidnara(arm.arm)) {
                 throw new Error(
                     `${arm.arm}: r/eidnara.log is missing, so fail-open evidence cannot be read`,
                 );
@@ -499,7 +499,7 @@ export function recoveries(run: RunLogs): Recovery[] {
                 // The driver skips a daemon fault on the arm that runs no daemon and a store fill on
                 // an arm with no loop-mounted store; every other fault runs on every arm.
                 const skippable =
-                    (RESTARTS.has(base.type) && armBase(arm.arm) === "host") ||
+                    (RESTARTS.has(base.type) && !runsEidnara(arm.arm)) ||
                     base.type === "store_full";
                 if (!skippable) {
                     throw new Error(

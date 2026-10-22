@@ -220,6 +220,7 @@ describe("compiled S scenario", async () => {
         const inputs = {
             preregistration_sha256: s.manifest.preregistration_sha256,
             corpus_inputs_sha256: s.manifest.corpus_inputs_sha256,
+            qualification_sha256: null,
         };
         expect(inputs.preregistration_sha256).toHaveLength(64);
         expect(scenarioInputMismatch(s, inputs)).toBeNull();
