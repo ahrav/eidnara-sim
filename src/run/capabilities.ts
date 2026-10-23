@@ -49,6 +49,8 @@ export interface ArmObservation {
     transform_passes: number;
     /** Of those, the passes whose output holds fewer messages than their input: a fold or a drop. */
     narrowing_passes: number;
+    /** Of those, the passes whose line names no `in=` and `out=` counts, so neither can be compared. */
+    unsized_passes: number;
     /**
      * `eidnara_search` results in the host transcripts: the legacy scan's fallback reasons, the
      * successful results the fused route answered (every success without the fallback note), and
@@ -267,7 +269,7 @@ export function logLength(path: string): number {
 export function readPluginLog(
     path: string,
     from = 0,
-): Pick<ArmObservation, "boots" | "transform_passes" | "narrowing_passes"> {
+): Pick<ArmObservation, "boots" | "transform_passes" | "narrowing_passes" | "unsized_passes"> {
     const boots = {
         enabled: 0,
         transform_on: 0,
@@ -277,13 +279,15 @@ export function readPluginLog(
     };
     let transform_passes = 0;
     let narrowing_passes = 0;
+    let unsized_passes = 0;
     eachLine(
         path,
         (line) => {
             if (line.includes("served_from=transform")) {
                 transform_passes++;
                 const counts = / in=(\d+) out=(\d+)/.exec(line);
-                if (counts && Number(counts[2]) < Number(counts[1])) narrowing_passes++;
+                if (!counts) unsized_passes++;
+                else if (Number(counts[2]) < Number(counts[1])) narrowing_passes++;
                 return;
             }
             // Pi logs its tool registration once per process; OpenCode logs its conflict check.
@@ -310,7 +314,7 @@ export function readPluginLog(
         },
         from,
     );
-    return { boots, transform_passes, narrowing_passes };
+    return { boots, transform_passes, narrowing_passes, unsized_passes };
 }
 
 const FALLBACK =
@@ -452,6 +456,11 @@ export function armMismatches(o: ArmObservation): string[] {
         if (o.narrowing_passes > 0) {
             out.push(
                 `${o.narrowing_passes} transform passes served fewer messages than they took, but the arm declares Eidnara compaction off`,
+            );
+        }
+        if (o.unsized_passes > 0) {
+            out.push(
+                `${o.unsized_passes} transform passes logged no message counts, so the arm's Eidnara compaction off is unverified for them`,
             );
         }
         if (count("history_summarizer") > 0) {

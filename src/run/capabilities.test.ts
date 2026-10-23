@@ -103,6 +103,18 @@ test("a knowledge-only arm whose pass narrowed the host's messages or that calle
     });
     expect(additive.narrowing_passes).toBe(0);
     expect(armMismatches(additive)).toEqual([]);
+    const cut = observeArm(
+        "eidnara-kl",
+        "pi",
+        armRoot([PI_OFF, ADDITIVE, PASS.split(" in=")[0] as string]),
+        {
+            agent: 3,
+        },
+    );
+    expect(cut.unsized_passes).toBe(1);
+    expect(armMismatches(cut)).toEqual([
+        "1 transform passes logged no message counts, so the arm's Eidnara compaction off is unverified for them",
+    ]);
     const unserved = observeArm("eidnara-kl", "pi", armRoot([PI_OFF]), { agent: 3 });
     expect(armMismatches(unserved)).toEqual([
         "3 agent calls and no transform pass, but the arm loads the Eidnara plugin",

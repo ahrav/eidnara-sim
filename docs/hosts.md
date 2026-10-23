@@ -136,7 +136,9 @@ pre-registers either. Before preflight, the run also
 requires the build clone to hold `AUDITED_EIDNARA` and its copies of each
 running variant's source files (`sources` in `src/hosts/profiles.ts`) to
 match that commit's, so a build whose fixture changed stops until the
-capabilities are read again.
+capabilities are read again. The fixture's sources include the Pi context
+handler, the Pi transform window, and the shared transform client whose
+`rust pass` line the knowledge-only check reads.
 
 ## Capability evidence
 
@@ -169,7 +171,8 @@ complete evidence only when the two agree:
   compaction, since the Pi plugin submits a pass on every request in both
   modes and the daemon serves it additively when compaction is off; one with
   Eidnara compaction off whose pass logged fewer output messages than input
-  (`in=` and `out=`) or that made a `history_summarizer` call; or a search result from a
+  (`in=` and `out=`), logged no counts, or that made a `history_summarizer`
+  call; or a search result from a
   route other than the declared one.
 - In a run whose order holds an oracle-context arm, and on an
   explicit-search arm, `capabilities.json` also holds `delivery`: the arm's

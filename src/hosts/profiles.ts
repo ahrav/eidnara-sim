@@ -51,6 +51,16 @@ export interface VariantRecord extends DaemonCapabilities {
  */
 const MEMORY_INJECTION =
     "crates/daemon/src/m0_compose.rs selects project memories for the <project-memory> block whenever memory_enabled holds, and crates/daemon/src/config.rs has no key that drops the block while memory stays on (memory.injection_budget_tokens has a schema minimum of 500); memory.enabled=false disables the plugin's kernel memory client (packages/opencode-plugin/src/shared/kernel-client/state.ts), which also serves Pi's eidnara_search memory source (packages/pi-plugin/src/tools/eidnara-search.ts)";
+/**
+ * The plugin sources behind the knowledge-only arm's evidence: the Pi context handler that
+ * submits a pass in every compaction mode, the Pi window it submits, and the shared transform
+ * client that logs each pass's `in=` and `out=` counts.
+ */
+const PASS_SOURCES = [
+    "packages/pi-plugin/src/index.ts",
+    "packages/pi-plugin/src/transform/pi-transform.ts",
+    "packages/opencode-plugin/src/hooks/context/transform-session-client.ts",
+];
 const MEMORY_INJECTION_SOURCES = [
     "crates/daemon/src/m0_compose.rs",
     "crates/daemon/src/config.rs",
@@ -77,6 +87,7 @@ export const DAEMON_VARIANTS: Record<DaemonVariant, VariantRecord> = {
             "crates/daemon/examples/direct_host_fixture/review_witness.rs",
             "packages/e2e-tests/src/bedrock-peer/harness-runtime.ts",
             "packages/e2e-tests/src/rust-runner/hermetic-host.ts",
+            ...PASS_SOURCES,
             ...MEMORY_INJECTION_SOURCES,
         ],
         notes: { memory_injection: MEMORY_INJECTION },
