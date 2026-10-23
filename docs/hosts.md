@@ -265,7 +265,9 @@ pid namespace ends with its init, so a child forked while the tree stops dies
 with the namespace. A Pi close whose tree stop confirms the pinned launcher
 gone takes that as the launch's exit and waits at most 1 s more for the
 runtime's own `exit` report, which can trail the kernel past the RPC client's
-20 s of SIGTERM and SIGKILL waits; a launch the stop cannot confirm, such as
+20 s of SIGTERM and SIGKILL waits, or never arrive: the launcher stays an unreaped
+`sudo` zombie, so a close that heard no report by then unrefs the launch's handle
+and destroys its pipes, and the run process exits once its journal is sealed; a launch the stop cannot confirm, such as
 one whose start time was never read, closes through the RPC client's shutdown,
 and its failure keeps the handle. `prompt` sends one user turn with the turn deadline and
 returns the host's error, if any. Pi emits `agent_end` with `willRetry: true`

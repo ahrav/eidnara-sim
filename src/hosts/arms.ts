@@ -412,6 +412,17 @@ export class DaemonStack {
 /** How long a close whose launch is confirmed gone waits for the runtime to report the exit. */
 export const PI_EXIT_EVENT_MS = 1_000;
 
+/**
+ * Lets the process exit past a launch the tree stop confirmed gone whose exit the runtime never
+ * reported: the unreported handle and its pipes would otherwise hold the event loop open after
+ * the run's journal is sealed.
+ */
+function releaseStopped(child: ChildProcess): void {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    child.unref();
+    for (const pipe of [child.stdout, child.stderr]) pipe?.destroy();
+}
+
 function exitEvent(child: ChildProcess, ms: number): Promise<void> {
     if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
     return new Promise((resolve) => {
@@ -878,7 +889,10 @@ export class PiSimHost extends SimHost {
             async () => {
                 confirmed = await this.stopTree(rpc.child.pid, this.launchStart);
             },
-            () => (confirmed ? exitEvent(rpc.child, PI_EXIT_EVENT_MS) : rpc.shutdown(10_000)),
+            () =>
+                confirmed
+                    ? exitEvent(rpc.child, PI_EXIT_EVENT_MS).then(() => releaseStopped(rpc.child))
+                    : rpc.shutdown(10_000),
         ]);
         if (failures.length > 0) throw failures[0];
         this.rpc = null;
