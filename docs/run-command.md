@@ -34,7 +34,8 @@ as this invocation's wall budget, so a run of the whole scenario, whose turns
 outlast the budget a tier campaign's capped prefix is planned for, ends in one
 invocation instead of stopping mid-turn and resuming. The manifest records it
 as `wall_budget_ms` (null for the tier's budget); a resume without the flag
-inherits it, and a resume naming another value is refused. `scripts/tier.ts`
+reads it from the manifest before its preflight and runs under it, and a
+resume naming another value is refused. `scripts/tier.ts`
 runs every campaign run under the registered budget, and the tier report's
 SIM-L03 check reads the tier's.
 

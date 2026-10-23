@@ -1811,30 +1811,27 @@ async function runArms(
     };
     const { config, seed } = o;
     const prereg = preregOf(o);
-    // The budget runs from the lease; a resume that inherits the manifest's budget re-arms it
-    // for what remains once the manifest is read.
-    const budgetStarted = Date.now();
-    let budget: ReturnType<typeof setTimeout> | null = null;
-    const armBudget = (ms: number, named: string) => {
-        if (budget) clearTimeout(budget);
-        budget = setTimeout(
-            () => {
-                stop.reason ??= `${named} of ${ms} ms exhausted`;
-                stop.raise();
-            },
-            Math.max(0, ms - (Date.now() - budgetStarted)),
-        );
-        budget.unref();
+    // The budget runs from here, just after the lease. A resume without the flag takes the budget
+    // its manifest records, read before anything else runs; loadManifest validates the whole
+    // manifest later and refuses one whose budget is malformed.
+    const recordedBudget = (): number | null => {
+        const path = join(o.out, "manifest.json");
+        if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) return null;
+        const value = (readJsonFile<{ wall_budget_ms?: unknown }>(path) ?? {}).wall_budget_ms;
+        return Number.isInteger(value) &&
+            (value as number) >= 1 &&
+            (value as number) <= MAX_TIMER_MS
+            ? (value as number)
+            : null;
     };
-    const budgetName = (ms: number | null | undefined) =>
-        ms == null ? "tier wall budget" : "run wall budget";
-    armBudget(
-        o.wallBudgetMs ?? prereg.liveness_bounds.tier_wall_budget_ms,
-        budgetName(o.wallBudgetMs),
-    );
-    cleanup.push(() => {
-        if (budget) clearTimeout(budget);
-    });
+    const runBudget = o.wallBudgetMs ?? recordedBudget();
+    const budgetMs = runBudget ?? prereg.liveness_bounds.tier_wall_budget_ms;
+    const budget = setTimeout(() => {
+        stop.reason ??= `${runBudget === null ? "tier" : "run"} wall budget of ${budgetMs} ms exhausted`;
+        stop.raise();
+    }, budgetMs);
+    budget.unref();
+    cleanup.push(() => clearTimeout(budget));
     const journalPath = join(o.out, "journal.jsonl");
     const fresh = !existsSync(journalPath) || readFileSync(journalPath, "utf8").trim() === "";
     if (fresh) {
@@ -1865,9 +1862,6 @@ async function runArms(
     if (!fresh) rmSync(join(o.out, "toolbin"), { recursive: true, force: true });
     const compiled = await tracked(() => loadScenario(o));
     const { manifest, checks } = await tracked(() => loadManifest(o, compiled));
-    if (o.wallBudgetMs === undefined && manifest.wall_budget_ms != null) {
-        armBudget(manifest.wall_budget_ms, budgetName(manifest.wall_budget_ms));
-    }
     requirePlainArtifacts(o.out, manifest.order);
     requireJournalShape(
         journal.entries,
