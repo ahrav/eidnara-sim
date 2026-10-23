@@ -396,24 +396,60 @@ describe("aa-report", () => {
         expect(() => aaReport(dir)).toThrow(/e-3.*deliver/);
     });
 
-    test("a capped prefix reports its realised rates beside the pairs", () => {
+    test("a capped prefix reports rates outside their bands; the whole scenario refuses them", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const [whole] = aaReport(dir) as unknown as Array<Record<string, unknown>>;
         expect(whole?.capped_prefix).toBe(false);
         expect(whole?.rates_outside).toEqual({ host: [], "host~aa": [] });
-        const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
-        scenario.events.push({ id: "e-after", kind: "session_start", session: "s-11" });
-        const longer = { ...scenario, scenario_hash: undefined };
-        delete longer.scenario_hash;
-        writeFileSync(join(dir, "scenario.json"), JSON.stringify(longer));
+        // The probe session alone, as a prefix: its twelve task turns realise no reactive rate.
+        const prefix = (e: Record<string, unknown>) => !/^[fz]-/.test(String(e.event ?? e.id));
+        const rows = (path: string) =>
+            readFileSync(path, "utf8")
+                .split("\n")
+                .filter((l) => l !== "")
+                .map((l) => JSON.parse(l) as Record<string, unknown>);
+        const kept = rows(join(dir, "journal.jsonl")).filter(prefix);
+        const rated = kept.map((e) =>
+            e.kind === "UserSimRates"
+                ? {
+                      kind: "UserSimRates",
+                      arm: e.arm,
+                      scenario_ms: 0,
+                      ...realisedRates(
+                          kept
+                              .filter((t) => t.kind === "UserTurn" && t.arm === e.arm)
+                              .map((t) => ({ session: String(t.session), label: "task" as Label })),
+                          loadPrereg("S"),
+                      ),
+                  }
+                : e,
+        );
+        writeFileSync(join(dir, "journal.jsonl"), journalText(rated.map(({ seq: _, ...e }) => e)));
+        const pairing = rows(join(dir, "pairing.jsonl")).filter(prefix);
+        writeFileSync(
+            join(dir, "pairing.jsonl"),
+            pairing.map((r) => `${JSON.stringify(r)}\n`).join(""),
+        );
         const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
         writeFileSync(
             join(dir, "manifest.json"),
-            JSON.stringify({ ...manifest, scenario_hash: scenarioHash(longer) }),
+            JSON.stringify({ ...manifest, events: N_EVENTS }),
         );
-        const [entry] = aaReport(dir) as unknown as Array<Record<string, unknown>>;
-        expect(entry?.capped_prefix).toBe(true);
-        expect(entry?.rates_outside).toEqual({ host: [], "host~aa": [] });
+        const [capped] = aaReport(dir) as unknown as Array<Record<string, unknown>>;
+        expect(capped?.capped_prefix).toBe(true);
+        expect((capped?.rates_outside as Record<string, string[]>).host).toContain(
+            "pushback_per_turn",
+        );
+        // The same turns as the whole scenario leave their bands, which is refused.
+        const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
+        const { scenario_hash: _, ...body } = scenario;
+        const short = { ...body, events: body.events.filter(prefix) };
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify(short));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({ ...manifest, events: N_EVENTS, scenario_hash: scenarioHash(short) }),
+        );
+        expect(() => aaReport(dir)).toThrow(/realised rates leave their bands: pushback_per_turn/);
     });
 
     test("an arm whose realised rates leave their bands yields no report", () => {
