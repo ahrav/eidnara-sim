@@ -396,6 +396,26 @@ describe("aa-report", () => {
         expect(() => aaReport(dir)).toThrow(/e-3.*deliver/);
     });
 
+    test("a capped prefix reports its realised rates beside the pairs", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const [whole] = aaReport(dir) as unknown as Array<Record<string, unknown>>;
+        expect(whole?.capped_prefix).toBe(false);
+        expect(whole?.rates_outside).toEqual({ host: [], "host~aa": [] });
+        const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
+        scenario.events.push({ id: "e-after", kind: "session_start", session: "s-11" });
+        const longer = { ...scenario, scenario_hash: undefined };
+        delete longer.scenario_hash;
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify(longer));
+        const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({ ...manifest, scenario_hash: scenarioHash(longer) }),
+        );
+        const [entry] = aaReport(dir) as unknown as Array<Record<string, unknown>>;
+        expect(entry?.capped_prefix).toBe(true);
+        expect(entry?.rates_outside).toEqual({ host: [], "host~aa": [] });
+    });
+
     test("an arm whose realised rates leave their bands yields no report", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const line = (o: unknown) => `${JSON.stringify(o)}\n`;
