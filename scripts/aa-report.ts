@@ -114,6 +114,8 @@ function report(dir: string) {
         );
     }
     const scheduled = scenario.events.slice(0, manifest.events).map((e) => String(e.id));
+    // A tier campaign runs a capped prefix, which cannot match whole-scenario user-sim rates.
+    const capped = (count as number) < scenario.events.length;
     const prefix = scenario.events.slice(0, manifest.events);
     const userTurns = prefix.filter((e) => e.kind === "user_turn").map((e) => String(e.id));
     // A probe is reached through its turn's event; a P14 item, which has no turn, through its
@@ -554,12 +556,22 @@ function report(dir: string) {
             );
         }
         rateOutside[arm] = expected.outside;
-        // Rates outside their pre-registered bands are an unregistered condition.
-        if (expected.outside.length > 0) {
+        // Rates outside their pre-registered bands are an unregistered condition. The bands
+        // describe a whole scenario, so a capped prefix records its rates beside the report.
+        if (expected.outside.length > 0 && !capped) {
             throw new Error(
                 `${dir}/journal.jsonl: arm ${arm}'s realised rates leave their bands: ${expected.outside.join(", ")}`,
             );
         }
+    }
+    for (const entry of report) {
+        Object.assign(entry, {
+            capped_prefix: capped,
+            rates_outside: {
+                [entry.arm]: rateOutside[entry.arm],
+                [entry.control]: rateOutside[entry.control],
+            },
+        });
     }
     // Staged under an exclusive create at a name of its own, then renamed over `aa.json`, so a
     // symlink at either name is replaced and a leftover of a killed report blocks nothing.
