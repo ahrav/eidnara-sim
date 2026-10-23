@@ -121,6 +121,11 @@ export interface RunOptions {
     turnsAwaitJobs?: boolean;
     /** The qualification registration (`prereg/<id>.json`) whose arms and controls the run takes. */
     qualification?: string;
+    /**
+     * The invocation's wall budget in place of the tier's `tier_wall_budget_ms`, so a run of the
+     * whole scenario can finish in one invocation; the manifest records it.
+     */
+    wallBudgetMs?: number;
 }
 
 export interface Manifest {
@@ -163,6 +168,11 @@ export interface Manifest {
     prereg_sha256: string;
     /** The qualification the run took its arms and controls from; null for a tier run. */
     qualification?: { id: string; sha256: string } | null;
+    /**
+     * Each invocation's wall budget when it replaces the tier's `tier_wall_budget_ms`; null or
+     * absent runs under the tier's.
+     */
+    wall_budget_ms?: number | null;
     base_wall_ms: number;
     /** The rates the cost panel prices this run's calls at, fixed when the run starts. */
     price_table: PriceTable;
@@ -431,6 +441,10 @@ function manifestProblems(m: Manifest, compiledEvents: number): string[] {
     }
     if (!Number.isInteger(m.context_limit) || m.context_limit < 1) {
         problems.push(`context_limit ${m.context_limit} is not a positive integer`);
+    }
+    const budget = m.wall_budget_ms;
+    if (budget != null && !(Number.isInteger(budget) && budget >= 1 && budget <= MAX_TIMER_MS)) {
+        problems.push(`wall_budget_ms ${budget} is not a positive integer timer length`);
     }
     if (!Array.isArray(m.models) || m.models.some((x) => typeof x !== "string" || x === "")) {
         problems.push("models is not a list of names");
@@ -768,7 +782,7 @@ const SESSION_START_ONLY = new Set([
 const COUNTS = ["count", "calls", "sessions"];
 const DURATIONS = ["duration_ms", "delay_ms", "timeout_ms"];
 /** The largest delay a JavaScript timer honors; longer values fire at once. */
-const MAX_TIMER_MS = 2_147_483_647;
+export const MAX_TIMER_MS = 2_147_483_647;
 
 /** The parameter each mechanism reads; every other key is refused as misleading. */
 const TYPE_PARAMS: Partial<Record<FaultType, string[]>> = {
@@ -1300,6 +1314,7 @@ export async function loadManifest(
         user_sim_model: o.userSimModel ?? preregOf(o).user_sim.model,
         turns_await_jobs: o.turnsAwaitJobs ?? false,
         qualification: qualificationRef(o),
+        wall_budget_ms: o.wallBudgetMs ?? null,
     };
     /** Computed once the inputs it hashes exist: before the probe on a resume, after it on a first run. */
     const digests = () => ({
@@ -1375,9 +1390,14 @@ export async function loadManifest(
             side_model: o.sideModel !== undefined,
             user_sim_model: o.userSimModel !== undefined,
             turns_await_jobs: o.turnsAwaitJobs !== undefined,
+            wall_budget_ms: o.wallBudgetMs !== undefined,
         };
-        // A manifest from before qualifications names none.
-        const recorded = { ...manifest, qualification: manifest.qualification ?? null };
+        // A manifest from before qualifications or wall budgets names neither.
+        const recorded = {
+            ...manifest,
+            qualification: manifest.qualification ?? null,
+            wall_budget_ms: manifest.wall_budget_ms ?? null,
+        };
         const differs = Object.entries(wanted).filter(
             ([k, v]) => given[k] !== false && !sameJson(recorded[k as keyof Manifest], v),
         );
@@ -1791,13 +1811,30 @@ async function runArms(
     };
     const { config, seed } = o;
     const prereg = preregOf(o);
-    const wallBudgetMs = prereg.liveness_bounds.tier_wall_budget_ms;
-    const budget = setTimeout(() => {
-        stop.reason ??= `tier wall budget of ${wallBudgetMs} ms exhausted`;
-        stop.raise();
-    }, wallBudgetMs);
-    budget.unref();
-    cleanup.push(() => clearTimeout(budget));
+    // The budget runs from the lease; a resume that inherits the manifest's budget re-arms it
+    // for what remains once the manifest is read.
+    const budgetStarted = Date.now();
+    let budget: ReturnType<typeof setTimeout> | null = null;
+    const armBudget = (ms: number, named: string) => {
+        if (budget) clearTimeout(budget);
+        budget = setTimeout(
+            () => {
+                stop.reason ??= `${named} of ${ms} ms exhausted`;
+                stop.raise();
+            },
+            Math.max(0, ms - (Date.now() - budgetStarted)),
+        );
+        budget.unref();
+    };
+    const budgetName = (ms: number | null | undefined) =>
+        ms == null ? "tier wall budget" : "run wall budget";
+    armBudget(
+        o.wallBudgetMs ?? prereg.liveness_bounds.tier_wall_budget_ms,
+        budgetName(o.wallBudgetMs),
+    );
+    cleanup.push(() => {
+        if (budget) clearTimeout(budget);
+    });
     const journalPath = join(o.out, "journal.jsonl");
     const fresh = !existsSync(journalPath) || readFileSync(journalPath, "utf8").trim() === "";
     if (fresh) {
@@ -1828,6 +1865,9 @@ async function runArms(
     if (!fresh) rmSync(join(o.out, "toolbin"), { recursive: true, force: true });
     const compiled = await tracked(() => loadScenario(o));
     const { manifest, checks } = await tracked(() => loadManifest(o, compiled));
+    if (o.wallBudgetMs === undefined && manifest.wall_budget_ms != null) {
+        armBudget(manifest.wall_budget_ms, budgetName(manifest.wall_budget_ms));
+    }
     requirePlainArtifacts(o.out, manifest.order);
     requireJournalShape(
         journal.entries,

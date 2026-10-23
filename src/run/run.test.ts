@@ -745,6 +745,51 @@ describe("run inputs", () => {
         }
     });
 
+    test("a run's own wall budget is recorded, inherited on resume, and refused when changed", async () => {
+        const out = dir();
+        const scenario = writeScenario(out, scenarioBody());
+        const checks: Preflight = {
+            launcher: join(out, "launcher"),
+            time_injection: [],
+            distortions: [],
+            hosts: [{ host: "pi", version: "0.80.2", transcript_paths: [] }],
+            upgrade: [],
+            toolchain: [],
+        };
+        const o: RunOptions = {
+            config,
+            tier: "S",
+            seed: 101,
+            host: "pi",
+            out,
+            wallBudgetMs: 9_000,
+        };
+        const { manifest } = await loadManifest(o, scenario, checks);
+        expect(manifest.wall_budget_ms).toBe(9_000);
+        await expect(
+            loadManifest({ ...o, wallBudgetMs: undefined }, scenario, checks),
+        ).resolves.toMatchObject({ manifest: { wall_budget_ms: 9_000 } });
+        await expect(loadManifest({ ...o, wallBudgetMs: 8_000 }, scenario, checks)).rejects.toThrow(
+            /resume options differ from the manifest: wall_budget_ms/,
+        );
+        const path = join(out, "manifest.json");
+        writeFileSync(path, JSON.stringify({ ...manifest, wall_budget_ms: 0 }));
+        await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
+            /wall_budget_ms 0 is not a positive integer timer length/,
+        );
+        const tierRun = dir();
+        const tierScenario = writeScenario(tierRun, scenarioBody());
+        const registered = await loadManifest(
+            { ...o, out: tierRun, wallBudgetMs: undefined },
+            tierScenario,
+            checks,
+        );
+        expect(registered.manifest.wall_budget_ms).toBeNull();
+        await expect(loadManifest({ ...o, out: tierRun }, tierScenario, checks)).rejects.toThrow(
+            /resume options differ from the manifest: wall_budget_ms/,
+        );
+    });
+
     test("a staging file that is a link is refused instead of followed", async () => {
         const out = dir();
         const scenario = writeScenario(out, scenarioBody());
