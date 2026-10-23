@@ -8,7 +8,7 @@ import { readJournal, requireComplete } from "../src/run/journal";
 import { CallIndex, referenceArm, requireAdmittedOrder } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
 import { scenarioHash } from "../src/scenario/compile";
-import { admittedArms, loadPrereg } from "../src/scenario/inputs";
+import { admittedArms, corpusInputsSha256, loadPrereg } from "../src/scenario/inputs";
 import {
     behaviourPlan,
     deliveredTurns,
@@ -63,7 +63,7 @@ if (manifest.events <= 0 || manifest.events > scenario.events.length) {
 }
 const compiledFor = (
     scenarioJson as {
-        manifest?: { seed?: unknown; tier?: unknown; corpus_manifest_sha256?: unknown };
+        manifest?: { seed?: unknown; tier?: unknown; corpus_inputs_sha256?: unknown };
     }
 ).manifest;
 if (compiledFor?.seed !== manifest.seed || compiledFor?.tier !== manifest.tier) {
@@ -116,13 +116,14 @@ const scriptAltered = turns
     .filter((r) => r.delivered && r.source === "script" && script.has(r.event))
     .filter((r) => r.text_sha256 !== sha256Hex(String(script.get(r.event)?.text)))
     .map((r) => `${r.arm} ${r.event}`);
-// The paste bytes come from the corpus the scenario was compiled from: its manifest hash is
-// the scenario's, and the samples file is the one that manifest names.
-const corpusManifestText = readFileSync(join(CORPUS_DIR, "manifest.json"), "utf8");
-if (sha256Hex(corpusManifestText) !== compiledFor?.corpus_manifest_sha256) {
-    console.error("corpus/manifest.json differs from the corpus the scenario was compiled from");
+// The paste bytes come from the corpus the scenario was compiled from: the corpus inputs digest
+// the compiler recorded covers the manifest and the samples file, and the samples file is the one
+// that manifest names.
+if (corpusInputsSha256() !== compiledFor?.corpus_inputs_sha256) {
+    console.error("the corpus inputs differ from the corpus the scenario was compiled from");
     process.exit(2);
 }
+const corpusManifestText = readFileSync(join(CORPUS_DIR, "manifest.json"), "utf8");
 const samplesText = readFileSync(join(CORPUS_DIR, "tool-outputs/samples.jsonl"), "utf8");
 const attestedSamples = (JSON.parse(corpusManifestText) as { files?: Record<string, string> })
     .files?.["tool-outputs/samples.jsonl"];
