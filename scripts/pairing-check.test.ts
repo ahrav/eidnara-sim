@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { scenarioHash } from "../src/scenario/compile";
-import { loadPrereg } from "../src/scenario/inputs";
+import { corpusInputsSha256, loadPrereg } from "../src/scenario/inputs";
 import { behaviourPlan, type Label, realisedRates } from "../src/usersim/plan";
 import { tapeKey } from "../src/usersim/usersim";
 
@@ -140,9 +140,9 @@ function fixture(arms: string[] = ["host", "eidnara"], events: Row[] = scriptedE
     return { events, journal, pairing, tape, manifest };
 }
 
-const CORPUS_MANIFEST_SHA = sha256Hex(readFileSync(join(ROOT, "corpus/manifest.json"), "utf8"));
+const CORPUS_INPUTS_SHA = corpusInputsSha256();
 const scenarioOf = (events: Row[]) => ({
-    manifest: { seed: 101, tier: "S", corpus_manifest_sha256: CORPUS_MANIFEST_SHA },
+    manifest: { seed: 101, tier: "S", corpus_inputs_sha256: CORPUS_INPUTS_SHA },
     events,
 });
 
@@ -582,7 +582,7 @@ test("paste provenance is checked against the corpus the scenario was compiled f
     const base = scenarioOf(f.events);
     const body = {
         ...base,
-        manifest: { ...base.manifest, corpus_manifest_sha256: "0".repeat(64) },
+        manifest: { ...base.manifest, corpus_inputs_sha256: "0".repeat(64) },
     };
     const scenario = { ...body, scenario_hash: scenarioHash(body) };
     writeFileSync(
