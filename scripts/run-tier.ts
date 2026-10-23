@@ -2,12 +2,12 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { TIERS, type Tier } from "../src/prereg/schema";
-import { runTier } from "../src/run/run";
+import { MAX_TIMER_MS, runTier } from "../src/run/run";
 
 const USAGE = `usage: --tier S --seed 101 --out <run dir> [--host pi|opencode] [--arms a,b]
     [--events N] [--faults <episodes.json>] [--context-limit N] [--models a,b]
     [--tapes <tape.jsonl>,...] [--side-model <id>] [--user-sim-model <id>] [--turns-await-jobs true|false]
-    [--qualification Q]`;
+    [--qualification Q] [--wall-budget-ms N]`;
 const arg = (name: string) => {
     const i = process.argv.indexOf(`--${name}`);
     if (i < 0) return undefined;
@@ -41,6 +41,7 @@ const KNOWN = [
     "user-sim-model",
     "turns-await-jobs",
     "qualification",
+    "wall-budget-ms",
 ];
 const unknown = process.argv
     .slice(2)
@@ -67,6 +68,10 @@ const parseFaults = (path: string): unknown => {
         return fail(`--faults ${path}: ${(caught as Error).message}`);
     }
 };
+const wallBudgetMs = count("wall-budget-ms");
+if (wallBudgetMs !== undefined && wallBudgetMs > MAX_TIMER_MS) {
+    fail(`--wall-budget-ms must be at most ${MAX_TIMER_MS}`);
+}
 await runTier({
     config: loadConfig(),
     tier,
@@ -85,4 +90,5 @@ await runTier({
     userSimModel: arg("user-sim-model"),
     turnsAwaitJobs: awaitJobs(arg("turns-await-jobs")),
     qualification: arg("qualification"),
+    wallBudgetMs,
 });

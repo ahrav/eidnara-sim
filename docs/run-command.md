@@ -9,7 +9,7 @@ PATH=<opencode release>/node_modules/.bin:$PATH \
 bun scripts/run-tier.ts --tier S --seed 101 --out runs/S-101-pi \
     [--host pi|opencode] [--arms host,eidnara] [--events N] \
     [--faults episodes.json] [--context-limit N] [--models a,b] \
-    [--tapes tape.jsonl,...] [--qualification Q]
+    [--tapes tape.jsonl,...] [--qualification Q] [--wall-budget-ms N]
 ```
 
 The v1 harness closure resolves `opencode` through a shell, and that shell
@@ -28,6 +28,16 @@ sets Eidnara's side-call model for a model-factor run, and `--user-sim-model`
 replaces the pre-registered user-sim model for a variant run. The manifest
 records every one of these values, and a digest of each tape and the
 pairing log beside it (`tape_sha256`).
+
+`--wall-budget-ms N` replaces the tier's `liveness_bounds.tier_wall_budget_ms`
+as this invocation's wall budget, so a run of the whole scenario, whose turns
+outlast the budget a tier campaign's capped prefix is planned for, ends in one
+invocation instead of stopping mid-turn and resuming. The manifest records it
+as `wall_budget_ms` (null for the tier's budget); a resume without the flag
+reads it from the manifest before its preflight and runs under it, and a
+resume naming another value is refused. `scripts/tier.ts`
+runs every campaign run under the registered budget, and the tier report's
+SIM-L03 check reads the tier's.
 
 `--qualification Q` runs under the qualification registration
 `prereg/Q.json` (`sim-qualification/v1`, `src/prereg/qualification.ts`)
@@ -131,8 +141,8 @@ toolchain wrappers are created exclusively after removing any planted name.
    event, fault, or finish, including a mid-fold
    fault overlapping its turn) before it stops the arm, so a daemon or host
    whose start is still pending is stopped rather than orphaned. Later
-   signals wait for the teardown. The tier's `tier_wall_budget_ms` starts a
-   timer at the same point; once it fires, every driver call refuses the
+   signals wait for the teardown. The tier's `tier_wall_budget_ms` (or the
+   run's `--wall-budget-ms`) starts a timer at the same point; once it fires, every driver call refuses the
    same way, the scheduler's idle wait and next step fail at once, a
    call that was in flight when it fired fails on return, and a call still
    blocked thirty seconds after it fired is abandoned, so the run proceeds to

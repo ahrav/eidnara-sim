@@ -290,8 +290,12 @@ export function planConflicts(plan: TierJob[]): string[] {
             order?: string[];
             host?: string;
             seed?: number;
+            wall_budget_ms?: number | null;
         };
         const out: string[] = [];
+        // A campaign run takes the tier's budget, so a run that recorded its own is no campaign run.
+        if (m.wall_budget_ms != null)
+            out.push(`${job.dir} ran under its own wall budget of ${m.wall_budget_ms} ms`);
         if (Number(m.events) !== job.events)
             out.push(`${job.dir} ran ${m.events} events, the plan says ${job.events}`);
         if (m.order && m.order.join(",") !== job.arms.join(","))
