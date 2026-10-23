@@ -195,39 +195,49 @@ function eachRequestLine(
 ): void {
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
-        const size = fstatSync(fd).size;
-        const chunk = Buffer.alloc(1 << 20);
-        let carry = Buffer.alloc(0);
-        let offset = 0;
-        let line = 0;
-        // The file offset of `buf`'s first byte.
-        let start = 0;
-        while (offset < size) {
-            const read = readSync(fd, chunk, 0, chunk.length, offset);
-            offset += read;
-            let buf = Buffer.concat([carry, chunk.subarray(0, read)]);
-            let at = buf.indexOf(0x0a);
-            while (at !== -1) {
-                line++;
-                const value = JSON.parse(buf.subarray(0, at).toString("utf8")) as {
-                    id?: unknown;
-                    part?: RequestPart;
-                };
-                if (typeof value.id !== "string" || !ID.test(value.id) || !value.part) {
-                    throw new Error(`${path} line ${line} is not a request part`);
-                }
-                if (partId(value.part) !== value.id) {
-                    throw new Error(`${path} line ${line} does not match its part id`);
-                }
-                visit(value.id, value.part, start, at);
-                start += at + 1;
-                buf = buf.subarray(at + 1);
-                at = buf.indexOf(0x0a);
-            }
-            carry = Buffer.from(buf);
-        }
+        eachRequestLineOf(fd, path, visit);
     } finally {
         closeSync(fd);
+    }
+}
+
+/** `eachRequestLine` over an open descriptor, from its first byte to its size at the start. */
+function eachRequestLineOf(
+    fd: number,
+    path: string,
+    visit: (id: string, part: RequestPart, offset: number, length: number) => void,
+): void {
+    const size = fstatSync(fd).size;
+    const chunk = Buffer.alloc(1 << 20);
+    let carry = Buffer.alloc(0);
+    let offset = 0;
+    let line = 0;
+    // The file offset of `buf`'s first byte.
+    let start = 0;
+    while (offset < size) {
+        const read = readSync(fd, chunk, 0, chunk.length, offset);
+        if (read === 0) break;
+        offset += read;
+        let buf = Buffer.concat([carry, chunk.subarray(0, read)]);
+        let at = buf.indexOf(0x0a);
+        while (at !== -1) {
+            line++;
+            const value = JSON.parse(buf.subarray(0, at).toString("utf8")) as {
+                id?: unknown;
+                part?: RequestPart;
+            };
+            if (typeof value.id !== "string" || !ID.test(value.id) || !value.part) {
+                throw new Error(`${path} line ${line} is not a request part`);
+            }
+            if (partId(value.part) !== value.id) {
+                throw new Error(`${path} line ${line} does not match its part id`);
+            }
+            visit(value.id, value.part, start, at);
+            start += at + 1;
+            buf = buf.subarray(at + 1);
+            at = buf.indexOf(0x0a);
+        }
+        carry = Buffer.from(buf);
     }
 }
 
@@ -251,6 +261,7 @@ export class RequestPartLog implements PartLookup {
     private readonly index = new Map<string, { offset: number; length: number }>();
     private readonly cache = new Map<string, { part: RequestPart; length: number }>();
     private cached = 0;
+    private closed = false;
 
     constructor(
         path: string,
@@ -259,7 +270,7 @@ export class RequestPartLog implements PartLookup {
         this.fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
         try {
             if (!fstatSync(this.fd).isFile()) throw new Error(`${path} is not a regular file`);
-            eachRequestLine(path, (id, _part, offset, length) => {
+            eachRequestLineOf(this.fd, path, (id, _part, offset, length) => {
                 this.index.set(id, { offset, length });
             });
         } catch (caught) {
@@ -277,6 +288,8 @@ export class RequestPartLog implements PartLookup {
     }
 
     get(id: string): RequestPart | undefined {
+        // A closed descriptor's number can name another file, so a read after close is refused.
+        if (this.closed) throw new Error("request part log read after close");
         const hit = this.cache.get(id);
         if (hit) {
             this.cache.delete(id);
@@ -303,6 +316,9 @@ export class RequestPartLog implements PartLookup {
     }
 
     close(): void {
+        if (this.closed) return;
+        this.closed = true;
+        this.cache.clear();
         closeSync(this.fd);
     }
 }

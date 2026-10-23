@@ -242,7 +242,6 @@ class PartTexts {
 interface RunCache {
     intact: Map<number, boolean>;
     partTexts: PartTexts;
-    bodies: Map<number, ConverseBody | null>;
     order: Map<string, number>;
     journal: (arm: string) => Entry[];
     calls: (arm: string) => CallRecord[];
@@ -264,7 +263,6 @@ function cacheOf(run: RunData): RunCache {
     const cache: RunCache = {
         intact: new Map(),
         partTexts: new PartTexts(),
-        bodies: new Map(),
         order: new Map(run.scenario.events.map((e, i) => [e.id, i])),
         journal: (arm) => {
             let mine = journals.get(arm);
@@ -395,7 +393,9 @@ export function probeEvidence(
         health,
         intact: cached.intact,
         partTexts: cached.partTexts,
-        bodies: cached.bodies,
+        // A probe reads its own turn's bodies, and a rebuilt body holds its parts, so the bodies
+        // stay with the probe and leave with it.
+        bodies: new Map(),
     };
     const gt = probe.ground_truth ?? {};
     const present = (gt.present ?? []).filter((g) => g.length > 0);

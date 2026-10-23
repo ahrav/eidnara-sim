@@ -5,6 +5,7 @@ import { sessionHealth } from "../src/evidence/health";
 import { loadRun } from "../src/evidence/load";
 import { type RunEvidence, renderEvidence } from "../src/evidence/report";
 import { runEvidence } from "../src/evidence/stages";
+import { RequestPartLog } from "../src/proxy/requests";
 import { writeAtomic } from "../src/run/atomic";
 import { contains, realExisting } from "../src/run/paths";
 
@@ -31,13 +32,18 @@ export function evidenceRun(dirs: string[], out: string | null, checkout: string
     // Every run is analysed before any file is written, so a refused run leaves no partial batch.
     for (const dir of dirs) {
         const run = loadRun(dir);
-        const sessions = sessionHealth(run);
-        runs.push({
-            name: basename(resolve(dir)),
-            run,
-            probes: runEvidence(run, sessions),
-            sessions,
-        });
+        try {
+            const sessions = sessionHealth(run);
+            runs.push({
+                name: basename(resolve(dir)),
+                run,
+                probes: runEvidence(run, sessions),
+                sessions,
+            });
+        } finally {
+            // The report reads the stages and sessions, so the log closes once its run is analysed.
+            if (run.parts instanceof RequestPartLog) run.parts.close();
+        }
     }
     for (const [i, r] of runs.entries()) {
         const target = out ? join(out, r.name) : (dirs[i] as string);

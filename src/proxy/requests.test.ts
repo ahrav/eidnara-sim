@@ -91,6 +91,7 @@ test("the on-demand part log rebuilds every body the whole-file read rebuilds, p
     } finally {
         log.close();
     }
+    expect(() => log.get(partId({ field: "system", value: system }))).toThrow(/after close/);
 });
 
 test("a reopened store drops a cut line and writes no part twice", () => {
