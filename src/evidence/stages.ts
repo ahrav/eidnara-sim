@@ -207,6 +207,7 @@ interface Context {
     health: SessionHealth[];
     intact: Map<number, boolean>;
     partTexts: PartTexts;
+    useIds: Map<number, string[]>;
     bodies: Map<number, ConverseBody | null>;
 }
 
@@ -242,6 +243,8 @@ class PartTexts {
 interface RunCache {
     intact: Map<number, boolean>;
     partTexts: PartTexts;
+    /** Each call's tool-use ids, which every later probe of its session reads. */
+    useIds: Map<number, string[]>;
     order: Map<string, number>;
     journal: (arm: string) => Entry[];
     calls: (arm: string) => CallRecord[];
@@ -263,6 +266,7 @@ function cacheOf(run: RunData): RunCache {
     const cache: RunCache = {
         intact: new Map(),
         partTexts: new PartTexts(),
+        useIds: new Map(),
         order: new Map(run.scenario.events.map((e, i) => [e.id, i])),
         journal: (arm) => {
             let mine = journals.get(arm);
@@ -393,6 +397,7 @@ export function probeEvidence(
         health,
         intact: cached.intact,
         partTexts: cached.partTexts,
+        useIds: cached.useIds,
         // A probe reads its own turn's bodies, and a rebuilt body holds its parts, so the bodies
         // stay with the probe and leave with it.
         bodies: new Map(),
@@ -827,8 +832,13 @@ export function probeEvidence(
         for (const c of armCalls) {
             if (c.component !== "agent" || c.session !== session) continue;
             if ((order.get(c.turn ?? "") ?? -1) >= probeOrder) continue;
-            const b = body(ctx, c);
-            if (b) for (const id of toolTraffic(b).uses.keys()) before.add(id);
+            let ids = ctx.useIds.get(c.seq);
+            if (!ids) {
+                const b = body(ctx, c);
+                ids = b ? [...toolTraffic(b).uses.keys()] : [];
+                ctx.useIds.set(c.seq, ids);
+            }
+            for (const id of ids) before.add(id);
         }
         const uses = new Map<string, ToolUse>();
         const results = new Map<string, { text: string; error: boolean }>();
