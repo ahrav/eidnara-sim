@@ -785,6 +785,11 @@ describe("run inputs", () => {
             checks,
         );
         expect(registered.manifest.wall_budget_ms).toBeNull();
+        for (const wallBudgetMs of [0, Number.NaN, 2 ** 31]) {
+            await expect(
+                loadManifest({ ...o, out: dir(), wallBudgetMs }, tierScenario, checks),
+            ).rejects.toThrow(/is not a positive integer of at most 2147483647 ms/);
+        }
         await expect(loadManifest({ ...o, out: tierRun }, tierScenario, checks)).rejects.toThrow(
             /resume options differ from the manifest: wall_budget_ms/,
         );

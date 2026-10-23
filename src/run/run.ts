@@ -784,6 +784,16 @@ const DURATIONS = ["duration_ms", "delay_ms", "timeout_ms"];
 /** The largest delay a JavaScript timer honors; longer values fire at once. */
 export const MAX_TIMER_MS = 2_147_483_647;
 
+/** A run's own wall budget, refused unless a positive integer a timer can hold. */
+function requireWallBudget(ms: number | undefined): number | undefined {
+    if (ms !== undefined && !(Number.isInteger(ms) && ms >= 1 && ms <= MAX_TIMER_MS)) {
+        throw new HarnessFailure(
+            `wall budget ${ms} is not a positive integer of at most ${MAX_TIMER_MS} ms`,
+        );
+    }
+    return ms;
+}
+
 /** The parameter each mechanism reads; every other key is refused as misleading. */
 const TYPE_PARAMS: Partial<Record<FaultType, string[]>> = {
     provider_timeout: ["timeout_ms"],
@@ -1314,7 +1324,7 @@ export async function loadManifest(
         user_sim_model: o.userSimModel ?? preregOf(o).user_sim.model,
         turns_await_jobs: o.turnsAwaitJobs ?? false,
         qualification: qualificationRef(o),
-        wall_budget_ms: o.wallBudgetMs ?? null,
+        wall_budget_ms: requireWallBudget(o.wallBudgetMs) ?? null,
     };
     /** Computed once the inputs it hashes exist: before the probe on a resume, after it on a first run. */
     const digests = () => ({
@@ -1824,6 +1834,7 @@ async function runArms(
             ? (value as number)
             : null;
     };
+    requireWallBudget(o.wallBudgetMs);
     const runBudget = o.wallBudgetMs ?? recordedBudget();
     const budgetMs = runBudget ?? prereg.liveness_bounds.tier_wall_budget_ms;
     const budget = setTimeout(() => {

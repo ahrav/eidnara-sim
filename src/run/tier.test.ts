@@ -255,6 +255,18 @@ describe("tier resume", () => {
         expect(planConflicts([job])).toEqual([]);
         writeFileSync(join(job.dir, "manifest.json"), JSON.stringify({ events: 5 }));
         expect(planConflicts([job])).toEqual([`${job.dir} ran 5 events, the plan says 7`]);
+        writeFileSync(
+            join(job.dir, "manifest.json"),
+            JSON.stringify({ events: 7, wall_budget_ms: 90_000 }),
+        );
+        expect(planConflicts([job])).toEqual([
+            `${job.dir} ran under its own wall budget of 90000 ms`,
+        ]);
+        writeFileSync(
+            join(job.dir, "manifest.json"),
+            JSON.stringify({ events: 7, wall_budget_ms: null }),
+        );
+        expect(planConflicts([job])).toEqual([]);
         const full = {
             ...job,
             host: "pi",
