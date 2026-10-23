@@ -1373,11 +1373,17 @@ test("a Pi close whose launch stopTree confirms gone ends without the launcher's
     // when a confirmed-gone Pi launch failed its close after 20 s of SIGTERM and SIGKILL waits.
     const launched = Bun.spawn(["sleep", "30"]);
     const start = processStart(launched.pid);
+    let unrefs = 0;
+    let destroyed = 0;
+    const pipe = { destroy: () => destroyed++ };
     const child = Object.assign(new EventEmitter(), {
         pid: launched.pid,
         exitCode: null,
         signalCode: null,
         stdin: { end: () => undefined },
+        stdout: pipe,
+        stderr: pipe,
+        unref: () => unrefs++,
     });
     let signalled = 0;
     const rpc = {
@@ -1395,6 +1401,8 @@ test("a Pi close whose launch stopTree confirms gone ends without the launcher's
     expect(running(launched.pid, start ?? undefined)).toBe(false);
     expect(signalled).toBe(0);
     expect(host.hostPid()).toBeNull();
+    // The handle that never reported its exit, and its pipes, stop holding the event loop.
+    expect([unrefs, destroyed]).toEqual([1, 2]);
     // A launch without a start identity stays unconfirmed, so the RPC client's shutdown decides.
     const unconfirmed = {
         child: { ...child, pid: 4242 },
