@@ -36,6 +36,7 @@ const PI_OFF = `${T} [eidnara][pi] registered tools: eidnara_search, eidnara_mem
 const OC_ON = `${T} [eidnara] no conflicts detected, plugin enabled`;
 const OC_OFF = `${T} [eidnara] disabled due to conflicts: OpenCode auto-compaction is enabled (compaction.auto=true); OpenCode prune is enabled (compaction.prune=true)`;
 const PASS = `${T} [eidnara][sim-s-0000] rust pass: decision=SOFT+ reason=none served_from=transform in=10 out=9`;
+const ADDITIVE = `${T} [eidnara][sim-s-0000] rust pass: decision=SOFT+ reason=none served_from=transform in=9 out=9 applied=true`;
 
 function armRoot(log: string[], searches: string[] = []): string {
     const root = join(tmp(), "r");
@@ -85,25 +86,45 @@ test("a Pi boot whose transform mode differs from the arm's Eidnara compaction i
     ]);
 });
 
-test("a knowledge-only arm with a transform pass or a history summarizer call is a mismatch", () => {
-    const root = armRoot([PI_OFF, PASS]);
-    const observed = observeArm("eidnara-kl", "pi", root, { agent: 3, history_summarizer: 1 });
-    expect(observed.transform_passes).toBe(1);
-    expect(armMismatches(observed)).toEqual([
-        "1 transform passes, but the arm declares Eidnara compaction off",
+test("a knowledge-only arm whose pass narrowed the host's messages or that called the history summarizer is a mismatch", () => {
+    const narrowed = observeArm("eidnara-kl", "pi", armRoot([PI_OFF, PASS]), {
+        agent: 3,
+        history_summarizer: 1,
+    });
+    expect(narrowed.transform_passes).toBe(1);
+    expect(narrowed.narrowing_passes).toBe(1);
+    expect(armMismatches(narrowed)).toEqual([
+        "1 transform passes served fewer messages than they took, but the arm declares Eidnara compaction off",
         "1 history_summarizer calls, but the arm declares Eidnara compaction off",
     ]);
-    const clean = observeArm("eidnara-kl", "pi", armRoot([PI_OFF]), {
+    const additive = observeArm("eidnara-kl", "pi", armRoot([PI_OFF, ADDITIVE]), {
         agent: 3,
         memory_capture: 1,
     });
-    expect(armMismatches(clean)).toEqual([]);
+    expect(additive.narrowing_passes).toBe(0);
+    expect(armMismatches(additive)).toEqual([]);
+    const cut = observeArm(
+        "eidnara-kl",
+        "pi",
+        armRoot([PI_OFF, ADDITIVE, PASS.split(" in=")[0] as string]),
+        {
+            agent: 3,
+        },
+    );
+    expect(cut.unsized_passes).toBe(1);
+    expect(armMismatches(cut)).toEqual([
+        "1 transform passes logged no message counts, so the arm's Eidnara compaction off is unverified for them",
+    ]);
+    const unserved = observeArm("eidnara-kl", "pi", armRoot([PI_OFF]), { agent: 3 });
+    expect(armMismatches(unserved)).toEqual([
+        "3 agent calls and no transform pass, but the arm loads the Eidnara plugin",
+    ]);
 });
 
 test("a fallback-search arm that answered agent calls with no transform pass is a mismatch", () => {
     const observed = observeArm("eidnara", "pi", armRoot([PI_ON]), { agent: 2 });
     expect(armMismatches(observed)).toEqual([
-        "2 agent calls and no transform pass, but the arm declares Eidnara compaction on",
+        "2 agent calls and no transform pass, but the arm loads the Eidnara plugin",
     ]);
     const served = observeArm("eidnara", "pi", armRoot([PI_ON, PASS]), { agent: 2 });
     expect(armMismatches(served)).toEqual([]);
