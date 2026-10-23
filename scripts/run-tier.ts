@@ -86,3 +86,6 @@ await runTier({
     turnsAwaitJobs: awaitJobs(arg("turns-await-jobs")),
     qualification: arg("qualification"),
 });
+// runTier resolves once the journal is sealed and every teardown step has run. A Pi launcher
+// that the runtime never reaped can still hold the event loop open, so the command exits here.
+process.exit(0);
