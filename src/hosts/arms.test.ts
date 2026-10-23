@@ -1374,15 +1374,15 @@ test("a Pi close whose launch stopTree confirms gone ends without the launcher's
     const launched = Bun.spawn(["sleep", "30"]);
     const start = processStart(launched.pid);
     let unrefs = 0;
-    let destroyed = 0;
-    const pipe = { destroy: () => destroyed++ };
+    const destroyed = { stdout: 0, stderr: 0 };
+    const pipe = (name: keyof typeof destroyed) => ({ destroy: () => destroyed[name]++ });
     const child = Object.assign(new EventEmitter(), {
         pid: launched.pid,
         exitCode: null,
         signalCode: null,
         stdin: { end: () => undefined },
-        stdout: pipe,
-        stderr: pipe,
+        stdout: pipe("stdout"),
+        stderr: pipe("stderr"),
         unref: () => unrefs++,
     });
     let signalled = 0;
@@ -1402,7 +1402,7 @@ test("a Pi close whose launch stopTree confirms gone ends without the launcher's
     expect(signalled).toBe(0);
     expect(host.hostPid()).toBeNull();
     // The handle that never reported its exit, and its pipes, stop holding the event loop.
-    expect([unrefs, destroyed]).toEqual([1, 2]);
+    expect([unrefs, destroyed]).toEqual([1, { stdout: 1, stderr: 1 }]);
     // A launch without a start identity stays unconfirmed, so the RPC client's shutdown decides.
     const unconfirmed = {
         child: { ...child, pid: 4242 },
