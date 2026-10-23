@@ -19,7 +19,7 @@ import {
 } from "../hosts/profiles";
 import type { ConverseBody } from "../proxy/classify";
 import type { CallRecord } from "../proxy/records";
-import { type RequestPart, rebuildRequest } from "../proxy/requests";
+import { type PartLookup, rebuildRequest } from "../proxy/requests";
 import { ORACLE_OPENING } from "./oracle-note";
 
 /** The model-call components only the Eidnara plugin and daemon make. */
@@ -100,7 +100,7 @@ const occurrences = (text: string, needle: string) => text.split(needle).length 
 
 export function observeDelivery(
     calls: readonly Pick<CallRecord, "seq" | "component" | "session" | "turn" | "request">[],
-    parts: ReadonlyMap<string, RequestPart>,
+    parts: PartLookup,
     notes: readonly ExpectedNote[],
     eventIndex: ReadonlyMap<string, number>,
 ): DeliveryObservation {

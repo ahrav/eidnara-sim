@@ -19,7 +19,7 @@ import type { ConverseBody } from "../proxy/classify";
 import type { CallRecord, Component } from "../proxy/records";
 import { partId, type RequestPart, requestParts } from "../proxy/requests";
 import type { Entry } from "../run/journal";
-import { scenarioHash } from "../scenario/compile";
+import { holds, scenarioHash } from "../scenario/compile";
 import { sessionHealth } from "./health";
 import {
     type ArmData,
@@ -34,6 +34,7 @@ import {
     findGroups,
     injectedBlocks,
     type ProbeEvidence,
+    partText,
     probeEvidence,
     searchRoute,
 } from "./stages";
@@ -196,6 +197,34 @@ const evidence = (r: RunData): ProbeEvidence => {
     return probeEvidence(r, g?.arm as string, g as GradeRecord, sessionHealth(r));
 };
 const stage = (p: ProbeEvidence, name: string) => p.stages.find((s) => s.stage === name);
+
+test("a single-line alternative holds in some part's text exactly when it holds in the body's text", () => {
+    const body = {
+        system: [{ text: "You are a coding agent. Port 80" }],
+        messages: [
+            user("Port 12"),
+            toolUse("t0", "bash", { command: "echo 3" }),
+            toolResult("t0", "Set TAG_X to 4512\nok"),
+        ],
+        inferenceConfig: { maxTokens: 12 },
+    } as ConverseBody;
+    const parts = requestParts(body);
+    for (const alt of [
+        "12",
+        "123",
+        "45",
+        "4512",
+        "tag_x",
+        "TAG_X to 4512",
+        "80",
+        "803",
+        "maxTokens",
+        "t0",
+    ]) {
+        const whole = findGroups([[alt]], bodyText(body))[0] !== null;
+        expect([alt, parts.some((p) => holds(partText(p), alt))]).toEqual([alt, whole]);
+    }
+});
 
 const SOURCE_READ = {
     session: "s-1",
@@ -905,7 +934,9 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     writeFileSync(join(dir, "calls.jsonl"), r.calls.map((c) => `${JSON.stringify(c)}\n`).join(""));
     writeFileSync(
         join(dir, "requests.jsonl"),
-        [...(r.parts ?? [])].map(([id, part]) => `${JSON.stringify({ id, part })}\n`).join(""),
+        [...((r.parts as Map<string, RequestPart> | null) ?? [])]
+            .map(([id, part]) => `${JSON.stringify({ id, part })}\n`)
+            .join(""),
     );
     const graded = {
         ...r.grades[0],

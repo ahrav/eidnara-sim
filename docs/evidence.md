@@ -8,6 +8,14 @@ script opens run artefacts for reading only. Without `--out` it writes
 `evidence.jsonl`, `evidence-sessions.jsonl`, and (for one run) `evidence.md`
 into the run directory; with `--out` it writes `<out>/<run name>/` per run and
 `<out>/evidence.md`, so a run another process still owns is never written.
+The request part log `requests.jsonl` is read on demand: one streaming pass
+checks every line and keeps each part's offset, and a body is rebuilt from
+its parts when a stage reads it, with the last 64 MiB of parsed parts cached.
+The source stage searches each part's text in turn (the last 256 Mi
+characters of part text cached), since `bodyText` joins lines and a
+single-line literal never spans two parts; a literal holding a newline is
+searched in the rebuilt body. Memory stays bounded by the part index and the
+two caches, whatever the run's length.
 
 ## Stages
 
