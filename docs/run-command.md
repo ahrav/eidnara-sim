@@ -253,7 +253,10 @@ toolchain wrappers are created exclusively after removing any planted name.
    opens at that instant; an upload the client abandons yields one `rejected`
    record with status 0. Each
    step runs even when an earlier one fails, and the first failure is
-   rethrown after the last step, so the command exits nonzero. Stopping the
+   rethrown after the last step, so the command exits nonzero. After a
+   teardown with no failure the command exits 0 at once, so a launch whose
+   exit the runtime never reported cannot keep the sealed run's process
+   alive. Stopping the
    proxy aborts in-flight handlers and waits up to ten seconds for them to
    write their call records; a handler still active after that is recorded
    as a failure. The scheduler asks the run to verify before it writes

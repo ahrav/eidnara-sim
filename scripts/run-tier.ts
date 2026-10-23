@@ -92,3 +92,6 @@ await runTier({
     qualification: arg("qualification"),
     wallBudgetMs,
 });
+// runTier resolves once the journal is sealed and every teardown step has run. A Pi launcher
+// that the runtime never reaped can still hold the event loop open, so the command exits here.
+process.exit(0);
