@@ -35,7 +35,7 @@ export interface DaemonCapabilities {
 }
 
 /** The Eidnara commit whose source `DAEMON_VARIANTS` was read from. */
-export const AUDITED_EIDNARA = "08de9051a735f136ff63a9dca49eaa11493b3006";
+export const AUDITED_EIDNARA = "18ba63f8b41c736c97478d41041d61f31129ffd3";
 
 export interface VariantRecord extends DaemonCapabilities {
     evidence: string;
@@ -71,9 +71,10 @@ export const DAEMON_VARIANTS: Record<DaemonVariant, VariantRecord> = {
         side_calls: "proxy",
         memory_injection: "always-on",
         evidence:
-            "crates/daemon/examples/direct_host_fixture.rs builds its Handler without set_query_route_limits or a memory reviewer host and links an 8-dimension deterministic embedding engine; packages/e2e-tests/src/bedrock-peer/harness-runtime.ts points its closures at the proxy",
+            "crates/daemon/examples/direct_host_fixture.rs builds its Handler without set_query_route_limits or a memory reviewer host and links an 8-dimension deterministic embedding engine; its review-witness control runs MemoryReviewer jobs only on a test's request, against a scripted local provider, and the host's own worker keeps its closed gate (direct_host_fixture/review_witness.rs); packages/e2e-tests/src/bedrock-peer/harness-runtime.ts points its closures at the proxy",
         sources: [
             "crates/daemon/examples/direct_host_fixture.rs",
+            "crates/daemon/examples/direct_host_fixture/review_witness.rs",
             "packages/e2e-tests/src/bedrock-peer/harness-runtime.ts",
             "packages/e2e-tests/src/rust-runner/hermetic-host.ts",
             ...MEMORY_INJECTION_SOURCES,

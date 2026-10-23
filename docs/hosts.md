@@ -118,11 +118,11 @@ opening `Background from earlier sessions on ` or a note carries a marker
 earlier user message does; the next session starts without it.
 
 Each daemon variant provides a fixed capability set, read from the Eidnara
-source at commit `08de9051a` (`AUDITED_EIDNARA`):
+source at commit `18ba63f8b` (`AUDITED_EIDNARA`):
 
 | Variant | Search route | Embeddings | Memory reviewer | Side calls | Memory injection |
 |---|---|---|---|---|---|
-| `direct_host_fixture` | legacy scan (no query route limits) | deterministic 8-dimension engine | none | through the proxy, by the `--harness-runtime` redirect extension | always on |
+| `direct_host_fixture` | legacy scan (no query route limits) | deterministic 8-dimension engine | none (its `review-witness` control runs reviewer jobs against a scripted local provider on a test's request) | through the proxy, by the `--harness-runtime` redirect extension | always on |
 | production `eidnara-host` | fused | `gte-modernbert-base-f32` | yes | straight to Bedrock | always on |
 
 The production launcher admits only its compiled-in qualified harness
@@ -165,8 +165,11 @@ complete evidence only when the two agree:
   leaves `EndArm` unwritten, so the run is incomplete and a resume checks the
   same evidence again: a host-only arm with a plugin boot
   or an Eidnara component call; an arm with Eidnara compaction on that
-  answered agent calls with no transform pass; one with it off that shows a
-  transform pass or a `history_summarizer` call; or a search result from a
+  answered agent calls with no transform pass, whatever its Eidnara
+  compaction, since the Pi plugin submits a pass on every request in both
+  modes and the daemon serves it additively when compaction is off; one with
+  Eidnara compaction off whose pass logged fewer output messages than input
+  (`in=` and `out=`) or that made a `history_summarizer` call; or a search result from a
   route other than the declared one.
 - In a run whose order holds an oracle-context arm, and on an
   explicit-search arm, `capabilities.json` also holds `delivery`: the arm's

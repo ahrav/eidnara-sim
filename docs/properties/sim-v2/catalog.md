@@ -2108,7 +2108,8 @@ Status: active
 Exercised: partial - `src/hosts/profiles.ts` declares the arm's configuration,
 the host stack writes it, and the run's capability check (`src/run/capabilities.ts`)
 refuses an `eidnara-kl` arm whose plugin disabled itself, booted with the
-transform, served a transform pass, or made a history summarizer call; the
+transform, served a pass with fewer output messages than input, served no
+pass while answering agent calls, or made a history summarizer call; the
 evidence path (`src/evidence/health.ts`) reports, after a run, whether each
 forced p90 session of such an arm holds a `native_compaction` record, and no
 run-time check refuses a run without one

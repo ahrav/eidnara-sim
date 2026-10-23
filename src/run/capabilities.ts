@@ -47,6 +47,8 @@ export interface ArmObservation {
     };
     /** Plugin-log lines for a pass the daemon served through the transform. */
     transform_passes: number;
+    /** Of those, the passes whose output holds fewer messages than their input: a fold or a drop. */
+    narrowing_passes: number;
     /**
      * `eidnara_search` results in the host transcripts: the legacy scan's fallback reasons, the
      * successful results the fused route answered (every success without the fallback note), and
@@ -265,7 +267,7 @@ export function logLength(path: string): number {
 export function readPluginLog(
     path: string,
     from = 0,
-): Pick<ArmObservation, "boots" | "transform_passes"> {
+): Pick<ArmObservation, "boots" | "transform_passes" | "narrowing_passes"> {
     const boots = {
         enabled: 0,
         transform_on: 0,
@@ -274,11 +276,14 @@ export function readPluginLog(
         disabled: [] as string[],
     };
     let transform_passes = 0;
+    let narrowing_passes = 0;
     eachLine(
         path,
         (line) => {
             if (line.includes("served_from=transform")) {
                 transform_passes++;
+                const counts = / in=(\d+) out=(\d+)/.exec(line);
+                if (counts && Number(counts[2]) < Number(counts[1])) narrowing_passes++;
                 return;
             }
             // Pi logs its tool registration once per process; OpenCode logs its conflict check.
@@ -305,7 +310,7 @@ export function readPluginLog(
         },
         from,
     );
-    return { boots, transform_passes };
+    return { boots, transform_passes, narrowing_passes };
 }
 
 const FALLBACK =
@@ -435,15 +440,18 @@ export function armMismatches(o: ArmObservation): string[] {
             out.push(`${o.transform_passes} transform passes on a ${profile.role} arm`);
         return out;
     }
-    if (profile.eidnara_compaction && count("agent") > 0 && o.transform_passes === 0) {
+    // The Pi plugin submits a pass on every request in either compaction mode, so the daemon's
+    // memory reaches the model; with Eidnara compaction off the daemon serves it additively and
+    // the host keeps its own history.
+    if (count("agent") > 0 && o.transform_passes === 0) {
         out.push(
-            `${count("agent")} agent calls and no transform pass, but the arm declares Eidnara compaction on`,
+            `${count("agent")} agent calls and no transform pass, but the arm loads the Eidnara plugin`,
         );
     }
     if (!profile.eidnara_compaction) {
-        if (o.transform_passes > 0) {
+        if (o.narrowing_passes > 0) {
             out.push(
-                `${o.transform_passes} transform passes, but the arm declares Eidnara compaction off`,
+                `${o.narrowing_passes} transform passes served fewer messages than they took, but the arm declares Eidnara compaction off`,
             );
         }
         if (count("history_summarizer") > 0) {

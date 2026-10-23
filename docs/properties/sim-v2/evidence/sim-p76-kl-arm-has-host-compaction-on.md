@@ -29,8 +29,15 @@ lines), and on Pi each boot registered the transform
 boots at its `session_end`, and before `EndArm` the transform passes and the
 arm's `history_summarizer` calls. The Pi smoke runs `smoke-s1/b-eidnara-kl`
 and `smoke-s1/c-eidnara-kl` (S seed 101, 9 events) show 3 boots in
-compaction-off mode, no transform pass, and memory capture calls. No check
-asserts a `native_compaction` record in a p90 session.
+compaction-off mode, no transform pass, and memory capture calls. From Eidnara
+`18ba63f8b` the Pi plugin submits a pass in every compaction mode (#1062), and
+the daemon serves a compaction-off session additively, so the arm's passes
+deliver memory and keep every host message: in the exploratory run
+`rr/explore/kl` (S seed 101, 32 events) each `rust pass` line logged
+`out=` equal to `in=` and no `history_summarizer` call ran. The check now
+requires a pass on every arm that loads the plugin and refuses a
+compaction-off pass that narrows its input. No check asserts a
+`native_compaction` record in a p90 session.
 
 ## Failure scenario
 

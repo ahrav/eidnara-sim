@@ -45,7 +45,7 @@ Checks in this tree that enforce arm capabilities (Workstream A S1):
 
 | Check | Records | Status |
 | --- | --- | --- |
-| `src/run/capabilities.ts` `bootMismatches` (each `session_end`) and `armMismatches` (before `EndArm`): `eidnara-kl` plugin boots in compaction-off mode, no transform pass, no history summarizer call | SIM-P76 | unaudited |
+| `src/run/capabilities.ts` `bootMismatches` (each `session_end`) and `armMismatches` (before `EndArm`): `eidnara-kl` plugin boots in compaction-off mode, additive transform passes only (no pass narrows its input), no history summarizer call | SIM-P76 | unaudited |
 | `src/hosts/arms.test.ts`: Pi and OpenCode `eidnara-kl` write host compaction on and Eidnara `compaction.enabled=false` | SIM-P76 | unaudited |
 
 Checks for the delivery-mode arms and the qualification controls (Workstream A S5):
