@@ -56,14 +56,16 @@ export function requestParts(body: ConverseBody): RequestPart[] {
     return parts;
 }
 
+/** Stored parts by id: a whole log read into a map, or a `RequestPartLog` that reads on demand. */
+export interface PartLookup {
+    get(id: string): RequestPart | undefined;
+}
+
 /**
  * The body a reference names, rebuilt from stored parts; null when a part is missing or the
  * rebuilt JSON differs from the reference's digest or length.
  */
-export function rebuildRequest(
-    ref: RequestRef,
-    parts: ReadonlyMap<string, RequestPart>,
-): ConverseBody | null {
+export function rebuildRequest(ref: RequestRef, parts: PartLookup): ConverseBody | null {
     const body: Record<string, unknown> = {};
     for (const id of ref.parts) {
         const part = parts.get(id);
@@ -183,44 +185,140 @@ export function readRequestLines(path: string): Array<{ id: string; part: Reques
     return out;
 }
 
-/** Visits each complete line in turn, so a reader that keeps only ids holds one line at a time. */
-function eachRequestLine(path: string, visit: (id: string, part: RequestPart) => void): void {
+/**
+ * Visits each complete line in turn with its byte offset and length (newline excluded), so a
+ * reader that keeps only ids or offsets holds one line at a time.
+ */
+function eachRequestLine(
+    path: string,
+    visit: (id: string, part: RequestPart, offset: number, length: number) => void,
+): void {
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
-        const size = fstatSync(fd).size;
-        const chunk = Buffer.alloc(1 << 20);
-        let carry = Buffer.alloc(0);
-        let offset = 0;
-        let line = 0;
-        while (offset < size) {
-            const read = readSync(fd, chunk, 0, chunk.length, offset);
-            offset += read;
-            let buf = Buffer.concat([carry, chunk.subarray(0, read)]);
-            let at = buf.indexOf(0x0a);
-            while (at !== -1) {
-                line++;
-                const value = JSON.parse(buf.subarray(0, at).toString("utf8")) as {
-                    id?: unknown;
-                    part?: RequestPart;
-                };
-                if (typeof value.id !== "string" || !ID.test(value.id) || !value.part) {
-                    throw new Error(`${path} line ${line} is not a request part`);
-                }
-                if (partId(value.part) !== value.id) {
-                    throw new Error(`${path} line ${line} does not match its part id`);
-                }
-                visit(value.id, value.part);
-                buf = buf.subarray(at + 1);
-                at = buf.indexOf(0x0a);
-            }
-            carry = Buffer.from(buf);
-        }
+        eachRequestLineOf(fd, path, visit);
     } finally {
         closeSync(fd);
+    }
+}
+
+/** `eachRequestLine` over an open descriptor, from its first byte to its size at the start. */
+function eachRequestLineOf(
+    fd: number,
+    path: string,
+    visit: (id: string, part: RequestPart, offset: number, length: number) => void,
+): void {
+    const size = fstatSync(fd).size;
+    const chunk = Buffer.alloc(1 << 20);
+    let carry = Buffer.alloc(0);
+    let offset = 0;
+    let line = 0;
+    // The file offset of `buf`'s first byte.
+    let start = 0;
+    while (offset < size) {
+        const read = readSync(fd, chunk, 0, chunk.length, offset);
+        if (read === 0) break;
+        offset += read;
+        let buf = Buffer.concat([carry, chunk.subarray(0, read)]);
+        let at = buf.indexOf(0x0a);
+        while (at !== -1) {
+            line++;
+            const value = JSON.parse(buf.subarray(0, at).toString("utf8")) as {
+                id?: unknown;
+                part?: RequestPart;
+            };
+            if (typeof value.id !== "string" || !ID.test(value.id) || !value.part) {
+                throw new Error(`${path} line ${line} is not a request part`);
+            }
+            if (partId(value.part) !== value.id) {
+                throw new Error(`${path} line ${line} does not match its part id`);
+            }
+            visit(value.id, value.part, start, at);
+            start += at + 1;
+            buf = buf.subarray(at + 1);
+            at = buf.indexOf(0x0a);
+        }
+        carry = Buffer.from(buf);
     }
 }
 
 /** The parts of a request part log keyed by id. */
 export function readRequestParts(path: string): Map<string, RequestPart> {
     return new Map(readRequestLines(path).map((l) => [l.id, l.part]));
+}
+
+/** Parsed parts a `RequestPartLog` keeps between reads, by the bytes of their lines. */
+const PART_CACHE_BYTES = 64 << 20;
+
+/**
+ * A request part log read on demand: one streaming pass checks every line and keeps each id's
+ * offset and length, and `get` reads and parses one line, so a run's bodies never sit in memory
+ * at once. A small cache keeps the parts read last, since consecutive calls of a session share
+ * most of their messages. The file is opened once without following a link and held until
+ * `close`; the log is append-only, so the lines indexed at open stay in place.
+ */
+export class RequestPartLog implements PartLookup {
+    private readonly fd: number;
+    private readonly index = new Map<string, { offset: number; length: number }>();
+    private readonly cache = new Map<string, { part: RequestPart; length: number }>();
+    private cached = 0;
+    private closed = false;
+
+    constructor(
+        path: string,
+        private readonly cacheBytes = PART_CACHE_BYTES,
+    ) {
+        this.fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+        try {
+            if (!fstatSync(this.fd).isFile()) throw new Error(`${path} is not a regular file`);
+            eachRequestLineOf(this.fd, path, (id, _part, offset, length) => {
+                this.index.set(id, { offset, length });
+            });
+        } catch (caught) {
+            closeSync(this.fd);
+            throw caught;
+        }
+    }
+
+    get size(): number {
+        return this.index.size;
+    }
+
+    has(id: string): boolean {
+        return this.index.has(id);
+    }
+
+    get(id: string): RequestPart | undefined {
+        // A closed descriptor's number can name another file, so a read after close is refused.
+        if (this.closed) throw new Error("request part log read after close");
+        const hit = this.cache.get(id);
+        if (hit) {
+            this.cache.delete(id);
+            this.cache.set(id, hit);
+            return hit.part;
+        }
+        const at = this.index.get(id);
+        if (!at) return undefined;
+        const buf = Buffer.alloc(at.length);
+        for (let got = 0; got < at.length; ) {
+            const n = readSync(this.fd, buf, got, at.length - got, at.offset + got);
+            if (n === 0) throw new Error(`request part ${id} ends past the log's end`);
+            got += n;
+        }
+        const { part } = JSON.parse(buf.toString("utf8")) as { part: RequestPart };
+        this.cache.set(id, { part, length: at.length });
+        this.cached += at.length;
+        for (const [old, entry] of this.cache) {
+            if (this.cached <= this.cacheBytes || old === id) break;
+            this.cache.delete(old);
+            this.cached -= entry.length;
+        }
+        return part;
+    }
+
+    close(): void {
+        if (this.closed) return;
+        this.closed = true;
+        this.cache.clear();
+        closeSync(this.fd);
+    }
 }

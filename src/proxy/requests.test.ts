@@ -9,6 +9,7 @@ import { FaultInjector } from "./inject";
 import { RecordWriter, recordProblems } from "./records";
 import {
     partId,
+    RequestPartLog,
     RequestStore,
     readRequestLines,
     readRequestParts,
@@ -55,6 +56,42 @@ test("a growing conversation stores each message once and rebuilds every body", 
     expect(rebuildRequest({ ...b, parts: [...b.parts, "0".repeat(32)] }, parts)).toBeNull();
     expect(rebuildRequest({ ...b, parts: [...b.parts].reverse() }, parts)).toBeNull();
     expect(rebuildRequest({ ...b, bytes: b.bytes + 1 }, parts)).toBeNull();
+});
+
+test("the on-demand part log rebuilds every body the whole-file read rebuilds, past its cache", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-requests-"));
+    const path = join(dir, "requests.jsonl");
+    const store = new RequestStore(path);
+    const system = [{ text: "You are a coding agent." }];
+    // Each message is over 1 KiB, so a 16 KiB part cache evicts while the bodies are rebuilt.
+    const big = (i: number) => turn(`${i}:${"x".repeat(1 << 10)}é`);
+    const bodies: Array<{ system: typeof system; messages: ReturnType<typeof turn>[] }> = [];
+    const refs = [];
+    for (let i = 1; i <= 80; i++) {
+        const body = { system, messages: Array.from({ length: i }, (_, j) => big(j)) };
+        if (i % 20 === 0 || i === 1) {
+            bodies.push(body);
+            refs.push(store.store(body));
+        } else {
+            store.store({ system, messages: [big(i)] });
+        }
+    }
+    store.close();
+    appendFileSync(path, '{"id": "cut');
+    const whole = readRequestParts(path);
+    const log = new RequestPartLog(path, 16 << 10);
+    try {
+        expect(log.size).toBe(whole.size);
+        refs.forEach((ref, i) => {
+            expect(rebuildRequest(ref, log) as unknown).toEqual(bodies[i]);
+            expect(rebuildRequest(ref, log)).toEqual(rebuildRequest(ref, whole));
+        });
+        expect(log.get("0".repeat(32))).toBeUndefined();
+        expect(log.has(partId({ field: "system", value: system }))).toBe(true);
+    } finally {
+        log.close();
+    }
+    expect(() => log.get(partId({ field: "system", value: system }))).toThrow(/after close/);
 });
 
 test("a reopened store drops a cut line and writes no part twice", () => {

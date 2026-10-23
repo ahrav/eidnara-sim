@@ -1,6 +1,7 @@
 import { type GradeRecord, runsScript, type SourceEvent } from "../grade/probes";
 import type { ConverseBody } from "../proxy/classify";
 import type { CallRecord } from "../proxy/records";
+import { type RequestPart, rebuildRequest } from "../proxy/requests";
 import type { Entry } from "../run/journal";
 import { holds } from "../scenario/compile";
 import type { SessionHealth } from "./health";
@@ -81,19 +82,32 @@ const SKIP_KEYS = new Set([
     "status",
 ]);
 
+/** Appends every string `v` carries under `key` to `out`, skipping the keys no model reads as text. */
+function collectStrings(v: unknown, key: string, out: string[]): void {
+    if (SKIP_KEYS.has(key)) return;
+    if (typeof v === "string") out.push(v);
+    else if (Array.isArray(v)) for (const x of v) collectStrings(x, key, out);
+    else if (v && typeof v === "object") {
+        for (const [k, x] of Object.entries(v)) collectStrings(x, k, out);
+    }
+}
+
 /** Every string a body's system blocks and messages carry, one per line. */
 export function bodyText(body: ConverseBody): string {
     const out: string[] = [];
-    const walk = (v: unknown, key: string) => {
-        if (SKIP_KEYS.has(key)) return;
-        if (typeof v === "string") out.push(v);
-        else if (Array.isArray(v)) for (const x of v) walk(x, key);
-        else if (v && typeof v === "object") {
-            for (const [k, x] of Object.entries(v)) walk(x, k);
-        }
-    };
-    walk(body.system, "system");
-    walk(body.messages, "messages");
+    collectStrings(body.system, "system", out);
+    collectStrings(body.messages, "messages", out);
+    return out.join("\n");
+}
+
+/**
+ * The strings one stored part contributes to `bodyText`, one per line: a `system` part's, or one
+ * message's; every other field adds none.
+ */
+export function partText(part: RequestPart): string {
+    if (part.field !== "system" && part.field !== "messages") return "";
+    const out: string[] = [];
+    collectStrings(part.value, part.field, out);
     return out.join("\n");
 }
 
@@ -191,13 +205,46 @@ interface Context {
     order: Map<string, number>;
     journal: Entry[];
     health: SessionHealth[];
-    texts: Map<number, string | null>;
+    intact: Map<number, boolean>;
+    partTexts: PartTexts;
+    useIds: Map<number, string[]>;
     bodies: Map<number, ConverseBody | null>;
 }
 
+/** Characters of part text a run keeps between searches. */
+const PART_TEXT_CHARS = 256 << 20;
+
+/** The part texts searched last, so the overlapping source windows of a run's probes reuse them. */
+class PartTexts {
+    private readonly texts = new Map<string, string>();
+    private chars = 0;
+
+    get(id: string, part: () => RequestPart | undefined): string | null {
+        const hit = this.texts.get(id);
+        if (hit !== undefined) {
+            this.texts.delete(id);
+            this.texts.set(id, hit);
+            return hit;
+        }
+        const found = part();
+        if (!found) return null;
+        const text = partText(found);
+        this.texts.set(id, text);
+        this.chars += text.length;
+        for (const [old, t] of this.texts) {
+            if (this.chars <= PART_TEXT_CHARS || old === id) break;
+            this.texts.delete(old);
+            this.chars -= t.length;
+        }
+        return text;
+    }
+}
+
 interface RunCache {
-    texts: Map<number, string | null>;
-    bodies: Map<number, ConverseBody | null>;
+    intact: Map<number, boolean>;
+    partTexts: PartTexts;
+    /** Each call's tool-use ids, which every later probe of its session reads. */
+    useIds: Map<number, string[]>;
     order: Map<string, number>;
     journal: (arm: string) => Entry[];
     calls: (arm: string) => CallRecord[];
@@ -217,8 +264,9 @@ function cacheOf(run: RunData): RunCache {
     const reachedModel = (c: CallRecord) =>
         c.fault_ref === null || faultType.get(c.fault_ref) === "slow_stream";
     const cache: RunCache = {
-        texts: new Map(),
-        bodies: new Map(),
+        intact: new Map(),
+        partTexts: new PartTexts(),
+        useIds: new Map(),
         order: new Map(run.scenario.events.map((e, i) => [e.id, i])),
         journal: (arm) => {
             let mine = journals.get(arm);
@@ -243,12 +291,34 @@ function body(ctx: Context, c: CallRecord): ConverseBody | null {
     return ctx.bodies.get(c.seq) ?? null;
 }
 
-function text(ctx: Context, c: CallRecord): string | null {
-    if (!ctx.texts.has(c.seq)) {
-        const b = body(ctx, c);
-        ctx.texts.set(c.seq, b ? bodyText(b) : null);
+/**
+ * Whether the call's recorded body carries one of the group's alternatives, as `findGroups` over
+ * its `bodyText` finds it. The body is rebuilt once to check its digest; the search then runs over
+ * each part's text in turn, since the lines `bodyText` joins never let a single-line alternative
+ * span two parts, so no whole-body text is held. An alternative with a newline is searched in the
+ * rebuilt body's text.
+ */
+function carries(ctx: Context, c: CallRecord, group: string[]): boolean {
+    const { parts } = ctx.run;
+    const ref = c.request;
+    if (!parts || !ref) return false;
+    let intact = ctx.intact.get(c.seq);
+    if (intact === undefined) {
+        intact = rebuildRequest(ref, parts) !== null;
+        ctx.intact.set(c.seq, intact);
     }
-    return ctx.texts.get(c.seq) ?? null;
+    if (!intact) return false;
+    return group.some((alt) => {
+        if (alt.length === 0) return false;
+        if (alt.includes("\n")) {
+            const b = rebuildRequest(ref, parts);
+            return b !== null && holds(bodyText(b), alt);
+        }
+        return ref.parts.some((id) => {
+            const t = ctx.partTexts.get(id, () => parts.get(id));
+            return t !== null && t.length > 0 && holds(t, alt);
+        });
+    });
 }
 
 /** Converts a harness wall time to the daemon's clock through the arm's journaled clock offsets. */
@@ -325,8 +395,12 @@ export function probeEvidence(
         order,
         journal,
         health,
-        texts: cached.texts,
-        bodies: cached.bodies,
+        intact: cached.intact,
+        partTexts: cached.partTexts,
+        useIds: cached.useIds,
+        // A probe reads its own turn's bodies, and a rebuilt body holds its parts, so the bodies
+        // stay with the probe and leave with it.
+        bodies: new Map(),
     };
     const gt = probe.ground_truth ?? {};
     const present = (gt.present ?? []).filter((g) => g.length > 0);
@@ -576,8 +650,7 @@ export function probeEvidence(
             const from = startOf(g);
             for (const c of windowCalls) {
                 if (c.component !== "agent" || !inWindow(c, from)) continue;
-                const t = text(ctx, c);
-                if (t && findGroups([g], t)[0]) return c;
+                if (carries(ctx, c, g)) return c;
             }
             return null;
         });
@@ -600,8 +673,7 @@ export function probeEvidence(
                     )
                 )
                     continue;
-                const t = text(ctx, c);
-                if (t && findGroups([g], t)[0]) return c;
+                if (carries(ctx, c, g)) return c;
             }
             return null;
         });
@@ -760,8 +832,13 @@ export function probeEvidence(
         for (const c of armCalls) {
             if (c.component !== "agent" || c.session !== session) continue;
             if ((order.get(c.turn ?? "") ?? -1) >= probeOrder) continue;
-            const b = body(ctx, c);
-            if (b) for (const id of toolTraffic(b).uses.keys()) before.add(id);
+            let ids = ctx.useIds.get(c.seq);
+            if (!ids) {
+                const b = body(ctx, c);
+                ids = b ? [...toolTraffic(b).uses.keys()] : [];
+                ctx.useIds.set(c.seq, ids);
+            }
+            for (const id of ids) before.add(id);
         }
         const uses = new Map<string, ToolUse>();
         const results = new Map<string, { text: string; error: boolean }>();

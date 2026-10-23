@@ -7,7 +7,7 @@ import { armBase, CONTROL_LABEL, requireOrder } from "../hosts/arms";
 import { ARMS, TIERS, type Tier } from "../prereg/schema";
 import type { ConverseBody } from "../proxy/classify";
 import { type CallRecord, recordProblems } from "../proxy/records";
-import { type RequestPart, readRequestParts, rebuildRequest } from "../proxy/requests";
+import { type PartLookup, RequestPartLog, rebuildRequest } from "../proxy/requests";
 import { type Entry, readJournal, readJsonl } from "../run/journal";
 import { scenarioHash } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
@@ -109,8 +109,11 @@ export interface RunData {
     calls: CallRecord[];
     /** The fault schedule the run used: the manifest's override, else the scenario's. */
     faults: Array<{ id: string; type: string }>;
-    /** The request part log, or null for a run recorded before the proxy stored bodies. */
-    parts: Map<string, RequestPart> | null;
+    /**
+     * The request part log, read on demand, or null for a run recorded before the proxy stored
+     * bodies.
+     */
+    parts: PartLookup | null;
     grades: GradeRecord[];
     arms: Map<string, ArmData>;
 }
@@ -455,7 +458,7 @@ export function loadRun(dir: string): RunData {
         journal: readJournal(join(dir, "journal.jsonl")),
         calls: readCalls(join(dir, "calls.jsonl")),
         parts: lstatSync(requestsPath, { throwIfNoEntry: false })?.isFile()
-            ? readRequestParts(requestsPath)
+            ? new RequestPartLog(requestsPath)
             : null,
         grades,
         arms,

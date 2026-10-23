@@ -37,7 +37,7 @@ import { preregistrationHash } from "../prereg/validate";
 import { bedrockUpstream, Gateway } from "../proxy/gateway";
 import { FaultInjector, restoreOrder } from "../proxy/inject";
 import { type CallRecord, RecordWriter, recordProblems } from "../proxy/records";
-import { RequestStore, readRequestParts } from "../proxy/requests";
+import { RequestPartLog, RequestStore } from "../proxy/requests";
 import { Rng } from "../rng";
 import {
     compileScenario,
@@ -2182,12 +2182,17 @@ async function runArms(
                       return [{ event, session: String(t.session), background, text, owed }];
                   })
                 : [];
-            observed.delivery = observeDelivery(
-                readJsonl<CallRecord>(callsPath).filter((c) => c.arm === arm),
-                readRequestParts(join(o.out, "requests.jsonl")),
-                notes,
-                eventOrder,
-            );
+            const parts = new RequestPartLog(join(o.out, "requests.jsonl"));
+            try {
+                observed.delivery = observeDelivery(
+                    readJsonl<CallRecord>(callsPath).filter((c) => c.arm === arm),
+                    parts,
+                    notes,
+                    eventOrder,
+                );
+            } finally {
+                parts.close();
+            }
         }
         const mismatches = armMismatches(observed);
         const record = { profile: armProfile(arm), observed, mismatches };
