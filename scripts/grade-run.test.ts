@@ -775,6 +775,58 @@ describe("grade-run", () => {
         );
     });
 
+    test("a background call credited to the probe turn after its snapshot leaves the snapshot standing", async () => {
+        const p8 = fixture("P8-pass");
+        const base = p8.snapshots[0] as Snapshot;
+        const two = {
+            ...base,
+            artefacts: base.artefacts.map((a) =>
+                a.class === "proxy-call"
+                    ? {
+                          ...a,
+                          calls: [
+                              ...a.calls,
+                              ...a.calls.map((c) => ({
+                                  ...c,
+                                  seq: c.seq + 1,
+                                  component: "history_summarizer",
+                                  turn: "e-2",
+                              })),
+                          ],
+                      }
+                    : a,
+            ),
+        } as Snapshot;
+        const dir = run({ probes: [p8.probe], unended: { host: ["e-1"] } });
+        snapshot(dir, "eidnara", two);
+        const log = join(dir, "eidnara", "snapshots.jsonl");
+        const row = JSON.parse(readFileSync(log, "utf8").trim());
+        for (const a of row.artefacts) if (a.class === "proxy-call") a.calls.pop();
+        writeFileSync(log, `${JSON.stringify(row)}\n`);
+        // The summarizer call ran after the probe turn ended; the proxy credits it to that turn.
+        const callsPath = join(dir, "calls.jsonl");
+        const records = readFileSync(callsPath, "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l));
+        const last = records[records.length - 1];
+        last.origin_turn = "e-1";
+        writeFileSync(callsPath, records.map((r) => `${JSON.stringify(r)}\n`).join(""));
+        const summary = await gradeRun(dir, null);
+        expect(summary.graded).toBeGreaterThan(0);
+        // An agent call is the turn's own whatever turn its record names, so the snapshot left it out.
+        last.component = "agent";
+        writeFileSync(callsPath, records.map((r) => `${JSON.stringify(r)}\n`).join(""));
+        rmSync(join(dir, "grades.jsonl"), { force: true });
+        await expect(gradeRun(dir, null)).rejects.toThrow(/within its turn e-1/);
+        // The same background call named as the probe turn's own is one the snapshot left out.
+        last.component = "history_summarizer";
+        last.turn = "e-1";
+        writeFileSync(callsPath, records.map((r) => `${JSON.stringify(r)}\n`).join(""));
+        rmSync(join(dir, "grades.jsonl"), { force: true });
+        await expect(gradeRun(dir, null)).rejects.toThrow(/within its turn e-1/);
+    });
+
     test("a manifest scheduling more events than the scenario compiles is refused", async () => {
         const dir = run({ probes: [p5.probe] });
         snapshot(dir, "eidnara", snap);
