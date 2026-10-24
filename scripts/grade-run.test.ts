@@ -814,7 +814,13 @@ describe("grade-run", () => {
         writeFileSync(callsPath, records.map((r) => `${JSON.stringify(r)}\n`).join(""));
         const summary = await gradeRun(dir, null);
         expect(summary.graded).toBeGreaterThan(0);
-        // The same call named as the probe turn's own is a call the snapshot left out.
+        // An agent call is the turn's own whatever turn its record names, so the snapshot left it out.
+        last.component = "agent";
+        writeFileSync(callsPath, records.map((r) => `${JSON.stringify(r)}\n`).join(""));
+        rmSync(join(dir, "grades.jsonl"), { force: true });
+        await expect(gradeRun(dir, null)).rejects.toThrow(/within its turn e-1/);
+        // The same background call named as the probe turn's own is one the snapshot left out.
+        last.component = "history_summarizer";
         last.turn = "e-1";
         writeFileSync(callsPath, records.map((r) => `${JSON.stringify(r)}\n`).join(""));
         rmSync(join(dir, "grades.jsonl"), { force: true });

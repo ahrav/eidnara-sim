@@ -497,10 +497,12 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
         const proxied = calls.calls.filter((c) => c.component !== "user-sim");
         const probeTurn = turnIndex.get(meta.turn);
         // The snapshot holds the session's calls recorded by the probe turn's end. A background
-        // call credited to the turn that was recorded after the snapshot's last call, and that
-        // names another turn or none as its own, ran after the snapshot was taken.
+        // call (any component but the agent's) credited to the turn that was recorded after the
+        // snapshot's last call, and that names another turn or none as its own, ran after the
+        // snapshot was taken.
         const lastHeld = proxied.at(-1)?.seq ?? Number.NEGATIVE_INFINITY;
-        const later = (c: CallView) => c.seq > lastHeld && c.turn !== meta.turn;
+        const later = (c: CallView) =>
+            c.seq > lastHeld && c.turn !== meta.turn && c.component !== "agent";
         let boundary = recorded.length - 1;
         while (
             boundary >= 0 &&
