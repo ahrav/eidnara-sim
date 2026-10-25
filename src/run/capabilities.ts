@@ -438,15 +438,16 @@ const CAPTURE_COUNTERS = ["admitted", "completed"];
 
 /**
  * Why a settled `source_capture` report is no counter evidence, or null: it must be an object
- * holding `admitted` and `completed`, and every value a non-negative integer (or `null`, which the
- * wire admits for `oldest_deferred_age_ms`).
+ * holding `admitted` and `completed`, and every value a non-negative integer, with `null` admitted
+ * for `oldest_deferred_age_ms` alone, as the wire declares.
  */
 export function captureCountersProblem(c: unknown): string | null {
     if (!c || typeof c !== "object" || Array.isArray(c)) return "no counters recorded";
     const counter = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
     const values = c as Record<string, unknown>;
     const named = CAPTURE_COUNTERS.every((k) => counter(values[k]));
-    return named && Object.values(values).every((v) => v === null || counter(v))
+    const nullable = (k: string, v: unknown) => v === null && k === "oldest_deferred_age_ms";
+    return named && Object.entries(values).every(([k, v]) => nullable(k, v) || counter(v))
         ? null
         : `malformed counters ${JSON.stringify(c)}`;
 }

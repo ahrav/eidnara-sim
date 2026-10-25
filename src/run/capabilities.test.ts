@@ -227,6 +227,17 @@ test("an arm that consents to source capture must leave message descriptors and 
     expect(armMismatches(shifted)[0]).toMatch(
         /^source capture counters unread: malformed counters/,
     );
+    const nulls = (counters: Record<string, unknown>) =>
+        armMismatches(
+            observeArm(
+                "eidnara",
+                "pi",
+                captured(armRoot([PI_ON, PASS]), ["messages"], counters as Record<string, number>),
+                { agent: 2 },
+            ),
+        );
+    expect(nulls({ admitted: 1, completed: 1, oldest_deferred_age_ms: null })).toEqual([]);
+    expect(nulls({ admitted: 1, completed: 1, units_published: null })[0]).toMatch(/malformed/);
     // An arm that never reached an agent call has nothing for capture to retain.
     expect(armMismatches(observeArm("eidnara", "pi", armRoot([PI_ON]), {}))).toEqual([]);
     const kl = observeArm("eidnara-kl", "pi", captured(armRoot([PI_OFF, ADDITIVE])), { agent: 2 });

@@ -90,7 +90,7 @@ test("a changed source whose probes hold asks for a reading of exactly the chang
     expect(report.verdict).toBe("reread");
     expect(report.variants[0]?.changed).toEqual(["fixture.rs"]);
     expect(renderAudit(report)).toContain(
-        `git -C ${r.dir} diff ${audited} ${candidate} -- fixture.rs`,
+        `git --no-replace-objects -C ${r.dir} diff ${audited} ${candidate} -- fixture.rs`,
     );
 });
 
@@ -149,6 +149,6 @@ test("the printed diff quotes a checkout path a shell would split", () => {
         verdict: "reread",
     });
     expect(text).toContain(
-        `git -C '/tmp/eidnara audit/it'\\''s' diff ${"a".repeat(40)} ${"b".repeat(40)} -- 'src/x y.rs'`,
+        `git --no-replace-objects -C '/tmp/eidnara audit/it'\\''s' diff ${"a".repeat(40)} ${"b".repeat(40)} -- 'src/x y.rs'`,
     );
 });

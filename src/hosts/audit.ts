@@ -134,7 +134,7 @@ export function renderAudit(r: AuditReport): string {
     } else if (r.verdict === "reread") {
         lines.push(
             "Every probe holds. Read the changes, then set AUDITED_EIDNARA to the candidate:",
-            `  ${["git", "-C", r.checkout, "diff", r.audited, r.candidate, "--", ...files].map(shellQuote).join(" ")}`,
+            `  ${["git", "--no-replace-objects", "-C", r.checkout, "diff", r.audited, r.candidate, "--", ...files].map(shellQuote).join(" ")}`,
         );
     } else {
         lines.push(
