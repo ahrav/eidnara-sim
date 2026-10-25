@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
     appendFileSync,
@@ -55,6 +56,35 @@ function armRoot(log: string[], searches: string[] = []): string {
         }),
     );
     writeFileSync(join(sessions, "2026_sim-s-0000.jsonl"), `${lines.join("\n")}\n`);
+    return root;
+}
+
+/**
+ * Writes the capture evidence a stopped daemon leaves beside an arm root: a final Kernel store
+ * whose registry holds one descriptor per class named, and the counters the driver read.
+ */
+function captured(
+    root: string,
+    classes: string[] = ["messages"],
+    counters: Record<string, number> | null = { completed: 1, units_published: 2 },
+): string {
+    const store = join(root, "..", "final-store");
+    mkdirSync(store, { recursive: true });
+    const db = new Database(join(store, "kernel.sqlite"));
+    db.run(
+        "create table object_registry(object_id text primary key, object_kind text, source_kind text, invalidated_commit_seq integer)",
+    );
+    for (const [i, c] of classes.entries()) {
+        db.run("insert into object_registry values (?, 'observation', ?, ?)", [
+            `srcdesc:${c}${i}:1`,
+            c,
+            i === 0 ? null : 7,
+        ]);
+    }
+    db.run("insert into object_registry values ('decision:x', 'decision', 'memory', null)");
+    db.close();
+    const error = counters ? null : "fixture control timed out";
+    writeFileSync(join(root, "..", "source-capture.json"), JSON.stringify({ counters, error }));
     return root;
 }
 
@@ -122,19 +152,21 @@ test("a knowledge-only arm whose pass narrowed the host's messages or that calle
 });
 
 test("a fallback-search arm that answered agent calls with no transform pass is a mismatch", () => {
-    const observed = observeArm("eidnara", "pi", armRoot([PI_ON]), { agent: 2 });
+    const observed = observeArm("eidnara", "pi", captured(armRoot([PI_ON])), { agent: 2 });
     expect(armMismatches(observed)).toEqual([
         "2 agent calls and no transform pass, but the arm loads the Eidnara plugin",
     ]);
-    const served = observeArm("eidnara", "pi", armRoot([PI_ON, PASS]), { agent: 2 });
+    const served = observeArm("eidnara", "pi", captured(armRoot([PI_ON, PASS])), { agent: 2 });
     expect(armMismatches(served)).toEqual([]);
 });
 
 test("search results are checked against the route the arm declares", () => {
-    const root = armRoot(
-        [PI_ON, PASS],
-        [LEGACY, FUSED, "Found 0 results", "Error: the memory search route answered refused"],
-    );
+    const searched = () =>
+        armRoot(
+            [PI_ON, PASS],
+            [LEGACY, FUSED, "Found 0 results", "Error: the memory search route answered refused"],
+        );
+    const root = captured(searched());
     const fallback = observeArm("eidnara", "pi", root, { agent: 1 });
     expect(fallback.search).toEqual({ legacy_scan: ["disabled"], fused: 2, errored: 1 });
     expect(armMismatches(fallback)).toEqual([
@@ -142,11 +174,54 @@ test("search results are checked against the route the arm declares", () => {
     ]);
     const legacyOnly = observeArm("eidnara", "pi", armRoot([PI_ON, PASS], [LEGACY]), {});
     expect(armMismatches(legacyOnly)).toEqual([]);
-    const hybrid = observeArm("eidnara-hybrid", "pi", root, { agent: 1 });
+    const hybrid = observeArm("eidnara-hybrid", "pi", searched(), { agent: 1 });
     expect(armMismatches(hybrid)).toEqual([
         "1 eidnara_search results came from the legacy snapshot scan (disabled), but the arm declares the fused route",
     ]);
     expect(observeArm("eidnara", "opencode", root, { agent: 1 }).search).toBeNull();
+});
+
+test("an arm that consents to source capture must leave message descriptors and counters, and one without it none", () => {
+    const ok = observeArm(
+        "eidnara",
+        "pi",
+        captured(armRoot([PI_ON, PASS]), ["messages", "raw_tool_spans"]),
+        {
+            agent: 2,
+        },
+    );
+    expect(ok.source_capture).toEqual({
+        descriptors: { messages: 1, raw_tool_spans: 1 },
+        live: 1,
+        counters: { completed: 1, units_published: 2 },
+        counters_error: null,
+    });
+    expect(armMismatches(ok)).toEqual([]);
+    const missing = observeArm("eidnara", "pi", armRoot([PI_ON, PASS]), { agent: 2 });
+    expect(armMismatches(missing)).toEqual([
+        "the final Kernel store is absent or unreadable, so source capture is unverified",
+        "source capture counters unread: source-capture.json was not written",
+    ]);
+    const toolsOnly = observeArm(
+        "eidnara-cf",
+        "pi",
+        captured(armRoot([PI_ON, PASS]), ["raw_tool_spans"], null),
+        { agent: 2 },
+    );
+    expect(armMismatches(toolsOnly)).toEqual([
+        'the final store holds no message source descriptor ({"raw_tool_spans":1}), but the arm declares source capture on',
+        "source capture counters unread: fixture control timed out",
+    ]);
+    // An arm that never reached an agent call has nothing for capture to retain.
+    expect(armMismatches(observeArm("eidnara", "pi", armRoot([PI_ON]), {}))).toEqual([]);
+    const kl = observeArm("eidnara-kl", "pi", captured(armRoot([PI_OFF, ADDITIVE])), { agent: 2 });
+    expect(armMismatches(kl)).toEqual([
+        "1 source descriptors in the final store, but the arm declares source capture off",
+    ]);
+    const klClean = observeArm("eidnara-kl", "pi", captured(armRoot([PI_OFF, ADDITIVE]), []), {
+        agent: 2,
+    });
+    expect(armMismatches(klClean)).toEqual([]);
 });
 
 test("a host-only arm with a plugin boot or Eidnara calls is a mismatch", () => {

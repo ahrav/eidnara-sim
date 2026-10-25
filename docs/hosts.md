@@ -57,7 +57,19 @@ from it.
 | `host-oracle` | oracle-context | none | none | n/a | on | none | oracle context |
 
 `eidnara-cf` runs as `eidnara` here; its counterfactual deletions land with
-the counterfactual arm. `eidnara-kl` keeps Eidnara's knowledge layer
+the counterfactual arm.
+
+Source capture is on for `eidnara` and `eidnara-cf` (`source_capture` in
+the profile) and off on every other arm. The user-only consent key
+`source_capture.enabled` goes into the daemon's own user tier
+(`fixtureDaemonConfig`, which the hermetic host stack writes as the
+daemon's `eidnara.jsonc`) and into the plugin's user tier, as one user-tier
+file would carry it. The daemon captures only when the key and
+`memory.enabled` both hold (`consents` in
+`crates/daemon/src/source_capture.rs`): it retains user and assistant
+message text, tool outputs and errors, and the configured repository
+documents as Kernel source descriptors. `eidnara-kl` keeps its knowledge-layer
+configuration unchanged, so its SIM-P76 comparison with earlier runs holds. `eidnara-kl` keeps Eidnara's knowledge layer
 (memory, injection, notes, `eidnara_search`, `eidnara_memory`) and leaves the
 context window to the host (SIM-P76); with Eidnara compaction off, OpenCode's
 conflict check reports no conflict with its native compaction.
@@ -118,12 +130,12 @@ opening `Background from earlier sessions on ` or a note carries a marker
 earlier user message does; the next session starts without it.
 
 Each daemon variant provides a fixed capability set, read from the Eidnara
-source at commit `18ba63f8b` (`AUDITED_EIDNARA`):
+source at commit `1c56ba033` (`AUDITED_EIDNARA`):
 
-| Variant | Search route | Embeddings | Memory reviewer | Side calls | Memory injection |
-|---|---|---|---|---|---|
-| `direct_host_fixture` | legacy scan (no query route limits) | deterministic 8-dimension engine | none (its `review-witness` control runs reviewer jobs against a scripted local provider on a test's request) | through the proxy, by the `--harness-runtime` redirect extension | always on |
-| production `eidnara-host` | fused | `gte-modernbert-base-f32` | yes | straight to Bedrock | always on |
+| Variant | Search route | Embeddings | Memory reviewer | Side calls | Memory injection | Source capture |
+|---|---|---|---|---|---|---|
+| `direct_host_fixture` | legacy scan (no query route limits) | deterministic 8-dimension engine | none (its `review-witness` control runs reviewer jobs against a scripted local provider on a test's request) | through the proxy, by the `--harness-runtime` redirect extension | always on | on the consent key; its control socket reports the settled `source_capture` counters |
+| production `eidnara-host` | fused | `gte-modernbert-base-f32` | yes | straight to Bedrock | always on | on the consent key |
 
 The production launcher admits only its compiled-in qualified harness
 closures, runs Pi with `--no-extensions` and a fresh `HOME`, and refuses AWS
@@ -139,6 +151,30 @@ match that commit's, so a build whose fixture changed stops until the
 capabilities are read again. The fixture's sources include the Pi context
 handler, the Pi transform window, and the shared transform client whose
 `rust pass` line the knowledge-only check reads.
+
+Each variant also records `probes`: one regular expression per capability
+reading that a named source file at the audited commit matches or lacks
+(for example, the fixture lacks `set_query_route_limits`, and
+`source_capture.rs` gates capture on `config.source_capture_enabled &&
+config.memory_enabled`). Moving the pin to a new Eidnara commit is one
+command against a checkout that holds both commits:
+
+```sh
+bun scripts/audit-eidnara.ts <eidnara checkout> <commit>
+```
+
+It lists, per variant, the audited source files that differ between
+`AUDITED_EIDNARA` and the commit, and evaluates every probe at the commit.
+Exit 0 (`unchanged`): no audited source differs, so the table holds and the
+pin may stay. Exit 1 (`reread`): sources differ and every probe holds; the
+script prints the `git diff` to read, and after that reading the pin moves to
+the commit. Exit 2 (`broken`): a probe fails, so `DAEMON_VARIANTS` needs
+revising before the pin moves. The pin names only merged commits, so a run
+built from an unmerged branch stops at preflight once its fixture sources
+differ from the pin's. At `1c56ba033` the verdict is `unchanged`; against
+the previous pin `18ba63f8b` it is `reread`, for the fixture's two new
+source-capture control commands, `config.rs`'s `project_docs.files` key,
+`m0_compose.rs`'s document reads, and `source_capture.rs`.
 
 ## Capability evidence
 
@@ -174,6 +210,19 @@ complete evidence only when the two agree:
   (`in=` and `out=`), logged no counts, or that made a `history_summarizer`
   call; or a search result from a
   route other than the declared one.
+- `capabilities.json` also holds `source_capture`: the Kernel source
+  descriptors (`srcdesc:*` observations) in `<arm>/final-store/kernel.sqlite`
+  by class (`messages`, `raw_tool_spans`, `repository_documents`) and how many
+  are live, and the settled `source_capture` counters the last daemon
+  generation reported. Before the final daemon stop, the driver reads those
+  counters through the fixture's control socket (`settledSourceCapture`,
+  waiting up to 30 s for every capture job to settle) into
+  `<arm>/source-capture.json`; the counters are process-local, so they cover
+  the generation since its last start, while the descriptors cover the whole
+  arm. An arm that consents to source capture and answered agent calls is a
+  mismatch when its final store is unreadable, holds no `messages`
+  descriptor, or its counters were not read; an arm without the consent is a
+  mismatch when its final store holds any descriptor.
 - In a run whose order holds an oracle-context arm, and on an
   explicit-search arm, `capabilities.json` also holds `delivery`: the arm's
   agent request bodies rebuilt from `requests.jsonl`, those that could not

@@ -894,14 +894,20 @@ describe("run inputs", () => {
                 daemon: "direct-host-fixture",
                 search: "legacy-scan",
             },
-            eidnara_config: { compaction: { enabled: true } },
+            eidnara_config: { compaction: { enabled: true }, source_capture: { enabled: true } },
             daemon_config: {
                 history_summarizer: { module_model: `amazon-bedrock/${config.agent_model}` },
+                source_capture: { enabled: true },
             },
         });
         expect(manifest.arms["eidnara-kl"]).toMatchObject({
             profile: { role: "knowledge-only", host_compaction: true, eidnara_compaction: false },
-            eidnara_config: { compaction: { enabled: false }, memory: { enabled: true } },
+            eidnara_config: {
+                compaction: { enabled: false },
+                memory: { enabled: true },
+                source_capture: { enabled: false },
+            },
+            daemon_config: { source_capture: { enabled: false } },
         });
         const kl = manifest.arms["eidnara-kl"] as { eidnara_config: Record<string, unknown> };
         kl.eidnara_config.compaction = { enabled: true };

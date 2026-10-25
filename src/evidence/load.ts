@@ -51,6 +51,8 @@ export interface ArmProfileView {
     eidnara_compaction?: boolean;
     search?: string;
     role?: string;
+    /** Absent in manifests recorded before arms declared source capture. */
+    source_capture?: boolean;
 }
 
 export interface ToolRun {
@@ -82,6 +84,15 @@ export interface StoreObject {
     superseded_by: string | null;
 }
 
+/** A Kernel source descriptor (`srcdesc:*`) source capture published, by class and lifetime. */
+export interface SourceDescriptor {
+    id: string;
+    /** `messages`, `raw_tool_spans`, or `repository_documents`. */
+    class: string;
+    created_ms: number;
+    retired_ms: number | null;
+}
+
 export interface CaptureJob {
     session: string;
     project: string;
@@ -98,6 +109,8 @@ export interface ArmData {
     pluginLog: string[] | null;
     objects: StoreObject[] | null;
     captures: CaptureJob[] | null;
+    /** Null when the Kernel store is absent or unreadable. */
+    descriptors: SourceDescriptor[] | null;
 }
 
 export interface RunData {
@@ -192,12 +205,40 @@ function openStore(path: string): Database | null {
     }
 }
 
+/**
+ * The Kernel's source descriptors; null when the registry predates them or a creation commit is
+ * missing from the log, so descriptor counts never stand for the store's memory objects.
+ */
+function readDescriptors(db: Database, commits: Map<number, number>): SourceDescriptor[] | null {
+    try {
+        const rows = db
+            .query(
+                `select object_id as id, source_kind as class, created_commit_seq as created,
+                    invalidated_commit_seq as invalidated
+                 from object_registry
+                 where object_id glob 'srcdesc:*' and object_kind = 'observation'`,
+            )
+            .all() as { id: string; class: string; created: number; invalidated: number | null }[];
+        if (rows.some((r) => !commits.has(r.created))) return null;
+        return rows.map((r) => ({
+            id: r.id,
+            class: r.class,
+            created_ms: commits.get(r.created) as number,
+            retired_ms: r.invalidated === null ? null : (commits.get(r.invalidated) ?? 0),
+        }));
+    } catch (caught) {
+        if (isSqliteError(caught)) return null;
+        throw caught;
+    }
+}
+
 /** The final store's memory objects and capture jobs; null parts when a database is absent. */
-export function readStore(dir: string): Pick<ArmData, "objects" | "captures"> {
+export function readStore(dir: string): Pick<ArmData, "objects" | "captures" | "descriptors"> {
     const kernelPath = join(dir, "kernel.sqlite");
     const storePath = join(dir, "store.db");
     const objects: StoreObject[] = [];
     let captures: CaptureJob[] | null = null;
+    let descriptors: SourceDescriptor[] | null = null;
     const commits = new Map<number, number>();
     let kernelRead = false;
     if (lstatSync(kernelPath, { throwIfNoEntry: false })?.isFile()) {
@@ -244,11 +285,13 @@ export function readStore(dir: string): Pick<ArmData, "objects" | "captures"> {
                     superseded_by: r.superseded,
                 });
             }
+            descriptors = readDescriptors(db, commits);
             kernelRead = true;
         } catch (caught) {
             // A store a crash or fault left half-written reads as unobserved.
             if (!(caught instanceof StoreUnreadable) && !isSqliteError(caught)) throw caught;
             objects.length = 0;
+            descriptors = null;
         } finally {
             db?.close();
         }
@@ -339,7 +382,7 @@ export function readStore(dir: string): Pick<ArmData, "objects" | "captures"> {
         }
     }
     // A negative answer needs every store: one database alone leaves the stage unobserved.
-    return { objects: kernelRead && storeRead ? objects : null, captures };
+    return { objects: kernelRead && storeRead ? objects : null, captures, descriptors };
 }
 
 /**

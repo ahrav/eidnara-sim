@@ -236,12 +236,18 @@ export function eidnaraUserConfig(
             auto_search: { enabled: deliveryOf(ARM_PROFILES[arm]) === "automatic" },
             git_commit_indexing: { enabled: false },
         },
+        source_capture: { enabled: ARM_PROFILES[arm].source_capture },
     };
 }
 
 /** The daemon configuration the hermetic host stack hands `direct_host_fixture`. */
-export const fixtureDaemonConfig = (model: string): Record<string, unknown> => ({
+/**
+ * The daemon's own user tier. `source_capture.enabled` is user-only, so the daemon reads its
+ * consent here; the plugin's user tier carries the same value, as one user-tier file would.
+ */
+export const fixtureDaemonConfig = (model: string, arm: ArmName): Record<string, unknown> => ({
     history_summarizer: { module_model: modelRef(model) },
+    source_capture: { enabled: ARM_PROFILES[arm].source_capture },
 });
 
 export interface DaemonContext {
@@ -253,6 +259,8 @@ export interface DaemonContext {
     proxyHttp1: string;
     proxyHttp2: string;
     model: string;
+    /** The arm label the daemon serves; its base arm's profile sets the daemon config. */
+    arm: string;
 }
 
 export class DaemonStack {
@@ -307,7 +315,7 @@ export class DaemonStack {
             startTimeoutMs: 300_000,
             harnessRuntime,
             credentialSource: DUMMY_AWS,
-            daemonConfig: fixtureDaemonConfig(this.ctx.model),
+            daemonConfig: fixtureDaemonConfig(this.ctx.model, armBase(this.ctx.arm)),
             daemonEnv: faketimeEnv(this.ctx.offsetFile),
         });
         this.connectionFile = this.stack.connectionFile;
@@ -358,6 +366,19 @@ export class DaemonStack {
         const sink = (chunk: Buffer) => this.append(chunk);
         child?.stdout?.on("data", sink);
         child?.stderr?.on("data", sink);
+    }
+
+    /**
+     * The `source_capture` counters the running daemon generation reports once every capture job
+     * has settled, through the fixture's control socket. The counters are process-local, so they
+     * cover the generation since its last start.
+     */
+    async sourceCapture(timeoutMs = 30_000): Promise<Record<string, number>> {
+        const read = this.stack?.settledSourceCapture;
+        if (typeof read !== "function") {
+            throw new Error("the daemon's fixture control reports no source capture counters");
+        }
+        return await read.call(this.stack, timeoutMs);
     }
 
     /** Set between `crash` and the `restart` that starts the replacement. */

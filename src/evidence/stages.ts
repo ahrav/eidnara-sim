@@ -10,6 +10,7 @@ import {
     type EvidenceScenario,
     type RunData,
     requestOf,
+    type SourceDescriptor,
     type StoreObject,
 } from "./load";
 
@@ -695,14 +696,54 @@ export function probeEvidence(
                 detail: {
                     capture_calls: windowCalls.filter((c) => c.component === "memory_capture")
                         .length,
+                    ...(arm.profile?.source_capture
+                        ? { source_descriptors: sourceDescriptors() }
+                        : {}),
                 },
             };
         }
         pointers.push(...captured.flatMap((c) => (c ? [callPointer(c)] : [])));
-        return { stage: "source", status: "ok", pointers };
+        const descriptors = sourceDescriptors();
+        return {
+            stage: "source",
+            status: "ok",
+            pointers,
+            ...(descriptors && arm.profile?.source_capture
+                ? { detail: { source_descriptors: descriptors } }
+                : {}),
+        };
     };
 
     const probeDaemon = begin ? daemonMs(journal, begin.wall_ms) : null;
+    /**
+     * The source descriptors live at the probe, and those published from the first source event
+     * on, by class, on the daemon's clock; null without a readable Kernel store or a probe turn.
+     */
+    const sourceDescriptors = () => {
+        if (arm.descriptors === null || probeDaemon === null) return null;
+        const firstWall = Math.min(
+            ...sources.flatMap((x) => {
+                const e = journal.find((j) => j.kind === "Event" && j.event === x.id);
+                return e ? [e.wall_ms] : [];
+            }),
+        );
+        const from = Number.isFinite(firstWall) ? daemonMs(journal, firstWall) : null;
+        const byClass = (keep: (d: SourceDescriptor) => boolean) => {
+            const out: Record<string, number> = {};
+            for (const d of arm.descriptors ?? [])
+                if (keep(d)) out[d.class] = (out[d.class] ?? 0) + 1;
+            return out;
+        };
+        const live = (d: SourceDescriptor) =>
+            d.created_ms <= probeDaemon && (d.retired_ms === null || d.retired_ms > probeDaemon);
+        return {
+            at_probe: byClass(live),
+            since_source:
+                from === null
+                    ? null
+                    : byClass((d) => d.created_ms >= from && d.created_ms <= probeDaemon),
+        };
+    };
     const persistedHits = (): StoreObject[][] =>
         present.map((g) => (arm.objects ?? []).filter((o) => findGroups([g], o.text)[0] !== null));
     const existsAt = (o: StoreObject) =>
@@ -1024,6 +1065,7 @@ export function probeEvidence(
                       ).length,
                   },
         store_objects: arm.objects === null ? null : arm.objects.filter(existsAt).length,
+        source_descriptors: memory ? sourceDescriptors() : null,
         transform_passes_in_session: passes,
         background_calls: background.map((c) => ({ seq: c.seq, component: c.component })),
         session_health: sessionRow

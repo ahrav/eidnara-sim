@@ -43,6 +43,7 @@ import {
     type SimHost,
     type ToolRun,
 } from "./arms";
+import { armProfile } from "./profiles";
 import { entriesOf, SnapshotRecorder } from "./snapshot";
 import {
     checkStore,
@@ -1666,6 +1667,19 @@ export class HostDriver implements ArmDriver {
         }
         try {
             const daemon = this.daemon;
+            if (daemon && checkFinalStore && armProfile(this.o.arm).source_capture) {
+                // Read before the stop: the counters live in the daemon process.
+                const capture = await Promise.resolve()
+                    .then(() => daemon.sourceCapture())
+                    .then(
+                        (counters) => ({ counters, error: null }),
+                        (caught: unknown) => ({ counters: null, error: String(caught) }),
+                    );
+                writeWhole(
+                    join(this.armDir, "source-capture.json"),
+                    `${JSON.stringify(capture)}\n`,
+                );
+            }
             await daemon?.stop();
             this.daemon = null;
             if (daemon && checkFinalStore) {
