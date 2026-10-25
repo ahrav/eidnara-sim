@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { auditEidnara, renderAudit } from "./audit";
+import { auditEidnara, checkoutEnv, renderAudit } from "./audit";
 import type { VariantRecord } from "./profiles";
 
 const dirs: string[] = [];
@@ -17,7 +17,11 @@ function repo(): { dir: string; commit: (files: Record<string, string>) => strin
         const r = Bun.spawnSync(["git", "-C", dir, ...args], {
             stdout: "pipe",
             stderr: "pipe",
-            env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" },
+            env: {
+                ...checkoutEnv(),
+                GIT_CONFIG_GLOBAL: "/dev/null",
+                GIT_CONFIG_SYSTEM: "/dev/null",
+            },
         });
         if (r.exitCode !== 0) throw new Error(r.stderr.toString());
         return r.stdout.toString().trim();
@@ -85,7 +89,9 @@ test("a changed source whose probes hold asks for a reading of exactly the chang
     const report = auditEidnara(r.dir, candidate, audited, { fixture: VARIANT });
     expect(report.verdict).toBe("reread");
     expect(report.variants[0]?.changed).toEqual(["fixture.rs"]);
-    expect(renderAudit(report)).toContain(`git diff ${audited} ${candidate} -- fixture.rs`);
+    expect(renderAudit(report)).toContain(
+        `git -C ${r.dir} diff ${audited} ${candidate} -- fixture.rs`,
+    );
 });
 
 test("a probe that reads differently at the candidate, or a removed file, breaks the table", () => {
@@ -108,4 +114,28 @@ test("a probe that reads differently at the candidate, or a removed file, breaks
     expect(() => auditEidnara(r.dir, "0".repeat(40), audited, { fixture: VARIANT })).toThrow(
         /has no commit/,
     );
+});
+
+test("a hook's repository-local Git variables are dropped before the checkout is read", () => {
+    const env = checkoutEnv({
+        GIT_DIR: "/elsewhere/.git",
+        GIT_WORK_TREE: "/elsewhere",
+        HOME: "/h",
+    });
+    expect(env).toEqual({ HOME: "/h" });
+    const r = repo();
+    const audited = r.commit({
+        "fixture.rs": "fn main() {}",
+        "config.rs": "/source_capture/enabled",
+    });
+    const saved = process.env.GIT_DIR;
+    process.env.GIT_DIR = "/nonexistent/.git";
+    try {
+        expect(auditEidnara(r.dir, audited, audited, { fixture: VARIANT }).verdict).toBe(
+            "unchanged",
+        );
+    } finally {
+        if (saved === undefined) delete process.env.GIT_DIR;
+        else process.env.GIT_DIR = saved;
+    }
 });

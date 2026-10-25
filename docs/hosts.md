@@ -164,7 +164,9 @@ bun scripts/audit-eidnara.ts <eidnara checkout> <commit>
 ```
 
 It lists, per variant, the audited source files that differ between
-`AUDITED_EIDNARA` and the commit, and evaluates every probe at the commit.
+`AUDITED_EIDNARA` and the commit, and evaluates every probe at the commit,
+with Git's repository-local variables cleared so a hook's repository cannot
+stand in for the checkout.
 Exit 0 (`unchanged`): no audited source differs, so the table holds and the
 pin may stay. Exit 1 (`reread`): sources differ and every probe holds; the
 script prints the `git diff` to read, and after that reading the pin moves to
@@ -221,8 +223,9 @@ complete evidence only when the two agree:
   the generation since its last start, while the descriptors cover the whole
   arm. An arm that consents to source capture and answered agent calls is a
   mismatch when its final store is unreadable, holds no `messages`
-  descriptor, or its counters were not read; an arm without the consent is a
-  mismatch when its final store holds any descriptor.
+  descriptor, or its counters were not read; a daemon arm without the
+  consent is a mismatch when its final store holds any descriptor, or when
+  it answered agent calls and its final store is unreadable.
 - In a run whose order holds an oracle-context arm, and on an
   explicit-search arm, `capabilities.json` also holds `delivery`: the arm's
   agent request bodies rebuilt from `requests.jsonl`, those that could not

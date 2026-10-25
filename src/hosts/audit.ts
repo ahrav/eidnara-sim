@@ -21,6 +21,7 @@ export interface VariantAudit {
 }
 
 export interface AuditReport {
+    checkout: string;
     audited: string;
     candidate: string;
     variants: VariantAudit[];
@@ -33,8 +34,30 @@ export interface AuditReport {
     verdict: "unchanged" | "reread" | "broken";
 }
 
+/**
+ * The environment without Git's repository-local variables, so `-C checkout` reads that checkout
+ * even when a hook or another repository's command runs the audit.
+ */
+export function checkoutEnv(
+    env: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+    const local = Bun.spawnSync(["git", "rev-parse", "--local-env-vars"], { stdout: "pipe" })
+        .stdout.toString()
+        .split("\n")
+        .filter((v) => v !== "");
+    return Object.fromEntries(
+        Object.entries(env).filter(
+            (e): e is [string, string] => e[1] !== undefined && !local.includes(e[0]),
+        ),
+    );
+}
+
 function git(checkout: string, args: string[]): { ok: boolean; out: string } {
-    const r = Bun.spawnSync(["git", "-C", checkout, ...args], { stdout: "pipe", stderr: "pipe" });
+    const r = Bun.spawnSync(["git", "-C", checkout, ...args], {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: checkoutEnv(),
+    });
     return { ok: r.exitCode === 0, out: r.stdout.toString() };
 }
 
@@ -73,6 +96,7 @@ export function auditEidnara(
     const broken = results.some((v) => v.probes.some((p) => !p.holds));
     const changed = results.some((v) => v.changed.length > 0);
     return {
+        checkout,
         audited: from,
         candidate: to,
         variants: results,
@@ -105,7 +129,7 @@ export function renderAudit(r: AuditReport): string {
     } else if (r.verdict === "reread") {
         lines.push(
             "Every probe holds. Read the changes, then set AUDITED_EIDNARA to the candidate:",
-            `  git diff ${r.audited} ${r.candidate} -- ${files.join(" ")}`,
+            `  git -C ${r.checkout} diff ${r.audited} ${r.candidate} -- ${files.join(" ")}`,
         );
     } else {
         lines.push(

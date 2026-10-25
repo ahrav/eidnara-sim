@@ -575,15 +575,22 @@ export function armMismatches(o: ArmObservation): string[] {
 function captureMismatches(profile: ArmProfile, o: ArmObservation): string[] {
     const c = o.source_capture;
     if (!c) return [];
+    if (profile.daemon === null) return [];
     const total = Object.values(c.descriptors ?? {}).reduce((a, b) => a + b, 0);
+    const answered = (o.components.agent ?? 0) > 0;
     if (!profile.source_capture) {
-        return total > 0
+        if (total > 0) {
+            return [
+                `${total} source descriptors in the final store, but the arm declares source capture off`,
+            ];
+        }
+        return answered && c.descriptors === null
             ? [
-                  `${total} source descriptors in the final store, but the arm declares source capture off`,
+                  "the final Kernel store is absent or unreadable, so source capture off is unverified",
               ]
             : [];
     }
-    if ((o.components.agent ?? 0) === 0) return [];
+    if (!answered) return [];
     const out: string[] = [];
     if (c.descriptors === null) {
         out.push("the final Kernel store is absent or unreadable, so source capture is unverified");

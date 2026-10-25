@@ -117,7 +117,7 @@ test("a Pi boot whose transform mode differs from the arm's Eidnara compaction i
 });
 
 test("a knowledge-only arm whose pass narrowed the host's messages or that called the history summarizer is a mismatch", () => {
-    const narrowed = observeArm("eidnara-kl", "pi", armRoot([PI_OFF, PASS]), {
+    const narrowed = observeArm("eidnara-kl", "pi", captured(armRoot([PI_OFF, PASS]), []), {
         agent: 3,
         history_summarizer: 1,
     });
@@ -127,7 +127,7 @@ test("a knowledge-only arm whose pass narrowed the host's messages or that calle
         "1 transform passes served fewer messages than they took, but the arm declares Eidnara compaction off",
         "1 history_summarizer calls, but the arm declares Eidnara compaction off",
     ]);
-    const additive = observeArm("eidnara-kl", "pi", armRoot([PI_OFF, ADDITIVE]), {
+    const additive = observeArm("eidnara-kl", "pi", captured(armRoot([PI_OFF, ADDITIVE]), []), {
         agent: 3,
         memory_capture: 1,
     });
@@ -136,7 +136,7 @@ test("a knowledge-only arm whose pass narrowed the host's messages or that calle
     const cut = observeArm(
         "eidnara-kl",
         "pi",
-        armRoot([PI_OFF, ADDITIVE, PASS.split(" in=")[0] as string]),
+        captured(armRoot([PI_OFF, ADDITIVE, PASS.split(" in=")[0] as string]), []),
         {
             agent: 3,
         },
@@ -145,7 +145,9 @@ test("a knowledge-only arm whose pass narrowed the host's messages or that calle
     expect(armMismatches(cut)).toEqual([
         "1 transform passes logged no message counts, so the arm's Eidnara compaction off is unverified for them",
     ]);
-    const unserved = observeArm("eidnara-kl", "pi", armRoot([PI_OFF]), { agent: 3 });
+    const unserved = observeArm("eidnara-kl", "pi", captured(armRoot([PI_OFF]), []), {
+        agent: 3,
+    });
     expect(armMismatches(unserved)).toEqual([
         "3 agent calls and no transform pass, but the arm loads the Eidnara plugin",
     ]);
@@ -174,7 +176,7 @@ test("search results are checked against the route the arm declares", () => {
     ]);
     const legacyOnly = observeArm("eidnara", "pi", armRoot([PI_ON, PASS], [LEGACY]), {});
     expect(armMismatches(legacyOnly)).toEqual([]);
-    const hybrid = observeArm("eidnara-hybrid", "pi", searched(), { agent: 1 });
+    const hybrid = observeArm("eidnara-hybrid", "pi", captured(searched(), []), { agent: 1 });
     expect(armMismatches(hybrid)).toEqual([
         "1 eidnara_search results came from the legacy snapshot scan (disabled), but the arm declares the fused route",
     ]);
@@ -217,6 +219,10 @@ test("an arm that consents to source capture must leave message descriptors and 
     const kl = observeArm("eidnara-kl", "pi", captured(armRoot([PI_OFF, ADDITIVE])), { agent: 2 });
     expect(armMismatches(kl)).toEqual([
         "1 source descriptors in the final store, but the arm declares source capture off",
+    ]);
+    const klUnread = observeArm("eidnara-kl", "pi", armRoot([PI_OFF, ADDITIVE]), { agent: 2 });
+    expect(armMismatches(klUnread)).toEqual([
+        "the final Kernel store is absent or unreadable, so source capture off is unverified",
     ]);
     const klClean = observeArm("eidnara-kl", "pi", captured(armRoot([PI_OFF, ADDITIVE]), []), {
         agent: 2,

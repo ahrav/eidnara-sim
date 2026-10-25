@@ -1675,10 +1675,15 @@ export class HostDriver implements ArmDriver {
                         (counters) => ({ counters, error: null }),
                         (caught: unknown) => ({ counters: null, error: String(caught) }),
                     );
-                writeWhole(
-                    join(this.armDir, "source-capture.json"),
-                    `${JSON.stringify(capture)}\n`,
-                );
+                // The record is evidence only; a failed write still lets the daemon stop.
+                try {
+                    writeWhole(
+                        join(this.armDir, "source-capture.json"),
+                        `${JSON.stringify(capture)}\n`,
+                    );
+                } catch (caught) {
+                    failure ??= caught;
+                }
             }
             await daemon?.stop();
             this.daemon = null;
