@@ -696,20 +696,17 @@ export function probeEvidence(
                 detail: {
                     capture_calls: windowCalls.filter((c) => c.component === "memory_capture")
                         .length,
-                    ...(arm.profile?.source_capture
-                        ? { source_descriptors: sourceDescriptors() }
-                        : {}),
                 },
             };
         }
         pointers.push(...captured.flatMap((c) => (c ? [callPointer(c)] : [])));
-        const descriptors = sourceDescriptors();
-        return {
-            stage: "source",
-            status: "ok",
-            pointers,
-            ...(arm.profile?.source_capture ? { detail: { source_descriptors: descriptors } } : {}),
-        };
+        return { stage: "source", status: "ok", pointers };
+    };
+    /** On a memory arm that consents to capture, every sourced probe's stage carries the counts. */
+    const capturedSourceStage = (): Stage => {
+        const stage = sourceStage();
+        if (!memory || !arm.profile?.source_capture || sources.length === 0) return stage;
+        return { ...stage, detail: { ...stage.detail, source_descriptors: sourceDescriptors() } };
     };
 
     const probeDaemon = begin ? daemonMs(journal, begin.wall_ms) : null;
@@ -999,7 +996,7 @@ export function probeEvidence(
 
     const stages: Stage[] = memory
         ? [
-              sourceStage(),
+              capturedSourceStage(),
               persistedStage(),
               eligibilityStage(),
               retrievalStage(),

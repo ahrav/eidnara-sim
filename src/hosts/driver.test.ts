@@ -1951,6 +1951,13 @@ describe("HostDriver faults", () => {
         expect(
             JSON.parse(readFileSync(join(failing.armDir, "source-capture.json"), "utf8")),
         ).toEqual({ counters: null, error: "Error: source capture never settled" });
+        const odd = fixture("eidnara").driver;
+        const shifted = fakeDaemon(PID + 13);
+        shifted.capture = { admitted: 1, completed: -1 };
+        odd.daemon = shifted as unknown as DaemonStack;
+        await expect(odd.finish()).rejects.toThrow(
+            /source capture counters unread: malformed counters/,
+        );
         const kl = fixture("eidnara-kl").driver;
         kl.daemon = fakeDaemon(PID + 12) as unknown as DaemonStack;
         await kl.finish();

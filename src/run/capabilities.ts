@@ -436,6 +436,21 @@ export function readDescriptors(
 /** Counters every `metrics.source_capture` block carries (Eidnara docs/host-wire-protocol.md 7.9). */
 const CAPTURE_COUNTERS = ["admitted", "completed"];
 
+/**
+ * Why a settled `source_capture` report is no counter evidence, or null: it must be an object
+ * holding `admitted` and `completed`, and every value a non-negative integer (or `null`, which the
+ * wire admits for `oldest_deferred_age_ms`).
+ */
+export function captureCountersProblem(c: unknown): string | null {
+    if (!c || typeof c !== "object" || Array.isArray(c)) return "no counters recorded";
+    const counter = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+    const values = c as Record<string, unknown>;
+    const named = CAPTURE_COUNTERS.every((k) => counter(values[k]));
+    return named && Object.values(values).every((v) => v === null || counter(v))
+        ? null
+        : `malformed counters ${JSON.stringify(c)}`;
+}
+
 /** `<arm>/source-capture.json` beside the final store, as the driver wrote it before the stop. */
 function readCaptureCounters(
     path: string,
@@ -449,19 +464,15 @@ function readCaptureCounters(
             error?: unknown;
         };
         const error = typeof raw.error === "string" ? raw.error : null;
-        const c = raw.counters;
-        if (!c || typeof c !== "object" || Array.isArray(c)) {
+        if (raw.counters === null || raw.counters === undefined) {
             return { counters: null, counters_error: error ?? "no counters recorded" };
         }
-        const entries = Object.entries(c);
-        const counter = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
-        // The health block always reports job admissions and completions.
-        const named = CAPTURE_COUNTERS.every((k) => counter((c as Record<string, unknown>)[k]));
-        if (!named || !entries.every(([, v]) => v === null || counter(v))) {
-            return { counters: null, counters_error: `malformed counters ${JSON.stringify(c)}` };
-        }
+        const problem = captureCountersProblem(raw.counters);
+        if (problem) return { counters: null, counters_error: problem };
         const counters = Object.fromEntries(
-            entries.filter((e): e is [string, number] => typeof e[1] === "number"),
+            Object.entries(raw.counters as Record<string, unknown>).filter(
+                (e): e is [string, number] => typeof e[1] === "number",
+            ),
         );
         return { counters, counters_error: null };
     } catch (caught) {

@@ -23,6 +23,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { GitBound, git } from "../git";
 import type { CallView } from "../grade/artefacts";
+import { captureCountersProblem } from "../run/capabilities";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import {
     type ArmDriver,
@@ -1672,7 +1673,12 @@ export class HostDriver implements ArmDriver {
                 const capture = await Promise.resolve()
                     .then(() => daemon.sourceCapture())
                     .then(
-                        (counters) => ({ counters, error: null }),
+                        (counters) => {
+                            const problem = captureCountersProblem(counters);
+                            return problem
+                                ? { counters: null, error: problem }
+                                : { counters, error: null };
+                        },
                         (caught: unknown) => ({ counters: null, error: String(caught) }),
                     );
                 // The record is evidence only; a failed write still lets the daemon stop.
