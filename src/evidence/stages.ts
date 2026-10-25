@@ -708,9 +708,7 @@ export function probeEvidence(
             stage: "source",
             status: "ok",
             pointers,
-            ...(descriptors && arm.profile?.source_capture
-                ? { detail: { source_descriptors: descriptors } }
-                : {}),
+            ...(arm.profile?.source_capture ? { detail: { source_descriptors: descriptors } } : {}),
         };
     };
 
@@ -723,7 +721,11 @@ export function probeEvidence(
         if (arm.descriptors === null || probeDaemon === null) return null;
         const firstWall = Math.min(
             ...sources.flatMap((x) => {
-                const e = journal.find((j) => j.kind === "Event" && j.event === x.id);
+                // A user turn's capture can publish while the turn runs, which its BeginTurn
+                // opens; a commit lands between sessions, which its Event marks.
+                const e =
+                    journal.find((j) => j.kind === "BeginTurn" && j.event === x.id) ??
+                    journal.find((j) => j.kind === "Event" && j.event === x.id);
                 return e ? [e.wall_ms] : [];
             }),
         );

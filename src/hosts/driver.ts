@@ -1684,6 +1684,11 @@ export class HostDriver implements ArmDriver {
                 } catch (caught) {
                     failure ??= caught;
                 }
+                // The counters live only in this daemon generation, so an unread record fails
+                // the finish, and the arm's recorded failure keeps a resume from replacing them.
+                if (capture.error !== null) {
+                    failure ??= new Error(`source capture counters unread: ${capture.error}`);
+                }
             }
             await daemon?.stop();
             this.daemon = null;

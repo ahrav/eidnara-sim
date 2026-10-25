@@ -219,12 +219,13 @@ function readDescriptors(db: Database, commits: Map<number, number>): SourceDesc
                  where object_id glob 'srcdesc:*' and object_kind = 'observation'`,
             )
             .all() as { id: string; class: string; created: number; invalidated: number | null }[];
-        if (rows.some((r) => !commits.has(r.created))) return null;
+        const known = (seq: number | null) => seq === null || commits.has(seq);
+        if (rows.some((r) => !known(r.created) || !known(r.invalidated))) return null;
         return rows.map((r) => ({
             id: r.id,
             class: r.class,
             created_ms: commits.get(r.created) as number,
-            retired_ms: r.invalidated === null ? null : (commits.get(r.invalidated) ?? 0),
+            retired_ms: r.invalidated === null ? null : (commits.get(r.invalidated) as number),
         }));
     } catch (caught) {
         if (isSqliteError(caught)) return null;

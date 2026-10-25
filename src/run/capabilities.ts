@@ -433,6 +433,9 @@ export function readDescriptors(
     }
 }
 
+/** Counters every `metrics.source_capture` block carries (Eidnara docs/host-wire-protocol.md 7.9). */
+const CAPTURE_COUNTERS = ["admitted", "completed"];
+
 /** `<arm>/source-capture.json` beside the final store, as the driver wrote it before the stop. */
 function readCaptureCounters(
     path: string,
@@ -445,16 +448,22 @@ function readCaptureCounters(
             counters?: unknown;
             error?: unknown;
         };
-        const counters =
-            raw.counters && typeof raw.counters === "object" && !Array.isArray(raw.counters)
-                ? Object.fromEntries(
-                      Object.entries(raw.counters).filter(
-                          (e): e is [string, number] => typeof e[1] === "number",
-                      ),
-                  )
-                : null;
         const error = typeof raw.error === "string" ? raw.error : null;
-        return { counters, counters_error: counters ? null : (error ?? "no counters recorded") };
+        const c = raw.counters;
+        if (!c || typeof c !== "object" || Array.isArray(c)) {
+            return { counters: null, counters_error: error ?? "no counters recorded" };
+        }
+        const entries = Object.entries(c);
+        const counter = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+        // The health block always reports job admissions and completions.
+        const named = CAPTURE_COUNTERS.every((k) => counter((c as Record<string, unknown>)[k]));
+        if (!named || !entries.every(([, v]) => v === null || counter(v))) {
+            return { counters: null, counters_error: `malformed counters ${JSON.stringify(c)}` };
+        }
+        const counters = Object.fromEntries(
+            entries.filter((e): e is [string, number] => typeof e[1] === "number"),
+        );
+        return { counters, counters_error: null };
     } catch (caught) {
         return { counters: null, counters_error: `source-capture.json: ${String(caught)}` };
     }

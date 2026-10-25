@@ -66,7 +66,7 @@ function armRoot(log: string[], searches: string[] = []): string {
 function captured(
     root: string,
     classes: string[] = ["messages"],
-    counters: Record<string, number> | null = { completed: 1, units_published: 2 },
+    counters: Record<string, number> | null = { admitted: 1, completed: 1, units_published: 2 },
 ): string {
     const store = join(root, "..", "final-store");
     mkdirSync(store, { recursive: true });
@@ -195,7 +195,7 @@ test("an arm that consents to source capture must leave message descriptors and 
     expect(ok.source_capture).toEqual({
         descriptors: { messages: 1, raw_tool_spans: 1 },
         live: 1,
-        counters: { completed: 1, units_published: 2 },
+        counters: { admitted: 1, completed: 1, units_published: 2 },
         counters_error: null,
     });
     expect(armMismatches(ok)).toEqual([]);
@@ -214,6 +214,19 @@ test("an arm that consents to source capture must leave message descriptors and 
         'the final store holds no message source descriptor ({"raw_tool_spans":1}), but the arm declares source capture on',
         "source capture counters unread: fixture control timed out",
     ]);
+    const empty = observeArm("eidnara", "pi", captured(armRoot([PI_ON, PASS]), ["messages"], {}), {
+        agent: 2,
+    });
+    expect(armMismatches(empty)).toEqual(["source capture counters unread: malformed counters {}"]);
+    const shifted = observeArm(
+        "eidnara",
+        "pi",
+        captured(armRoot([PI_ON, PASS]), ["messages"], { admitted: 1, completed: -1 }),
+        { agent: 2 },
+    );
+    expect(armMismatches(shifted)[0]).toMatch(
+        /^source capture counters unread: malformed counters/,
+    );
     // An arm that never reached an agent call has nothing for capture to retain.
     expect(armMismatches(observeArm("eidnara", "pi", armRoot([PI_ON]), {}))).toEqual([]);
     const kl = observeArm("eidnara-kl", "pi", captured(armRoot([PI_OFF, ADDITIVE])), { agent: 2 });

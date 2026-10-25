@@ -26,6 +26,7 @@ import {
     type EvidenceScenario,
     loadRun,
     type RunData,
+    readStore,
     type StoreObject,
 } from "./load";
 import { armComparison } from "./report";
@@ -1066,4 +1067,33 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     expect(loadRun(dir).arms.get("eidnara")?.objects).toBeNull();
     writeFileSync(join(dir, "grades.jsonl"), `${JSON.stringify({ ...graded, version: 2 })}\n`);
     expect(() => loadRun(dir)).toThrow(/version 2/);
+});
+
+test("a descriptor whose creation or retirement commit the log lacks leaves the descriptors unread", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-desc-"));
+    try {
+        const db = new Database(join(dir, "kernel.sqlite"));
+        db.run("create table commit_log(commit_seq integer primary key, recorded_at integer)");
+        db.run(
+            "create table object_registry(object_id text, object_kind text, source_kind text, created_commit_seq integer, invalidated_commit_seq integer, superseded_by text)",
+        );
+        db.run("create table decisions(object_id text, decision_payload blob, scope_id text)");
+        db.run("create table propositions(object_id text, value blob, scope_id text)");
+        db.run("insert into commit_log values (1, 100), (2, 200)");
+        db.run(
+            "insert into object_registry values ('srcdesc:a:1', 'observation', 'messages', 1, 2, null)",
+        );
+        db.close();
+        expect(readStore(dir).descriptors).toEqual([
+            { id: "srcdesc:a:1", class: "messages", created_ms: 100, retired_ms: 200 },
+        ]);
+        const again = new Database(join(dir, "kernel.sqlite"));
+        again.run(
+            "insert into object_registry values ('srcdesc:b:1', 'observation', 'messages', 1, 9, null)",
+        );
+        again.close();
+        expect(readStore(dir).descriptors).toBeNull();
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
 });

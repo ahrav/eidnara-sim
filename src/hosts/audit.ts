@@ -53,7 +53,8 @@ export function checkoutEnv(
 }
 
 function git(checkout: string, args: string[]): { ok: boolean; out: string } {
-    const r = Bun.spawnSync(["git", "-C", checkout, ...args], {
+    // Replacement refs would show other bytes than the named commits hold.
+    const r = Bun.spawnSync(["git", "--no-replace-objects", "-C", checkout, ...args], {
         stdout: "pipe",
         stderr: "pipe",
         env: checkoutEnv(),
@@ -104,6 +105,10 @@ export function auditEidnara(
     };
 }
 
+/** A shell word for `s`: bare when it holds only safe characters, else single-quoted. */
+const shellQuote = (s: string) =>
+    /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`;
+
 export function renderAudit(r: AuditReport): string {
     const lines = [`audited:   ${r.audited}`, `candidate: ${r.candidate}`];
     for (const v of r.variants) {
@@ -129,7 +134,7 @@ export function renderAudit(r: AuditReport): string {
     } else if (r.verdict === "reread") {
         lines.push(
             "Every probe holds. Read the changes, then set AUDITED_EIDNARA to the candidate:",
-            `  git -C ${r.checkout} diff ${r.audited} ${r.candidate} -- ${files.join(" ")}`,
+            `  ${["git", "-C", r.checkout, "diff", r.audited, r.candidate, "--", ...files].map(shellQuote).join(" ")}`,
         );
     } else {
         lines.push(

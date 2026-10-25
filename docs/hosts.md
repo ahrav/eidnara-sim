@@ -164,9 +164,10 @@ bun scripts/audit-eidnara.ts <eidnara checkout> <commit>
 ```
 
 It lists, per variant, the audited source files that differ between
-`AUDITED_EIDNARA` and the commit, and evaluates every probe at the commit,
-with Git's repository-local variables cleared so a hook's repository cannot
-stand in for the checkout.
+`AUDITED_EIDNARA` and the commit, and evaluates every probe at the commit.
+Git runs with its repository-local variables cleared and
+`--no-replace-objects`, so it reads the named commits' own objects in the
+named checkout even when a hook invokes the audit.
 Exit 0 (`unchanged`): no audited source differs, so the table holds and the
 pin may stay. Exit 1 (`reread`): sources differ and every probe holds; the
 script prints the `git diff` to read, and after that reading the pin moves to
@@ -221,7 +222,12 @@ complete evidence only when the two agree:
   waiting up to 30 s for every capture job to settle) into
   `<arm>/source-capture.json`; the counters are process-local, so they cover
   the generation since its last start, while the descriptors cover the whole
-  arm. An arm that consents to source capture and answered agent calls is a
+  arm. A read that fails or times out is recorded with its error, the daemon
+  still stops and its store is archived, and then the finish fails, so the
+  arm's recorded failure keeps a resume from replacing the record with a
+  later generation's counters. Counters without numeric `admitted` and
+  `completed`, or with a value that is not a non-negative integer, count as
+  unread. An arm that consents to source capture and answered agent calls is a
   mismatch when its final store is unreadable, holds no `messages`
   descriptor, or its counters were not read; a daemon arm without the
   consent is a mismatch when its final store holds any descriptor, or when

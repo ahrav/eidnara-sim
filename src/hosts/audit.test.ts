@@ -139,3 +139,16 @@ test("a hook's repository-local Git variables are dropped before the checkout is
         else process.env.GIT_DIR = saved;
     }
 });
+
+test("the printed diff quotes a checkout path a shell would split", () => {
+    const text = renderAudit({
+        checkout: "/tmp/eidnara audit/it's",
+        audited: "a".repeat(40),
+        candidate: "b".repeat(40),
+        variants: [{ variant: "fixture", changed: ["src/x y.rs"], probes: [] }],
+        verdict: "reread",
+    });
+    expect(text).toContain(
+        `git -C '/tmp/eidnara audit/it'\\''s' diff ${"a".repeat(40)} ${"b".repeat(40)} -- 'src/x y.rs'`,
+    );
+});
