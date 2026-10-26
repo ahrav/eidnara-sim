@@ -1397,8 +1397,9 @@ Invalidated by the S-101 qualification audit: on every arm the agent finished
 the P1 task at its control turn (q-0013, q-0021, q-0025, q-0029), so the P1
 probe found the task done. Qualification Q revision 3 registers `host` as the
 no-source control instead.
-Existing check: `src/scenario/compile.test.ts` `no probe of a project asks a P1
-task before that P1 item`; status unaudited
+Existing check: none. The compile test `no probe of a project asks a P1 task
+before that P1 item` holds the no-pre-emption property that replaced this
+record, and checks none of this record's guarantee.
 Impact: a control asked before its P1 item in a shared workspace pre-empts the
 P1 item it was meant to calibrate.
 Open questions: None.

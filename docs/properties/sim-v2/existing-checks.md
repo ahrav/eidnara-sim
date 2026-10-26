@@ -60,7 +60,7 @@ Checks for the no-source control and the fact-bank presuppositions (S6):
 
 | Check | Records | Status |
 | --- | --- | --- |
-| `src/scenario/compile.test.ts`: no probe of a project asks a P1 task before that P1 item | SIM-P49 | unaudited |
+| `src/scenario/compile.test.ts`: no probe of a project asks a P1 task before that P1 item | none (the no-pre-emption property that replaced the invalidated SIM-P49) | unaudited |
 | `src/corpus/presuppositions.ts` `checkPresuppositions` (called by `loadCompileInput` in `src/scenario/inputs.ts`) and `presuppositionProblems` (called by `scripts/corpus-repos.ts`): each `requires` entry matches at the pinned base and twin commits | SIM-P81 | unaudited |
 | `src/corpus/fact-bank.ts` `requirementShapeProblems` (corpus checker): every language template carries a non-empty `requires` list of fixed paths and valid patterns | SIM-P81 | unaudited |
 | `src/corpus/presuppositions.test.ts`: missing file, pattern miss, twin-only miss, blank and malformed patterns, a missing checkout, and the committed bank against the real checkouts | SIM-P81 | unaudited |

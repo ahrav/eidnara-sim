@@ -1333,6 +1333,8 @@ export function gradeItem(
 }
 
 const VERDICTS: Verdict[] = ["pass", "fail", "excluded"];
+/** RECORDED_TYPES preserves compatibility with recorded `P1-control` grades. */
+const RECORDED_TYPES = ["P1-control"];
 const digest = (v: unknown) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v);
 const LOCK_WAIT_MS = 2000;
 const LOCK_POLL_MS = 10;
@@ -1342,7 +1344,10 @@ function isGradeRecord(value: unknown): value is GradeRecord {
     const g = value as Record<string, unknown>;
     const strings =
         ["item", "arm", "snapshot"].every((k) => text(g[k])) && typeof g.probe_type === "string";
-    const known = g.probe_type === "P7" || Object.hasOwn(GRADERS, g.probe_type as string);
+    const known =
+        g.probe_type === "P7" ||
+        Object.hasOwn(GRADERS, g.probe_type as string) ||
+        RECORDED_TYPES.includes(g.probe_type as string);
     const version = typeof g.version === "number" && Number.isInteger(g.version) && g.version >= 1;
     const verdict = VERDICTS.includes(g.verdict as Verdict);
     const metricValue = (v: unknown) => typeof v === "boolean" || str(v) || num(v);

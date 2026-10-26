@@ -22,8 +22,9 @@ refused a scenario whose control followed a conveyance of its fact. M5
 
 Generator `sim-scenario/v6` (rr-campaign-3) removed the control, its
 refusals, and the `pair` field; `src/scenario/compile.test.ts` `no probe of
-a project asks a P1 task before that P1 item` holds the replacement
-property.
+a project asks a P1 task before that P1 item` holds the no-pre-emption
+property that replaced it. Recorded `P1-control` grades stay readable in
+`GradeLog`.
 
 ## Failure scenario
 

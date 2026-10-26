@@ -978,7 +978,7 @@
                 "probe": "Let values put in the app store expire after a set time, and clear the expired ones out.",
                 "check": {
                     "must_not": [
-                        "^(?:(?:export\\s+)?(?:const|let|var)\\s+\\w+(?:\\s*:[^=]+)?\\s*=\\s*)?setInterval\\s*\\("
+                        "^\\s*(?:(?:export\\s+)?(?:const|let|var)\\s+\\w+(?:\\s*:[^=]+)?\\s*=\\s*)?(?:globalThis\\.|window\\.)?setInterval\\s*\\("
                     ]
                 }
             },
@@ -1162,7 +1162,7 @@
                 "probe": "Add a helper that serves every file under a directory for a route prefix.",
                 "check": {
                     "must_not": [
-                        "readFileSync\\s*\\("
+                        "\\b(?:readFile|readdir|opendir|stat|lstat|realpath)Sync\\s*\\("
                     ]
                 }
             },

@@ -495,6 +495,8 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "setInterval(() => expire(store), 1000)",
             "const sweeper = setInterval(() => expire(store), 1000)",
             "export let sweeper: Timer = setInterval(sweep, 1000)",
+            "const sweeper = globalThis.setInterval(sweep, 1000)",
+            "    const sweeper = setInterval(sweep, 1000)",
         ]) {
             const module = { files: [{ path: "src/store.ts", lines: [line] }] };
             expect(outcome(sweep, module)).toEqual(["fail", "reused the rejected approach"]);

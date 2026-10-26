@@ -1922,6 +1922,19 @@ describe("grading harness", () => {
         expect(() => log.all()).toThrow("line 2 has version 3 after version 1");
     });
 
+    test("a recorded P1-control grade with its pair stays readable", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const p1 = grade("P1-fail");
+        const control = {
+            ...p1,
+            probe_type: "P1-control",
+            pair: "f-0012",
+            metrics: { "P1-control.pass": false },
+        };
+        appendFileSync(path, `${JSON.stringify(control)}\n`);
+        expect(new GradeLog(path).all().map((g) => g.probe_type)).toEqual(["P1-control"]);
+    });
+
     test("every counted snapshot is bound to the probe's session and event", () => {
         const f = fixture("P8-pass");
         const first = f.snapshots[0] as Snapshot;
