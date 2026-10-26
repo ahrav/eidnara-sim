@@ -978,7 +978,7 @@
                 "probe": "Let values put in the app store expire after a set time, and clear the expired ones out.",
                 "check": {
                     "must_not": [
-                        "^\\s*(?:(?:export\\s+)?(?:const|let|var)\\s+\\w+(?:\\s*:[^=]+)?\\s*=\\s*)?(?:globalThis\\.|window\\.)?setInterval\\s*\\("
+                        "^(?:(?:export\\s+)?(?:const|let|var)\\s+\\w+(?:\\s*:[^=]+)?\\s*=\\s*)?(?:globalThis\\.|window\\.)?setInterval\\s*\\("
                     ]
                 }
             },

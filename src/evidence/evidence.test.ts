@@ -39,6 +39,7 @@ import {
     type ProbeEvidence,
     partText,
     probeEvidence,
+    runEvidence,
     searchRoute,
 } from "./stages";
 
@@ -756,6 +757,20 @@ describe("evidence stages on the host arm", () => {
             at: "line 1",
         });
     });
+});
+
+test("a recorded P1-control grade stays out of the run's evidence", () => {
+    const run = build({ calls: [searchTurn("TAG_X")], verdict: "pass" });
+    expect(runEvidence(run, sessionHealth(run))).toHaveLength(1);
+    const control = {
+        ...run,
+        scenario: {
+            ...run.scenario,
+            probes: run.scenario.probes.map((p) => ({ ...p, type: "P1-control" })),
+        },
+        grades: run.grades.map((g) => ({ ...g, probe_type: "P1-control" })),
+    };
+    expect(runEvidence(control, sessionHealth(control))).toEqual([]);
 });
 
 describe("context health", () => {

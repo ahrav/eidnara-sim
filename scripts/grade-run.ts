@@ -35,6 +35,7 @@ import {
     gradeItem,
     graderDigest,
     needsSourceCommands,
+    RECORDED_TYPES,
     requireEvidence,
     type SourceEvent,
     verdictCounts,
@@ -721,6 +722,10 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
         for (const arm of arms) {
             if (probe.type === "P14") {
                 skip(arm, "P14 has no probe turn");
+                continue;
+            }
+            if (RECORDED_TYPES.includes(probe.type)) {
+                skip(arm, `${probe.type} has no grader; its recorded grades stand`);
                 continue;
             }
             if (!ran.has(probe.id)) {

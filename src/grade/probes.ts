@@ -1334,7 +1334,7 @@ export function gradeItem(
 
 const VERDICTS: Verdict[] = ["pass", "fail", "excluded"];
 /** RECORDED_TYPES preserves compatibility with recorded `P1-control` grades. */
-const RECORDED_TYPES = ["P1-control"];
+export const RECORDED_TYPES = ["P1-control"];
 const digest = (v: unknown) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v);
 const LOCK_WAIT_MS = 2000;
 const LOCK_POLL_MS = 10;

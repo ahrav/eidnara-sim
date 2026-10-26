@@ -1,4 +1,4 @@
-import { type GradeRecord, runsScript, type SourceEvent } from "../grade/probes";
+import { type GradeRecord, RECORDED_TYPES, runsScript, type SourceEvent } from "../grade/probes";
 import type { ConverseBody } from "../proxy/classify";
 import type { CallRecord } from "../proxy/records";
 import { type RequestPart, rebuildRequest } from "../proxy/requests";
@@ -1113,11 +1113,21 @@ export function attribute(
     return { cause: "application", status: app.status, reason: app.reason ?? o.verdict };
 }
 
-/** Every graded probe of every arm, P7 pairwise grades aside. */
+/**
+ * Every graded probe of every arm, P7 pairwise grades and recorded `P1-control` grades aside: a
+ * control's pass meant the agent applied a rule it had no source for, which the stages here
+ * read as the opposite.
+ */
 export function runEvidence(run: RunData, health: SessionHealth[]): ProbeEvidence[] {
     const probes = new Set(run.scenario.probes.map((p) => p.id));
     return run.grades
-        .filter((g) => g.against === undefined && probes.has(g.item) && run.arms.has(g.arm))
+        .filter(
+            (g) =>
+                g.against === undefined &&
+                !RECORDED_TYPES.includes(g.probe_type) &&
+                probes.has(g.item) &&
+                run.arms.has(g.arm),
+        )
         .sort((a, b) => (a.arm + a.item < b.arm + b.item ? -1 : 1))
         .map((g) => probeEvidence(run, g.arm, g, health));
 }

@@ -264,10 +264,10 @@ export function checkCatalog(
 
 /**
  * The sim-v2 catalog's stable ids: the spec's 77 proposed records, the 3 Workstream A S5 records,
- * the fact-bank presupposition record, and the 3 liveness bounds.
+ * the fact-bank presupposition and P1 no-pre-emption records, and the 3 liveness bounds.
  */
 export const SIM_IDS = [
-    { prefix: "SIM-P", count: 81 },
+    { prefix: "SIM-P", count: 82 },
     { prefix: "SIM-L", count: 3 },
 ];
 

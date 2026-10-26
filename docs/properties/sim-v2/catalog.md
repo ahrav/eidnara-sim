@@ -13,7 +13,8 @@ verify against when they were written.
 
 Stable ids: `SIM-P01` to `SIM-P77` carry the spec's proposed records,
 `SIM-P78` to `SIM-P80` the Workstream A S5 delivery-mode and control records,
-`SIM-P81` the fact-bank presupposition record,
+`SIM-P81` and `SIM-P82` the fact-bank presupposition and P1 no-pre-emption
+records,
 and
 `SIM-L01` to `SIM-L03` carry the liveness bounds OQ-6 asked for and M0
 pre-registers. Each id is the slug prefix and opens the `Guarantee:` line.
@@ -117,6 +118,7 @@ pre-registers. Each id is the slug prefix and opens the `Guarantee:` line.
 | SIM-P79 | [sim-p79-explicit-search-arm-receives-no-injection](#sim-p79-explicit-search-arm-receives-no-injection) | safety | `always` | explicit-config-only | S5 |
 | SIM-P80 | [sim-p80-wrong-project-lookup-is-no-answer](#sim-p80-wrong-project-lookup-is-no-answer) | safety | `always` | explicit-config-only | S5 |
 | SIM-P81 | [sim-p81-template-presuppositions-hold-on-pinned-trees](#sim-p81-template-presuppositions-hold-on-pinned-trees) | safety | `always` | default-production | S6 |
+| SIM-P82 | [sim-p82-no-probe-asks-a-p1-task-before-its-item](#sim-p82-no-probe-asks-a-p1-task-before-its-item) | safety | `always` | default-production | S6 |
 | SIM-L01 | [sim-l01-turn-ends-within-turn-deadline](#sim-l01-turn-ends-within-turn-deadline) | liveness | `always` | default-production | M4 |
 | SIM-L02 | [sim-l02-background-job-ends-within-job-deadline](#sim-l02-background-job-ends-within-job-deadline) | liveness | `always` | default-production | M4 |
 | SIM-L03 | [sim-l03-tier-completes-within-wall-budget](#sim-l03-tier-completes-within-wall-budget) | liveness | `always` | default-production | M4 |
@@ -1397,9 +1399,8 @@ Invalidated by the S-101 qualification audit: on every arm the agent finished
 the P1 task at its control turn (q-0013, q-0021, q-0025, q-0029), so the P1
 probe found the task done. Qualification Q revision 3 registers `host` as the
 no-source control instead.
-Existing check: none. The compile test `no probe of a project asks a P1 task
-before that P1 item` holds the no-pre-emption property that replaced this
-record, and checks none of this record's guarantee.
+Existing check: none. SIM-P82 records the no-pre-emption property that
+replaced this record.
 Impact: a control asked before its P1 item in a shared workspace pre-empts the
 P1 item it was meant to calibrate.
 Open questions: None.
@@ -2287,6 +2288,33 @@ Open questions:
 - A `requires` pattern proves the construct exists; whether the task asks for
   work the tree still lacks is a reading of the source, recorded per template
   in the rr-campaign-3 audit. Unresolved, needs a semantic check.
+
+### sim-p82-no-probe-asks-a-p1-task-before-its-item
+
+Type: safety
+Reachability: default-production
+Status: active
+Exercised: partial - `src/scenario/compile.test.ts` checks the compiled S-101
+scenario; the Titan seeds were inspected for repeated texts at rr-campaign-3
+Guarantee: SIM-P82: No probe of a project asks a P1 item's task before that
+P1 item, so the persisted workspace holds no earlier attempt at the task when
+the P1 probe arrives.
+Check: `always` - for every P1 item, assert that no probe of its project
+whose text equals the P1 text precedes it in event order; `always`, because
+one earlier asking lets the agent finish the task before the rule is tested.
+Fault/timing angle: agent edits persist across sessions in each arm's
+workspace, so any earlier asking of the task stays in the tree.
+Required faults and enabling state: a scenario with P1 items.
+Confidence: medium -
+[evidence](evidence/sim-p82-no-probe-asks-a-p1-task-before-its-item.md). The
+test compares exact texts; a revised line's P1 at M and above repeats the
+task behind a framing, which the test does not count.
+Existing check: `src/scenario/compile.test.ts` `no probe of a project asks a
+P1 task before that P1 item` (unaudited).
+Impact: a P1 item measures the earlier attempt instead of the rule.
+Open questions:
+- A revised constraint repeats its P1 task behind a framing at M and above.
+  Unresolved, needs per-instance probe texts in the fact bank.
 
 ## Liveness
 
