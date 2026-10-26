@@ -4,6 +4,7 @@ import {
     ARM_PROFILES,
     armProfile,
     capabilityGaps,
+    DAEMON_VARIANTS,
     deliveryOf,
     isArmName,
     runsEidnara,
@@ -76,5 +77,21 @@ test("the oracle control is exempt from daemon and plugin evidence as the host a
     for (const label of ["host", "host~aa", "host-oracle"]) expect(runsEidnara(label)).toBe(false);
     for (const label of ["eidnara", "eidnara~aa", "eidnara-kl", "eidnara-x"]) {
         expect(runsEidnara(label)).toBe(true);
+    }
+});
+
+test("source capture is consented on the fallback-search arms alone, and every capability has a source probe", () => {
+    const capturing = Object.entries(ARM_PROFILES)
+        .filter(([, p]) => p.source_capture)
+        .map(([arm]) => arm);
+    expect(capturing).toEqual(["eidnara", "eidnara-cf"]);
+    for (const arm of capturing) expect(armProfile(arm).requires.source_capture).toBe(true);
+    for (const [variant, record] of Object.entries(DAEMON_VARIANTS)) {
+        const covered = new Set<string>(record.probes.map((p) => p.capability));
+        const keys = Object.keys(record).filter(
+            (k) => !["evidence", "notes", "sources", "probes"].includes(k),
+        );
+        expect([variant, [...covered].sort()]).toEqual([variant, keys.sort()]);
+        for (const p of record.probes) expect(record.sources).toContain(p.file);
     }
 });

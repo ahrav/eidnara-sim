@@ -1263,7 +1263,7 @@ export function armConfigs(order: readonly string[], sideModel: string): Record<
                     eidnara_config: profile.plugin
                         ? eidnaraUserConfig("<connection file>", sideModel, arm)
                         : null,
-                    daemon_config: profile.daemon ? fixtureDaemonConfig(sideModel) : null,
+                    daemon_config: profile.daemon ? fixtureDaemonConfig(sideModel, arm) : null,
                 },
             ];
         }),

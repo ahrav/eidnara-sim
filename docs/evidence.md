@@ -37,6 +37,18 @@ a grade record).
 | `delivery` / `context` | A probe-turn agent request carries each group, with the probe's own text removed first | `calls.jsonl` + `requests.jsonl` |
 | `application` | The latest grade passes (the S3 grade) | `grades.jsonl`, `<arm>/snapshots.jsonl` |
 
+On an arm whose profile consents to source capture, the memory arm's
+`source` stage detail records `source_descriptors`: the Kernel source
+descriptors live at the probe and those published from the first source
+event to the probe (from a user-turn source's `BeginTurn`, since capture can
+publish while the turn runs, or a commit's `Event`), by class, read from
+`final-store/kernel.sqlite`; a descriptor whose creation or retirement commit
+the log lacks, or a creation or retirement on a boundary's own millisecond,
+leaves the counts null. Every
+memory arm's probe-time state carries the same counts (null when the Kernel
+store is unreadable). The counts describe capture; the stage status and
+the attribution do not read them.
+
 Daemon times are compared with the probe through the arm's journaled
 `ClockOffset` entries: the daemon reads wall time plus the offset in effect.
 
@@ -92,7 +104,8 @@ session's row reports whether it holds a `native_compaction` record
 and prompt time, the probe turn's agent calls, its tool runs with exits, its
 searches, the jobs still open at `BeginTurn`, the capture jobs created and not
 yet committed or abandoned at the probe (all and the probe project's), the
-store objects that existed, the plugin's transform passes in the session, the
+store objects that existed, the source descriptors (above), the plugin's
+transform passes in the session, the
 background calls credited to the turn (`origin_turn` or `turn`), and the
 session's health cause.
 

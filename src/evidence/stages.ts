@@ -10,6 +10,7 @@ import {
     type EvidenceScenario,
     type RunData,
     requestOf,
+    type SourceDescriptor,
     type StoreObject,
 } from "./load";
 
@@ -701,8 +702,57 @@ export function probeEvidence(
         pointers.push(...captured.flatMap((c) => (c ? [callPointer(c)] : [])));
         return { stage: "source", status: "ok", pointers };
     };
+    /** On a memory arm that consents to capture, every sourced probe's stage carries the counts. */
+    const capturedSourceStage = (): Stage => {
+        const stage = sourceStage();
+        if (!memory || !arm.profile?.source_capture || sources.length === 0) return stage;
+        return { ...stage, detail: { ...stage.detail, source_descriptors: sourceDescriptors() } };
+    };
 
     const probeDaemon = begin ? daemonMs(journal, begin.wall_ms) : null;
+    /**
+     * The source descriptors live at the probe, and those published from the first source event
+     * on, by class, on the daemon's clock; null without a readable Kernel store or a probe turn.
+     */
+    const sourceDescriptors = () => {
+        if (arm.descriptors === null || probeDaemon === null) return null;
+        // A user turn's capture can publish while the turn runs, which its BeginTurn opens; a
+        // commit lands between sessions, which its Event marks. A source without either leaves
+        // the window unknown.
+        const walls = sources.map(
+            (x) =>
+                (
+                    journal.find((j) => j.kind === "BeginTurn" && j.event === x.id) ??
+                    journal.find((j) => j.kind === "Event" && j.event === x.id)
+                )?.wall_ms,
+        );
+        if (walls.some((w) => w === undefined)) return null;
+        const from = walls.length > 0 ? daemonMs(journal, Math.min(...(walls as number[]))) : null;
+        const byClass = (keep: (d: SourceDescriptor) => boolean) => {
+            const out = new Map<string, number>();
+            for (const d of arm.descriptors ?? []) {
+                if (keep(d)) out.set(d.class, (out.get(d.class) ?? 0) + 1);
+            }
+            return Object.fromEntries(out);
+        };
+        // A creation or retirement on a boundary's own millisecond has no known order with it.
+        const bounds = from === null ? [probeDaemon] : [probeDaemon, from];
+        const descriptors = arm.descriptors ?? [];
+        if (
+            descriptors.some((d) => bounds.includes(d.created_ms) || d.retired_ms === probeDaemon)
+        ) {
+            return null;
+        }
+        const live = (d: SourceDescriptor) =>
+            d.created_ms < probeDaemon && (d.retired_ms === null || d.retired_ms > probeDaemon);
+        return {
+            at_probe: byClass(live),
+            since_source:
+                from === null
+                    ? null
+                    : byClass((d) => d.created_ms > from && d.created_ms < probeDaemon),
+        };
+    };
     const persistedHits = (): StoreObject[][] =>
         present.map((g) => (arm.objects ?? []).filter((o) => findGroups([g], o.text)[0] !== null));
     const existsAt = (o: StoreObject) =>
@@ -956,7 +1006,7 @@ export function probeEvidence(
 
     const stages: Stage[] = memory
         ? [
-              sourceStage(),
+              capturedSourceStage(),
               persistedStage(),
               eligibilityStage(),
               retrievalStage(),
@@ -1024,6 +1074,7 @@ export function probeEvidence(
                       ).length,
                   },
         store_objects: arm.objects === null ? null : arm.objects.filter(existsAt).length,
+        source_descriptors: memory ? sourceDescriptors() : null,
         transform_passes_in_session: passes,
         background_calls: background.map((c) => ({ seq: c.seq, component: c.component })),
         session_health: sessionRow

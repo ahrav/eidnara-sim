@@ -32,10 +32,27 @@ export interface DaemonCapabilities {
      * (`always-on`).
      */
     memory_injection: "always-on" | "switchable";
+    /**
+     * Whether the daemon honours the user-tier `source_capture.enabled` consent key, retaining
+     * message text, tool outputs, and configured documents as Kernel source descriptors.
+     */
+    source_capture: boolean;
 }
 
 /** The Eidnara commit whose source `DAEMON_VARIANTS` was read from. */
-export const AUDITED_EIDNARA = "18ba63f8b41c736c97478d41041d61f31129ffd3";
+export const AUDITED_EIDNARA = "1c56ba03388b9b1075cb13e6ffdff847ebf7fd5e";
+
+/**
+ * One mechanical reading behind a capability: `file` at the audited commit matches `pattern`
+ * (`present: true`) or does not (`present: false`). `scripts/audit-eidnara.ts` evaluates every
+ * probe at a candidate commit, so a re-audit starts from the readings that no longer hold.
+ */
+export interface SourceProbe {
+    capability: keyof DaemonCapabilities;
+    file: string;
+    pattern: string;
+    present: boolean;
+}
 
 export interface VariantRecord extends DaemonCapabilities {
     evidence: string;
@@ -43,6 +60,8 @@ export interface VariantRecord extends DaemonCapabilities {
     notes?: Partial<Record<keyof DaemonCapabilities, string>>;
     /** The Eidnara files that fix these capabilities; a build whose copies differ from `AUDITED_EIDNARA`'s needs a fresh reading. */
     sources: string[];
+    /** The mechanical readings of `sources` that back the capability values. */
+    probes: SourceProbe[];
 }
 
 /**
@@ -67,6 +86,33 @@ const MEMORY_INJECTION_SOURCES = [
     "packages/opencode-plugin/src/shared/kernel-client/state.ts",
     "packages/pi-plugin/src/tools/eidnara-search.ts",
 ];
+/**
+ * Source capture runs when the daemon's effective config holds `source_capture.enabled` and
+ * `memory.enabled` (`consents` in source_capture.rs), and the key is read from the user tier only.
+ */
+const SOURCE_CAPTURE_SOURCES = ["crates/daemon/src/source_capture.rs"];
+const probe = (
+    capability: keyof DaemonCapabilities,
+    file: string,
+    pattern: string,
+    present = true,
+): SourceProbe => ({ capability, file, pattern, present });
+/** The readings both variants share: the memory block's lack of a switch and the capture key. */
+const SHARED_PROBES = [
+    probe(
+        "memory_injection",
+        "crates/daemon/src/config.rs",
+        "injection_enabled|/memory/injection/enabled",
+        false,
+    ),
+    probe("memory_injection", "crates/daemon/src/m0_compose.rs", "memory_enabled"),
+    probe("source_capture", "crates/daemon/src/config.rs", '"/source_capture/enabled"'),
+    probe(
+        "source_capture",
+        "crates/daemon/src/source_capture.rs",
+        "config\\.source_capture_enabled\\s*&&\\s*config\\.memory_enabled",
+    ),
+];
 
 /**
  * What each daemon variant provides, with the Eidnara source that establishes it. Only the
@@ -80,6 +126,7 @@ export const DAEMON_VARIANTS: Record<DaemonVariant, VariantRecord> = {
         memory_reviewer: false,
         side_calls: "proxy",
         memory_injection: "always-on",
+        source_capture: true,
         evidence:
             "crates/daemon/examples/direct_host_fixture.rs builds its Handler without set_query_route_limits or a memory reviewer host and links an 8-dimension deterministic embedding engine; its review-witness control runs MemoryReviewer jobs only on a test's request, against a scripted local provider, and the host's own worker keeps its closed gate (direct_host_fixture/review_witness.rs); packages/e2e-tests/src/bedrock-peer/harness-runtime.ts points its closures at the proxy",
         sources: [
@@ -89,6 +136,42 @@ export const DAEMON_VARIANTS: Record<DaemonVariant, VariantRecord> = {
             "packages/e2e-tests/src/rust-runner/hermetic-host.ts",
             ...PASS_SOURCES,
             ...MEMORY_INJECTION_SOURCES,
+            ...SOURCE_CAPTURE_SOURCES,
+        ],
+        probes: [
+            probe(
+                "search",
+                "crates/daemon/examples/direct_host_fixture.rs",
+                "set_query_route_limits",
+                false,
+            ),
+            probe(
+                "memory_reviewer",
+                "crates/daemon/examples/direct_host_fixture.rs",
+                "with_memory_reviewer_host",
+                false,
+            ),
+            probe(
+                "embeddings",
+                "crates/daemon/examples/direct_host_fixture.rs",
+                "struct DeterministicEngine",
+            ),
+            probe(
+                "side_calls",
+                "packages/e2e-tests/src/bedrock-peer/harness-runtime.ts",
+                "piBaseUrl",
+            ),
+            probe(
+                "source_capture",
+                "crates/daemon/examples/direct_host_fixture.rs",
+                "SourceCaptureReport",
+            ),
+            probe(
+                "source_capture",
+                "packages/e2e-tests/src/rust-runner/hermetic-host.ts",
+                "settledSourceCapture",
+            ),
+            ...SHARED_PROBES,
         ],
         notes: { memory_injection: MEMORY_INJECTION },
     },
@@ -98,6 +181,7 @@ export const DAEMON_VARIANTS: Record<DaemonVariant, VariantRecord> = {
         memory_reviewer: true,
         side_calls: "direct-bedrock",
         memory_injection: "always-on",
+        source_capture: true,
         evidence:
             "eidnara-host serve (crates/daemon/src/bin/eidnara_host/serve.rs) admits only the compiled-in QUALIFIED_HARNESS_CLOSURES, runs Pi with --no-extensions and a fresh HOME (crates/host-runtime/src/model_execution/pi.rs), and refuses AWS endpoint overrides (aws_profile.rs), so its model calls cannot reach the sim proxy",
         sources: [
@@ -105,6 +189,31 @@ export const DAEMON_VARIANTS: Record<DaemonVariant, VariantRecord> = {
             "crates/host-runtime/src/model_execution/pi.rs",
             "crates/host-runtime/src/model_execution/aws_profile.rs",
             ...MEMORY_INJECTION_SOURCES,
+            ...SOURCE_CAPTURE_SOURCES,
+        ],
+        probes: [
+            probe(
+                "search",
+                "crates/daemon/src/bin/eidnara_host/serve.rs",
+                "set_query_route_limits",
+            ),
+            probe(
+                "memory_reviewer",
+                "crates/daemon/src/bin/eidnara_host/serve.rs",
+                "with_memory_reviewer_host",
+            ),
+            probe(
+                "embeddings",
+                "crates/daemon/src/bin/eidnara_host/serve.rs",
+                "gte-modernbert-base-f32",
+            ),
+            probe(
+                "side_calls",
+                "crates/daemon/src/bin/eidnara_host/serve.rs",
+                "QUALIFIED_HARNESS_CLOSURES",
+            ),
+            probe("side_calls", "crates/host-runtime/src/model_execution/pi.rs", "--no-extensions"),
+            ...SHARED_PROBES,
         ],
         notes: { memory_injection: MEMORY_INJECTION },
     },
@@ -142,6 +251,8 @@ export interface ArmProfile {
     requires: Partial<DaemonCapabilities>;
     /** Absent on the arms that predate it, which deliver as `deliveryOf` derives. */
     delivery?: Delivery;
+    /** Eidnara's user-only `source_capture.enabled` consent key, written to the daemon and plugin user tiers. */
+    source_capture: boolean;
 }
 
 /** An arm's delivery mode: its declared one, or automatic with the plugin and none without. */
@@ -158,6 +269,7 @@ export const ARM_PROFILES: Record<ArmName, ArmProfile> = {
         eidnara_compaction: false,
         host_compaction: true,
         search: "none",
+        source_capture: false,
         requires: {},
     },
     eidnara: {
@@ -167,7 +279,8 @@ export const ARM_PROFILES: Record<ArmName, ArmProfile> = {
         eidnara_compaction: true,
         host_compaction: false,
         search: "legacy-scan",
-        requires: PROXIED,
+        source_capture: true,
+        requires: { ...PROXIED, source_capture: true },
     },
     "eidnara-cf": {
         role: "fallback-search",
@@ -176,7 +289,8 @@ export const ARM_PROFILES: Record<ArmName, ArmProfile> = {
         eidnara_compaction: true,
         host_compaction: false,
         search: "legacy-scan",
-        requires: PROXIED,
+        source_capture: true,
+        requires: { ...PROXIED, source_capture: true },
     },
     // SIM-P76: the knowledge layer alone, with the host owning the context window.
     "eidnara-kl": {
@@ -186,6 +300,7 @@ export const ARM_PROFILES: Record<ArmName, ArmProfile> = {
         eidnara_compaction: false,
         host_compaction: true,
         search: "legacy-scan",
+        source_capture: false,
         requires: PROXIED,
     },
     "eidnara-hybrid": {
@@ -195,6 +310,7 @@ export const ARM_PROFILES: Record<ArmName, ArmProfile> = {
         eidnara_compaction: true,
         host_compaction: false,
         search: "fused",
+        source_capture: false,
         requires: {
             ...PROXIED,
             embeddings: "gte-modernbert-base-f32",
@@ -209,6 +325,7 @@ export const ARM_PROFILES: Record<ArmName, ArmProfile> = {
         eidnara_compaction: true,
         host_compaction: false,
         search: "legacy-scan",
+        source_capture: false,
         requires: { ...PROXIED, memory_injection: "switchable" },
         delivery: "explicit-search",
     },
@@ -220,6 +337,7 @@ export const ARM_PROFILES: Record<ArmName, ArmProfile> = {
         eidnara_compaction: false,
         host_compaction: true,
         search: "none",
+        source_capture: false,
         requires: {},
         delivery: "oracle-context",
     },

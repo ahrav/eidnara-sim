@@ -198,6 +198,11 @@ function fakeDaemon(pid: number | null) {
             d.stops++;
         },
         connectionFile: "/run/conn",
+        capture: { admitted: 2, completed: 2 } as Record<string, number> | Error,
+        sourceCapture: async () => {
+            if (d.capture instanceof Error) throw d.capture;
+            return d.capture;
+        },
         starting: false,
         stoppedWhileStarting: 0,
         start: async () => {
@@ -1925,6 +1930,62 @@ describe("HostDriver faults", () => {
             overlaps: [],
             ranges: [],
         });
+    });
+
+    test("finish records the daemon's settled source capture counters, and an unread record fails it after the stop", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(PID + 10);
+        driver.daemon = daemon as unknown as DaemonStack;
+        await driver.finish();
+        const record = () =>
+            JSON.parse(readFileSync(join(driver.armDir, "source-capture.json"), "utf8"));
+        expect(record()).toEqual({ counters: { admitted: 2, completed: 2 }, error: null });
+        const failing = fixture("eidnara-cf").driver;
+        const silent = fakeDaemon(PID + 11);
+        silent.capture = new Error("source capture never settled");
+        failing.daemon = silent as unknown as DaemonStack;
+        await expect(failing.finish()).rejects.toThrow(
+            /source capture counters unread: Error: source capture never settled/,
+        );
+        expect(silent.stops).toBe(1);
+        expect(
+            JSON.parse(readFileSync(join(failing.armDir, "source-capture.json"), "utf8")),
+        ).toEqual({ counters: null, error: "Error: source capture never settled" });
+        const odd = fixture("eidnara").driver;
+        const shifted = fakeDaemon(PID + 13);
+        shifted.capture = { admitted: 1, completed: -1 };
+        odd.daemon = shifted as unknown as DaemonStack;
+        await expect(odd.finish()).rejects.toThrow(
+            /source capture counters unread: malformed counters/,
+        );
+        // A harness killed mid-read leaves the placeholder, which a resumed finish keeps unread.
+        const killed = fixture("eidnara").driver;
+        writeFileSync(
+            join(killed.armDir, "source-capture.json"),
+            JSON.stringify({ counters: null, error: "the counter read did not finish" }),
+        );
+        killed.daemon = fakeDaemon(PID + 15) as unknown as DaemonStack;
+        await killed.finish();
+        expect(
+            JSON.parse(readFileSync(join(killed.armDir, "source-capture.json"), "utf8")),
+        ).toEqual({ counters: null, error: "the counter read did not finish" });
+        // A resumed finish keeps the record of the generation that ran the arm's events.
+        const resumed = fixture("eidnara").driver;
+        writeFileSync(
+            join(resumed.armDir, "source-capture.json"),
+            JSON.stringify({ counters: { admitted: 9, completed: 9 }, error: null }),
+        );
+        const fresh = fakeDaemon(PID + 14);
+        fresh.capture = { admitted: 0, completed: 0 };
+        resumed.daemon = fresh as unknown as DaemonStack;
+        await resumed.finish();
+        expect(
+            JSON.parse(readFileSync(join(resumed.armDir, "source-capture.json"), "utf8")).counters,
+        ).toEqual({ admitted: 9, completed: 9 });
+        const kl = fixture("eidnara-kl").driver;
+        kl.daemon = fakeDaemon(PID + 12) as unknown as DaemonStack;
+        await kl.finish();
+        expect(existsSync(join(kl.armDir, "source-capture.json"))).toBe(false);
     });
 
     test("an A/A control label runs as its arm: the host sees the base arm and no store", async () => {

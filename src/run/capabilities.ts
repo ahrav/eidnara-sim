@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import {
     closeSync,
     constants,
@@ -5,6 +6,7 @@ import {
     lstatSync,
     openSync,
     readdirSync,
+    readFileSync,
     readSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -61,6 +63,24 @@ export interface ArmObservation {
     components: Record<string, number>;
     /** What the arm's agent requests carried; null where the run's arms need no request read. */
     delivery?: DeliveryObservation | null;
+    /** The arm's source capture evidence; absent on observations recorded before it was read. */
+    source_capture?: SourceCaptureObservation;
+}
+
+/**
+ * Source capture as the arm's daemon left it: the Kernel source descriptors (`srcdesc:*`
+ * observations) in `final-store/kernel.sqlite` by class, and the settled `source_capture`
+ * counters the last daemon generation reported before its stop (`source-capture.json`).
+ */
+export interface SourceCaptureObservation {
+    /** Descriptors by class (`messages`, `raw_tool_spans`, `repository_documents`); null when the store is absent or unreadable. */
+    descriptors: Record<string, number> | null;
+    /** Of those, the descriptors no later revision retired. */
+    live: number | null;
+    /** The last daemon generation's counters; null when they were not read. */
+    counters: Record<string, number | null> | null;
+    /** Why the counters could not be read, or null. */
+    counters_error: string | null;
 }
 
 /** An oracle note the arm owes: the probe turn it goes into and the background it quotes. */
@@ -383,6 +403,97 @@ export function readPiSearches(root: string, rel: string): NonNullable<ArmObserv
     return search;
 }
 
+/** The source descriptors of a final Kernel store; null when the store is absent or unreadable. */
+export function readDescriptors(
+    kernelPath: string,
+): Pick<SourceCaptureObservation, "descriptors" | "live"> {
+    if (!lstatSync(kernelPath, { throwIfNoEntry: false })?.isFile()) {
+        return { descriptors: null, live: null };
+    }
+    let db: Database | null = null;
+    try {
+        db = new Database(kernelPath, { readonly: true });
+        const rows = db
+            .query(
+                `select source_kind as class, count(*) as n,
+                    sum(invalidated_commit_seq is null) as live
+                 from object_registry
+                 where object_id glob 'srcdesc:*' and object_kind = 'observation'
+                 group by source_kind`,
+            )
+            .all() as { class: string; n: number; live: number }[];
+        // A descriptor whose commit the log lacks comes from a store a crash left partial.
+        const orphans = db
+            .query(
+                `select count(*) as n from object_registry o
+                 where o.object_id glob 'srcdesc:*' and o.object_kind = 'observation'
+                   and (o.created_commit_seq is null
+                     or o.created_commit_seq not in (select commit_seq from commit_log)
+                     or (o.invalidated_commit_seq is not null
+                         and o.invalidated_commit_seq not in (select commit_seq from commit_log)))`,
+            )
+            .get() as { n: number };
+        if (orphans.n > 0) return { descriptors: null, live: null };
+        return {
+            descriptors: Object.fromEntries(rows.map((r) => [r.class, r.n])),
+            live: rows.reduce((sum, r) => sum + r.live, 0),
+        };
+    } catch {
+        return { descriptors: null, live: null };
+    } finally {
+        db?.close();
+    }
+}
+
+/** Counters every `metrics.source_capture` block carries (Eidnara docs/host-wire-protocol.md 7.9). */
+const CAPTURE_COUNTERS = ["admitted", "completed"];
+
+/**
+ * Why a settled `source_capture` report is no counter evidence, or null: it must be an object
+ * holding `admitted` and `completed`, and every value a non-negative integer, with `null` admitted
+ * for `oldest_deferred_age_ms` alone, as the wire declares.
+ */
+export function captureCountersProblem(c: unknown): string | null {
+    if (!c || typeof c !== "object" || Array.isArray(c)) return "no counters recorded";
+    const counter = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+    const values = c as Record<string, unknown>;
+    const named = CAPTURE_COUNTERS.every((k) => counter(values[k]));
+    const nullable = (k: string, v: unknown) => v === null && k === "oldest_deferred_age_ms";
+    return named && Object.entries(values).every(([k, v]) => nullable(k, v) || counter(v))
+        ? null
+        : `malformed counters ${JSON.stringify(c)}`;
+}
+
+/** `<arm>/source-capture.json` beside the final store, as the driver wrote it before the stop. */
+function readCaptureCounters(
+    path: string,
+): Pick<SourceCaptureObservation, "counters" | "counters_error"> {
+    if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) {
+        return { counters: null, counters_error: "source-capture.json was not written" };
+    }
+    try {
+        const raw = JSON.parse(readFileSync(path, "utf8")) as {
+            counters?: unknown;
+            error?: unknown;
+        };
+        const error = typeof raw.error === "string" ? raw.error : null;
+        if (raw.counters === null || raw.counters === undefined) {
+            return { counters: null, counters_error: error ?? "no counters recorded" };
+        }
+        if (error !== null || raw.error !== null) {
+            return {
+                counters: null,
+                counters_error: `the record also reports ${String(raw.error)}`,
+            };
+        }
+        const problem = captureCountersProblem(raw.counters);
+        if (problem) return { counters: null, counters_error: problem };
+        return { counters: raw.counters as Record<string, number | null>, counters_error: null };
+    } catch (caught) {
+        return { counters: null, counters_error: `source-capture.json: ${String(caught)}` };
+    }
+}
+
 /**
  * Reads an arm's evidence after its host and daemon stopped: the plugin log at
  * `<armRoot>/eidnara.log`, Pi's transcripts, and the arm's call counts by component.
@@ -399,6 +510,10 @@ export function observeArm(
         ...readPluginLog(join(armRoot, "eidnara.log")),
         search: host === "pi" ? readPiSearches(armRoot, "home/.pi/agent/sessions") : null,
         components: { ...components },
+        source_capture: {
+            ...readDescriptors(join(armRoot, "..", "final-store", "kernel.sqlite")),
+            ...readCaptureCounters(join(armRoot, "..", "source-capture.json")),
+        },
     };
 }
 
@@ -469,6 +584,7 @@ export function armMismatches(o: ArmObservation): string[] {
             );
         }
     }
+    out.push(...captureMismatches(profile, o));
     if (o.search) {
         if (profile.search !== "legacy-scan" && o.search.legacy_scan.length > 0) {
             const reasons = [...new Set(o.search.legacy_scan)].join(", ");
@@ -482,6 +598,42 @@ export function armMismatches(o: ArmObservation): string[] {
             );
         }
     }
+    return out;
+}
+
+/**
+ * An arm that consents to source capture and answered agent calls must leave message descriptors
+ * in its final store and report the last generation's counters; an arm without the consent must
+ * leave no descriptor.
+ */
+function captureMismatches(profile: ArmProfile, o: ArmObservation): string[] {
+    const c = o.source_capture;
+    if (!c) return [];
+    if (profile.daemon === null) return [];
+    const total = Object.values(c.descriptors ?? {}).reduce((a, b) => a + b, 0);
+    const answered = (o.components.agent ?? 0) > 0;
+    if (!profile.source_capture) {
+        if (total > 0) {
+            return [
+                `${total} source descriptors in the final store, but the arm declares source capture off`,
+            ];
+        }
+        return answered && c.descriptors === null
+            ? [
+                  "the final Kernel store is absent or unreadable, so source capture off is unverified",
+              ]
+            : [];
+    }
+    if (!answered) return [];
+    const out: string[] = [];
+    if (c.descriptors === null) {
+        out.push("the final Kernel store is absent or unreadable, so source capture is unverified");
+    } else if ((c.descriptors.messages ?? 0) === 0) {
+        out.push(
+            `the final store holds no message source descriptor (${JSON.stringify(c.descriptors)}), but the arm declares source capture on`,
+        );
+    }
+    if (c.counters === null) out.push(`source capture counters unread: ${c.counters_error}`);
     return out;
 }
 

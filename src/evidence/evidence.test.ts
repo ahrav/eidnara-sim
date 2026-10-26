@@ -26,6 +26,7 @@ import {
     type EvidenceScenario,
     loadRun,
     type RunData,
+    readStore,
     type StoreObject,
 } from "./load";
 import { armComparison } from "./report";
@@ -94,6 +95,8 @@ interface Spec {
     scenario?: EvidenceScenario;
     parts?: boolean;
     limit?: number;
+    capture?: boolean;
+    descriptors?: ArmData["descriptors"];
 }
 
 const BEGIN_WALL = 10_000;
@@ -172,11 +175,15 @@ function build(spec: Spec): RunData {
                 arm,
                 {
                     arm,
-                    profile: { plugin: spec.memory ?? arm !== "host" },
+                    profile: {
+                        plugin: spec.memory ?? arm !== "host",
+                        ...(spec.capture ? { source_capture: true } : {}),
+                    },
                     tools: spec.tools ?? [],
                     transcripts: spec.transcripts ?? new Map(),
                     pluginLog: [],
                     objects: spec.objects === undefined ? [] : spec.objects,
+                    descriptors: spec.descriptors === undefined ? [] : spec.descriptors,
                     captures: [
                         {
                             session: "s-1",
@@ -377,6 +384,54 @@ describe("evidence stages on a memory arm", () => {
             build({ scenario, calls: [read, CAPTURED, searchTurn("nothing")], objects: [storedY] }),
         );
         expect(stage(p, "source")?.status).toBe("ok");
+    });
+
+    test("a capturing arm's source stage and probe-time state record the descriptors at the probe", () => {
+        const d = (
+            id: string,
+            cls: string,
+            created_ms: number,
+            retired_ms: number | null = null,
+        ) => ({
+            id,
+            class: cls,
+            created_ms,
+            retired_ms,
+        });
+        const descriptors = [
+            d("srcdesc:a:1", "messages", 5),
+            d("srcdesc:b:1", "raw_tool_spans", 6),
+            d("srcdesc:c:1", "messages", 7, 8),
+            d("srcdesc:d:1", "messages", BEGIN_WALL + 1),
+        ];
+        const calls = [SOURCE_READ, CAPTURED, searchTurn("nothing")];
+        const p = evidence(build({ calls, objects: [STORED], capture: true, descriptors }));
+        const counts = {
+            at_probe: { messages: 1, raw_tool_spans: 1 },
+            since_source: { messages: 2, raw_tool_spans: 1 },
+        };
+        expect(stage(p, "source")).toMatchObject({
+            status: "ok",
+            detail: { source_descriptors: counts },
+        });
+        expect(p.probe_time.source_descriptors).toEqual(counts);
+        // An arm without the consent keeps the stage as before; an unreadable store reads null.
+        const plain = evidence(build({ calls, objects: [STORED], descriptors }));
+        expect(stage(plain, "source")?.detail).toBeUndefined();
+        // A descriptor published on the probe's own millisecond has no known order with it.
+        const tied = evidence(
+            build({
+                calls,
+                objects: [STORED],
+                capture: true,
+                descriptors: [...descriptors, d("srcdesc:e:1", "messages", BEGIN_WALL)],
+            }),
+        );
+        expect(tied.probe_time.source_descriptors).toBeNull();
+        const unread = evidence(
+            build({ calls, objects: [STORED], capture: true, descriptors: null }),
+        );
+        expect(unread.probe_time.source_descriptors).toBeNull();
     });
 
     test("a successor written after the probe began leaves the memory eligible", () => {
@@ -1022,4 +1077,33 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     expect(loadRun(dir).arms.get("eidnara")?.objects).toBeNull();
     writeFileSync(join(dir, "grades.jsonl"), `${JSON.stringify({ ...graded, version: 2 })}\n`);
     expect(() => loadRun(dir)).toThrow(/version 2/);
+});
+
+test("a descriptor whose creation or retirement commit the log lacks leaves the descriptors unread", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-desc-"));
+    try {
+        const db = new Database(join(dir, "kernel.sqlite"));
+        db.run("create table commit_log(commit_seq integer primary key, recorded_at integer)");
+        db.run(
+            "create table object_registry(object_id text, object_kind text, source_kind text, created_commit_seq integer, invalidated_commit_seq integer, superseded_by text)",
+        );
+        db.run("create table decisions(object_id text, decision_payload blob, scope_id text)");
+        db.run("create table propositions(object_id text, value blob, scope_id text)");
+        db.run("insert into commit_log values (1, 100), (2, 200)");
+        db.run(
+            "insert into object_registry values ('srcdesc:a:1', 'observation', 'messages', 1, 2, null)",
+        );
+        db.close();
+        expect(readStore(dir).descriptors).toEqual([
+            { id: "srcdesc:a:1", class: "messages", created_ms: 100, retired_ms: 200 },
+        ]);
+        const again = new Database(join(dir, "kernel.sqlite"));
+        again.run(
+            "insert into object_registry values ('srcdesc:b:1', 'observation', 'messages', 1, 9, null)",
+        );
+        again.close();
+        expect(readStore(dir).descriptors).toBeNull();
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
 });

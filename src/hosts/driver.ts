@@ -23,6 +23,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { GitBound, git } from "../git";
 import type { CallView } from "../grade/artefacts";
+import { captureCountersProblem } from "../run/capabilities";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import {
     type ArmDriver,
@@ -43,6 +44,7 @@ import {
     type SimHost,
     type ToolRun,
 } from "./arms";
+import { armProfile } from "./profiles";
 import { entriesOf, SnapshotRecorder } from "./snapshot";
 import {
     checkStore,
@@ -681,7 +683,7 @@ export class HostDriver implements ArmDriver {
         for (const dir of [this.o.armRoot, this.storeRoot])
             rmSync(dir, { recursive: true, force: true });
         rmSync(this.image, { force: true });
-        for (const stale of ["daemon.log", "transcripts.json"]) {
+        for (const stale of ["daemon.log", "transcripts.json", "source-capture.json"]) {
             rmSync(join(this.armDir, stale), { force: true });
         }
         mkdirSync(join(this.o.armRoot, "workspaces"), { recursive: true });
@@ -732,6 +734,9 @@ export class HostDriver implements ArmDriver {
         this.switched = undone ? null : (state.switched ?? null);
         this.live = true;
         this.storeFaults = new Map(Object.entries(state.store_faults ?? {}));
+        // A record a cleanup finish wrote before the arm's last event belongs to a generation
+        // that has more events to run after this resume, so the final finish reads anew.
+        if (open !== null) rmSync(join(this.armDir, "source-capture.json"), { force: true });
         const checked = join(this.armDir, "transcripts.json");
         if (existsSync(checked)) {
             const record = this.readRecord<{
@@ -1666,6 +1671,49 @@ export class HostDriver implements ArmDriver {
         }
         try {
             const daemon = this.daemon;
+            const captureRecord = join(this.armDir, "source-capture.json");
+            // A record an earlier finish wrote after the arm's last event holds the generation
+            // that ran it; a resumed finish keeps it, since its own generation started afresh.
+            if (
+                daemon &&
+                checkFinalStore &&
+                armProfile(this.o.arm).source_capture &&
+                !existsSync(captureRecord)
+            ) {
+                // Read before the stop: the counters live in the daemon process. The placeholder
+                // stands until the read is recorded, so a harness killed mid-read leaves an unread
+                // record a resume keeps.
+                const pending = { counters: null, error: "the counter read did not finish" };
+                let recorded = true;
+                try {
+                    writeWhole(captureRecord, `${JSON.stringify(pending)}\n`);
+                } catch (caught) {
+                    recorded = false;
+                    failure ??= caught;
+                }
+                const capture = await Promise.resolve()
+                    .then(() => daemon.sourceCapture())
+                    .then(
+                        (counters) => {
+                            const problem = captureCountersProblem(counters);
+                            return problem
+                                ? { counters: null, error: problem }
+                                : { counters, error: null };
+                        },
+                        (caught: unknown) => ({ counters: null, error: String(caught) }),
+                    );
+                // The record is evidence only; a failed write still lets the daemon stop.
+                try {
+                    if (recorded) writeWhole(captureRecord, `${JSON.stringify(capture)}\n`);
+                } catch (caught) {
+                    failure ??= caught;
+                }
+                // The counters live only in this daemon generation, so an unread record fails
+                // the finish, and the arm's recorded failure keeps a resume from replacing them.
+                if (capture.error !== null) {
+                    failure ??= new Error(`source capture counters unread: ${capture.error}`);
+                }
+            }
             await daemon?.stop();
             this.daemon = null;
             if (daemon && checkFinalStore) {

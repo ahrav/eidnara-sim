@@ -319,6 +319,7 @@ test("the daemon's harness runtime lives beside the arm, outside what the host c
         proxyHttp1: "",
         proxyHttp2: "",
         model: "m",
+        arm: "eidnara",
     });
     expect(stack.runtimeDir).toBe(join(run, "arm", "runtime"));
 });
@@ -634,6 +635,7 @@ test("the daemon stack refuses a symlinked store directory and replaces a symlin
             proxyHttp1: "",
             proxyHttp2: "",
             model: "m",
+            arm: "eidnara",
         });
     symlinkSync(elsewhere, join(store, "d"));
     await expect(stack(join(store, "d")).start()).rejects.toThrow(/symlink/);
@@ -776,6 +778,7 @@ function daemonStack(run: string, logFile = join(run, "daemon.log")) {
         proxyHttp1: "",
         proxyHttp2: "",
         model: "m",
+        arm: "eidnara",
     });
 }
 
@@ -799,6 +802,7 @@ test("appending the daemon log refuses a symlink left at the log path", async ()
         proxyHttp1: "",
         proxyHttp2: "",
         model: "m",
+        arm: "eidnara",
     });
     const child = fakeChild();
     (stack as Untyped).stack = {
@@ -827,6 +831,7 @@ test("a daemon that outlives SIGTERM is killed before stop reports the failure",
         proxyHttp1: "",
         proxyHttp2: "",
         model: "m",
+        arm: "eidnara",
     });
     (stack as Untyped).stack = {
         hostLog: () => "",
@@ -990,6 +995,7 @@ test("the daemon store is walked from the arm directory, so a symlinked ancestor
         proxyHttp1: "",
         proxyHttp2: "",
         model: "m",
+        arm: "eidnara",
     });
     await expect(stack.start()).rejects.toThrow(/symlink/);
     expect(existsSync(join(elsewhere, "store"))).toBe(false);
@@ -1037,6 +1043,7 @@ test("the daemon log keeps what the daemon wrote while it shut down", async () =
         proxyHttp1: "",
         proxyHttp2: "",
         model: "m",
+        arm: "eidnara",
     });
     const child = fakeChild();
     (stack as Untyped).stack = {
@@ -1118,6 +1125,7 @@ test("a FIFO left at the daemon log path fails the append without blocking teard
         proxyHttp1: "",
         proxyHttp2: "",
         model: "m",
+        arm: "eidnara",
     });
     const child = fakeChild();
     (stack as Untyped).stack = {
@@ -1151,6 +1159,7 @@ test("a failed SIGKILL fallback still records the log and reports both failures"
         proxyHttp1: "",
         proxyHttp2: "",
         model: "m",
+        arm: "eidnara",
     });
     const child = fakeChild();
     (stack as Untyped).stack = {
@@ -1252,6 +1261,7 @@ test("a daemon whose forced shutdown is unconfirmed stays tracked for another st
         proxyHttp1: "",
         proxyHttp2: "",
         model: "m",
+        arm: "eidnara",
     });
     const fake = {
         hostLog: () => "",
@@ -1471,6 +1481,7 @@ test("a daemon root reached through a symlink is refused before anything beneath
         proxyHttp1: "",
         proxyHttp2: "",
         model: "m",
+        arm: "eidnara",
     });
     await expect(stack.start()).rejects.toThrow(/symlink/);
     expect(readFileSync(join(elsewhere, "runtime/keep.txt"), "utf8")).toBe("theirs\n");
