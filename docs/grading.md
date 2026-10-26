@@ -57,9 +57,9 @@ but lacks a grade record's fields (non-empty item, arm, and snapshot ids, a know
 boolean, string, or finite number values whose primary metric agrees with
 the verdict unless excluded: `<type>.pass`, the P13 fold score, or the P14
 correction count, a non-negative attempt count, at least one distinct
-input id, a `pair` on P1 and P1-control records, an `against` arm on P7 records, and, on a graded P7 record, the judge's identity, calibration, permutation, cross-judge, order-verdict, and answer-length fields), or whose version is other than the
+input id, an `against` arm on P7 records, and, on a graded P7 record, the judge's identity, calibration, permutation, cross-judge, order-verdict, and answer-length fields), or whose version is other than the
 successor of the item, arm, and opponent's previous one, or that changes the snapshot,
-probe type, pair, or opponent of an earlier version, is refused by line number. A kill mid-append
+probe type, or opponent of an earlier version, is refused by line number. A kill mid-append
 leaves a cut final line; reads skip it and the next append overwrites it, so
 the complete earlier grades stay readable. An append holds `grades.jsonl.lock`, created
 exclusively, while it reads, validates, and writes, so concurrent graders take
@@ -276,8 +276,7 @@ skipped.
 
 | Probe | Pass when | Other metrics |
 |---|---|---|
-| P1 | Every rule the check names holds on the target files and none it forbids occurs (see the check channels below). With `applies`, at least one governed construct lies in the scope and every one carries the rule; a turn with none fails as `rule not applicable to the change`, and a governed construct without the rule fails as `a governed construct breaks the rule` | `P1.pass`; `pair` names the fact (SIM-P49) |
-| P1 control | As P1, for the same task before the fact is conveyed | `P1-control.pass`, so the no-cue base rate stays out of `P1.pass`; `pair` as P1 |
+| P1 | Every rule the check names holds on the target files and none it forbids occurs (see the check channels below). With `applies`, at least one governed construct lies in the scope and every one carries the rule; a turn with none fails as `rule not applicable to the change`, and a governed construct without the rule fails as `a governed construct breaks the rule` | `P1.pass`; the run's memory-free arm (`host`) gives the item's base rate |
 | P2 | The turn added, changed, or deleted a code file and no forbidden rule occurs (`must_not`, `paths_must_not`, `first_line_must_not`, `commands_must_not`); a turn that changed no code file fails as `no code change` with `P2.harm` false | `P2.harm` when the rule was applied outside its scope |
 | P3 | The work carries the authoritative value (the rules to hold) and no stale one (the rules to break); `must` and `must_not` are required | `P3.reliance` (`authoritative`, `stale`, `neither`), `P3.harm`; `deltaMem` gives the P3 pass-rate difference, memory arm minus host arm, over the items both arms graded, with that count |
 | P4 | On the item's side of `check.scope`, the rule the check names holds and the one it forbids does not; on the other side, the check's own rule does not appear (a governed unit, or for a quote rule a literal in its style). An `in` item reads the files under the scope, an `out` item the files outside it | Inside the scope, the old rule is `kept the superseded rule`; outside it, the update is `collapsed a still-valid fact` (`P4.collapsed`, `P4.harm`); an update that leaks outside its scope collapses the still-valid fact, and the old rule inside the scope keeps the superseded one; a missing expected rule is named too, and with `applies` a turn with no governed unit on its side fails as `rule not applicable to the change` |
@@ -329,7 +328,7 @@ blanked (a Rust `'a` lifetime stays code, and a Rust raw string `r#"..."#` close
 no unit and opens no bracket. The unit `must` reads is the source with its
 comments blanked, so a comment satisfies no rule: at least one
 must exist and every one must match every `must` pattern. A grader reads the
-turn diff only when the check names a diff channel. P1, P1-control, P3, P4, P6, P12, and P13 require a rule to hold (for P6, `clarify` counts),
+turn diff only when the check names a diff channel. P1, P3, P4, P6, P12, and P13 require a rule to hold (for P6, `clarify` counts),
 and P2, P3, P5, P10, and P11 a rule to break; an item without one is refused.
 
 Check patterns match line by line against the diff's surviving paths (the
@@ -370,8 +369,7 @@ sentences.
 
 Every grader checks the item's `ground_truth` when the compiled probe carries
 one, and refuses an item whose check disagrees with it: the expected
-behaviour per type (`apply` for P1, P3, P4, P12, and P13, `baseline` for the
-P1 control, `avoid` for P2, P5, P10, and P11, `resume` or `clarify` for P6
+behaviour per type (`apply` for P1, P3, P4, P12, and P13, `avoid` for P2, P5, P10, and P11, `resume` or `clarify` for P6
 matching the presence of `check.clarify`, `answer` for P8 with `check.answer`
 among the present values, `abstain` for P9). P8 and P9 read
 `ground_truth.stale` as competing and guessed values, P12 reads
@@ -581,7 +579,8 @@ the P12 `source` command log from a run's `tools.jsonl`.
 
 `tests/fixtures/grade/` holds a known pass and a known fail for every
 probe type (P7's as an answer pair with scripted judge verdicts), extra fixtures for each branch a grader can take,
-and P1 control items (`tests/fixtures/grade/README.md` gives their
-provenance). The P1 and P1 control items come from live runs; the others
+and two P1 fail snapshots the harness's `SnapshotRecorder` captured
+(`tests/fixtures/grade/README.md` gives their provenance). The P1 items
+come from live runs; the others
 are constructed from compiled checks, because those probe types have not
 reached a live run yet.

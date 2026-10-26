@@ -62,15 +62,25 @@ also carry three sections:
   delivery) hold from first to last on the positive sourced probes only:
   P1, P3, P4 on its `in` side, P6 items that expect `resume`, P8, P12, and
   P13 (`RANKING_GATE_ITEMS`). Avoid, abstain, and should-not-apply items
-  (P2, P5, P9, P10, P11, P1-control, P8-twin, a P4 `out` item, a P6
+  (P2, P5, P9, P10, P11, P8-twin, a P4 `out` item, a P6
   `clarify` item) are outside the gate: their right answer withholds or
   leaves out what a source says, and the oracle note quotes it, so the
   oracle arm sits below the host there by design. The apply graders stay
   strict: a clarifying question on an apply item fails it.
 
+- `no_source_control`: the run arm that serves as the memory-free control.
+  It must be a run arm whose delivery mode is `none`: it meets the same
+  scripted conveyances, commits, and probes as every arm, in its own
+  workspace, and receives no memory between sessions. An item's base rate is
+  that arm's pass rate on the same scripted item.
+
 Revision 2 registers whole-scenario A/A controls `host~aa` and `eidnara~aa`
 on seed 102, hold-out seed 103 over `eidnara` then `host`, and the ranking
-gate over `host-oracle`, `eidnara`, `host`.
+gate over `host-oracle`, `eidnara`, `host`. Revision 3 (`e8c1f508`) names
+`host` as the no-source control, in place of the P1 control items of
+generator `sim-scenario/v5`. Those asked the P1 task in the same workspace
+before the rule was conveyed, and agent edits persist across sessions, so on
+every arm the agent had done the P1 task before its P1 probe.
 
 The validator (`bun run prereg:validate`) refuses a stale tier digest, a seed or
 host the tier does not run, an arm without a profile or with a capability
@@ -79,7 +89,8 @@ between arms of one delivery mode; an A/A seed outside `seeds` or a pair
 that is not one run arm twice; a hold-out seed inside `seeds`, a hold-out arm
 outside the run arms, or a hold-out order that does not permute
 `holdout.arms`; and a ranking gate whose order is not one run arm per mode in
-that order or whose items differ from `RANKING_GATE_ITEMS`. The run refuses
+that order or whose items differ from `RANKING_GATE_ITEMS`; and a
+no-source control that is not a run arm or delivers memory. The run refuses
 a qualification over another tier, a seed or host it does not list, an arm
 outside the seed's order, and an A/A control label the seed does not
 register; the tier pre-registration still supplies the liveness bounds,

@@ -12,7 +12,7 @@
     "project": "mini-redis",
     "session": "s-0003",
     "text": "Put a cap on how many keys one GET-style request may name, and reject requests above it.",
-    "type": "P1-control"
+    "type": "P1"
   },
   "snapshots": [
     {
@@ -178,7 +178,7 @@
     "verdict": "fail",
     "reason": "rule not applied",
     "metrics": {
-      "P1-control.pass": false
+      "P1.pass": false
     },
     "inputs": [
       "host:q-0012:diff"

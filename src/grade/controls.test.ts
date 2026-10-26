@@ -114,9 +114,8 @@ const outcome = (p: ProbeItem, t: Turn) => {
 const NOOP: Turn = {};
 const literal = (p: ProbeItem) => (p.ground_truth?.present[0]?.[0] ?? "") as string;
 
-describe("P1 and P1-control: the rule holds on every construct it governs, in its scope", () => {
+describe("P1: the rule holds on every construct it governs, in its scope", () => {
     const p1 = probeOf("P1", "rs-cmd-const-prefix");
-    const control = probeOf("P1-control", "rs-cmd-const-prefix");
     const token = literal(p1);
     const constant = (path: string, name: string) => ({
         path,
@@ -137,13 +136,11 @@ describe("P1 and P1-control: the rule holds on every construct it governs, in it
             ],
         };
         expect(outcome(p1, alternative)).toEqual(["pass"]);
-        expect(outcome(control, alternative)).toEqual(["pass"]);
     });
 
     test("a no-op, an unrelated edit, the wrong scope, or a note is no application", () => {
         const none = ["fail", "rule not applicable to the change"];
         expect(outcome(p1, NOOP)).toEqual(none);
-        expect(outcome(control, NOOP)).toEqual(none);
         const unrelated = { files: [{ path: "src/cmd/get.rs", lines: ["fn helper() {}"] }] };
         expect(outcome(p1, unrelated)).toEqual(none);
         expect(outcome(p1, { files: [constant("src/lib.rs", `${token}_MAX_KEYS`)] })).toEqual(none);
@@ -368,28 +365,28 @@ describe("P2 and P11: no over-application, and a turn that changed no code is no
 });
 
 describe("P3: the authoritative value in code, not a stale one or a note", () => {
-    const p3 = probeOf("P3", "rs-scan-page");
+    const p3 = probeOf("P3", "rs-max-conns");
     const [value, name] = p3.ground_truth?.present[0] ?? [];
     const stale = (p3.ground_truth?.absent[0] ?? "") as string;
 
     test("the value or its named constant passes", () => {
         const byValue = {
-            files: [{ path: "src/cmd/mget.rs", lines: [`const CHUNK: usize = ${value};`] }],
+            files: [{ path: "src/server.rs", lines: [`const MAX_CONNECTIONS: usize = ${value};`] }],
         };
         expect(outcome(p3, byValue)).toEqual(["pass"]);
         const byName = {
-            files: [{ path: "src/cmd/mget.rs", lines: [`let chunk = ${name}_PAGE_SIZE;`] }],
+            files: [{ path: "src/server.rs", lines: [`let cap = ${name}_MAX_CONNECTIONS;`] }],
         };
         expect(outcome(p3, byName)).toEqual(["pass"]);
     });
 
     test("a stale value, a no-op, and a note fail", () => {
         const old = {
-            files: [{ path: "src/cmd/mget.rs", lines: [`const CHUNK: usize = ${stale};`] }],
+            files: [{ path: "src/server.rs", lines: [`const MAX_CONNECTIONS: usize = ${stale};`] }],
         };
         expect(grade(p3, old).metrics["P3.reliance"]).toBe("stale");
         expect(outcome(p3, NOOP)).toEqual(["fail", "relied on neither"]);
-        const note = { files: [{ path: "notes/page.md", lines: [`page size ${value}`] }] };
+        const note = { files: [{ path: "notes/limits.md", lines: [`client cap ${value}`] }] };
         expect(outcome(p3, note)).toEqual(["fail", "relied on neither"]);
     });
 });
@@ -481,6 +478,35 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
         expect(outcome(p5, NOOP)).toEqual(["fail", "no code change"]);
         const searched = { commands: ["grep -rn 'static STORE: Mutex<State>' src"] };
         expect(grade(p5, searched).verdict).toBe("fail");
+    });
+
+    test("a timer the app or a function owns passes; a module-level setInterval fails", () => {
+        const sweep = probeOf("P5", "ts-no-set-interval");
+        for (const line of [
+            "\t\tthis.sweeper = setInterval(() => this.expire(), 1000)",
+            "\tconst sweeper = setInterval(sweep, 1000)",
+        ]) {
+            const owned = { files: [{ path: "src/index.ts", lines: [line] }] };
+            expect(outcome(sweep, owned)).toEqual(["pass"]);
+        }
+        const declaredThenOwned = {
+            files: [
+                {
+                    path: "src/index.ts",
+                    lines: ["let sweeper: Timer", "\t\tthis.sweeper = setInterval(sweep, 1000)"],
+                },
+            ],
+        };
+        expect(outcome(sweep, declaredThenOwned)).toEqual(["pass"]);
+        for (const line of [
+            "setInterval(() => expire(store), 1000)",
+            "const sweeper = setInterval(() => expire(store), 1000)",
+            "export let sweeper: Timer = setInterval(sweep, 1000)",
+            "const sweeper = globalThis.setInterval(sweep, 1000)",
+        ]) {
+            const module = { files: [{ path: "src/store.ts", lines: [line] }] };
+            expect(outcome(sweep, module)).toEqual(["fail", "reused the rejected approach"]);
+        }
     });
 });
 

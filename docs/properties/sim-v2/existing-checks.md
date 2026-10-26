@@ -28,7 +28,7 @@ Checks in this tree that enforce records at M5 (the grading unit, #1029):
 
 | Check | Records | Status |
 | --- | --- | --- |
-| `src/grade/probes.test.ts`: transcript artefact refused and exact input ids per fixture, first attempt only, strictly increasing grade versions, no grade for a failed turn, P13 fixtures, P1/control pairing by fact, P11 false-positive weight | SIM-P40, P41, P42, P46, P47, P49, P50 | unaudited |
+| `src/grade/probes.test.ts`: transcript artefact refused and exact input ids per fixture, first attempt only, strictly increasing grade versions, no grade for a failed turn, P13 fixtures, P11 false-positive weight | SIM-P40, P41, P42, P46, P47, P50 | unaudited |
 
 Checks in this tree that enforce records at M7:
 
@@ -55,5 +55,14 @@ Checks for the delivery-mode arms and the qualification controls (Workstream A S
 | `src/run/capabilities.ts` `observeDelivery` and `deliveryMismatches` (before `EndArm`): each owed oracle note in a request of its turn, none misplaced, none on another arm; no plugin block on an explicit-search arm | SIM-P78, SIM-P79 | unaudited |
 | `src/hosts/profiles.ts` `capabilityGaps`: `eidnara-search` refused for `memory_injection` | SIM-P79 | unaudited |
 | `src/grade/probes.ts` `P8-twin` grader and `src/grade/controls.test.ts` positive and negative answers | SIM-P80 | unaudited |
+
+Checks for the no-source control and the fact-bank presuppositions (S6):
+
+| Check | Records | Status |
+| --- | --- | --- |
+| `src/scenario/compile.test.ts`: no probe of a project asks a P1 task before that P1 item, apart from an earlier instance of its line (S-101 and M-201, framings stripped) | SIM-P82 | unaudited |
+| `src/corpus/presuppositions.ts` `checkPresuppositions` (called by `loadCompileInput` in `src/scenario/inputs.ts`) and `presuppositionProblems` (called by `scripts/corpus-repos.ts`): each `requires` entry matches at the pinned base and twin commits | SIM-P81 | unaudited |
+| `src/corpus/fact-bank.ts` `requirementShapeProblems` (corpus checker): every language template carries a non-empty `requires` list of fixed paths and valid patterns | SIM-P81 | unaudited |
+| `src/corpus/presuppositions.test.ts`: missing file, pattern miss, twin-only miss, blank and malformed patterns, a missing checkout, and the committed bank against the real checkouts | SIM-P81 | unaudited |
 
 None found: user-sim, tape, clock, and counterfactual checks.

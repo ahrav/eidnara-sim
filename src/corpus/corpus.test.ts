@@ -98,7 +98,7 @@ describe("committed corpus", () => {
         broken.any.anchor[1].id = "lookup-port";
         delete broken.any.never_settled;
         expect(bankProblems(broken)).toEqual([
-            "fact-bank schema: sim-fact-bank/v0 is not sim-fact-bank/v3",
+            "fact-bank schema: sim-fact-bank/v0 is not sim-fact-bank/v4",
             "fact-bank rust/plan[0] rs-plan-field: probe missing",
             "fact-bank rust/rationale: expected at least 1 templates",
             "fact-bank rust/filler: expected a non-empty list of distinct non-blank strings",
@@ -109,6 +109,27 @@ describe("committed corpus", () => {
             "fact-bank any/anchor[0] anchor-ticket: check key must_not pattern [unclosed is not a regular expression",
             "fact-bank any/anchor[1] lookup-port: duplicate template id",
             "fact-bank python: unknown language",
+        ]);
+    });
+
+    test("a language template names fixed project paths and valid patterns for its presupposed constructs", () => {
+        const bank = JSON.parse(readFileSync(join(CORPUS_DIR, "fact-bank.json"), "utf8"));
+        const broken = structuredClone(bank);
+        delete broken.rust.constraint[0].requires;
+        broken.rust.constraint[1].requires = [];
+        broken.rust.decision[0].requires = [{ path: "src/{token}.rs", pattern: "x" }];
+        broken.typescript.rejected[0].requires = [
+            { path: "../outside.ts", pattern: "x" },
+            { path: "src/index.ts", pattern: "[unclosed" },
+            { path: "src/index.ts" },
+        ];
+        expect(bankProblems(broken)).toEqual([
+            "fact-bank rust/constraint[0] rs-cmd-const-prefix: requires is not a non-empty list",
+            "fact-bank rust/constraint[1] rs-cmd-error-tag: requires is not a non-empty list",
+            "fact-bank rust/decision[0] rs-max-conns: requires[0] path is not a fixed project path",
+            "fact-bank typescript/rejected[0] ts-no-module-map: requires[0] path is not a fixed project path",
+            "fact-bank typescript/rejected[0] ts-no-module-map: requires[1] pattern is not a regular expression",
+            "fact-bank typescript/rejected[0] ts-no-module-map: requires[2] needs path and pattern",
         ]);
     });
 
@@ -169,13 +190,13 @@ describe("committed corpus", () => {
             "fact-bank rust/constraint[3] rs-test-suffix: check needs must or paths_must",
             "fact-bank rust/constraint[4] rs-tracing-target: check key scope is not a directory prefix ending in / or a file path",
             "fact-bank rust/constraint[4] rs-tracing-target: check key applies needs must, which every governed unit matches",
-            "fact-bank rust/decision[0] rs-scan-page: authority missing",
+            "fact-bank rust/decision[0] rs-max-conns: authority missing",
             "fact-bank rust/decision[1] rs-conn-buffer: authority content does not satisfy the check",
             "fact-bank rust/plan[0] rs-plan-field: a plan task binds only {token} and {TOKEN}, which a second task rebinds",
             "fact-bank rust/plan[0] rs-plan-field: check key must pattern {tokne} names an unknown placeholder",
             "fact-bank rust/plan[1] rs-plan-cmd: a plan task binds only {token} and {TOKEN}, which a second task rebinds",
             "fact-bank rust/plan[1] rs-plan-cmd: check key must pattern {code} names an unknown placeholder",
-            "fact-bank rust/rationale[0] rs-why-noalloc: check key judge is blank",
+            "fact-bank rust/rationale[0] rs-why-check: check key judge is blank",
             "fact-bank rust/rejected[0] rs-no-global-mutex: check key answer is not graded for rejected facts",
             "fact-bank rust/scoped_update[0] rs-scope-log-level: update missing",
             "fact-bank typescript/constraint[0] ts-const-prefix: check needs must or paths_must",
@@ -204,7 +225,7 @@ describe("committed corpus", () => {
         broken.typescript.scoped_update[0].variants[0].outer = "backtick";
         expect(bankProblems(broken)).toEqual([
             "fact-bank rust/constraint[0] rs-cmd-const-prefix: revise names an unknown placeholder",
-            "fact-bank rust/decision[0] rs-scan-page: variants repeat",
+            "fact-bank rust/decision[0] rs-max-conns: variants repeat",
             "fact-bank rust/plan[1] rs-plan-cmd: check needs must, which a clarify item names",
             "fact-bank rust/scoped_update[0] rs-scope-log-level: variants is not a list of at least two objects",
             "fact-bank rust/tool_error[0] rs-check-replay: form is not tool_result or pasted",

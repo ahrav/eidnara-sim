@@ -1,4 +1,4 @@
-import { type GradeRecord, runsScript, type SourceEvent } from "../grade/probes";
+import { type GradeRecord, RECORDED_TYPES, runsScript, type SourceEvent } from "../grade/probes";
 import type { ConverseBody } from "../proxy/classify";
 import type { CallRecord } from "../proxy/records";
 import { type RequestPart, rebuildRequest } from "../proxy/requests";
@@ -407,8 +407,6 @@ export function probeEvidence(
     const present = (gt.present ?? []).filter((g) => g.length > 0);
     const stale = gt.stale ?? [];
     const sources = sourceEvents(run.scenario, probe);
-    // A control or baseline item has no source: the rule's literal must stay out of its context.
-    const control = probe.ground_truth !== undefined && sources.length === 0 && present.length > 0;
     const event = probe.event ?? null;
     const session = probe.session ?? null;
     const project = probe.project ?? null;
@@ -476,22 +474,6 @@ export function probeEvidence(
                 },
             };
         }
-        if (control) {
-            const leaked = contextHits.flatMap((h) => (h ? [h] : []));
-            return leaked.length > 0
-                ? {
-                      stage: name,
-                      status: "failed",
-                      reason: `the rule's literal ${leaked[0]?.alt} reached the probe context, which has no source for it`,
-                      pointers: leaked.map((h) => callPointer(h.c)),
-                  }
-                : {
-                      stage: name,
-                      status: "ok",
-                      reason: "the rule's literal stayed out of the probe context",
-                      pointers: turnCalls.map(callPointer),
-                  };
-        }
         return delivered
             ? {
                   stage: name,
@@ -541,7 +523,7 @@ export function probeEvidence(
             return {
                 stage: "source",
                 status: "n/a",
-                reason: "control or baseline item; no source by construction",
+                reason: "the scenario records no source for the item",
                 pointers: [],
             };
         }
@@ -774,14 +756,6 @@ export function probeEvidence(
                 pointers: [],
             };
         }
-        if (present.length === 0 || control) {
-            return {
-                stage: "persisted",
-                status: "n/a",
-                pointers: [],
-                detail: { objects: persistedHits().map((h) => h.length) },
-            };
-        }
         const hits = persistedHits();
         const before = hits.map((h) => h.filter(existsAt));
         if (before.every((h) => h.length > 0)) {
@@ -836,17 +810,6 @@ export function probeEvidence(
                     stale.some((s) => holds(o.text, s)),
             )
             .map((o) => o.id);
-        if (control) {
-            const leaked = eligible.flat();
-            return leaked.length > 0
-                ? {
-                      stage: "eligibility",
-                      status: "failed",
-                      reason: `${leaked[0]?.id} carries the rule's literal and is eligible in ${project}, which has no source for it`,
-                      pointers: leaked.slice(0, 5).map(objectPointer),
-                  }
-                : { stage: "eligibility", status: "ok", pointers: [] };
-        }
         if (eligible.every((h) => h.length > 0)) {
             return {
                 stage: "eligibility",
@@ -957,18 +920,6 @@ export function probeEvidence(
             }
             return null;
         });
-        if (control) {
-            const leaked = hits.flatMap((h) => (h ? [h] : []));
-            return leaked.length > 0
-                ? {
-                      stage: "retrieval",
-                      status: "failed",
-                      reason: `${leaked[0]?.cand.source} returned the rule's literal in a turn with no source for it`,
-                      pointers: leaked.map((h) => h.cand.pointer),
-                      detail: { searches },
-                  }
-                : { stage: "retrieval", status: "ok", pointers: [], detail: { searches } };
-        }
         if (hits.every(Boolean)) {
             return {
                 stage: "retrieval",
@@ -996,11 +947,11 @@ export function probeEvidence(
         path: "grades.jsonl",
         at: `${grade.item}/${grade.arm} v${grade.version}`,
     };
-    const held = control ? grade.verdict === "fail" : grade.verdict === "pass";
+    const held = grade.verdict === "pass";
     const applicationStage: Stage = {
         stage: "application",
         status: grade.verdict === "excluded" ? "excluded" : held ? "ok" : "failed",
-        ...(grade.reason ? { reason: control ? `control: ${grade.reason}` : grade.reason } : {}),
+        ...(grade.reason ? { reason: grade.reason } : {}),
         pointers: [gradePointer, { path: `${armName}/snapshots.jsonl`, at: grade.snapshot }],
     };
 
@@ -1023,7 +974,6 @@ export function probeEvidence(
     const attributed = attribute(stages, {
         verdict: grade.verdict,
         memory,
-        controls: control,
         delivered,
         staleOnly: present.length > 0 && staleInContext.length > 0 && !delivered,
         flagged: flagged ? (sessionRow as SessionHealth) : null,
@@ -1113,13 +1063,11 @@ export function attribute(
     o: {
         verdict: string;
         memory: boolean;
-        controls: boolean;
         delivered: boolean;
         staleOnly: boolean;
         flagged: SessionHealth | null;
     },
 ): ProbeEvidence["attributed"] {
-    const reach: StageName = o.memory ? "delivery" : "context";
     const at = (name: StageName) => stages.find((s) => s.stage === name);
     if (o.verdict === "excluded") {
         // An item set aside because its evidence never existed (a P12 check that never ran)
@@ -1129,32 +1077,6 @@ export function attribute(
             return { cause: missing.stage, status: "unavailable", reason: missing.reason ?? "" };
         const app = at("application") as Stage;
         return { cause: "application", status: "excluded", reason: app.reason ?? "excluded" };
-    }
-    if (o.controls) {
-        // A control's grade passes when the agent applied the rule with no source for it.
-        if (o.verdict !== "pass") {
-            return {
-                cause: "none",
-                status: "ok",
-                reason: "control: the rule stays unapplied without its source",
-            };
-        }
-        const ctx = at(reach);
-        if (ctx?.status === "unobserved") {
-            return { cause: reach, status: "unobserved", reason: ctx.reason ?? "unobserved" };
-        }
-        if (ctx?.status === "failed") {
-            return {
-                cause: o.memory ? "eligibility" : "context",
-                status: "failed",
-                reason: ctx.reason ?? "the rule reached the probe context with no source in scope",
-            };
-        }
-        return {
-            cause: "application",
-            status: "failed",
-            reason: "control: the rule was applied with no source in the probe context",
-        };
     }
     if (o.verdict === "pass") return { cause: "none", status: "ok", reason: "passed" };
     if (o.flagged?.cause) {
@@ -1191,11 +1113,21 @@ export function attribute(
     return { cause: "application", status: app.status, reason: app.reason ?? o.verdict };
 }
 
-/** Every graded probe of every arm, P7 pairwise grades aside. */
+/**
+ * Every graded probe of every arm, P7 pairwise grades and recorded `P1-control` grades aside: a
+ * control's pass meant the agent applied a rule it had no source for, which the stages here
+ * read as the opposite.
+ */
 export function runEvidence(run: RunData, health: SessionHealth[]): ProbeEvidence[] {
     const probes = new Set(run.scenario.probes.map((p) => p.id));
     return run.grades
-        .filter((g) => g.against === undefined && probes.has(g.item) && run.arms.has(g.arm))
+        .filter(
+            (g) =>
+                g.against === undefined &&
+                !RECORDED_TYPES.includes(g.probe_type) &&
+                probes.has(g.item) &&
+                run.arms.has(g.arm),
+        )
         .sort((a, b) => (a.arm + a.item < b.arm + b.item ? -1 : 1))
         .map((g) => probeEvidence(run, g.arm, g, health));
 }

@@ -235,6 +235,7 @@ export function proxyJudge(
                         }),
                         signal: AbortSignal.timeout(deadlineMs),
                         redirect: "error",
+                        keepalive: false,
                     },
                 );
                 if (!response.ok) throw new GradeRefused(`judge call failed: ${response.status}`);

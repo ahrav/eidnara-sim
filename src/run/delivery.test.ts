@@ -95,13 +95,14 @@ describe("oracle note", () => {
         );
     });
 
-    test("every probe turn with sources gets a marker-free note; a control gets none", () => {
+    test("every probe turn with sources gets a marker-free note; a turn without sources gets none", () => {
         const notes = oracleBackgrounds(qualified, keys);
         const sourced = qualified.probes.filter((p) => (p.ground_truth?.sources ?? []).length > 0);
         expect([...notes.keys()].sort()).toEqual(sourced.map((p) => p.event as string).sort());
-        const control = qualified.probes.find((p) => p.type === "P1-control");
-        expect(notes.has(control?.event as string)).toBe(false);
-        expect(oracleBackground(qualified, control?.id as string)).toBeNull();
+        const unsourced = qualified.probes.find((p) => p.type === "P14");
+        expect(unsourced?.ground_truth).toBeUndefined();
+        expect(notes.has(unsourced?.event as string)).toBe(false);
+        expect(oracleBackground(qualified, unsourced?.id as string)).toBeNull();
     });
 
     test("a scenario whose own text holds the opening, or a note with a marker, refuses the run", () => {

@@ -5,7 +5,7 @@ scenario to `runs/scenarios/<tier>-<seed>.json`; a `--embedder local` compile
 defaults to `runs/scenarios/<tier>-<seed>.local.json`, so a stand-in never
 replaces a Titan scenario. The inputs are the seed, the
 tier's pre-registration in `prereg/<tier>.json`, the corpus under `corpus/`,
-and the generator version `sim-scenario/v5`. The same inputs produce the same
+and the generator version `sim-scenario/v6`. The same inputs produce the same
 bytes in any process, and a run reuses a cached `scenario.json` only when its
 top-level `schema`, generator version, pre-registration hash, and corpus
 inputs hash match the current inputs. The compiler scores cue and probe pairs with
@@ -40,7 +40,7 @@ The scenario file is canonical JSON with these sections:
 | `projects` | Each repository in `corpus/repos.json` and its twin |
 | `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, `basis`, `line`, `revision`, `supersedes`, statement, the cue texts that carry it, and for P12 facts the `form` (`tool_result` or `pasted`) |
-| `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, the event that delivers it, and, for every probe with user text, its `ground_truth`. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` and `commands_must_not` over the command log, an optional `scope` (a directory prefix or one file path) that limits the diff-channel keys to files under it (on a P4 `out` item, to the files outside it), `applies` (regexes for the constructs a constraint governs, each of which must carry the `must` patterns), `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, `clarify` for a P6 item whose right response is a question (patterns the final answer must all carry), `side` (`in` or `out`) for P4, `turns` for P13, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
+| `probes` | Probe items P1 to P14 with project, session, user text, the grading check, the event that delivers it, and, for every probe with user text, its `ground_truth`. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` and `commands_must_not` over the command log, an optional `scope` (a directory prefix or one file path) that limits the diff-channel keys to files under it (on a P4 `out` item, to the files outside it), `applies` (regexes for the constructs a constraint governs, each of which must carry the `must` patterns), `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, `clarify` for a P6 item whose right response is a question (patterns the final answer must all carry), `side` (`in` or `out`) for P4, `turns` for P13, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
 | `plans` | One record per P6 fact: project, `expect` (`resume` or `clarify`), and its history, each entry an event with the status it set (`accepted`, `revised`, `completed`) and the next actions it leaves open |
 | `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, each committed file of the fact and each shared first turn that joins its cue counted as a cue, each record naming its cue by `cue_sha256`, journaled to four decimals; the threshold gate compares the full-precision values |
 | `events` | `apply_diff` (a whole-file `content`, or `remove: true`), `session_start`, `user_turn`, and `session_end` events in scenario time |
@@ -51,14 +51,15 @@ The scenario file is canonical JSON with these sections:
 ## Sessions and time
 
 Each base repository gets `sessions_per_project` sessions and each twin a
-quarter as many, shuffled into one sequence. Every session opens on the
-repository state the scenario defines: the pinned commit plus the
-`apply_diff` events scheduled so far. An agent's edits in one session do not
-carry into the next, so every arm of a seed meets the same repository in every
-session, and a task text that recurs (the P1 control and its item, the
-single scoped-update template per language) is graded against the same
-starting tree each time. The scheduler owns that restore; the compiler relies
-on it. `forced_p90_sessions` sessions
+quarter as many, shuffled into one sequence. Each arm clones every project
+once at the pinned commit, and the `apply_diff` events land on that
+workspace between sessions. The agent's edits stay in the workspace, so a
+later session opens on the scripted commits plus everything the arm's agent
+changed before; arms of one seed share the scripted commits, and their trees
+differ by their agents' work. The only earlier probe of a project that asks
+a P1 item's task is the P1 item of an earlier instance of the same line,
+which a revision re-asks at M and above (Known limits). `forced_p90_sessions`
+sessions
 draw their request count from the tail above p90: each base repository takes
 an equal share, a seeded draw assigns any remainder, and each share spreads
 evenly over that repository's sessions; every other session draws from the full fitted distribution with
@@ -85,11 +86,31 @@ pre-registered seeds end between 0.2 and 1.2 days past it.
 
 Each probe type gets `paired_items_per_probe_type / (seeds * hosts)` items;
 the pre-registration validator requires that division to be exact. Facts come
-from the templates in `corpus/fact-bank.json` (`sim-fact-bank/v3`), filled
+from the templates in `corpus/fact-bank.json` (`sim-fact-bank/v4`), filled
 with generated tokens: `adjective_noun` words in lower, upper, and Pascal
 case, five-digit numbers from 10000 to 65535 (so a figure a template states
 as a port is a valid TCP port), and `adjective-noun-NN` codenames, from the v1
 harness word lists.
+
+### Presuppositions
+
+Every Rust and TypeScript template lists in `requires` the constructs its
+tasks presuppose: a project path and a regular expression the file must match
+(multiline, so `^` and `$` anchor lines). `src/corpus/presuppositions.ts`
+reads each file with `git cat-file blob <commit>:<path>` in every corpus
+checkout of the template's language, base and twin, at the commits
+`corpus/repos.json` pins, so the pinned commit's content is what counts. A
+Titan compile and a run's compile refuse the bank when a checkout is missing
+(run `bun run corpus:repos`), a checkout's HEAD differs from its pinned
+commit (a run clones HEAD), or a requirement fails, naming the template,
+tree, path, and pattern; an `--embedder local` compile checks when all four
+checkouts are present. `bun run corpus:repos` checks the same requirements
+after it clones, and the corpus checker refuses a language template without
+a non-empty `requires` list of fixed project paths and valid patterns.
+The check proves each named construct exists in each pinned tree. Whether a
+task still asks for behaviour the tree lacks is a reading of the source; the
+rr-campaign-3 audit (PR #44) records it per template, and SIM-P81 keeps it
+as an open question.
 
 ### Lines and supersession
 
@@ -113,9 +134,7 @@ of instance `k`. Instance `k + 1` supersedes instance `k` explicitly:
   predecessor's own required value, such as a commit-tag rule's complement,
   is that requirement restated and stays out), and everything earlier
   instances forbade, except a
-  pattern the new check requires. The P1 control of a revised constraint
-  carries the new requirement without those inherited forbids, since its
-  agent has yet to hear the revision;
+  pattern the new check requires;
 - the session that conveys instance `k + 1` opens with commits that remove
   every file the line committed earlier and the new instance does not
   rewrite, so the repository never holds two live states of one line; a
@@ -142,9 +161,8 @@ pasted, and a P3 value read from its authoritative file).
 | Probe | Fact kind | Placement |
 |---|---|---|
 | P1 | constraint | Later session of the same project, inside the constraint's scope |
-| P1 control | the P1 fact | The same task as the P1 item, in the same window before the fact is conveyed; `ground_truth.expect` is `baseline`, its `sources` are empty, and a revised line's control omits the forbids it would inherit |
 | P2 | the P1 fact | Later session of the same project, outside the scope; the check forbids the convention |
-| P3 | decision | A later session opens with a commit of the template's authoritative file (one stable path per template) and a first turn naming that path and saying it replaces the stated figure; the commit removes the line's notes and check scripts, and the probe follows in a later session; the check requires the file's value and forbids the stated one |
+| P3 | decision | A later session opens with a commit of the template's authoritative file (one stable path per template) and a first turn naming that path, saying it replaces the stated figure, and saying nothing needs changing yet, so the agent leaves the probe's task for the probe; the commit removes the line's notes and check scripts, and the probe follows in a later session; the check requires the file's value and forbids the stated one |
 | P4 | scoped update | A second conveyance narrows the rule to one module; items alternate inside and outside it, with the alternation offset by seed parity so the pooled counts balance per language across seeds, and `check.side` says which (`in` or `out`); both sides carry the update's `check.scope` |
 | P5 | rejected approach | Later session; the check forbids the rejected approach |
 | P6 | plan | First turn of the project's next session after the plan's latest conveyance, at least one hour after the previous session ends; see Plans below |
@@ -209,8 +227,9 @@ Commits fire only between sessions, so every commit lands at the start of
 the session whose first turn points at it:
 
 - a hand-applied diff adds a file whose content implies the fact, and the
-  first turn names that file and asks the agent to look it over without
-  stating the fact. A constraint template whose scope is a directory names an example
+  first turn says the user added that file (`I added \`<path>\``; every
+  committed path carries a fresh token) and asks the agent to look it over
+  without stating the fact. A constraint template whose scope is a directory names an example
   path inside that scope (`src/cmd/{token}.rs`, `src/adapter/{token}.ts`,
   `tests/{token}.rs`, `test/{codename}.{token}.test.ts`); every other template
   adds `notes/{token}.md`, a note that states the fact's current state;
@@ -237,7 +256,12 @@ registration adds its own items on top (`docs/run-command.md`):
 | stale | `ground_truth.stale` on reversed facts (the decoy), on revised instances (the predecessor's literals), on a revised P6 plan (the dropped step), and on P3 (the stated figure) | the current value, with the stale one absent; the compiler proves no stale literal reaches the agent after the current one or sits in the tree at the probe |
 | superseded | revised instances of a line (`supersedes` non-empty), on P3, P4, P6, P7, P10, P12, and P13 at S | the latest instance's rule or value |
 | wrong project | P11 (a P1 rule's task in the twin project), and with `wrong-project-lookup` P8-twin (a P8 question in the twin project) | the other project's rule stays out of the code; the other project's value is no answer |
-| should not apply | P1-control (the task before the rule is conveyed), P2 (outside the rule's scope), a P4 `out` item, P5 (a rejected approach), P9 (a question nobody settled), P10 (an incidental anchor) | the baseline behaviour, the rule absent, an abstention |
+| should not apply | P2 (outside the rule's scope), a P4 `out` item, P5 (a rejected approach), P9 (a question nobody settled), P10 (an incidental anchor) | the baseline behaviour, the rule absent, an abstention |
+
+The memory-free baseline of an item is the `host` arm's grade on the same
+scripted item: that arm meets the same conveyances, commits, and probes in
+its own workspace and receives no memory between sessions, and
+qualification Q registers it as `no_source_control`.
 
 The compiler adds P8-twin items only when its input names the qualification
 and the control; the manifest then records `qualification_sha256`, and a run
@@ -267,8 +291,7 @@ scenario when:
   carries a `present` literal;
 - a P3 item's authoritative value (one literal of each pattern) is missing
   from the tree, or a
-  `tool_result` P12 item's check script is still in it;
-- a P1 control follows a source of its fact.
+  `tool_result` P12 item's check script is still in it.
 
 Provider faults trigger after the last probe, source, or plan status turn of
 their session and after any P14 window in it, so a fault never withholds a
@@ -288,8 +311,8 @@ The compiler throws, and writes nothing, when:
 - any user text or diff path or content matches the marker set: probe ids,
   the word probe, fact, template, or probe item ids, or grading words
   (SIM-P07);
-- a probe turn precedes any conveyance, update, or diff of its fact, or a P1
-  control follows the first conveyance of its fact (SIM-P06);
+- a probe turn precedes any conveyance, update, or diff of its fact
+  (SIM-P06);
 - a template repeats in a project without a `revise` wording, or a probe text
   repeats for more facts of one project than the bank holds framings;
 - a commit finds no free session opening in its window;
@@ -346,27 +369,35 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `1463d12e` | 0.2767 | 0.4802 |
-| S | 102 | `9bbb45a3` | 0.2689 | 0.5229 |
-| M | 201 | `eda5ff8e` | 0.2606 | 0.5807 |
-| M | 202 | `1ea62d69` | 0.2595 | 0.5807 |
-| M | 203 | `3498591b` | 0.2593 | 0.551 |
-| L | 301 | `0443dc48` | 0.2599 | 0.5807 |
-| L | 302 | `b834c8b7` | 0.2593 | 0.5807 |
-| L | 303 | `d1fc2004` | 0.2605 | 0.5807 |
-| XL | 401 | `274d5843` | 0.2607 | 0.5807 |
+| S | 101 | `9a894781` | 0.2762 | 0.4982 |
+| S | 102 | `909187ab` | 0.2666 | 0.5229 |
+| M | 201 | `6100c3d5` | 0.3577 | 0.5807 |
+| M | 202 | `f4e10516` | 0.3538 | 0.5807 |
+| M | 203 | `d460e314` | 0.3214 | 0.551 |
+| L | 301 | `a155389b` | 0.324 | 0.5807 |
+| L | 302 | `4dc7794b` | 0.325 | 0.5807 |
+| L | 303 | `1238256b` | 0.3242 | 0.5807 |
+| XL | 401 | `ccead8c6` | 0.3185 | 0.5807 |
 
-Under qualification Q (revision 2, `d03fd8ca`), which adds its P8-twin
+Under qualification Q (revision 3, `e8c1f508`), which adds its P8-twin
 controls, the seeds compile to these scenarios; 103 is its exploratory
 hold-out:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| Q | 101 | `f36d5033` | 0.2767 | 0.4802 |
-| Q | 102 | `6ab5a114` | 0.2668 | 0.5229 |
-| Q | 103 | `c0b8dcf3` | 0.2705 | 0.4939 |
+| Q | 101 | `929e4edb` | 0.2762 | 0.4982 |
+| Q | 102 | `d935a927` | 0.2614 | 0.5229 |
+| Q | 103 | `b98217c7` | 0.2706 | 0.5021 |
 
 ## Known limits
+
+- A revised line asks its probe text again, behind a framing, in the
+  workspace the agent already changed. A revised decision (P3) or a flipped
+  quote rule asks for different code, but a P4 item on a side whose rule the
+  revision leaves unchanged, a repeated P10 task, and at M and above a
+  revised constraint's P1, P2, and P11 tasks meet work the agent did for the
+  earlier instance. At S each seed carries two such P4 and two such P10
+  items.
 
 - SWE-chat's per-prompt intent labels are gated, so sessions carry no intent
   kind.

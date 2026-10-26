@@ -1,6 +1,7 @@
 import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderJson } from "../src/corpus/build";
+import { pinnedTrees, presuppositionProblems } from "../src/corpus/presuppositions";
 import {
     buildTwin,
     cloneAt,
@@ -43,6 +44,11 @@ for (const repo of repos) {
             failures.push(`${label}: offline test outcome differs from repos.json`);
         }
     }
+}
+
+const bank = parseJson(readFileSync(join(CORPUS_DIR, "fact-bank.json"), "utf8"), "fact-bank.json");
+for (const problem of presuppositionProblems(bank, pinnedTrees(repos))) {
+    failures.push(`fact-bank: ${problem}`);
 }
 
 if (record && failures.length === 0) {

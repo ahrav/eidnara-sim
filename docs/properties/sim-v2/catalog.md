@@ -13,6 +13,8 @@ verify against when they were written.
 
 Stable ids: `SIM-P01` to `SIM-P77` carry the spec's proposed records,
 `SIM-P78` to `SIM-P80` the Workstream A S5 delivery-mode and control records,
+`SIM-P81` and `SIM-P82` the fact-bank presupposition and P1 no-pre-emption
+records,
 and
 `SIM-L01` to `SIM-L03` carry the liveness bounds OQ-6 asked for and M0
 pre-registers. Each id is the slug prefix and opens the `Guarantee:` line.
@@ -115,6 +117,8 @@ pre-registers. Each id is the slug prefix and opens the `Guarantee:` line.
 | SIM-P78 | [sim-p78-oracle-note-confined-to-its-turn](#sim-p78-oracle-note-confined-to-its-turn) | safety | `always` | explicit-config-only | S5 |
 | SIM-P79 | [sim-p79-explicit-search-arm-receives-no-injection](#sim-p79-explicit-search-arm-receives-no-injection) | safety | `always` | explicit-config-only | S5 |
 | SIM-P80 | [sim-p80-wrong-project-lookup-is-no-answer](#sim-p80-wrong-project-lookup-is-no-answer) | safety | `always` | explicit-config-only | S5 |
+| SIM-P81 | [sim-p81-template-presuppositions-hold-on-pinned-trees](#sim-p81-template-presuppositions-hold-on-pinned-trees) | safety | `always` | default-production | S6 |
+| SIM-P82 | [sim-p82-no-probe-asks-a-p1-task-before-its-item](#sim-p82-no-probe-asks-a-p1-task-before-its-item) | safety | `always` | default-production | S6 |
 | SIM-L01 | [sim-l01-turn-ends-within-turn-deadline](#sim-l01-turn-ends-within-turn-deadline) | liveness | `always` | default-production | M4 |
 | SIM-L02 | [sim-l02-background-job-ends-within-job-deadline](#sim-l02-background-job-ends-within-job-deadline) | liveness | `always` | default-production | M4 |
 | SIM-L03 | [sim-l03-tier-completes-within-wall-budget](#sim-l03-tier-completes-within-wall-budget) | liveness | `always` | default-production | M4 |
@@ -1380,24 +1384,25 @@ Open questions:
 
 Type: safety
 Reachability: default-production
-Status: active
-Exercised: partial - the M5 grading unit (#1029) exercises the grader on
-recorded fixtures in `src/grade/probes.test.ts`; run and report wiring lands in
-later units
+Status: invalidated
+Exercised: not yet - generator `sim-scenario/v6` compiles no control instance;
+the `host` arm's grade on the same P1 item gives the base rate
 Guarantee: SIM-P49: Every P1 item has a no-cue control instance with the same
 task, and the report pairs them.
 Check: `always` - for each P1 item, assert a control instance with the same task
 exists and the report pairs them.
-Fault/timing angle: none.
+Fault/timing angle: the control turn precedes the P1 probe in the same
+persisted workspace, so the agent's control work is in the tree at the probe.
 Required faults and enabling state: a probe plan with P1 items.
-Confidence: low - [evidence](evidence/sim-p49-p1-control-instance-paired.md).
-PROPOSED:
-reconstructed from the condensed index in spec #1007; the M5 grading unit
-(#1029) implements the grader and run and report wiring is still absent, and a
-default tier run reaches it.
-Existing check: `src/grade/probes.test.ts`, grading harness: P1 and its control
-are paired by fact under separate metrics; status unaudited
-Impact: P1 compliance cannot be separated from the task's base rate.
+Confidence: high - [evidence](evidence/sim-p49-p1-control-instance-paired.md).
+Invalidated by the S-101 qualification audit: on every arm the agent finished
+the P1 task at its control turn (q-0013, q-0021, q-0025, q-0029), so the P1
+probe found the task done. Qualification Q revision 3 registers `host` as the
+no-source control instead.
+Existing check: none. SIM-P82 records the no-pre-emption property that
+replaced this record.
+Impact: a control asked before its P1 item in a shared workspace pre-empts the
+P1 item it was meant to calibrate.
 Open questions: None.
 
 ### sim-p50-p11-false-positive-weight-applied
@@ -2246,6 +2251,74 @@ Open questions:
 - Whether a sentence that names the owner and still recommends the value
   (`use X, as mini-redis does`) should fail; the sentence rule passes it.
   Unresolved, needs the Q campaign's answers.
+
+### sim-p81-template-presuppositions-hold-on-pinned-trees
+
+Type: safety
+Reachability: default-production
+Status: active
+Exercised: yes - `src/corpus/presuppositions.test.ts` refuses a missing file,
+a pattern miss, a miss in the twin alone, and a template without
+requirements, and checks the committed bank against the four pinned corpus
+checkouts when they are present; every Titan compile of the registered seeds
+ran the check
+Guarantee: SIM-P81: Every Rust and TypeScript fact-bank template's `requires`
+entries hold in the base and twin corpus checkouts of its language at their
+pinned commits, so each task names code the agent's workspace holds.
+Check: `always` - for every Rust and TypeScript template and every base and
+twin corpus checkout of its language, each `requires` path exists at the
+pinned commit and its content matches the pattern (multiline) before a
+Titan or run compile succeeds; `always`, because one template that names an
+absent construct turns every item compiled from it into a question about
+code the agent cannot find.
+Fault/timing angle: none.
+Required faults and enabling state: the corpus checkouts from
+`bun run corpus:repos`.
+Confidence: medium -
+[evidence](evidence/sim-p81-template-presuppositions-hold-on-pinned-trees.md).
+The patterns were written against the repository source and checked by
+`git cat-file` at the pinned commits; a pattern names a construct, so a task
+can still misread a construct the pattern finds.
+Existing check: `checkPresuppositions` in `loadCompileInput`,
+`presuppositionProblems` in `scripts/corpus-repos.ts`, and
+`requirementShapeProblems` in the corpus checker (unaudited).
+Impact: an agent asks which code a task means, and the item grades a
+clarifying question as a failure on every arm.
+Open questions:
+- A `requires` pattern proves the construct exists; whether the task asks for
+  work the tree still lacks is a reading of the source, recorded per template
+  in the rr-campaign-3 audit. Unresolved, needs a semantic check.
+
+### sim-p82-no-probe-asks-a-p1-task-before-its-item
+
+Type: safety
+Reachability: default-production
+Status: active
+Exercised: partial - `src/scenario/compile.test.ts` checks the compiled
+S-101 and M-201 scenarios, framings stripped
+Guarantee: SIM-P82: No probe of a project asks a P1 item's task before that
+P1 item, apart from the P1 item of an earlier instance of the same line,
+which a revision re-asks behind a framing.
+Check: `always` - for every P1 item, assert that every earlier probe of its
+project whose text, framing stripped, equals the P1 task is the P1 item of
+an earlier instance of the same line; `always`, because one earlier asking
+from another probe lets the agent finish the task before the rule is
+tested.
+Fault/timing angle: agent edits persist across sessions in each arm's
+workspace, so any earlier asking of the task stays in the tree.
+Required faults and enabling state: a scenario with P1 items.
+Confidence: medium -
+[evidence](evidence/sim-p82-no-probe-asks-a-p1-task-before-its-item.md). The
+test compares tasks with the bank's framings stripped; at S it finds no
+repeat, at M-201 ten same-line repeats.
+Existing check: `src/scenario/compile.test.ts` `no probe of a project asks a
+P1 task before that P1 item, apart from an earlier instance of its line`
+(unaudited).
+Impact: a P1 item measures the earlier attempt instead of the rule.
+Open questions:
+- A revised constraint's P1 at M and above meets the work the earlier
+  instance's P1 left in the workspace. Unresolved, needs per-instance probe
+  texts in the fact bank.
 
 ## Liveness
 

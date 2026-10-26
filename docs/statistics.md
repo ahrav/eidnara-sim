@@ -202,14 +202,13 @@ families with their MDE and margin, and the harm metrics whose verdict is
 word parity is refused.
 
 `falsificationSet(prereg, pairs)` checks the harness falsification set
-(in-session repo-readable fact pass rate, gateway 4xx rate with no
-scheduled faults, pre-divergence pushback rate, wall time per scripted
+(gateway 4xx rate with no scheduled faults, pre-divergence pushback rate, wall time per scripted
 idle gap): each check's paired differences get a bootstrap interval, and
 a zero effect is an interval that covers zero; the differences are sorted
 before resampling so the seeded draw is independent of pair order. With
 fewer than two pairs
 a check has no result. An input that is not a record of collections, a name
 outside the set, a collection that is not an array of pair records, a value that is not finite
-or outside the check's domain (the three rates lie in [0, 1], the idle-gap
+or outside the check's domain (the two rates lie in [0, 1], the idle-gap
 wall time is non-negative), a bootstrap plan outside 40 to 10,000 replicates, or an
 interval that is not finite is refused.

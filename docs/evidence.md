@@ -64,19 +64,14 @@ the stage.
 
 Each probe gets one `attributed` cause with a status and reason:
 
-1. A control item (ground truth with no sources: `P1-control`, expect
-   `baseline`) holds when its grade fails, since the grade passes only when
-   the agent applied the rule. A control that applied the rule is attributed
-   to `eligibility` (memory arm) or `context` (host arm) when the rule's
-   literal reached the probe context, and to `application` otherwise.
-2. A passing grade is attributed `none`.
-3. A probe in a session flagged by context health at or before the probe
+1. A passing grade is attributed `none`.
+2. A probe in a session flagged by context health at or before the probe
    turn is attributed `compaction-refused` or `context-overflow`, whatever its
    stages show.
-4. A superseded literal in the probe context with the current one absent is
+3. A superseded literal in the probe context with the current one absent is
    attributed to `eligibility` (memory arm) or `context` (host arm).
-5. A probe whose context carried every group is attributed to `application`.
-6. Otherwise the first stage whose status is not `ok` or `n/a`.
+4. A probe whose context carried every group is attributed to `application`.
+5. Otherwise the first stage whose status is not `ok` or `n/a`.
 
 ## Context health
 

@@ -39,6 +39,7 @@ import {
     type ProbeEvidence,
     partText,
     probeEvidence,
+    runEvidence,
     searchRoute,
 } from "./stages";
 
@@ -758,39 +759,18 @@ describe("evidence stages on the host arm", () => {
     });
 });
 
-describe("control items", () => {
-    const control: EvidenceScenario = {
-        ...SCENARIO,
-        probes: SCENARIO.probes.map((p) => ({
-            ...p,
-            type: "P1-control",
-            ground_truth: { expect: "baseline", present: [["TAG_X"]], sources: [] },
-        })),
+test("a recorded P1-control grade stays out of the run's evidence", () => {
+    const run = build({ calls: [searchTurn("TAG_X")], verdict: "pass" });
+    expect(runEvidence(run, sessionHealth(run))).toHaveLength(1);
+    const control = {
+        ...run,
+        scenario: {
+            ...run.scenario,
+            probes: run.scenario.probes.map((p) => ({ ...p, type: "P1-control" })),
+        },
+        grades: run.grades.map((g) => ({ ...g, probe_type: "P1-control" })),
     };
-    test("a control that leaves the rule unapplied holds", () => {
-        const p = evidence(build({ scenario: control, calls: [searchTurn("nothing")] }));
-        expect(p.attributed.cause).toBe("none");
-        expect(stage(p, "application")?.status).toBe("ok");
-    });
-    test("a control that applies a rule its context carried blames eligibility", () => {
-        const p = evidence(
-            build({ scenario: control, calls: [searchTurn("TAG_X")], verdict: "pass" }),
-        );
-        expect(p.attributed).toMatchObject({ cause: "eligibility", status: "failed" });
-        expect(stage(p, "retrieval")?.status).toBe("failed");
-    });
-    test("an excluded control is neither held nor lost at a stage", () => {
-        const p = evidence(
-            build({ scenario: control, calls: [searchTurn("nothing")], verdict: "excluded" }),
-        );
-        expect(p.attributed).toMatchObject({ cause: "application", status: "excluded" });
-    });
-    test("a control that applies the rule unprompted blames application", () => {
-        const p = evidence(
-            build({ scenario: control, calls: [searchTurn("nothing")], verdict: "pass" }),
-        );
-        expect(p.attributed.cause).toBe("application");
-    });
+    expect(runEvidence(control, sessionHealth(control))).toEqual([]);
 });
 
 describe("context health", () => {

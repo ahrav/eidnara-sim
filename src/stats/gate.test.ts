@@ -362,7 +362,6 @@ describe("tier gates", () => {
         });
         const by = Object.fromEntries(out.map((z) => [z.check, z.zero_effect]));
         expect(by).toEqual({
-            in_session_repo_readable_fact_pass: null,
             gateway_4xx_rate_without_faults: false,
             pre_divergence_pushback_rate: true,
             wall_ms_per_scripted_idle_gap: null,

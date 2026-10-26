@@ -7,7 +7,7 @@ import { scheduleFaults, validateFault } from "./faults";
 import { bm25Ratio, cosine, type Embedder, round4 } from "./similarity";
 import { Tokens } from "./tokens";
 
-export const GENERATOR_VERSION = "sim-scenario/v5";
+export const GENERATOR_VERSION = "sim-scenario/v6";
 
 export const MANNER_WEIGHTS = {
     correction: 0.35,
@@ -38,6 +38,8 @@ export interface Template {
     paste?: string;
     check: Record<string, unknown>;
     out_check?: Record<string, unknown>;
+    /** The constructs the template's tasks presuppose in each pinned repository of its language. */
+    requires?: { path: string; pattern: string }[];
 }
 export type Bank = Record<string, Record<string, Template[] | string[]>>;
 
@@ -101,15 +103,7 @@ interface Commits {
  * output or an authoritative file).
  */
 export type Basis = "instruction" | "convention" | "incidental" | "observation";
-export type Expect =
-    | "apply"
-    | "baseline"
-    | "avoid"
-    | "answer"
-    | "abstain"
-    | "explain"
-    | "resume"
-    | "clarify";
+export type Expect = "apply" | "avoid" | "answer" | "abstain" | "explain" | "resume" | "clarify";
 
 export interface Fact {
     id: string;
@@ -815,8 +809,8 @@ export async function compileScenario(input: CompileInput) {
             const path = tpl.example ? render(tpl.example.path, vars) : `notes/${word}.md`;
             const pushed =
                 revision > 0
-                    ? `I pushed a change to \`${path}\` that replaces something we set up earlier. Look it over before we continue.`
-                    : `I pushed a small change to \`${path}\`. Look it over before we continue.`;
+                    ? `I added \`${path}\`; it replaces something we set up earlier. Look it over before we continue.`
+                    : `I added \`${path}\`. Look it over before we continue.`;
             conveyed = cue(pushed, commits([{ path, content }]), content);
         } else if (manner === "tool_error") {
             const path = `scripts/check_${word}.sh`;
@@ -850,7 +844,6 @@ export async function compileScenario(input: CompileInput) {
         }
         const accepted = conveyed;
         const startOf = (t: Turn) => sessionOf(t.session).start_ms;
-        const opened = startOf(conveyed);
         const later = (p: string) => inWindow(p).filter((x) => x.start_ms > startOf(conveyed));
         const updateText = planRevised
             ? `Change of plan for next time: drop ${taskText(0)}; the next step is ${taskText(1)} instead.`
@@ -877,7 +870,6 @@ export async function compileScenario(input: CompileInput) {
             candidates: Session[],
             truth: TruthOf,
             at = all,
-            factOf: string | null = id,
             opens = false,
         ) => {
             const pid = pad("q", probes.length);
@@ -886,7 +878,7 @@ export async function compileScenario(input: CompileInput) {
             const turn = {
                 role: "probe" as const,
                 text: shown,
-                ...(factOf ? { fact: factOf } : {}),
+                fact: id,
                 probe: pid,
             };
             const t = opens ? takeOpening(candidates, turn, "probe") : take(candidates, at, turn);
@@ -996,10 +988,6 @@ export async function compileScenario(input: CompileInput) {
         const outText = render(tpl.out_probe ?? tpl.probe, vars);
         const fromConveyed = later(project.id);
         if (f.type === "P1") {
-            const before = win.filter((x) => x.start_ms < opened);
-            const control = truthFor("baseline");
-            const unprimed = append(append(base, superseded), negate(obsolete));
-            addProbe("P1-control", project.id, probeText, unprimed, before, control, all, null);
             addProbe("P1", project.id, probeText, check, fromConveyed, truthFor("apply"));
             addProbe("P2", project.id, outText, mustNot, fromConveyed, truthFor("avoid"));
             const twin = twinOf(project.id);
@@ -1035,7 +1023,6 @@ export async function compileScenario(input: CompileInput) {
                 target ? [target] : [],
                 truthFor(planExpect ?? "resume"),
                 all,
-                id,
                 true,
             );
             sessionOf(t.session).min_gap_ms = HOUR;
@@ -1066,7 +1053,7 @@ export async function compileScenario(input: CompileInput) {
             });
         } else if (f.kind === "decision" && tpl.authority) {
             const { path, content } = renderDeep(tpl.authority, vars);
-            const text = `I committed ${path}. Its figure replaces the one I gave you before, so go by that file.`;
+            const text = `I committed ${path}. Its figure replaces the one I gave you before; nothing needs changing yet.`;
             fact.cues.push(text, content);
             const target = takeOpening(
                 fromConveyed.slice(0, -1),
@@ -1288,12 +1275,10 @@ export async function compileScenario(input: CompileInput) {
     for (const e of events)
         if (e.kind === "user_turn") lastTurnEvent.set(e.session as string, e.id);
     for (const p of probes) if (p.type === "P14") p.event = lastTurnEvent.get(p.session);
-    const firstCue = new Map<unknown, number>();
     const lastCue = new Map<unknown, number>();
     events.forEach((e, i) => {
         if (!e.fact || e.role === "probe" || e.role === "status") return;
         for (const fact of [e.fact, ...((e.facts as string[] | undefined) ?? [])]) {
-            if (!firstCue.has(fact)) firstCue.set(fact, i);
             lastCue.set(fact, i);
         }
     });
@@ -1303,12 +1288,6 @@ export async function compileScenario(input: CompileInput) {
         }
     });
     const order = new Map(events.map((e, i) => [e.id, i]));
-    for (const p of probes) {
-        const control = order.get(p.event ?? "") ?? Number.POSITIVE_INFINITY;
-        if (p.type === "P1-control" && control > (firstCue.get(p.fact) ?? -1)) {
-            throw new Error(`${p.id}: P1 control follows a conveyance of ${p.fact}`);
-        }
-    }
     const sourcesOf = (fact: string) => {
         const e = exposure.get(fact) ?? { turns: [], diffs: [] };
         return [...e.turns, ...e.diffs].map((ref) => indexOf.get(ref) ?? -1).sort((a, b) => a - b);
@@ -1496,13 +1475,6 @@ export function proveExposure(o: Exposure): void {
         if (at === undefined || !fact) throw new Error(`${p.id}: probe has no event or fact`);
         const all = o.sourcesOf(fact.id);
         if (all.some((i) => i < 0)) throw new Error(`${p.id}: a source of ${fact.id} has no event`);
-        if (truth.expect === "baseline") {
-            if (all.some((i) => i < at)) {
-                throw new Error(`${p.id}: the control follows a source of ${fact.id}`);
-            }
-            p.ground_truth = { ...rest, sources: [] };
-            continue;
-        }
         if (all.length === 0) throw new Error(`${p.id}: no event exposes ${fact.id}`);
         const sources = all.map((i) => o.events[i] as ScenarioEvent);
         for (const [n, e] of sources.entries()) {

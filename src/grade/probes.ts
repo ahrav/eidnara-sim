@@ -104,6 +104,7 @@ export interface GradeRecord extends Outcome {
     later_attempts_logged: number;
     /** The digest of the grader's source files that produced the record. */
     grader?: string;
+    /** The fact a recorded P1 or P1-control grade named, read from earlier runs' logs. */
     pair?: string;
     /**
      * The arm a pairwise (P7) grade was judged against. One host answer is judged once per
@@ -251,7 +252,7 @@ const DIFF_CHANNELS = [
     "quote_style_must",
 ];
 /** Probe types whose check must name a rule to hold, and those whose check must name one to break. */
-const NEEDS_POSITIVE = ["P1", "P1-control", "P3", "P4", "P6", "P12", "P13"];
+const NEEDS_POSITIVE = ["P1", "P3", "P4", "P6", "P12", "P13"];
 const NEEDS_NEGATIVE = ["P2", "P3", "P5", "P10", "P11"];
 
 /**
@@ -1071,7 +1072,6 @@ type Grader = (
 
 const GRADERS: Record<string, Grader> = {
     P1: appliedOutcome("P1"),
-    "P1-control": appliedOutcome("P1-control"),
     P2: (r, c) => {
         const over = broken(turnWork(r, c), c);
         if (!over && !codeChanged(r)) return binary("P2", false, { "P2.harm": false }, NO_CHANGE);
@@ -1147,7 +1147,6 @@ const GRADERS: Record<string, Grader> = {
 /** The `ground_truth.expect` each probe type's grader is built for. */
 const EXPECTS: Record<string, string[]> = {
     P1: ["apply"],
-    "P1-control": ["baseline"],
     P2: ["avoid"],
     P3: ["apply"],
     P4: ["apply"],
@@ -1323,9 +1322,6 @@ export function gradeItem(
     requireEvidence(probe, first, sources);
     const reader = new ArtefactReader(first);
     const outcome = grader(reader, (probe.check ?? {}) as Check, rules, probe, sources);
-    const paired = probe.type === "P1-control" || probe.type === "P1";
-    if (paired && !probe.fact)
-        throw new GradeRefused(`${probe.type} item ${probe.id} names no fact`);
     return {
         item: probe.id,
         arm: first.arm,
@@ -1334,12 +1330,13 @@ export function gradeItem(
         snapshot: first.id,
         inputs: [...reader.read].sort(),
         later_attempts_logged: snapshots.length - 1,
-        ...(paired ? { pair: probe.fact as string } : {}),
         ...outcome,
     };
 }
 
 const VERDICTS: Verdict[] = ["pass", "fail", "excluded"];
+/** RECORDED_TYPES preserves compatibility with recorded `P1-control` grades. */
+export const RECORDED_TYPES = ["P1-control"];
 const digest = (v: unknown) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v);
 const LOCK_WAIT_MS = 2000;
 const LOCK_POLL_MS = 10;
@@ -1349,7 +1346,10 @@ function isGradeRecord(value: unknown): value is GradeRecord {
     const g = value as Record<string, unknown>;
     const strings =
         ["item", "arm", "snapshot"].every((k) => text(g[k])) && typeof g.probe_type === "string";
-    const known = g.probe_type === "P7" || Object.hasOwn(GRADERS, g.probe_type as string);
+    const known =
+        g.probe_type === "P7" ||
+        Object.hasOwn(GRADERS, g.probe_type as string) ||
+        RECORDED_TYPES.includes(g.probe_type as string);
     const version = typeof g.version === "number" && Number.isInteger(g.version) && g.version >= 1;
     const verdict = VERDICTS.includes(g.verdict as Verdict);
     const metricValue = (v: unknown) => typeof v === "boolean" || str(v) || num(v);
@@ -1365,11 +1365,15 @@ function isGradeRecord(value: unknown): value is GradeRecord {
         new Set(g.inputs).size === g.inputs.length;
     const attempts =
         Number.isInteger(g.later_attempts_logged) && (g.later_attempts_logged as number) >= 0;
-    const paired = g.probe_type === "P1" || g.probe_type === "P1-control";
-    const pair = paired ? text(g.pair) : g.pair === undefined;
     const against = g.probe_type === "P7" ? text(g.against) : g.against === undefined;
     const graded = metrics && (g.verdict === "excluded" || metricsAgree(g));
     const optionals = optional(str)(g.reason) && optional(digest)(g.grader);
+    const pair =
+        g.probe_type === "P1-control"
+            ? text(g.pair)
+            : g.probe_type === "P1"
+              ? optional(text)(g.pair)
+              : g.pair === undefined;
     return (
         strings &&
         known &&
@@ -1642,6 +1646,11 @@ export class GradeLog {
         for (const record of records) {
             if (!isGradeRecord(record)) {
                 throw new GradeRefused(`grade ${keyOf(record)} is not a grade record`);
+            }
+            if (RECORDED_TYPES.includes(record.probe_type)) {
+                throw new GradeRefused(
+                    `grade ${keyOf(record)} is a ${record.probe_type} record, read-only`,
+                );
             }
         }
         if (records.length === 0) return;

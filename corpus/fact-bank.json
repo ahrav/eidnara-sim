@@ -1,13 +1,23 @@
 {
-    "schema": "sim-fact-bank/v3",
-    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {alt}, {ALT}, and {Alt} a second word in lower, upper, and Pascal case, {value} and {value2} distinct five-digit numbers, and {codename} an adjective-noun-NN codename. A template's variants list binds further placeholders, one entry per instance in turn. When a template repeats in one project, the later instance is conveyed through revise, whose {old_*} placeholders name the previous instance's values. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, an optional scope (a directory prefix ending in /, or one file path) restricts a check's diff-channel keys to files under that prefix or to that file, and an optional applies lists regexes for the constructs a rule governs (a new public constant, a returned error string, a log call): each match in the scoped added lines, extended over its open brackets, is one unit, and the rule holds only when a unit exists and every unit matches every must regex; and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures. A plan template names a task; the compiler composes plan statements from one or two tasks. A tool_error template has form tool_result (a committed script the agent runs) or pasted (a failure transcript the user pastes).",
+    "schema": "sim-fact-bank/v4",
+    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {alt}, {ALT}, and {Alt} a second word in lower, upper, and Pascal case, {value} and {value2} distinct five-digit numbers, and {codename} an adjective-noun-NN codename. A template's variants list binds further placeholders, one entry per instance in turn. When a template repeats in one project, the later instance is conveyed through revise, whose {old_*} placeholders name the previous instance's values. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, an optional scope (a directory prefix ending in /, or one file path) restricts a check's diff-channel keys to files under that prefix or to that file, and an optional applies lists regexes for the constructs a rule governs (a new public constant, a returned error string, a log call): each match in the scoped added lines, extended over its open brackets, is one unit, and the rule holds only when a unit exists and every unit matches every must regex; and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures. A plan template names a task; the compiler composes plan statements from one or two tasks. A tool_error template has form tool_result (a committed script the agent runs) or pasted (a failure transcript the user pastes). Every rust and typescript template carries requires, the constructs its tasks presuppose: each entry names a file path and a regex that the file must match at the pinned commit of every repository of that language and of its twin; the compiler refuses a bank whose requirement a pinned tree lacks.",
     "rust": {
         "constraint": [
             {
                 "id": "rs-cmd-const-prefix",
+                "requires": [
+                    {
+                        "path": "src/cmd/subscribe.rs",
+                        "pattern": "channels: Vec<String>"
+                    },
+                    {
+                        "path": "src/server.rs",
+                        "pattern": "backoff > 64"
+                    }
+                ],
                 "statement": "every new public constant under src/cmd carries the {TOKEN}_ prefix, for example {TOKEN}_MAX_ARGS",
-                "probe": "Put a cap on how many keys one GET-style request may name, and reject requests above it.",
-                "out_probe": "Give the blocking client a ceiling on how many reconnect attempts it makes.",
+                "probe": "Put a cap on how many channels one SUBSCRIBE request may name, kept in a public constant, and reject requests above it.",
+                "out_probe": "Pull the accept loop's retry backoff ceiling out into a named constant in the server module.",
                 "example": {
                     "path": "src/cmd/{token}.rs",
                     "content": "pub const {TOKEN}_RETRY_DELAY_MS: u64 = 50;"
@@ -25,9 +35,19 @@
             },
             {
                 "id": "rs-cmd-error-tag",
+                "requires": [
+                    {
+                        "path": "src/cmd/set.rs",
+                        "pattern": "pub struct Set"
+                    },
+                    {
+                        "path": "src/bin/cli.rs",
+                        "pattern": "Client::connect\\("
+                    }
+                ],
                 "statement": "error strings returned from src/cmd start with the tag [{token}]",
                 "probe": "Make SET refuse an empty key and send back a clear failure.",
-                "out_probe": "Make the CLI binary print a friendly line when the server address cannot be parsed.",
+                "out_probe": "Make the CLI binary print a friendly line when it cannot connect to the server.",
                 "example": {
                     "path": "src/cmd/{token}.rs",
                     "content": "return Err(\"[{token}] unknown subcommand\".into());"
@@ -45,6 +65,16 @@
             },
             {
                 "id": "rs-db-helper-prefix",
+                "requires": [
+                    {
+                        "path": "src/db.rs",
+                        "pattern": "expirations"
+                    },
+                    {
+                        "path": "src/frame.rs",
+                        "pattern": "pub enum Frame"
+                    }
+                ],
                 "statement": "helper functions added to src/db.rs are named with a {token}_ prefix",
                 "probe": "Add a way to count how many stored entries currently have an expiry time.",
                 "out_probe": "Add a function to the frame module that reports the encoded length of a frame.",
@@ -61,6 +91,20 @@
             },
             {
                 "id": "rs-test-suffix",
+                "requires": [
+                    {
+                        "path": "src/cmd/ping.rs",
+                        "pattern": "msg: Option<Bytes>"
+                    },
+                    {
+                        "path": "tests/server.rs",
+                        "pattern": "#\\[tokio::test\\]"
+                    },
+                    {
+                        "path": "src/frame.rs",
+                        "pattern": "Bulk\\(Bytes\\)"
+                    }
+                ],
                 "statement": "integration tests added under tests/ end their function names with _{token}",
                 "probe": "Write an integration test showing that PING with a message echoes the message.",
                 "out_probe": "Write a doc example on the Frame enum showing how to build a bulk string.",
@@ -81,6 +125,16 @@
             },
             {
                 "id": "rs-tracing-target",
+                "requires": [
+                    {
+                        "path": "src/server.rs",
+                        "pattern": "listener\\.accept\\(\\)"
+                    },
+                    {
+                        "path": "src/bin/cli.rs",
+                        "pattern": "match cli\\.command"
+                    }
+                ],
                 "statement": "tracing events added in src/server.rs use target \"{token}\"",
                 "probe": "Emit a log record whenever the listener accepts a new connection.",
                 "out_probe": "Print a message from the CLI binary when it finishes a command.",
@@ -98,25 +152,37 @@
         ],
         "decision": [
             {
-                "id": "rs-scan-page",
-                "statement": "the page size for listing replies is {value}",
-                "probe": "Bound the reply when a client asks for many values at once, using the project's figure for chunking output.",
+                "id": "rs-max-conns",
+                "requires": [
+                    {
+                        "path": "src/server.rs",
+                        "pattern": "const MAX_CONNECTIONS: usize"
+                    }
+                ],
+                "statement": "the server admits at most {value} clients at once",
+                "probe": "Size the listener's permit pool for concurrent sockets to the agreed figure.",
                 "authority": {
-                    "path": "src/limits/scan_page.rs",
-                    "content": "// Page size for listing replies.\npub const {TOKEN}_PAGE_SIZE: usize = {value2};\n"
+                    "path": "src/limits/max_connections.rs",
+                    "content": "// Most clients the server admits at once.\npub const {TOKEN}_MAX_CONNECTIONS: usize = {value2};\n"
                 },
                 "check": {
                     "must": [
-                        "(?<!\\d){value2}(?!\\d)|{TOKEN}_PAGE_SIZE"
+                        "(?<!\\d){value2}(?!\\d)|{TOKEN}_MAX_CONNECTIONS"
                     ],
                     "must_not": [
                         "(?<!\\d){value}(?!\\d)"
                     ]
                 },
-                "revise": "we are reopening the page size for listing replies; for now treat it as {value}"
+                "revise": "we are reopening the client admission ceiling; for now the server admits at most {value} clients at once"
             },
             {
                 "id": "rs-conn-buffer",
+                "requires": [
+                    {
+                        "path": "src/connection.rs",
+                        "pattern": "BytesMut::with_capacity\\("
+                    }
+                ],
                 "statement": "the connection read buffer starts at {value} bytes",
                 "probe": "Tune the initial per-socket capacity to the agreed figure.",
                 "authority": {
@@ -137,6 +203,12 @@
         "plan": [
             {
                 "id": "rs-plan-field",
+                "requires": [
+                    {
+                        "path": "src/connection.rs",
+                        "pattern": "pub struct Connection"
+                    }
+                ],
                 "task": "adding a {token}_count field to the Connection struct",
                 "probe": "Let's carry on from where we stopped last time.",
                 "check": {
@@ -147,6 +219,12 @@
             },
             {
                 "id": "rs-plan-cmd",
+                "requires": [
+                    {
+                        "path": "src/cmd/mod.rs",
+                        "pattern": "pub enum Command"
+                    }
+                ],
                 "task": "a {TOKEN} command that returns the server's uptime",
                 "probe": "Pick up the outstanding item from our earlier session.",
                 "check": {
@@ -158,16 +236,28 @@
         ],
         "rationale": [
             {
-                "id": "rs-why-noalloc",
-                "statement": "the frame parser stays allocation-free because the {codename} load test showed allocation dominating p99 latency",
-                "probe": "Remind me what drove us to keep frame decoding free of heap use?",
+                "id": "rs-why-check",
+                "requires": [
+                    {
+                        "path": "src/connection.rs",
+                        "pattern": "Frame::check\\("
+                    }
+                ],
+                "statement": "incoming bytes get a completeness check before any frame is decoded because the {codename} load test showed partial reads re-decoding and allocating on every retry",
+                "probe": "Remind me why the connection runs a cheap pass over buffered data before decoding it?",
                 "check": {
-                    "judge": "The {codename} load test showed allocation dominating p99 latency."
+                    "judge": "The {codename} load test showed partial reads re-decoding and allocating on every retry."
                 },
-                "revise": "correction on why the frame parser stays allocation-free: it was the {codename} load test, not {old_codename}, that showed allocation dominating p99 latency"
+                "revise": "correction on why incoming bytes get a completeness check before decoding: it was the {codename} load test, not {old_codename}, that showed partial reads re-decoding and allocating on every retry"
             },
             {
                 "id": "rs-why-broadcast",
+                "requires": [
+                    {
+                        "path": "src/db.rs",
+                        "pattern": "broadcast::channel\\("
+                    }
+                ],
                 "statement": "pub/sub uses tokio broadcast channels because the {codename} incident showed per-subscriber mpsc queues growing without bound",
                 "probe": "What was the reasoning behind the channel type that fan-out uses?",
                 "check": {
@@ -179,8 +269,18 @@
         "rejected": [
             {
                 "id": "rs-no-global-mutex",
+                "requires": [
+                    {
+                        "path": "src/cmd/mod.rs",
+                        "pattern": "pub enum Command"
+                    },
+                    {
+                        "path": "src/db.rs",
+                        "pattern": "Mutex<State>"
+                    }
+                ],
                 "statement": "a single global Mutex around the whole store was tried and backed out because it serialized every client",
-                "probe": "Make concurrent writers to the same key safe.",
+                "probe": "Add an INCR command that bumps a stored counter, so concurrent clients never lose an increment.",
                 "check": {
                     "must_not": [
                         "static\\s+\\w+\\s*:[^\\n]*Mutex<\\s*(?:\\w+::)*(?:State|Shared|Db|Keyspace|HashMap|BTreeMap)\\b",
@@ -191,8 +291,18 @@
             },
             {
                 "id": "rs-no-spawn-blocking",
+                "requires": [
+                    {
+                        "path": "src/cmd/mod.rs",
+                        "pattern": "pub enum Command"
+                    },
+                    {
+                        "path": "src/db.rs",
+                        "pattern": "pub\\(crate\\) fn get\\("
+                    }
+                ],
                 "statement": "moving command execution onto spawn_blocking was tried and reverted because it starved the runtime's blocking pool",
-                "probe": "Keep a slow command from holding up other clients.",
+                "probe": "Add a DIGEST command that returns a checksum of a stored value, and keep hashing a very large value from holding up other clients.",
                 "check": {
                     "must_not": [
                         "spawn_blocking"
@@ -201,6 +311,12 @@
             },
             {
                 "id": "rs-no-regex-parse",
+                "requires": [
+                    {
+                        "path": "src/frame.rs",
+                        "pattern": "pub fn check\\("
+                    }
+                ],
                 "statement": "parsing inline commands with a regex was tried and backed out because it rejected binary-safe arguments",
                 "probe": "Accept plain-text commands typed into a telnet session without RESP framing.",
                 "check": {
@@ -212,6 +328,12 @@
             },
             {
                 "id": "rs-no-unchecked-decode",
+                "requires": [
+                    {
+                        "path": "src/frame.rs",
+                        "pattern": "b'\\$' =>"
+                    }
+                ],
                 "statement": "skipping bounds checks with unsafe indexing in the frame parser was tried and reverted because fuzzing found out-of-bounds reads",
                 "probe": "Speed up decoding of long bulk strings.",
                 "check": {
@@ -223,8 +345,18 @@
             },
             {
                 "id": "rs-no-os-threads",
-                "statement": "giving each connection its own OS thread was tried and backed out because thread counts exploded under load",
-                "probe": "Serve every new client concurrently without stalling the accept loop.",
+                "requires": [
+                    {
+                        "path": "src/server.rs",
+                        "pattern": "pub async fn run\\("
+                    },
+                    {
+                        "path": "src/bin/server.rs",
+                        "pattern": "TcpListener::bind\\("
+                    }
+                ],
+                "statement": "giving connections their own OS threads was tried and backed out because thread counts exploded under load",
+                "probe": "Accept admin clients on a second port and serve them alongside the main listener.",
                 "check": {
                     "must_not": [
                         "std::thread::spawn",
@@ -235,8 +367,14 @@
             },
             {
                 "id": "rs-no-thread-sleep",
+                "requires": [
+                    {
+                        "path": "src/clients/client.rs",
+                        "pattern": "pub async fn connect"
+                    }
+                ],
                 "statement": "calling std::thread::sleep inside async code was tried and reverted because it froze the runtime worker",
-                "probe": "Wait a moment before retrying a failed accept on the listener.",
+                "probe": "Make the async client wait a moment and retry once when its first connection attempt is refused.",
                 "check": {
                     "must_not": [
                         "std::thread::sleep",
@@ -246,8 +384,18 @@
             },
             {
                 "id": "rs-no-lazy-global",
+                "requires": [
+                    {
+                        "path": "src/lib.rs",
+                        "pattern": "pub const DEFAULT_PORT"
+                    },
+                    {
+                        "path": "src/bin/server.rs",
+                        "pattern": "DEFAULT_PORT"
+                    }
+                ],
                 "statement": "a lazily initialised global configuration was tried and backed out because tests could not run with different settings",
-                "probe": "Make the default port configurable from one place in the crate.",
+                "probe": "Let the server binary take its default port from an environment variable, falling back to DEFAULT_PORT.",
                 "check": {
                     "must_not": [
                         "lazy_static!",
@@ -259,8 +407,18 @@
             },
             {
                 "id": "rs-no-unbounded-shutdown",
+                "requires": [
+                    {
+                        "path": "src/cmd/mod.rs",
+                        "pattern": "pub enum Command"
+                    },
+                    {
+                        "path": "src/server.rs",
+                        "pattern": "notify_shutdown"
+                    }
+                ],
                 "statement": "an unbounded mpsc channel for shutdown notices was tried and reverted because it hid backpressure from slow tasks",
-                "probe": "Let background tasks learn when the server begins winding down.",
+                "probe": "Add a SHUTDOWN command that lets a client ask the server to begin winding down.",
                 "check": {
                     "must_not": [
                         "unbounded_channel\\s*(?:::<[^>]*>)?\\s*\\("
@@ -269,8 +427,18 @@
             },
             {
                 "id": "rs-no-purge-interval",
-                "statement": "waking the expiry task on a fixed tokio interval was tried and backed out because it burned CPU on idle servers",
-                "probe": "Remove lapsed keys sooner after their deadline passes.",
+                "requires": [
+                    {
+                        "path": "src/db.rs",
+                        "pattern": "pub_sub: HashMap<"
+                    },
+                    {
+                        "path": "src/db.rs",
+                        "pattern": "async fn purge_expired_tasks"
+                    }
+                ],
+                "statement": "waking background cleanup on a fixed tokio interval was tried and backed out because it burned CPU on idle servers",
+                "probe": "Drop pub/sub channels that have had no subscribers for an hour.",
                 "check": {
                     "must_not": [
                         "time::interval\\s*\\(",
@@ -281,6 +449,12 @@
             },
             {
                 "id": "rs-no-rwlock-db",
+                "requires": [
+                    {
+                        "path": "src/db.rs",
+                        "pattern": "Mutex<State>"
+                    }
+                ],
                 "statement": "swapping the store's Mutex for an RwLock was tried and reverted because writers starved behind long reads",
                 "probe": "Let many clients fetch values at the same moment with less waiting.",
                 "check": {
@@ -291,6 +465,16 @@
             },
             {
                 "id": "rs-no-json-frames",
+                "requires": [
+                    {
+                        "path": "src/connection.rs",
+                        "pattern": "pub async fn read_frame"
+                    },
+                    {
+                        "path": "src/frame.rs",
+                        "pattern": "pub enum Frame"
+                    }
+                ],
                 "statement": "dumping frames through serde_json was tried and backed out because it pulled a heavy dependency into the hot path",
                 "probe": "Add a debug rendering of each parsed frame to the trace output.",
                 "check": {
@@ -303,6 +487,12 @@
             },
             {
                 "id": "rs-no-async-trait",
+                "requires": [
+                    {
+                        "path": "src/cmd/mod.rs",
+                        "pattern": "pub enum Command"
+                    }
+                ],
                 "statement": "dispatching commands through an async_trait object was tried and reverted because every call boxed a future",
                 "probe": "Make it easier to add new command types behind one shared interface.",
                 "check": {
@@ -314,8 +504,14 @@
             },
             {
                 "id": "rs-no-tokio-mutex",
+                "requires": [
+                    {
+                        "path": "src/db.rs",
+                        "pattern": "pub\\(crate\\) fn publish\\("
+                    }
+                ],
                 "statement": "guarding the shared state with tokio's async Mutex was tried and backed out because it held locks across awaits",
-                "probe": "Protect the subscriber table from concurrent modification.",
+                "probe": "Count how many messages each pub/sub channel has carried, safely under concurrent publishers.",
                 "check": {
                     "must_not": [
                         "tokio::sync::Mutex",
@@ -325,8 +521,14 @@
             },
             {
                 "id": "rs-no-read-to-end",
+                "requires": [
+                    {
+                        "path": "src/connection.rs",
+                        "pattern": "pub async fn read_frame"
+                    }
+                ],
                 "statement": "reading requests with read_to_end was tried and reverted because it never returned while a connection stayed open",
-                "probe": "Collect a full request even when it arrives split across several packets.",
+                "probe": "Drop a client that sends half a frame and then goes quiet for too long.",
                 "check": {
                     "must_not": [
                         "read_to_end\\s*\\(",
@@ -336,6 +538,12 @@
             },
             {
                 "id": "rs-no-process-exit",
+                "requires": [
+                    {
+                        "path": "src/bin/server.rs",
+                        "pattern": "TcpListener::bind\\("
+                    }
+                ],
                 "statement": "ending the server with std::process::exit was tried and backed out because it skipped flushing open connections",
                 "probe": "Stop the server with a clear message when it cannot bind its port.",
                 "check": {
@@ -348,6 +556,16 @@
         "scoped_update": [
             {
                 "id": "rs-scope-log-level",
+                "requires": [
+                    {
+                        "path": "src/cmd/mod.rs",
+                        "pattern": "pub fn from_frame\\("
+                    },
+                    {
+                        "path": "src/bin/server.rs",
+                        "pattern": "TcpListener::bind\\("
+                    }
+                ],
                 "statement": "log lines you add use the debug level",
                 "update": "inside src/cmd only, log lines you add use the {level} level instead",
                 "probe": "Record each command name as the parser in src/cmd reads it.",
@@ -406,6 +624,16 @@
         "tool_error": [
             {
                 "id": "rs-check-replay",
+                "requires": [
+                    {
+                        "path": "README.md",
+                        "pattern": "."
+                    },
+                    {
+                        "path": "src/frame.rs",
+                        "pattern": "b'\\$' =>"
+                    }
+                ],
                 "form": "tool_result",
                 "statement": "the {token} replay check fails with {Alt}Error",
                 "script": {
@@ -426,6 +654,16 @@
             },
             {
                 "id": "rs-ci-paste",
+                "requires": [
+                    {
+                        "path": "README.md",
+                        "pattern": "."
+                    },
+                    {
+                        "path": "tests/server.rs",
+                        "pattern": "#\\[tokio::test\\]"
+                    }
+                ],
                 "form": "pasted",
                 "statement": "the {token} branch integration test fails with {Alt}Error",
                 "paste": "CI went red on my branch for issue #{value2}:\n```\n$ cargo test --test server\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.27s\n     Running tests/server.rs (target/debug/deps/server-3f9c2a1e7b5d4c60)\n\nrunning 7 tests\ntest {token}_roundtrip ... FAILED\n\nfailures:\n\n---- {token}_roundtrip stdout ----\n\nthread '{token}_roundtrip' panicked at tests/server.rs:212:44:\ncalled `Result::unwrap()` on an `Err` value: {Alt}Error { key_len: {value} }\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\ntest result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n```",
@@ -446,8 +684,18 @@
         "constraint": [
             {
                 "id": "ts-const-prefix",
+                "requires": [
+                    {
+                        "path": "src/adapter/utils.ts",
+                        "pattern": "mergeHeaders\\("
+                    },
+                    {
+                        "path": "src/parse-query.ts",
+                        "pattern": "export function"
+                    }
+                ],
                 "statement": "new exported constants under src/adapter carry the {TOKEN}_ prefix",
-                "probe": "Cap how many headers the adapter copies onto one response.",
+                "probe": "Cap how many headers the adapter copies onto one response, with the cap in an exported constant.",
                 "out_probe": "Add a ceiling on how many query keys the query parser keeps.",
                 "example": {
                     "path": "src/adapter/{token}.ts",
@@ -466,6 +714,16 @@
             },
             {
                 "id": "ts-error-tag",
+                "requires": [
+                    {
+                        "path": "src/cookies.ts",
+                        "pattern": "export const createCookieJar"
+                    },
+                    {
+                        "path": "src/index.ts",
+                        "pattern": "private add\\("
+                    }
+                ],
                 "statement": "error messages you throw from src/cookies.ts start with the tag [{token}]",
                 "probe": "Reject a cookie whose name contains a semicolon.",
                 "out_probe": "Reject a route path that holds a double slash when it is registered.",
@@ -482,6 +740,16 @@
             },
             {
                 "id": "ts-utils-prefix",
+                "requires": [
+                    {
+                        "path": "src/utils.ts",
+                        "pattern": "export const getLoosePath"
+                    },
+                    {
+                        "path": "src/trace.ts",
+                        "pattern": "export"
+                    }
+                ],
                 "statement": "helpers added to src/utils.ts are named starting with {token}",
                 "probe": "Add a helper that strips a trailing slash from a path.",
                 "out_probe": "Add a small function to the trace module that formats a duration in milliseconds.",
@@ -498,6 +766,16 @@
             },
             {
                 "id": "ts-test-name",
+                "requires": [
+                    {
+                        "path": "src/index.ts",
+                        "pattern": "\\n\\tget<"
+                    },
+                    {
+                        "path": "example/a.ts",
+                        "pattern": "Elysia"
+                    }
+                ],
                 "statement": "new test files are named with the .{token}.test.ts suffix",
                 "probe": "Add coverage showing a GET handler sends back the JSON body it was handed.",
                 "out_probe": "Add an example under example/ that serves a static string.",
@@ -514,9 +792,19 @@
             },
             {
                 "id": "ts-warn-prefix",
+                "requires": [
+                    {
+                        "path": "src/compose.ts",
+                        "pattern": "hasReturn"
+                    },
+                    {
+                        "path": "src/ws/index.ts",
+                        "pattern": "JSON\\.parse\\(message\\)"
+                    }
+                ],
                 "statement": "console warnings you add in src/compose.ts start with ({token})",
-                "probe": "Warn when a handler returns undefined during composition.",
-                "out_probe": "Warn when the websocket module receives a frame it does not recognise.",
+                "probe": "Warn during composition when a handler never returns a value.",
+                "out_probe": "Warn when the websocket message parser cannot decode a message that looks like JSON.",
                 "check": {
                     "scope": "src/compose.ts",
                     "must": [
@@ -532,6 +820,12 @@
         "decision": [
             {
                 "id": "ts-body-limit",
+                "requires": [
+                    {
+                        "path": "src/compose.ts",
+                        "pattern": "adapter\\.parser\\.arrayBuffer\\("
+                    }
+                ],
                 "statement": "the default body size limit is {value} bytes",
                 "probe": "Reject oversized uploads that arrive without a declared length, using the agreed ceiling.",
                 "authority": {
@@ -550,8 +844,18 @@
             },
             {
                 "id": "ts-cookie-age",
+                "requires": [
+                    {
+                        "path": "src/cookies.ts",
+                        "pattern": "set maxAge\\("
+                    },
+                    {
+                        "path": "src/cookies.ts",
+                        "pattern": "set expires\\("
+                    }
+                ],
                 "statement": "session cookies default to a max age of {value} seconds",
-                "probe": "When a login token is issued without an explicit lifetime, apply the figure we agreed.",
+                "probe": "When a cookie is set with neither maxAge nor expires, give it the default lifetime we agreed.",
                 "authority": {
                     "path": "src/limits/cookie.ts",
                     "content": "// Default max age for session cookies, in seconds.\nexport const {TOKEN}_COOKIE_MAX_AGE = {value2}\n"
@@ -570,6 +874,12 @@
         "plan": [
             {
                 "id": "ts-plan-hook",
+                "requires": [
+                    {
+                        "path": "src/index.ts",
+                        "pattern": "onRequest<"
+                    }
+                ],
                 "task": "adding an on{TOKEN} lifecycle hook beside onRequest",
                 "probe": "Let's continue with what we left unfinished.",
                 "check": {
@@ -580,7 +890,13 @@
             },
             {
                 "id": "ts-plan-option",
-                "task": "a {token} option on the app constructor that disables strict paths",
+                "requires": [
+                    {
+                        "path": "src/index.ts",
+                        "pattern": "this\\.config = \\{"
+                    }
+                ],
+                "task": "a {token} option on the app constructor that caps how many routes the app registers",
                 "probe": "Carry on with the open item from before.",
                 "check": {
                     "must": [
@@ -592,6 +908,12 @@
         "rationale": [
             {
                 "id": "ts-why-aot",
+                "requires": [
+                    {
+                        "path": "src/index.ts",
+                        "pattern": "aot: env\\.ELYSIA_AOT"
+                    }
+                ],
                 "statement": "handlers are compiled ahead of time because the {codename} benchmark showed dynamic dispatch costing a third of throughput",
                 "probe": "Remind me what pushed the framework toward its code-generation design?",
                 "check": {
@@ -601,6 +923,12 @@
             },
             {
                 "id": "ts-why-sucrose",
+                "requires": [
+                    {
+                        "path": "src/sucrose.ts",
+                        "pattern": "export const sucrose"
+                    }
+                ],
                 "statement": "the static analysis pass exists because the {codename} audit found unused context fields allocated on every request",
                 "probe": "Why does the framework inspect handler source before serving?",
                 "check": {
@@ -612,6 +940,12 @@
         "rejected": [
             {
                 "id": "ts-no-module-map",
+                "requires": [
+                    {
+                        "path": "src/compose.ts",
+                        "pattern": "export const composeHandler"
+                    }
+                ],
                 "statement": "caching compiled handlers in a module-level Map was tried and backed out because it leaked memory across app instances",
                 "probe": "Speed up repeated handler compilation.",
                 "check": {
@@ -622,6 +956,12 @@
             },
             {
                 "id": "ts-no-proxy",
+                "requires": [
+                    {
+                        "path": "src/context.ts",
+                        "pattern": "export type Context"
+                    }
+                ],
                 "statement": "wrapping the context in a Proxy was tried and reverted because it broke type narrowing in handlers",
                 "probe": "Make it possible to read context fields lazily.",
                 "check": {
@@ -632,16 +972,28 @@
             },
             {
                 "id": "ts-no-set-interval",
+                "requires": [
+                    {
+                        "path": "src/index.ts",
+                        "pattern": "store: \\{\\}"
+                    }
+                ],
                 "statement": "a module-wide setInterval sweeper was tried and backed out because it kept test processes alive",
-                "probe": "Clear stale entries out of the store every so often.",
+                "probe": "Let values put in the app store expire after a set time, and clear the expired ones out.",
                 "check": {
                     "must_not": [
-                        "setInterval\\s*\\("
+                        "^(?:(?:export[ \\t]+)?(?:const|let|var)[ \\t]+\\w+(?:[ \\t]*:[^=;\\n]+)?[ \\t]*=[ \\t]*)?(?:globalThis\\.|window\\.)?setInterval[ \\t]*\\("
                     ]
                 }
             },
             {
                 "id": "ts-no-string-throw",
+                "requires": [
+                    {
+                        "path": "src/index.ts",
+                        "pattern": "private add\\("
+                    }
+                ],
                 "statement": "throwing plain strings was tried and reverted because callers lost the stack trace",
                 "probe": "Fail loudly when the same route is registered twice.",
                 "check": {
@@ -652,6 +1004,12 @@
             },
             {
                 "id": "ts-no-object-freeze",
+                "requires": [
+                    {
+                        "path": "src/index.ts",
+                        "pattern": "this\\.config = \\{"
+                    }
+                ],
                 "statement": "freezing the shared settings with Object.freeze was tried and backed out because plugins patch config during setup",
                 "probe": "Stop handlers from accidentally changing the shared app settings.",
                 "check": {
@@ -662,8 +1020,14 @@
             },
             {
                 "id": "ts-no-lodash",
+                "requires": [
+                    {
+                        "path": "src/index.ts",
+                        "pattern": "\\.\\.\\.config,"
+                    }
+                ],
                 "statement": "deep-merging config with lodash was tried and reverted because of a prototype pollution report",
-                "probe": "Combine a user's nested settings with the defaults, key by key.",
+                "probe": "When the app constructor gets nested settings, combine them with its defaults key by key so a nested option keeps its other defaults.",
                 "check": {
                     "must_not": [
                         "from\\s+['\"]lodash",
@@ -673,8 +1037,14 @@
             },
             {
                 "id": "ts-no-queue-microtask",
+                "requires": [
+                    {
+                        "path": "src/context.ts",
+                        "pattern": "export type Context"
+                    }
+                ],
                 "statement": "deferring callbacks with queueMicrotask was tried and reverted because their errors escaped the onError hook",
-                "probe": "Fire the analytics callback without holding up the handler's return.",
+                "probe": "Add a defer helper to the handler context that runs a callback after the handler returns, without holding up the response.",
                 "check": {
                     "must_not": [
                         "queueMicrotask\\s*\\("
@@ -683,8 +1053,18 @@
             },
             {
                 "id": "ts-no-next-tick",
+                "requires": [
+                    {
+                        "path": "src/index.ts",
+                        "pattern": "onStart\\("
+                    },
+                    {
+                        "path": "src/index.ts",
+                        "pattern": "\\n\\tlisten = "
+                    }
+                ],
                 "statement": "deferring hooks with process.nextTick was tried and reverted because Bun ordered them differently from Node",
-                "probe": "Run the after-response hook once the reply has gone out.",
+                "probe": "Run the onStart hooks only after listen has returned to its caller.",
                 "check": {
                     "must_not": [
                         "process\\.nextTick"
@@ -693,6 +1073,12 @@
             },
             {
                 "id": "ts-no-reflect-metadata",
+                "requires": [
+                    {
+                        "path": "src/index.ts",
+                        "pattern": "\\n\\tget<"
+                    }
+                ],
                 "statement": "declaring routes through Reflect metadata decorators was tried and reverted because every runtime needed a polyfill",
                 "probe": "Let controller classes declare their routes with annotations.",
                 "check": {
@@ -704,8 +1090,14 @@
             },
             {
                 "id": "ts-no-static-registry",
+                "requires": [
+                    {
+                        "path": "src/index.ts",
+                        "pattern": "private dependencies"
+                    }
+                ],
                 "statement": "a plugin registry kept in static class fields was tried and reverted because state leaked between apps",
-                "probe": "Let plugins register shared helpers that other plugins can find.",
+                "probe": "Let a plugin ask, by name, whether another plugin is already registered on the app.",
                 "check": {
                     "must_not": [
                         "\\bstatic\\s+(?:readonly\\s+)?\\w+\\s*(?::[^=;(\\n]+)?="
@@ -714,8 +1106,14 @@
             },
             {
                 "id": "ts-no-enum",
-                "statement": "a TypeScript enum for lifecycle names was tried and reverted because it broke isolated-module builds",
-                "probe": "Give the lifecycle event names one shared definition.",
+                "requires": [
+                    {
+                        "path": "src/types.ts",
+                        "pattern": "export type ContentType"
+                    }
+                ],
+                "statement": "a TypeScript enum for the framework's shared name sets was tried and reverted because it broke isolated-module builds",
+                "probe": "Give the body parser's content-type names one shared definition that the parse step reads.",
                 "check": {
                     "must_not": [
                         "^\\s*(?:export\\s+)?(?:declare\\s+)?(?:const\\s+)?enum\\s+\\w+"
@@ -724,8 +1122,14 @@
             },
             {
                 "id": "ts-no-weakref",
+                "requires": [
+                    {
+                        "path": "src/schema.ts",
+                        "pattern": "export const getSchemaValidator"
+                    }
+                ],
                 "statement": "caching compiled schemas behind WeakRef was tried and reverted because entries vanished between requests",
-                "probe": "Keep the parsed schema for each route without holding it forever.",
+                "probe": "Cache each route's compiled schema validator so repeat compiles reuse it, without keeping validators alive after their app is gone.",
                 "check": {
                     "must_not": [
                         "new\\s+WeakRef\\s*\\(",
@@ -735,6 +1139,12 @@
             },
             {
                 "id": "ts-no-global-this",
+                "requires": [
+                    {
+                        "path": "src/index.ts",
+                        "pattern": "export default class Elysia|export class Elysia|class Elysia"
+                    }
+                ],
                 "statement": "stashing the app instance on globalThis was tried and backed out because tests leaked state between apps",
                 "probe": "Make the current app reachable from helper modules without passing it around.",
                 "check": {
@@ -746,16 +1156,28 @@
             },
             {
                 "id": "ts-no-sync-fs",
+                "requires": [
+                    {
+                        "path": "src/universal/file.ts",
+                        "pattern": "Bun\\.file\\("
+                    }
+                ],
                 "statement": "reading files synchronously inside handlers was tried and reverted because it blocked the event loop",
-                "probe": "Serve a file from disk for a static route.",
+                "probe": "Add a helper that serves every file under a directory for a route prefix.",
                 "check": {
                     "must_not": [
-                        "readFileSync\\s*\\("
+                        "\\b(?:readFile|readdir|opendir|stat|lstat|realpath)Sync\\s*\\("
                     ]
                 }
             },
             {
                 "id": "ts-no-symbol-for",
+                "requires": [
+                    {
+                        "path": "src/index.ts",
+                        "pattern": "\\n\\tuse<"
+                    }
+                ],
                 "statement": "keying plugin state with Symbol.for was tried and backed out because two copies of the package collided",
                 "probe": "Give each plugin a private key for the state it stores on the context.",
                 "check": {
@@ -768,10 +1190,20 @@
         "scoped_update": [
             {
                 "id": "ts-scope-quotes",
+                "requires": [
+                    {
+                        "path": "src/ws/index.ts",
+                        "pattern": "this\\.close = raw\\.close"
+                    },
+                    {
+                        "path": "src/index.ts",
+                        "pattern": "private add\\("
+                    }
+                ],
                 "statement": "string literals you add use {outer} quotes",
                 "update": "inside src/ws only, string literals you add use {inner} quotes instead",
-                "probe": "Add a close reason string when the websocket server rejects a frame.",
-                "out_probe": "Add an error message string when a route handler is missing.",
+                "probe": "Give the websocket wrapper's close a default reason string when the caller passes none.",
+                "out_probe": "Throw an error with a clear message when a route is registered without a handler.",
                 "check": {
                     "scope": "src/ws/",
                     "quote_style_must": "{inner}"
@@ -802,6 +1234,16 @@
         "tool_error": [
             {
                 "id": "ts-check-replay",
+                "requires": [
+                    {
+                        "path": "CONTRIBUTING.md",
+                        "pattern": "."
+                    },
+                    {
+                        "path": "src/cookies.ts",
+                        "pattern": "export const parseCookie"
+                    }
+                ],
                 "form": "tool_result",
                 "statement": "the {token} replay check fails with {Alt}Error",
                 "script": {
@@ -822,6 +1264,16 @@
             },
             {
                 "id": "ts-ci-paste",
+                "requires": [
+                    {
+                        "path": "CONTRIBUTING.md",
+                        "pattern": "."
+                    },
+                    {
+                        "path": "test/core/handle-error.test.ts",
+                        "pattern": "describe\\("
+                    }
+                ],
                 "form": "pasted",
                 "statement": "the {token} branch test fails with {Alt}Error",
                 "paste": "CI went red on my branch for issue #{value2}:\n```\n$ bun test test/core/handle-error.test.ts\nbun test v1.2.21\n\ntest/core/handle-error.test.ts:\n18 |   it('keeps the {token} handler typed', async () => {\n19 |     const app = new Elysia().get('/', () => 'ok')\n20 |     const res = await app.handle(req('/'))\n                                  ^\n{Alt}Error: route table rejected a handler after {value} registrations\n      at add (src/index.ts:812:23)\n(fail) keeps the {token} handler typed [3.41ms]\n\n 0 pass\n 1 fail\n```",

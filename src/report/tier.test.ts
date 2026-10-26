@@ -181,7 +181,7 @@ function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): Graded
     );
     const probes = Array.from({ length: 12 }, (_, i) => ({
         id: `q-${i}`,
-        type: "P1-control",
+        type: "P8-twin",
         fact: `f-${i % 4}`,
         project: "p",
         session: `s-${i}`,
@@ -193,13 +193,13 @@ function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): Graded
         probes.map((p, i) => ({
             item: p.id,
             arm: a.arm,
-            probe_type: "P1-control",
+            probe_type: "P8-twin",
             version: 1,
             snapshot: `${a.arm}:${p.id}`,
             inputs: [],
             later_attempts_logged: 0,
             verdict: (i + k) % 4 === 0 ? "fail" : "pass",
-            metrics: { "P1-control.pass": (i + k) % 4 !== 0 },
+            metrics: { "P8-twin.pass": (i + k) % 4 !== 0, "P8-twin.harm": false },
         })),
     );
     const grade = (arm: string, item: string, type: string, metrics: Record<string, boolean>) => ({
@@ -406,7 +406,6 @@ describe("tier report", () => {
         const g = fixture();
         const report = tierReport(prereg, [g], boundary);
         expect(report.falsification.map((z) => [z.check, z.zero_effect])).toEqual([
-            ["in_session_repo_readable_fact_pass", true],
             ["gateway_4xx_rate_without_faults", true],
             ["pre_divergence_pushback_rate", true],
             ["wall_ms_per_scripted_idle_gap", true],
@@ -817,10 +816,19 @@ describe("tier report", () => {
         control.arm = "eidnara~aa";
         for (const r of b.grades) if (r.arm === "host~aa") r.arm = "eidnara~aa";
         const report = tierReport(prereg, [a, b], boundary);
-        const facts = report.falsification.find(
-            (z) => z.check === "in_session_repo_readable_fact_pass",
-        );
-        expect(facts?.n).toBe(24);
+        // Run b's renamed control pairs with its eidnara arm and adds its sessions to run a's.
+        expect(report.falsification_pairs).toEqual([
+            ["host", "host~aa"],
+            ["eidnara", "eidnara~aa"],
+        ]);
+        const fourxx = (runs: (typeof a)[]) =>
+            tierReport(prereg, runs, boundary).falsification.find(
+                (z) => z.check === "gateway_4xx_rate_without_faults",
+            )?.n;
+        expect(fourxx([a])).toBe(12);
+        expect(
+            report.falsification.find((z) => z.check === "gateway_4xx_rate_without_faults")?.n,
+        ).toBe(24);
     });
 
     test("the report prices the grader's judge calls once per run", () => {

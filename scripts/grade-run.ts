@@ -35,6 +35,7 @@ import {
     gradeItem,
     graderDigest,
     needsSourceCommands,
+    RECORDED_TYPES,
     requireEvidence,
     type SourceEvent,
     verdictCounts,
@@ -99,6 +100,7 @@ export async function gradeRun(
     try {
         // A refused run keeps the summary of the grades it has.
         requireCheckedSchema(JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).schema);
+        requireGradableTypes(JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")));
         // A pass that stops early leaves no summary, so a reader never takes a stale one as current.
         rmSync(summaryPath(dir), { force: true });
         const summary = await grade(dir, config, regrade);
@@ -230,6 +232,16 @@ export function requireCapabilities(
                 `arm ${arm} ran other capabilities than it declares: ${JSON.stringify(mismatches)}`,
             );
         }
+    }
+}
+
+/** A scenario that compiles a recorded type is graded by the sim commit that recorded it. */
+function requireGradableTypes(scenario: Scenario): void {
+    const recorded = scenario.probes.find((p) => RECORDED_TYPES.includes(p.type));
+    if (recorded) {
+        throw new Error(
+            `scenario.json compiles ${recorded.type} items, a type this grader reads from logs only; grade the run with the sim commit that recorded it`,
+        );
     }
 }
 

@@ -11,7 +11,7 @@ const KINDS = [
     "tool_error",
     "session_rule",
 ];
-const SCHEMA = "sim-fact-bank/v3";
+const SCHEMA = "sim-fact-bank/v4";
 const LANGUAGES = ["rust", "typescript", "any"];
 /** Kinds every language object carries; `any` holds the kinds without a language-specific template set. */
 const REQUIRED_KINDS: Record<string, string[]> = {
@@ -253,12 +253,43 @@ export function bankProblems(bank: unknown): string[] {
                     return;
                 }
                 problems.push(...templateProblems(where, kind, t));
+                if (lang !== "any") problems.push(...requirementShapeProblems(where, t.requires));
                 if (ids.has(id)) problems.push(`${where}: duplicate template id`);
                 ids.add(id);
             });
         }
     }
     return problems;
+}
+
+/**
+ * A language template names the constructs its tasks presuppose: a non-empty list of a project
+ * path and a regular expression `src/corpus/presuppositions.ts` matches at each pinned tree.
+ */
+function requirementShapeProblems(where: string, requires: unknown): string[] {
+    if (!Array.isArray(requires) || requires.length === 0) {
+        return [`${where}: requires is not a non-empty list`];
+    }
+    return requires.flatMap((r, i) => {
+        const at = `${where}: requires[${i}]`;
+        if (!isObject(r) || typeof r.path !== "string" || typeof r.pattern !== "string") {
+            return [`${at} needs path and pattern`];
+        }
+        const problems: string[] = [];
+        if (/\{\w+\}/.test(r.path) || !projectRelative(r.path, {})) {
+            problems.push(`${at} path is not a fixed project path`);
+        }
+        const problem = r.pattern.trim() === "" ? "is blank" : null;
+        if (problem) problems.push(`${at} pattern ${problem}`);
+        else {
+            try {
+                new RegExp(r.pattern, "m");
+            } catch {
+                problems.push(`${at} pattern is not a regular expression`);
+            }
+        }
+        return problems;
+    });
 }
 
 /** Shape problems of one template: its text fields, files, variants, and checks. */

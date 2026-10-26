@@ -120,14 +120,6 @@ describe("grading harness", () => {
         expect(grade("P11-fail", heavier).metrics["P11.weighted_score"]).toBe(-3);
     });
 
-    test("P1 and its control are paired by fact under separate metrics", () => {
-        const a = grade("P1-pass");
-        const b = grade("P1-control-fail");
-        expect([a.pair, b.pair]).toEqual(["f-0012", "f-0012"]);
-        expect(b.metrics["P1-control.pass"]).toBe(false);
-        expect(b.metrics["P1.pass"]).toBeUndefined();
-    });
-
     test("delta-mem is the paired P3 pass-rate difference over items both arms graded", () => {
         const pass = grade("P3-pass");
         const fail = grade("P3-fail");
@@ -624,7 +616,7 @@ describe("grading harness", () => {
         expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
     });
 
-    test("a regrade keeps the item's snapshot, probe type, and pair", () => {
+    test("a regrade keeps the item's snapshot and probe type", () => {
         const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
         const log = new GradeLog(path);
         const g = grade("P1-pass");
@@ -632,8 +624,12 @@ describe("grading harness", () => {
         expect(() => log.append({ ...g, version: 2, snapshot: "other-snapshot" })).toThrow(
             "snapshot",
         );
-        appendFileSync(path, `${JSON.stringify({ ...g, version: 2, pair: "f-9999" })}\n`);
-        expect(() => log.all()).toThrow("line 2 changes pair");
+        const p2 = grade("P2-pass");
+        appendFileSync(
+            path,
+            `${JSON.stringify({ ...p2, item: g.item, snapshot: g.snapshot, version: 2 })}\n`,
+        );
+        expect(() => log.all()).toThrow("line 2 changes probe_type");
     });
 
     test("a positive diff check matches surviving paths only", () => {
@@ -1917,16 +1913,31 @@ describe("grading harness", () => {
         expect(() => gradeItem(f.probe, [snap], rules)).toThrow("calls[0].turn_index");
     });
 
-    test("a persisted P1 record carries its pair, a graded record its probe's metrics, and versions run consecutively", () => {
+    test("a persisted record carries its probe's metrics, and versions run consecutively", () => {
         const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
         const log = new GradeLog(path);
-        const p1 = grade("P1-pass");
-        const { pair: _pair, ...unpaired } = p1;
-        expect(() => log.append(unpaired as GradeRecord)).toThrow(GradeRefused);
         const p2 = grade("P2-pass");
         expect(() => log.append({ ...p2, metrics: {} })).toThrow(GradeRefused);
         appendFileSync(path, `${JSON.stringify(p2)}\n${JSON.stringify({ ...p2, version: 3 })}\n`);
         expect(() => log.all()).toThrow("line 2 has version 3 after version 1");
+    });
+
+    test("a recorded P1-control grade with its pair stays readable", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const p1 = grade("P1-fail");
+        const control = {
+            ...p1,
+            probe_type: "P1-control",
+            pair: "f-0012",
+            metrics: { "P1-control.pass": false },
+        };
+        appendFileSync(path, `${JSON.stringify(control)}\n`);
+        expect(new GradeLog(path).all().map((g) => g.probe_type)).toEqual(["P1-control"]);
+        const fresh = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        expect(() => new GradeLog(fresh).append(control as GradeRecord)).toThrow("read-only");
+        const blank = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        appendFileSync(blank, `${JSON.stringify({ ...control, pair: "" })}\n`);
+        expect(() => new GradeLog(blank).all()).toThrow("not a grade record");
     });
 
     test("every counted snapshot is bound to the probe's session and event", () => {
