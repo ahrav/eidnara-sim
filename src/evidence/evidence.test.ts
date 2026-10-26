@@ -1056,6 +1056,25 @@ test("evidence-run reads a run directory and writes only under --out", () => {
         }),
     );
     expect(() => loadRun(dir)).toThrow(/is not a subsequence of qualification Q's seed 101 order/);
+    // A hold-out run without controls is admitted only in its registered order and arms.
+    const holdout = { ...qualified, manifest: { ...qualified.manifest, seed: 103 } };
+    writeFileSync(scenarioPath, JSON.stringify(holdout));
+    const holdoutManifest = (order: string[]) =>
+        writeFileSync(
+            manifestPath,
+            JSON.stringify({
+                ...JSON.parse(manifest),
+                scenario_hash: scenarioHash(holdout as unknown as Record<string, unknown>),
+                tier: "S",
+                seed: 103,
+                order,
+                qualification: { id: "Q", sha256: qualificationHash(q) },
+            }),
+        );
+    holdoutManifest(["host-oracle"]);
+    expect(() => loadRun(dir)).toThrow(/is not a subsequence of qualification Q's seed 103 order/);
+    holdoutManifest(["host", "eidnara"]);
+    expect(() => loadRun(dir)).toThrow(/is not a subsequence/);
     writeFileSync(scenarioPath, JSON.stringify(SCENARIO));
     writeFileSync(manifestPath, manifest);
     expect(() => evidenceRun([dir], root, null)).toThrow(/inside a run directory/);

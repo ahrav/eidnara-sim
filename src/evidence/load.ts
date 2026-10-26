@@ -456,21 +456,26 @@ export function loadRun(dir: string): RunData {
             throw new Error(`${dir}: arm ${JSON.stringify(arm)} is not a directory name`);
         }
     }
-    // An A/A control label is admitted only for a pair the run's registration lists: the tier's,
-    // or under a qualification the run's own seed's.
+    // A qualification run is admitted as the runner admits it: its registration, seed, and order.
+    // An A/A control label needs a pair the run's registration lists for its seed.
+    let pairs: string[][] | null = null;
+    if (manifest.qualification) {
+        try {
+            pairs = admittedArms(
+                { ...manifest, tier: manifest.tier as Tier, order },
+                scenario as { manifest?: Record<string, unknown> },
+            ).pairs;
+        } catch (caught) {
+            throw new Error(`${dir}: ${(caught as Error).message}`);
+        }
+    }
     if (order.some((arm) => arm !== armBase(arm))) {
         const tier = manifest.tier;
         if (!TIERS.includes(tier as Tier)) {
             throw new Error(`${dir}: manifest names A/A controls without a known tier`);
         }
         try {
-            const pairs = manifest.qualification
-                ? admittedArms(
-                      { ...manifest, tier: tier as Tier, order },
-                      scenario as { manifest?: Record<string, unknown> },
-                  ).pairs
-                : (loadPrereg(tier as Tier).aa_controls?.pairs ?? []);
-            requireOrder(order, ARMS, pairs);
+            requireOrder(order, ARMS, pairs ?? loadPrereg(tier as Tier).aa_controls?.pairs ?? []);
         } catch (caught) {
             throw new Error(`${dir}: ${(caught as Error).message}`);
         }
