@@ -85,11 +85,29 @@ pre-registered seeds end between 0.2 and 1.2 days past it.
 
 Each probe type gets `paired_items_per_probe_type / (seeds * hosts)` items;
 the pre-registration validator requires that division to be exact. Facts come
-from the templates in `corpus/fact-bank.json` (`sim-fact-bank/v3`), filled
+from the templates in `corpus/fact-bank.json` (`sim-fact-bank/v4`), filled
 with generated tokens: `adjective_noun` words in lower, upper, and Pascal
 case, five-digit numbers from 10000 to 65535 (so a figure a template states
 as a port is a valid TCP port), and `adjective-noun-NN` codenames, from the v1
 harness word lists.
+
+### Presuppositions
+
+Every Rust and TypeScript template lists in `requires` the constructs its
+tasks presuppose: a project path and a regular expression the file must match
+(multiline, so `^` and `$` anchor lines). `src/corpus/presuppositions.ts`
+reads each file with `git cat-file blob <commit>:<path>` in every corpus
+checkout of the template's language, base and twin, at the commits
+`corpus/repos.json` pins, so the pinned commit's content is what counts. A
+Titan compile and a run's compile refuse the bank when a checkout is missing
+(run `bun run corpus:repos`) or a requirement fails, naming the template,
+tree, path, and pattern; an `--embedder local` compile checks when all four
+checkouts are present. `bun run corpus:repos` checks the same requirements
+after it clones, and the corpus checker refuses a language template without
+a non-empty `requires` list of fixed project paths and valid patterns.
+A template's tasks name code each pinned tree holds, and a task that asks for
+behaviour asks for behaviour the tree lacks, so the agent has work to do at
+every probe.
 
 ### Lines and supersession
 
@@ -141,7 +159,7 @@ pasted, and a P3 value read from its authoritative file).
 |---|---|---|
 | P1 | constraint | Later session of the same project, inside the constraint's scope |
 | P2 | the P1 fact | Later session of the same project, outside the scope; the check forbids the convention |
-| P3 | decision | A later session opens with a commit of the template's authoritative file (one stable path per template) and a first turn naming that path and saying it replaces the stated figure; the commit removes the line's notes and check scripts, and the probe follows in a later session; the check requires the file's value and forbids the stated one |
+| P3 | decision | A later session opens with a commit of the template's authoritative file (one stable path per template) and a first turn naming that path, saying it replaces the stated figure, and saying nothing needs changing yet, so the agent leaves the probe's task for the probe; the commit removes the line's notes and check scripts, and the probe follows in a later session; the check requires the file's value and forbids the stated one |
 | P4 | scoped update | A second conveyance narrows the rule to one module; items alternate inside and outside it, with the alternation offset by seed parity so the pooled counts balance per language across seeds, and `check.side` says which (`in` or `out`); both sides carry the update's `check.scope` |
 | P5 | rejected approach | Later session; the check forbids the rejected approach |
 | P6 | plan | First turn of the project's next session after the plan's latest conveyance, at least one hour after the previous session ends; see Plans below |
@@ -206,8 +224,9 @@ Commits fire only between sessions, so every commit lands at the start of
 the session whose first turn points at it:
 
 - a hand-applied diff adds a file whose content implies the fact, and the
-  first turn names that file and asks the agent to look it over without
-  stating the fact. A constraint template whose scope is a directory names an example
+  first turn says the user added that file (`I added \`<path>\``, or
+  `changed` when the line committed the path before) and asks the agent to
+  look it over without stating the fact. A constraint template whose scope is a directory names an example
   path inside that scope (`src/cmd/{token}.rs`, `src/adapter/{token}.ts`,
   `tests/{token}.rs`, `test/{codename}.{token}.test.ts`); every other template
   adds `notes/{token}.md`, a note that states the fact's current state;
@@ -346,27 +365,35 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `1463d12e` | 0.2767 | 0.4802 |
-| S | 102 | `9bbb45a3` | 0.2689 | 0.5229 |
-| M | 201 | `eda5ff8e` | 0.2606 | 0.5807 |
-| M | 202 | `1ea62d69` | 0.2595 | 0.5807 |
-| M | 203 | `3498591b` | 0.2593 | 0.551 |
-| L | 301 | `0443dc48` | 0.2599 | 0.5807 |
-| L | 302 | `b834c8b7` | 0.2593 | 0.5807 |
-| L | 303 | `d1fc2004` | 0.2605 | 0.5807 |
-| XL | 401 | `274d5843` | 0.2607 | 0.5807 |
+| S | 101 | `ffe066fb` | 0.2762 | 0.4941 |
+| S | 102 | `c9e47e21` | 0.2666 | 0.5229 |
+| M | 201 | `25751240` | 0.3576 | 0.5807 |
+| M | 202 | `ed26978c` | 0.3537 | 0.5807 |
+| M | 203 | `0ebea8de` | 0.3213 | 0.5574 |
+| L | 301 | `479453ce` | 0.324 | 0.5807 |
+| L | 302 | `0a54863a` | 0.325 | 0.5807 |
+| L | 303 | `2d27b871` | 0.3242 | 0.5807 |
+| XL | 401 | `c3adb2df` | 0.3185 | 0.5807 |
 
-Under qualification Q (revision 2, `d03fd8ca`), which adds its P8-twin
+Under qualification Q (revision 3, `e8c1f508`), which adds its P8-twin
 controls, the seeds compile to these scenarios; 103 is its exploratory
 hold-out:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| Q | 101 | `f36d5033` | 0.2767 | 0.4802 |
-| Q | 102 | `6ab5a114` | 0.2668 | 0.5229 |
-| Q | 103 | `c0b8dcf3` | 0.2705 | 0.4939 |
+| Q | 101 | `4b50681d` | 0.2762 | 0.4941 |
+| Q | 102 | `ada0153c` | 0.2614 | 0.5229 |
+| Q | 103 | `51cc2f25` | 0.2706 | 0.4988 |
 
 ## Known limits
+
+- A revised line asks its probe text again, behind a framing, in the
+  workspace the agent already changed. A revised decision (P3) or a flipped
+  quote rule asks for different code, but a P4 item on a side whose rule the
+  revision leaves unchanged, a repeated P10 task, and at M and above a
+  revised constraint's P1, P2, and P11 tasks meet work the agent did for the
+  earlier instance. At S each seed carries two such P4 and two such P10
+  items.
 
 - SWE-chat's per-prompt intent labels are gated, so sessions carry no intent
   kind.

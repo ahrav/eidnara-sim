@@ -365,28 +365,28 @@ describe("P2 and P11: no over-application, and a turn that changed no code is no
 });
 
 describe("P3: the authoritative value in code, not a stale one or a note", () => {
-    const p3 = probeOf("P3", "rs-scan-page");
+    const p3 = probeOf("P3", "rs-max-conns");
     const [value, name] = p3.ground_truth?.present[0] ?? [];
     const stale = (p3.ground_truth?.absent[0] ?? "") as string;
 
     test("the value or its named constant passes", () => {
         const byValue = {
-            files: [{ path: "src/cmd/mget.rs", lines: [`const CHUNK: usize = ${value};`] }],
+            files: [{ path: "src/server.rs", lines: [`const MAX_CONNECTIONS: usize = ${value};`] }],
         };
         expect(outcome(p3, byValue)).toEqual(["pass"]);
         const byName = {
-            files: [{ path: "src/cmd/mget.rs", lines: [`let chunk = ${name}_PAGE_SIZE;`] }],
+            files: [{ path: "src/server.rs", lines: [`let cap = ${name}_MAX_CONNECTIONS;`] }],
         };
         expect(outcome(p3, byName)).toEqual(["pass"]);
     });
 
     test("a stale value, a no-op, and a note fail", () => {
         const old = {
-            files: [{ path: "src/cmd/mget.rs", lines: [`const CHUNK: usize = ${stale};`] }],
+            files: [{ path: "src/server.rs", lines: [`const MAX_CONNECTIONS: usize = ${stale};`] }],
         };
         expect(grade(p3, old).metrics["P3.reliance"]).toBe("stale");
         expect(outcome(p3, NOOP)).toEqual(["fail", "relied on neither"]);
-        const note = { files: [{ path: "notes/page.md", lines: [`page size ${value}`] }] };
+        const note = { files: [{ path: "notes/limits.md", lines: [`client cap ${value}`] }] };
         expect(outcome(p3, note)).toEqual(["fail", "relied on neither"]);
     });
 });

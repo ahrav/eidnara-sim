@@ -679,6 +679,29 @@ describe("compiled S scenario", async () => {
         }
     });
 
+    test("a hand-applied commit's turn says the user added the new file, and a P3 authority asks for no change yet", () => {
+        const added = s.facts.filter((x) => x.manner === "hand_applied_diff");
+        expect(added.length).toBeGreaterThan(0);
+        for (const f of added) {
+            const add = s.events.find(
+                (e) => e.kind === "apply_diff" && e.fact === f.id && !e.remove,
+            );
+            const first = all.find((t) => t.session === add?.session && t.index === 0);
+            expect(first?.text).toContain(`I added \`${String(add?.path)}\``);
+            expect(first?.text).not.toMatch(/pushed/);
+        }
+        // A commit cue can share a turn's text with other paragraphs.
+        const authority = all.flatMap((t) =>
+            (t.text ?? "").split("\n\n").filter((x) => x.startsWith("I committed ")),
+        );
+        expect(authority.length).toBe(s.probes.filter((p) => p.type === "P3").length);
+        for (const text of authority) {
+            expect(text).toMatch(
+                /^I committed \S+\. Its figure replaces the one I gave you before; nothing needs changing yet\.$/,
+            );
+        }
+    });
+
     test("a revised session rule's check stays passable", async () => {
         const m = await compileScenario(loadCompileInput(201, "M", hashEmbedder, true));
         const tags = m.probes.filter(

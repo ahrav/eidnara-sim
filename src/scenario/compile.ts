@@ -38,6 +38,8 @@ export interface Template {
     paste?: string;
     check: Record<string, unknown>;
     out_check?: Record<string, unknown>;
+    /** The constructs the template's tasks presuppose in each pinned repository of its language. */
+    requires?: { path: string; pattern: string }[];
 }
 export type Bank = Record<string, Record<string, Template[] | string[]>>;
 
@@ -805,10 +807,12 @@ export async function compileScenario(input: CompileInput) {
         } else if (manner === "hand_applied_diff") {
             const content = tpl.example ? `${render(tpl.example.content, vars)}\n` : note(written);
             const path = tpl.example ? render(tpl.example.path, vars) : `notes/${word}.md`;
+            // The turn names the committed file as added, which is how the agent meets it in its tree.
+            const verb = line.artifacts.has(path) ? "changed" : "added";
             const pushed =
                 revision > 0
-                    ? `I pushed a change to \`${path}\` that replaces something we set up earlier. Look it over before we continue.`
-                    : `I pushed a small change to \`${path}\`. Look it over before we continue.`;
+                    ? `I ${verb} \`${path}\`; it replaces something we set up earlier. Look it over before we continue.`
+                    : `I ${verb} \`${path}\`. Look it over before we continue.`;
             conveyed = cue(pushed, commits([{ path, content }]), content);
         } else if (manner === "tool_error") {
             const path = `scripts/check_${word}.sh`;
@@ -1051,7 +1055,7 @@ export async function compileScenario(input: CompileInput) {
             });
         } else if (f.kind === "decision" && tpl.authority) {
             const { path, content } = renderDeep(tpl.authority, vars);
-            const text = `I committed ${path}. Its figure replaces the one I gave you before, so go by that file.`;
+            const text = `I committed ${path}. Its figure replaces the one I gave you before; nothing needs changing yet.`;
             fact.cues.push(text, content);
             const target = takeOpening(
                 fromConveyed.slice(0, -1),

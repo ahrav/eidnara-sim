@@ -13,6 +13,7 @@ verify against when they were written.
 
 Stable ids: `SIM-P01` to `SIM-P77` carry the spec's proposed records,
 `SIM-P78` to `SIM-P80` the Workstream A S5 delivery-mode and control records,
+`SIM-P81` the fact-bank presupposition record,
 and
 `SIM-L01` to `SIM-L03` carry the liveness bounds OQ-6 asked for and M0
 pre-registers. Each id is the slug prefix and opens the `Guarantee:` line.
@@ -115,6 +116,7 @@ pre-registers. Each id is the slug prefix and opens the `Guarantee:` line.
 | SIM-P78 | [sim-p78-oracle-note-confined-to-its-turn](#sim-p78-oracle-note-confined-to-its-turn) | safety | `always` | explicit-config-only | S5 |
 | SIM-P79 | [sim-p79-explicit-search-arm-receives-no-injection](#sim-p79-explicit-search-arm-receives-no-injection) | safety | `always` | explicit-config-only | S5 |
 | SIM-P80 | [sim-p80-wrong-project-lookup-is-no-answer](#sim-p80-wrong-project-lookup-is-no-answer) | safety | `always` | explicit-config-only | S5 |
+| SIM-P81 | [sim-p81-template-presuppositions-hold-on-pinned-trees](#sim-p81-template-presuppositions-hold-on-pinned-trees) | safety | `always` | default-production | S6 |
 | SIM-L01 | [sim-l01-turn-ends-within-turn-deadline](#sim-l01-turn-ends-within-turn-deadline) | liveness | `always` | default-production | M4 |
 | SIM-L02 | [sim-l02-background-job-ends-within-job-deadline](#sim-l02-background-job-ends-within-job-deadline) | liveness | `always` | default-production | M4 |
 | SIM-L03 | [sim-l03-tier-completes-within-wall-budget](#sim-l03-tier-completes-within-wall-budget) | liveness | `always` | default-production | M4 |
@@ -2247,6 +2249,40 @@ Open questions:
 - Whether a sentence that names the owner and still recommends the value
   (`use X, as mini-redis does`) should fail; the sentence rule passes it.
   Unresolved, needs the Q campaign's answers.
+
+### sim-p81-template-presuppositions-hold-on-pinned-trees
+
+Type: safety
+Reachability: default-production
+Status: active
+Exercised: yes - `src/corpus/presuppositions.test.ts` refuses a missing file,
+a pattern miss, a miss in the twin alone, and a template without
+requirements, and checks the committed bank against the four pinned corpus
+checkouts when they are present; every Titan compile of the registered seeds
+ran the check
+Guarantee: SIM-P81: Every Rust and TypeScript fact-bank template's `requires`
+entries hold in the base and twin corpus checkouts of its language at their
+pinned commits, so each task names code the agent's workspace holds.
+Check: `always` - a compile that admits a template whose presupposed
+construct is absent asks the agent about code it cannot find, and the item
+measures the ambiguity instead of memory.
+Fault/timing angle: none.
+Required faults and enabling state: the corpus checkouts from
+`bun run corpus:repos`.
+Confidence: medium -
+[evidence](evidence/sim-p81-template-presuppositions-hold-on-pinned-trees.md).
+The patterns were written against the repository source and checked by
+`git cat-file` at the pinned commits; a pattern names a construct, so a task
+can still misread a construct the pattern finds.
+Existing check: `checkPresuppositions` in `loadCompileInput` and
+`scripts/corpus-repos.ts`; `requirementShapeProblems` in the corpus checker
+(unaudited).
+Impact: an agent asks which code a task means, and the item grades a
+clarifying question as a failure on every arm.
+Open questions:
+- A `requires` pattern proves the construct exists; whether the task asks for
+  work the tree still lacks is a reading of the source, recorded per template
+  in the rr-campaign-3 audit. Unresolved, needs a semantic check.
 
 ## Liveness
 

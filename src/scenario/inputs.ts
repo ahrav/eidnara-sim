@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadDistributions } from "../corpus/distributions";
 import { parseJsonl } from "../corpus/entries";
-import { loadRepos } from "../corpus/repos";
+import { checkPresuppositions, LANG_OF_ROLE } from "../corpus/presuppositions";
+import { loadRepos, type RepoSpec } from "../corpus/repos";
 import { CORPUS_DIR } from "../corpus/sources";
 import { sha256Hex } from "../prereg/canonical";
 import {
@@ -182,9 +183,9 @@ export function admittedArms(
 }
 
 export function langOf(role: string): Project["lang"] {
-    if (role === "rust-service") return "rust";
-    if (role === "typescript-package") return "typescript";
-    throw new Error(`repos.json: role ${role} has no language`);
+    const lang = Object.hasOwn(LANG_OF_ROLE, role) ? LANG_OF_ROLE[role as RepoSpec["role"]] : null;
+    if (lang === null) throw new Error(`repos.json: role ${role} has no language`);
+    return lang;
 }
 
 export const corpusManifestHash = () => sha256Hex(read("manifest.json"));
@@ -212,7 +213,11 @@ export function loadCompileInput(
     const prereg = loadPrereg(tier);
     if (standIn) prereg.scenario.cue_probe_similarity.embedding_model = embedder.model;
     const texts = readCorpusInputs();
-    const projects: Project[] = loadRepos(texts["repos.json"]).flatMap((r) => {
+    const repos = loadRepos(texts["repos.json"]);
+    const bank = parseText(texts["fact-bank.json"], join(CORPUS_DIR, "fact-bank.json")) as Bank;
+    // A stand-in compile runs where the corpus checkouts may be absent, such as CI.
+    checkPresuppositions(bank, repos, !standIn);
+    const projects: Project[] = repos.flatMap((r) => {
         const lang = langOf(r.role);
         return [
             { id: r.id, lang, twin_of: null },
@@ -223,7 +228,7 @@ export function loadCompileInput(
         seed,
         prereg,
         dist: loadDistributions(texts["distributions.json"]),
-        bank: parseText(texts["fact-bank.json"], join(CORPUS_DIR, "fact-bank.json")) as Bank,
+        bank,
         projects,
         pastes: parseJsonl(texts["tool-outputs/samples.jsonl"]) as CompileInput["pastes"],
         corpusInputsSha256: corpusInputsSha256(texts),
