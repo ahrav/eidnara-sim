@@ -246,6 +246,12 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
         const names = changed.map(([k]) => k).join(", ");
         throw new Error(`inputs differ from the run's manifest: ${names}`);
     }
+    const recorded = scenario.probes.filter((p) => RECORDED_TYPES.includes(p.type));
+    if (recorded.length > 0) {
+        throw new Error(
+            `scenario.json compiles ${recorded[0]?.type} items, a type this grader reads from logs only; grade the run with the sim commit that recorded it`,
+        );
+    }
     const identity = scenario.manifest as { seed?: unknown; tier?: unknown };
     if (identity.seed !== manifest.seed || identity.tier !== manifest.tier) {
         throw new Error(
@@ -722,10 +728,6 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
         for (const arm of arms) {
             if (probe.type === "P14") {
                 skip(arm, "P14 has no probe turn");
-                continue;
-            }
-            if (RECORDED_TYPES.includes(probe.type)) {
-                skip(arm, `${probe.type} has no grader; its recorded grades stand`);
                 continue;
             }
             if (!ran.has(probe.id)) {

@@ -104,6 +104,8 @@ export interface GradeRecord extends Outcome {
     later_attempts_logged: number;
     /** The digest of the grader's source files that produced the record. */
     grader?: string;
+    /** The fact a recorded P1 or P1-control grade named, read from earlier runs' logs. */
+    pair?: string;
     /**
      * The arm a pairwise (P7) grade was judged against. One host answer is judged once per
      * memory arm, so its grades are distinct records, one per opponent.
@@ -1366,6 +1368,12 @@ function isGradeRecord(value: unknown): value is GradeRecord {
     const against = g.probe_type === "P7" ? text(g.against) : g.against === undefined;
     const graded = metrics && (g.verdict === "excluded" || metricsAgree(g));
     const optionals = optional(str)(g.reason) && optional(digest)(g.grader);
+    const pair =
+        g.probe_type === "P1-control"
+            ? text(g.pair)
+            : g.probe_type === "P1"
+              ? optional(text)(g.pair)
+              : g.pair === undefined;
     return (
         strings &&
         known &&
@@ -1375,6 +1383,7 @@ function isGradeRecord(value: unknown): value is GradeRecord {
         inputs &&
         attempts &&
         optionals &&
+        pair &&
         against &&
         graded
     );
@@ -1467,7 +1476,7 @@ function metricsAgree(g: Record<string, unknown>): boolean {
 
 /** The field a regrade changed among those fixed for an item, arm, and opponent, or null. */
 function identityChange(previous: GradeRecord, next: GradeRecord): string | null {
-    for (const field of ["snapshot", "probe_type", "against"] as const) {
+    for (const field of ["snapshot", "probe_type", "pair", "against"] as const) {
         if (previous[field] !== next[field]) return field;
     }
     return null;
@@ -1637,6 +1646,11 @@ export class GradeLog {
         for (const record of records) {
             if (!isGradeRecord(record)) {
                 throw new GradeRefused(`grade ${keyOf(record)} is not a grade record`);
+            }
+            if (RECORDED_TYPES.includes(record.probe_type)) {
+                throw new GradeRefused(
+                    `grade ${keyOf(record)} is a ${record.probe_type} record, read-only`,
+                );
             }
         }
         if (records.length === 0) return;

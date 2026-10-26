@@ -489,6 +489,15 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             const owned = { files: [{ path: "src/index.ts", lines: [line] }] };
             expect(outcome(sweep, owned)).toEqual(["pass"]);
         }
+        const declaredThenOwned = {
+            files: [
+                {
+                    path: "src/index.ts",
+                    lines: ["let sweeper: Timer", "\t\tthis.sweeper = setInterval(sweep, 1000)"],
+                },
+            ],
+        };
+        expect(outcome(sweep, declaredThenOwned)).toEqual(["pass"]);
         for (const line of [
             "setInterval(() => expire(store), 1000)",
             "const sweeper = setInterval(() => expire(store), 1000)",

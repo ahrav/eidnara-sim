@@ -1933,6 +1933,11 @@ describe("grading harness", () => {
         };
         appendFileSync(path, `${JSON.stringify(control)}\n`);
         expect(new GradeLog(path).all().map((g) => g.probe_type)).toEqual(["P1-control"]);
+        const fresh = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        expect(() => new GradeLog(fresh).append(control as GradeRecord)).toThrow("read-only");
+        const blank = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        appendFileSync(blank, `${JSON.stringify({ ...control, pair: "" })}\n`);
+        expect(() => new GradeLog(blank).all()).toThrow("not a grade record");
     });
 
     test("every counted snapshot is bound to the probe's session and event", () => {

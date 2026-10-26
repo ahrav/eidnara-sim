@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { git } from "../git";
 import {
     checkPresuppositions,
+    movedTrees,
     type PinnedTree,
     pinnedTrees,
     presuppositionProblems,
@@ -122,6 +125,9 @@ describe("the pinned corpus checkouts", () => {
             const head = readPinned(base as PinnedTree, "Cargo.toml");
             expect(head).toContain("[package]");
             expect(readPinned(base as PinnedTree, "no/such/file.rs")).toBeNull();
+            expect(readPinned(base as PinnedTree, "src")).toBeNull();
+            expect(readPinned(base as PinnedTree, "")).toBeNull();
+            expect(readPinned(base as PinnedTree, " Cargo.toml")).toBeNull();
             expect(() =>
                 readPinned({ ...(base as PinnedTree), commit: "0".repeat(40) }, "Cargo.toml"),
             ).toThrow();
@@ -130,4 +136,22 @@ describe("the pinned corpus checkouts", () => {
             ).toThrow();
         },
     );
+});
+
+describe("a checkout HEAD off its pin", () => {
+    test("is named, since a run clones the checkout's HEAD", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-pin-"));
+        const sh = (...args: string[]) => git(dir, args);
+        sh("init", "-q");
+        writeFileSync(join(dir, "a.rs"), "fn a() {}\n");
+        sh("add", "a.rs");
+        sh("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one");
+        const first = sh("rev-parse", "HEAD").trim();
+        const pinned: PinnedTree = { id: "svc", lang: "rust", dir, commit: first };
+        expect(movedTrees([pinned])).toEqual([]);
+        writeFileSync(join(dir, "a.rs"), "fn b() {}\n");
+        sh("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-am", "two");
+        expect(movedTrees([pinned])).toEqual(["svc"]);
+        expect(readPinned(pinned, "a.rs")).toBe("fn a() {}\n");
+    });
 });

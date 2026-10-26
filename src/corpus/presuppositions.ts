@@ -37,12 +37,22 @@ export function pinnedTrees(repos: RepoSpec[]): PinnedTree[] {
     ]);
 }
 
-/** A path the pinned commit lacks reads as null; a checkout or commit git cannot read throws. */
+/** A path the pinned commit lacks, or holds as a directory, reads as null; a checkout or commit git cannot read throws. */
 export const readPinned: ReadAt = (tree, path) => {
-    const listed = git(tree.dir, ["ls-tree", "--name-only", tree.commit, "--", path]).trim();
-    if (listed !== path) return null;
+    if (path.trim() === "" || path !== path.trim()) return null;
+    const [meta, name] = git(tree.dir, ["ls-tree", tree.commit, "--", path])
+        .replace(/\n$/, "")
+        .split("\t");
+    if (name !== path || meta?.split(" ")[1] !== "blob") return null;
     return git(tree.dir, ["cat-file", "blob", `${tree.commit}:${path}`]);
 };
+
+/** Each returned tree ID identifies a checkout that a run would clone at a commit different from its pinned commit. */
+export function movedTrees(trees: PinnedTree[]): string[] {
+    return trees
+        .filter((t) => git(t.dir, ["rev-parse", "HEAD"]).trim() !== t.commit)
+        .map((t) => t.id);
+}
 
 type Json = Record<string, unknown>;
 const isObject = (v: unknown): v is Json =>
@@ -117,6 +127,14 @@ export function checkPresuppositions(
     const key = createHash("sha256")
         .update(JSON.stringify([bank, trees]))
         .digest("hex");
+    if (read === readPinned) {
+        const moved = movedTrees(trees);
+        if (moved.length > 0) {
+            throw new Error(
+                `corpus checkouts ${moved.join(", ")} have HEAD off their pinned commit, which a run would clone (run bun run corpus:repos)`,
+            );
+        }
+    }
     if (read === readPinned && checked.has(key)) return true;
     const problems = presuppositionProblems(bank, trees, read);
     if (problems.length > 0) {

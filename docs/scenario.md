@@ -100,7 +100,8 @@ reads each file with `git cat-file blob <commit>:<path>` in every corpus
 checkout of the template's language, base and twin, at the commits
 `corpus/repos.json` pins, so the pinned commit's content is what counts. A
 Titan compile and a run's compile refuse the bank when a checkout is missing
-(run `bun run corpus:repos`) or a requirement fails, naming the template,
+(run `bun run corpus:repos`), a checkout's HEAD differs from its pinned
+commit (a run clones HEAD), or a requirement fails, naming the template,
 tree, path, and pattern; an `--embedder local` compile checks when all four
 checkouts are present. `bun run corpus:repos` checks the same requirements
 after it clones, and the corpus checker refuses a language template without
@@ -225,9 +226,9 @@ Commits fire only between sessions, so every commit lands at the start of
 the session whose first turn points at it:
 
 - a hand-applied diff adds a file whose content implies the fact, and the
-  first turn says the user added that file (`I added \`<path>\``, or
-  `changed` when the line committed the path before) and asks the agent to
-  look it over without stating the fact. A constraint template whose scope is a directory names an example
+  first turn says the user added that file (`I added \`<path>\``; every
+  committed path carries a fresh token) and asks the agent to look it over
+  without stating the fact. A constraint template whose scope is a directory names an example
   path inside that scope (`src/cmd/{token}.rs`, `src/adapter/{token}.ts`,
   `tests/{token}.rs`, `test/{codename}.{token}.test.ts`); every other template
   adds `notes/{token}.md`, a note that states the fact's current state;
@@ -367,15 +368,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `0b2ab0ae` | 0.2762 | 0.4941 |
-| S | 102 | `4885f87a` | 0.2666 | 0.5229 |
-| M | 201 | `dfbc88b8` | 0.3577 | 0.5807 |
-| M | 202 | `0e2b3660` | 0.3538 | 0.5807 |
-| M | 203 | `3c1e4342` | 0.3214 | 0.5574 |
-| L | 301 | `b93c6bee` | 0.324 | 0.5807 |
-| L | 302 | `f53428da` | 0.325 | 0.5807 |
-| L | 303 | `dd31ef52` | 0.3242 | 0.5807 |
-| XL | 401 | `9736d987` | 0.3185 | 0.5807 |
+| S | 101 | `f46852ba` | 0.2762 | 0.4941 |
+| S | 102 | `83a0be47` | 0.2666 | 0.5229 |
+| M | 201 | `6670ec72` | 0.3577 | 0.5807 |
+| M | 202 | `0f3ead8e` | 0.3538 | 0.5807 |
+| M | 203 | `33e6b69c` | 0.3214 | 0.5574 |
+| L | 301 | `89db0f83` | 0.324 | 0.5807 |
+| L | 302 | `0e9a80f5` | 0.325 | 0.5807 |
+| L | 303 | `35458ce2` | 0.3242 | 0.5807 |
+| XL | 401 | `fba2dbd3` | 0.3185 | 0.5807 |
 
 Under qualification Q (revision 3, `e8c1f508`), which adds its P8-twin
 controls, the seeds compile to these scenarios; 103 is its exploratory
@@ -383,9 +384,9 @@ hold-out:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| Q | 101 | `732d3447` | 0.2762 | 0.4941 |
-| Q | 102 | `fa7b04d7` | 0.2614 | 0.5229 |
-| Q | 103 | `c5dec1a6` | 0.2706 | 0.4988 |
+| Q | 101 | `84e1d132` | 0.2762 | 0.4941 |
+| Q | 102 | `1941f7aa` | 0.2614 | 0.5229 |
+| Q | 103 | `ad301cd7` | 0.2706 | 0.4988 |
 
 ## Known limits
 
