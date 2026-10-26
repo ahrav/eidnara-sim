@@ -34,7 +34,7 @@ export type QualificationControl = (typeof QUALIFICATION_CONTROLS)[number];
  * The item classes the delivery-mode ranking gate reads: the positive sourced probes, whose right
  * answer applies, answers with, or resumes from a source. A P4 item counts on its `in` side and a
  * P6 item when it expects `resume`. Avoid, abstain, and should-not-apply items (P2, P5, P9, P10,
- * P11, P1-control, P8-twin, a P4 `out` item, a P6 `clarify` item) stay outside the gate: their
+ * P11, P8-twin, a P4 `out` item, a P6 `clarify` item) stay outside the gate: their
  * right answer withholds or leaves out what a source says, and the oracle note quotes it.
  */
 export const RANKING_GATE_ITEMS = ["P1", "P3", "P4:in", "P6:resume", "P8", "P12", "P13"] as const;
@@ -72,6 +72,11 @@ export interface Qualification {
      * `order` hold from first to last (oracle context, then automatic delivery, then none).
      */
     ranking_gate?: { order: string[]; items: string[] };
+    /**
+     * The run arm that serves as the no-source control: it delivers nothing, so its pass rate on an
+     * item is the item's rate without any source.
+     */
+    no_source_control?: string;
     claim: "descriptive";
 }
 
@@ -110,7 +115,7 @@ const SECTIONS: Record<string, Shape> = {
  */
 export function validateQualification(value: unknown, tier: Preregistration): string[] {
     const errors: string[] = [];
-    checkShape(value, SHAPE, "", errors, Object.keys(SECTIONS));
+    checkShape(value, SHAPE, "", errors, [...Object.keys(SECTIONS), "no_source_control"]);
     for (const [field, shape] of Object.entries(SECTIONS)) {
         const v = (value as Record<string, unknown> | null)?.[field];
         if (v !== undefined) checkShape(v, shape, field, errors);
@@ -161,7 +166,10 @@ export function validateQualification(value: unknown, tier: Preregistration): st
     return errors;
 }
 
-/** The A/A, hold-out, and ranking gate sections against the registration's seeds and arms. */
+/**
+ * The A/A, hold-out, no-source control, and ranking gate sections against the registration's
+ * seeds and arms.
+ */
 function checkSections(q: Qualification, errors: string[]): void {
     const aa = q.aa_controls;
     for (const seed of aa?.seeds.filter((s) => !q.seeds.includes(s)) ?? []) {
@@ -188,6 +196,17 @@ function checkSections(q: Qualification, errors: string[]): void {
                 errors.push(`holdout.order_by_seed[${i}]: is not a permutation of holdout.arms`);
             }
         });
+    }
+    const control = q.no_source_control;
+    if (control !== undefined) {
+        if (typeof control !== "string" || !q.arms.run.includes(control)) {
+            errors.push("no_source_control: expected a run arm");
+        } else {
+            const mode = isArmName(control) ? deliveryOf(armProfile(control)) : "no profile";
+            if (mode !== "none") {
+                errors.push(`no_source_control: ${control} delivers ${mode}; expected none`);
+            }
+        }
     }
     const gate = q.ranking_gate;
     if (gate) {

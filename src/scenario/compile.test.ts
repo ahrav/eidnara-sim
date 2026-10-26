@@ -92,7 +92,7 @@ describe("SIM-P01: deterministic compile across processes", () => {
             expect(body.manifest).toMatchObject({
                 seed,
                 tier,
-                generator_version: "sim-scenario/v5",
+                generator_version: "sim-scenario/v6",
             });
         }, 180_000);
     }
@@ -125,16 +125,18 @@ describe("compiled S scenario", async () => {
     const all = turns(s);
     const order = new Map(s.events.map((e, i) => [e.id, i]));
 
-    test("every probe type P1 to P14 and the P1 control have the per-type count", () => {
+    test("every probe type P1 to P14 has the per-type count, and no other type is compiled", () => {
         const counts = new Map<string, number>();
         for (const p of s.probes) counts.set(p.type, (counts.get(p.type) ?? 0) + 1);
         for (let i = 1; i <= 14; i++) expect(counts.get(`P${i}`)).toBe(s.manifest.probes_per_type);
-        expect(counts.get("P1-control")).toBe(s.manifest.probes_per_type);
+        expect([...counts.keys()].sort()).toEqual(
+            Array.from({ length: 14 }, (_, i) => `P${i + 1}`).sort(),
+        );
     });
 
     test("SIM-P06: each probe turn comes after every conveyance and update of its fact", () => {
         for (const p of s.probes) {
-            if (!p.text || p.type === "P1-control") continue;
+            if (!p.text) continue;
             const probeTurn = all.find((t) => t.probe === p.id);
             const cues = s.events.filter(
                 (e) =>
@@ -153,15 +155,18 @@ describe("compiled S scenario", async () => {
         }
     });
 
-    test("a P1 control asks the same task before its fact is conveyed", () => {
-        for (const c of s.probes.filter((p) => p.type === "P1-control")) {
-            const p1 = s.probes.find((p) => p.type === "P1" && p.fact === c.fact);
-            expect(c.text).toBe(p1?.text ?? "missing");
-            expect(s.sessions.find((x) => x.id === c.session)?.project).toBe(
-                p1?.project ?? "missing",
+    test("no probe of a project asks a P1 task before that P1 item", () => {
+        for (const p1 of s.probes.filter((p) => p.type === "P1")) {
+            const earlier = s.probes.filter(
+                (p) =>
+                    p.project === p1.project &&
+                    p.text === p1.text &&
+                    (order.get(p.event ?? "") ?? Infinity) < (order.get(p1.event ?? "") ?? -1),
             );
-            const first = s.events.findIndex((e) => e.fact === c.fact && e.role !== "probe");
-            expect(order.get(c.event ?? "") ?? Infinity).toBeLessThan(first);
+            expect({ item: p1.id, earlier: earlier.map((p) => p.id) }).toEqual({
+                item: p1.id,
+                earlier: [],
+            });
         }
     });
 
@@ -559,11 +564,6 @@ describe("compiled S scenario", async () => {
             expect({ probe: p.id, has: g !== undefined }).toEqual({ probe: p.id, has: true });
             if (!g) continue;
             const at = order.get(p.event ?? "") ?? -1;
-            if (p.type === "P1-control") {
-                expect(g.expect).toBe("baseline");
-                expect(g.sources).toEqual([]);
-                continue;
-            }
             expect(g.sources.length).toBeGreaterThan(0);
             const fact = s.facts.find((f) => f.id === p.fact);
             expect(g.basis).toBe(fact?.basis ?? "instruction");
@@ -679,21 +679,8 @@ describe("compiled S scenario", async () => {
         }
     });
 
-    test("a revised line's control and later checks stay passable", async () => {
+    test("a revised session rule's check stays passable", async () => {
         const m = await compileScenario(loadCompileInput(201, "M", hashEmbedder, true));
-        let revisedControls = 0;
-        for (const c of m.probes.filter((p) => p.type === "P1-control")) {
-            const f = m.facts.find((x) => x.id === c.fact);
-            if (!f || f.revision === 0) continue;
-            revisedControls++;
-            const p1 = m.probes.find((p) => p.type === "P1" && p.fact === c.fact);
-            const forbids = (check: unknown) =>
-                Object.entries(check as Record<string, unknown>)
-                    .filter(([k]) => k.endsWith("_not"))
-                    .reduce((n, [, v]) => n + (v as string[]).length, 0);
-            expect(forbids(c.check)).toBeLessThan(forbids(p1?.check));
-        }
-        expect(revisedControls).toBeGreaterThan(0);
         const tags = m.probes.filter(
             (p) =>
                 p.type === "P13" &&
@@ -1327,10 +1314,10 @@ describe("compile-time refusals", () => {
         await expect(
             withInput((bank) => {
                 for (const lang of ["rust", "typescript"] as const) {
-                    (bank[lang] as Record<string, string[]>).filler = ["Tidy the q-0084 helper."];
+                    (bank[lang] as Record<string, string[]>).filler = ["Tidy the q-0080 helper."];
                 }
             }),
-        ).rejects.toThrow(/delivered text carries markers q-0084/);
+        ).rejects.toThrow(/delivered text carries markers q-0080/);
     });
 
     test("a diff whose content carries a ledger key is refused", async () => {
@@ -1472,12 +1459,6 @@ describe("exposure proof", () => {
     test("a number matches only as a whole value", () => {
         const events = [file("e-2", "a.rs", "54321"), said("e-3", "seed 9123456 ran")];
         expect(run(events, ["e-2"])?.sources).toEqual(["e-2"]);
-    });
-
-    test("a control that follows a source is refused", () => {
-        expect(() =>
-            run([said("e-1", "54321")], ["e-1"], { expect: "baseline" as never }, "P1-control"),
-        ).toThrow(/the control follows a source of f-1/);
     });
 
     test("a P6 probe that finds another plan of its project still open is refused", () => {

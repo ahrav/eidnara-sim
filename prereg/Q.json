@@ -1,7 +1,7 @@
 {
     "schema": "sim-qualification/v1",
     "id": "Q",
-    "revision": 2,
+    "revision": 3,
     "frozen": true,
     "tier": "S",
     "tier_preregistration_sha256": "583e428d34781097acacc4f302f9e857ed2037517a0f463492e963f1f106efca",
@@ -20,6 +20,7 @@
         ["host-oracle", "eidnara"]
     ],
     "controls": ["wrong-project-lookup"],
+    "no_source_control": "host",
     "aa_controls": {
         "seeds": [102],
         "pairs": [

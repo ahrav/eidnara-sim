@@ -220,8 +220,7 @@ records are refused as one campaign.
 
 The falsification set (`src/report/falsify.ts`) pairs, per run, each A/A
 control with its arm, or else the treatment with `host`, and pools the
-pairs: P1-control pass per item, the
-gateway 4xx share per session with no scheduled fault, the pushback share
+pairs: the gateway 4xx share per session with no scheduled fault, the pushback share
 per session before the first divergence index in either arm, and the wall time the
 harness spent from the preceding scripted event's completion (its `Event`
 entry) to each scripted clock jump. On an A/B pair the daemon arm's

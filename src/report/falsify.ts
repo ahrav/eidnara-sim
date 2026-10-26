@@ -22,14 +22,6 @@ export function falsificationPairs(
     treatment: string,
 ): Record<(typeof FALSIFICATION)[number], Pairs> {
     const arm = (a: string) => g.run.arms.find((x) => x.arm === a);
-    const facts = (a: string) =>
-        byKey(
-            g.grades.filter(
-                (r) => r.arm === a && r.probe_type === "P1-control" && r.verdict !== "excluded",
-            ),
-            (r) => r.item,
-            (r) => Number(r.verdict === "pass"),
-        );
     const faulted = new Set(g.scenario.faults.map((f) => f.trigger.session));
     const fourxx = (a: string) => {
         const calls = (arm(a)?.calls ?? []).filter(
@@ -90,7 +82,6 @@ export function falsificationPairs(
         );
     };
     return {
-        in_session_repo_readable_fact_pass: join2(facts(control), facts(treatment)),
         gateway_4xx_rate_without_faults: join2(fourxx(control), fourxx(treatment)),
         pre_divergence_pushback_rate: join2(pushback(control), pushback(treatment)),
         wall_ms_per_scripted_idle_gap: join2(gaps(control), gaps(treatment)),

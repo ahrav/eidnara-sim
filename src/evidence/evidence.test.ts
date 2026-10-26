@@ -758,41 +758,6 @@ describe("evidence stages on the host arm", () => {
     });
 });
 
-describe("control items", () => {
-    const control: EvidenceScenario = {
-        ...SCENARIO,
-        probes: SCENARIO.probes.map((p) => ({
-            ...p,
-            type: "P1-control",
-            ground_truth: { expect: "baseline", present: [["TAG_X"]], sources: [] },
-        })),
-    };
-    test("a control that leaves the rule unapplied holds", () => {
-        const p = evidence(build({ scenario: control, calls: [searchTurn("nothing")] }));
-        expect(p.attributed.cause).toBe("none");
-        expect(stage(p, "application")?.status).toBe("ok");
-    });
-    test("a control that applies a rule its context carried blames eligibility", () => {
-        const p = evidence(
-            build({ scenario: control, calls: [searchTurn("TAG_X")], verdict: "pass" }),
-        );
-        expect(p.attributed).toMatchObject({ cause: "eligibility", status: "failed" });
-        expect(stage(p, "retrieval")?.status).toBe("failed");
-    });
-    test("an excluded control is neither held nor lost at a stage", () => {
-        const p = evidence(
-            build({ scenario: control, calls: [searchTurn("nothing")], verdict: "excluded" }),
-        );
-        expect(p.attributed).toMatchObject({ cause: "application", status: "excluded" });
-    });
-    test("a control that applies the rule unprompted blames application", () => {
-        const p = evidence(
-            build({ scenario: control, calls: [searchTurn("nothing")], verdict: "pass" }),
-        );
-        expect(p.attributed.cause).toBe("application");
-    });
-});
-
 describe("context health", () => {
     const compaction = (output: number, finish: string) => ({
         session: "s-2",

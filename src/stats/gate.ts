@@ -892,12 +892,11 @@ export function pairByItem(
 }
 
 export const FALSIFICATION = [
-    "in_session_repo_readable_fact_pass",
     "gateway_4xx_rate_without_faults",
     "pre_divergence_pushback_rate",
     "wall_ms_per_scripted_idle_gap",
 ] as const;
-/** The first three checks are rates in [0, 1]; the idle-gap wall time is a non-negative duration. */
+/** The first two checks are rates in [0, 1]; the idle-gap wall time is a non-negative duration. */
 const inDomain = (check: string, v: number) =>
     check === "wall_ms_per_scripted_idle_gap" ? v >= 0 : isShare(v);
 

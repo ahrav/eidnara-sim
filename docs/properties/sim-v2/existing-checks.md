@@ -28,7 +28,7 @@ Checks in this tree that enforce records at M5 (the grading unit, #1029):
 
 | Check | Records | Status |
 | --- | --- | --- |
-| `src/grade/probes.test.ts`: transcript artefact refused and exact input ids per fixture, first attempt only, strictly increasing grade versions, no grade for a failed turn, P13 fixtures, P1/control pairing by fact, P11 false-positive weight | SIM-P40, P41, P42, P46, P47, P49, P50 | unaudited |
+| `src/grade/probes.test.ts`: transcript artefact refused and exact input ids per fixture, first attempt only, strictly increasing grade versions, no grade for a failed turn, P13 fixtures, P11 false-positive weight | SIM-P40, P41, P42, P46, P47, P50 | unaudited |
 
 Checks in this tree that enforce records at M7:
 

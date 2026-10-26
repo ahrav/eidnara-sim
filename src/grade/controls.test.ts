@@ -114,9 +114,8 @@ const outcome = (p: ProbeItem, t: Turn) => {
 const NOOP: Turn = {};
 const literal = (p: ProbeItem) => (p.ground_truth?.present[0]?.[0] ?? "") as string;
 
-describe("P1 and P1-control: the rule holds on every construct it governs, in its scope", () => {
+describe("P1: the rule holds on every construct it governs, in its scope", () => {
     const p1 = probeOf("P1", "rs-cmd-const-prefix");
-    const control = probeOf("P1-control", "rs-cmd-const-prefix");
     const token = literal(p1);
     const constant = (path: string, name: string) => ({
         path,
@@ -137,13 +136,11 @@ describe("P1 and P1-control: the rule holds on every construct it governs, in it
             ],
         };
         expect(outcome(p1, alternative)).toEqual(["pass"]);
-        expect(outcome(control, alternative)).toEqual(["pass"]);
     });
 
     test("a no-op, an unrelated edit, the wrong scope, or a note is no application", () => {
         const none = ["fail", "rule not applicable to the change"];
         expect(outcome(p1, NOOP)).toEqual(none);
-        expect(outcome(control, NOOP)).toEqual(none);
         const unrelated = { files: [{ path: "src/cmd/get.rs", lines: ["fn helper() {}"] }] };
         expect(outcome(p1, unrelated)).toEqual(none);
         expect(outcome(p1, { files: [constant("src/lib.rs", `${token}_MAX_KEYS`)] })).toEqual(none);

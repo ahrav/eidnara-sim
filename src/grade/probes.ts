@@ -104,7 +104,6 @@ export interface GradeRecord extends Outcome {
     later_attempts_logged: number;
     /** The digest of the grader's source files that produced the record. */
     grader?: string;
-    pair?: string;
     /**
      * The arm a pairwise (P7) grade was judged against. One host answer is judged once per
      * memory arm, so its grades are distinct records, one per opponent.
@@ -251,7 +250,7 @@ const DIFF_CHANNELS = [
     "quote_style_must",
 ];
 /** Probe types whose check must name a rule to hold, and those whose check must name one to break. */
-const NEEDS_POSITIVE = ["P1", "P1-control", "P3", "P4", "P6", "P12", "P13"];
+const NEEDS_POSITIVE = ["P1", "P3", "P4", "P6", "P12", "P13"];
 const NEEDS_NEGATIVE = ["P2", "P3", "P5", "P10", "P11"];
 
 /**
@@ -1071,7 +1070,6 @@ type Grader = (
 
 const GRADERS: Record<string, Grader> = {
     P1: appliedOutcome("P1"),
-    "P1-control": appliedOutcome("P1-control"),
     P2: (r, c) => {
         const over = broken(turnWork(r, c), c);
         if (!over && !codeChanged(r)) return binary("P2", false, { "P2.harm": false }, NO_CHANGE);
@@ -1147,7 +1145,6 @@ const GRADERS: Record<string, Grader> = {
 /** The `ground_truth.expect` each probe type's grader is built for. */
 const EXPECTS: Record<string, string[]> = {
     P1: ["apply"],
-    "P1-control": ["baseline"],
     P2: ["avoid"],
     P3: ["apply"],
     P4: ["apply"],
@@ -1323,9 +1320,6 @@ export function gradeItem(
     requireEvidence(probe, first, sources);
     const reader = new ArtefactReader(first);
     const outcome = grader(reader, (probe.check ?? {}) as Check, rules, probe, sources);
-    const paired = probe.type === "P1-control" || probe.type === "P1";
-    if (paired && !probe.fact)
-        throw new GradeRefused(`${probe.type} item ${probe.id} names no fact`);
     return {
         item: probe.id,
         arm: first.arm,
@@ -1334,7 +1328,6 @@ export function gradeItem(
         snapshot: first.id,
         inputs: [...reader.read].sort(),
         later_attempts_logged: snapshots.length - 1,
-        ...(paired ? { pair: probe.fact as string } : {}),
         ...outcome,
     };
 }
@@ -1365,8 +1358,6 @@ function isGradeRecord(value: unknown): value is GradeRecord {
         new Set(g.inputs).size === g.inputs.length;
     const attempts =
         Number.isInteger(g.later_attempts_logged) && (g.later_attempts_logged as number) >= 0;
-    const paired = g.probe_type === "P1" || g.probe_type === "P1-control";
-    const pair = paired ? text(g.pair) : g.pair === undefined;
     const against = g.probe_type === "P7" ? text(g.against) : g.against === undefined;
     const graded = metrics && (g.verdict === "excluded" || metricsAgree(g));
     const optionals = optional(str)(g.reason) && optional(digest)(g.grader);
@@ -1379,7 +1370,6 @@ function isGradeRecord(value: unknown): value is GradeRecord {
         inputs &&
         attempts &&
         optionals &&
-        pair &&
         against &&
         graded
     );
@@ -1472,7 +1462,7 @@ function metricsAgree(g: Record<string, unknown>): boolean {
 
 /** The field a regrade changed among those fixed for an item, arm, and opponent, or null. */
 function identityChange(previous: GradeRecord, next: GradeRecord): string | null {
-    for (const field of ["snapshot", "probe_type", "pair", "against"] as const) {
+    for (const field of ["snapshot", "probe_type", "against"] as const) {
         if (previous[field] !== next[field]) return field;
     }
     return null;

@@ -1380,24 +1380,25 @@ Open questions:
 
 Type: safety
 Reachability: default-production
-Status: active
-Exercised: partial - the M5 grading unit (#1029) exercises the grader on
-recorded fixtures in `src/grade/probes.test.ts`; run and report wiring lands in
-later units
+Status: invalidated
+Exercised: not yet - generator `sim-scenario/v6` compiles no control instance;
+the `host` arm's grade on the same P1 item gives the base rate
 Guarantee: SIM-P49: Every P1 item has a no-cue control instance with the same
 task, and the report pairs them.
 Check: `always` - for each P1 item, assert a control instance with the same task
 exists and the report pairs them.
-Fault/timing angle: none.
+Fault/timing angle: the control turn precedes the P1 probe in the same
+persisted workspace, so the agent's control work is in the tree at the probe.
 Required faults and enabling state: a probe plan with P1 items.
-Confidence: low - [evidence](evidence/sim-p49-p1-control-instance-paired.md).
-PROPOSED:
-reconstructed from the condensed index in spec #1007; the M5 grading unit
-(#1029) implements the grader and run and report wiring is still absent, and a
-default tier run reaches it.
-Existing check: `src/grade/probes.test.ts`, grading harness: P1 and its control
-are paired by fact under separate metrics; status unaudited
-Impact: P1 compliance cannot be separated from the task's base rate.
+Confidence: high - [evidence](evidence/sim-p49-p1-control-instance-paired.md).
+Invalidated by the S-101 qualification audit: on every arm the agent finished
+the P1 task at its control turn (q-0013, q-0021, q-0025, q-0029), so the P1
+probe found the task done. Qualification Q revision 3 registers `host` as the
+no-source control instead.
+Existing check: `src/scenario/compile.test.ts` `no probe of a project asks a P1
+task before that P1 item`; status unaudited
+Impact: a control asked before its P1 item in a shared workspace pre-empts the
+P1 item it was meant to calibrate.
 Open questions: None.
 
 ### sim-p50-p11-false-positive-weight-applied

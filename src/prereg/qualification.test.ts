@@ -18,7 +18,9 @@ const edit = (patch: (q: Record<string, unknown>) => void) => {
 /** Edits a copy without its optional sections, whose checks read the arms an edit replaces. */
 const editArms = (patch: (q: Record<string, unknown>) => void) =>
     edit((q) => {
-        for (const k of ["aa_controls", "holdout", "ranking_gate"]) delete q[k];
+        for (const k of ["aa_controls", "holdout", "ranking_gate", "no_source_control"]) {
+            delete q[k];
+        }
         patch(q);
     });
 
@@ -85,8 +87,9 @@ test("orders must permute the run arms, and contrasts must cross delivery modes"
     ).toEqual(["contrasts[0]: eidnara-kl and eidnara deliver the same way"]);
 });
 
-test("revision 2 registers seed 102's A/A controls, hold-out seed 103, and the scoped ranking gate", () => {
-    expect(Q.revision).toBe(2);
+test("revision 3 names host as the no-source control beside revision 2's sections", () => {
+    expect(Q.revision).toBe(3);
+    expect(Q.no_source_control).toBe("host");
     expect(qualificationSeed(Q, 102)).toEqual({
         order: ["host-oracle", "eidnara", "host"],
         run: ["host", "eidnara", "host-oracle"],
@@ -109,6 +112,19 @@ test("revision 2 registers seed 102's A/A controls, hold-out seed 103, and the s
         order: ["host-oracle", "eidnara", "host"],
         items: [...RANKING_GATE_ITEMS],
     });
+});
+
+test("the no-source control must be a run arm that delivers no memory", () => {
+    const control = (value: unknown) => edit((q) => (q.no_source_control = value));
+    expect(control("eidnara")).toEqual([
+        "no_source_control: eidnara delivers automatic; expected none",
+    ]);
+    expect(control("host-oracle")).toEqual([
+        "no_source_control: host-oracle delivers oracle-context; expected none",
+    ]);
+    expect(control("eidnara-kl")).toEqual(["no_source_control: expected a run arm"]);
+    expect(control(7)).toEqual(["no_source_control: expected a run arm"]);
+    expect(edit((q) => delete q.no_source_control)).toEqual([]);
 });
 
 test("A/A seeds and pairs, hold-out seeds and orders, and the ranking gate are checked", () => {
