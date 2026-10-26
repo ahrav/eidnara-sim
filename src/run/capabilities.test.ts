@@ -72,16 +72,18 @@ function captured(
     mkdirSync(store, { recursive: true });
     const db = new Database(join(store, "kernel.sqlite"));
     db.run(
-        "create table object_registry(object_id text primary key, object_kind text, source_kind text, invalidated_commit_seq integer)",
+        "create table object_registry(object_id text primary key, object_kind text, source_kind text, created_commit_seq integer, invalidated_commit_seq integer)",
     );
+    db.run("create table commit_log(commit_seq integer primary key)");
+    db.run("insert into commit_log values (1), (7)");
     for (const [i, c] of classes.entries()) {
-        db.run("insert into object_registry values (?, 'observation', ?, ?)", [
+        db.run("insert into object_registry values (?, 'observation', ?, 1, ?)", [
             `srcdesc:${c}${i}:1`,
             c,
             i === 0 ? null : 7,
         ]);
     }
-    db.run("insert into object_registry values ('decision:x', 'decision', 'memory', null)");
+    db.run("insert into object_registry values ('decision:x', 'decision', 'memory', 1, null)");
     db.close();
     const error = counters ? null : "fixture control timed out";
     writeFileSync(join(root, "..", "source-capture.json"), JSON.stringify({ counters, error }));
@@ -237,6 +239,30 @@ test("an arm that consents to source capture must leave message descriptors and 
             ),
         );
     expect(nulls({ admitted: 1, completed: 1, oldest_deferred_age_ms: null })).toEqual([]);
+    const deferred = observeArm(
+        "eidnara",
+        "pi",
+        captured(armRoot([PI_ON, PASS]), ["messages"], {
+            admitted: 1,
+            completed: 1,
+            oldest_deferred_age_ms: null,
+        } as unknown as Record<string, number>),
+        { agent: 2 },
+    );
+    expect(deferred.source_capture?.counters).toEqual({
+        admitted: 1,
+        completed: 1,
+        oldest_deferred_age_ms: null,
+    });
+    const orphaned = captured(armRoot([PI_ON, PASS]));
+    const db = new Database(join(orphaned, "..", "final-store", "kernel.sqlite"));
+    db.run(
+        "insert into object_registry values ('srcdesc:z:1', 'observation', 'messages', 9, null)",
+    );
+    db.close();
+    expect(armMismatches(observeArm("eidnara", "pi", orphaned, { agent: 2 }))).toEqual([
+        "the final Kernel store is absent or unreadable, so source capture is unverified",
+    ]);
     expect(nulls({ admitted: 1, completed: 1, units_published: null })[0]).toMatch(/malformed/);
     // An arm that never reached an agent call has nothing for capture to retain.
     expect(armMismatches(observeArm("eidnara", "pi", armRoot([PI_ON]), {}))).toEqual([]);

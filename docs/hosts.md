@@ -216,7 +216,8 @@ complete evidence only when the two agree:
 - `capabilities.json` also holds `source_capture`: the Kernel source
   descriptors (`srcdesc:*` observations) in `<arm>/final-store/kernel.sqlite`
   by class (`messages`, `raw_tool_spans`, `repository_documents`) and how many
-  are live, and the settled `source_capture` counters the last daemon
+  are live (a store holding a descriptor whose creation or retirement commit
+  its `commit_log` lacks reads as unreadable), and the settled `source_capture` counters the last daemon
   generation reported. Before the final daemon stop, the driver reads those
   counters through the fixture's control socket (`settledSourceCapture`,
   waiting up to 30 s for every capture job to settle) into

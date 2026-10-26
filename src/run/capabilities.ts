@@ -78,7 +78,7 @@ export interface SourceCaptureObservation {
     /** Of those, the descriptors no later revision retired. */
     live: number | null;
     /** The last daemon generation's counters; null when they were not read. */
-    counters: Record<string, number> | null;
+    counters: Record<string, number | null> | null;
     /** Why the counters could not be read, or null. */
     counters_error: string | null;
 }
@@ -422,6 +422,17 @@ export function readDescriptors(
                  group by source_kind`,
             )
             .all() as { class: string; n: number; live: number }[];
+        // A descriptor whose commit the log lacks comes from a store a crash left partial.
+        const orphans = db
+            .query(
+                `select count(*) as n from object_registry o
+                 where o.object_id glob 'srcdesc:*' and o.object_kind = 'observation'
+                   and (o.created_commit_seq not in (select commit_seq from commit_log)
+                     or (o.invalidated_commit_seq is not null
+                         and o.invalidated_commit_seq not in (select commit_seq from commit_log)))`,
+            )
+            .get() as { n: number };
+        if (orphans.n > 0) return { descriptors: null, live: null };
         return {
             descriptors: Object.fromEntries(rows.map((r) => [r.class, r.n])),
             live: rows.reduce((sum, r) => sum + r.live, 0),
@@ -470,12 +481,7 @@ function readCaptureCounters(
         }
         const problem = captureCountersProblem(raw.counters);
         if (problem) return { counters: null, counters_error: problem };
-        const counters = Object.fromEntries(
-            Object.entries(raw.counters as Record<string, unknown>).filter(
-                (e): e is [string, number] => typeof e[1] === "number",
-            ),
-        );
-        return { counters, counters_error: null };
+        return { counters: raw.counters as Record<string, number | null>, counters_error: null };
     } catch (caught) {
         return { counters: null, counters_error: `source-capture.json: ${String(caught)}` };
     }
