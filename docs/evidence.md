@@ -119,7 +119,8 @@ flagged sessions from `flagged_from` on, which get rows of their own.
 
 An arm of the manifest's order is a directory of the run: a plain name, or an
 A/A control label `<arm>~<tag>` that the run's tier registers as an
-`[arm, arm]` pair in `aa_controls`, right after its arm; a control label in a
+`[arm, arm]` pair in `aa_controls` (under a qualification, a pair its
+`aa_controls` registers for the run's seed), right after its arm; a control label in a
 manifest without a known tier is refused.
 
 ## Historical runs

@@ -10,7 +10,7 @@ import { type CallRecord, recordProblems } from "../proxy/records";
 import { type PartLookup, RequestPartLog, rebuildRequest } from "../proxy/requests";
 import { type Entry, readJournal, readJsonl } from "../run/journal";
 import { scenarioHash } from "../scenario/compile";
-import { loadPrereg } from "../scenario/inputs";
+import { admittedArms, loadPrereg } from "../scenario/inputs";
 
 /** The scenario fields the evidence path reads. */
 export interface EvidenceScenario {
@@ -429,6 +429,8 @@ export function loadRun(dir: string): RunData {
         context_limit?: number;
         order?: string[];
         tier?: unknown;
+        seed?: number;
+        qualification?: { id: string; sha256: string } | null;
         arms?: Record<string, { profile?: ArmProfileView }>;
     }>(join(dir, "manifest.json"));
     if (!manifest) throw new Error(`${dir}: no manifest.json`);
@@ -454,14 +456,21 @@ export function loadRun(dir: string): RunData {
             throw new Error(`${dir}: arm ${JSON.stringify(arm)} is not a directory name`);
         }
     }
-    // An A/A control label is admitted only for a pair the run's tier registers.
+    // An A/A control label is admitted only for a pair the run's registration lists: the tier's,
+    // or under a qualification the run's own seed's.
     if (order.some((arm) => arm !== armBase(arm))) {
         const tier = manifest.tier;
         if (!TIERS.includes(tier as Tier)) {
             throw new Error(`${dir}: manifest names A/A controls without a known tier`);
         }
         try {
-            requireOrder(order, ARMS, loadPrereg(tier as Tier).aa_controls?.pairs ?? []);
+            const pairs = manifest.qualification
+                ? admittedArms(
+                      { ...manifest, tier: tier as Tier, order },
+                      scenario as { manifest?: Record<string, unknown> },
+                  ).pairs
+                : (loadPrereg(tier as Tier).aa_controls?.pairs ?? []);
+            requireOrder(order, ARMS, pairs);
         } catch (caught) {
             throw new Error(`${dir}: ${(caught as Error).message}`);
         }
