@@ -100,6 +100,7 @@ export async function gradeRun(
     try {
         // A refused run keeps the summary of the grades it has.
         requireCheckedSchema(JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).schema);
+        requireGradableTypes(JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")));
         // A pass that stops early leaves no summary, so a reader never takes a stale one as current.
         rmSync(summaryPath(dir), { force: true });
         const summary = await grade(dir, config, regrade);
@@ -234,6 +235,16 @@ export function requireCapabilities(
     }
 }
 
+/** A scenario that compiles a recorded type is graded by the sim commit that recorded it. */
+function requireGradableTypes(scenario: Scenario): void {
+    const recorded = scenario.probes.find((p) => RECORDED_TYPES.includes(p.type));
+    if (recorded) {
+        throw new Error(
+            `scenario.json compiles ${recorded.type} items, a type this grader reads from logs only; grade the run with the sim commit that recorded it`,
+        );
+    }
+}
+
 async function grade(dir: string, config: SimConfig | null, regrade: boolean): Promise<Summary> {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
@@ -245,12 +256,6 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     if (changed.length > 0) {
         const names = changed.map(([k]) => k).join(", ");
         throw new Error(`inputs differ from the run's manifest: ${names}`);
-    }
-    const recorded = scenario.probes.filter((p) => RECORDED_TYPES.includes(p.type));
-    if (recorded.length > 0) {
-        throw new Error(
-            `scenario.json compiles ${recorded[0]?.type} items, a type this grader reads from logs only; grade the run with the sim commit that recorded it`,
-        );
     }
     const identity = scenario.manifest as { seed?: unknown; tier?: unknown };
     if (identity.seed !== manifest.seed || identity.tier !== manifest.tier) {

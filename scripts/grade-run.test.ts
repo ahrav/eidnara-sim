@@ -439,10 +439,12 @@ describe("grade-run", () => {
     test("a scenario with recorded P1-control items is refused before grading", async () => {
         const dir = run({ probes: [{ ...p5.probe, type: "P1-control" }] });
         snapshot(dir, "eidnara", snap);
+        writeFileSync(join(dir, "grade-summary.json"), "{}\n");
         await expect(gradeRun(dir, null)).rejects.toThrow(
             "compiles P1-control items, a type this grader reads from logs only",
         );
         expect(existsSync(join(dir, "grades.jsonl"))).toBe(false);
+        expect(readFileSync(join(dir, "grade-summary.json"), "utf8")).toBe("{}\n");
     });
 
     test("a journaled snapshot for an item the scenario does not compile aborts grading", async () => {
