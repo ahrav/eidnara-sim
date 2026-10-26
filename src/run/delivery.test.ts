@@ -268,12 +268,29 @@ describe("arm order under a qualification", () => {
         expect(armOrder({ tier: "S", seed: 101 })).toEqual(["host", "eidnara", "eidnara-kl"]);
     });
 
+    test("seed 102 runs the whole-scenario A/A controls beside their arms, and hold-out 103 its own arms", () => {
+        expect(at(102, ["host-oracle", "eidnara", "eidnara~aa", "host", "host~aa"])).toEqual([
+            "host-oracle",
+            "eidnara",
+            "eidnara~aa",
+            "host",
+            "host~aa",
+        ]);
+        expect(at(102, ["host", "host~aa"])).toEqual(["host", "host~aa"]);
+        expect(() => at(102, ["host-oracle~aa", "host-oracle"])).toThrow(/arms not in/);
+        expect(at(103)).toEqual(["eidnara", "host"]);
+        expect(at(103, ["host"])).toEqual(["host"]);
+    });
+
     test("an unregistered arm, a refused arm, a foreign host, and a tier mismatch are refused", () => {
         expect(() => at(101, ["eidnara-kl"])).toThrow(/arms not in the qualification Q order/);
         expect(() => at(101, ["eidnara-search"])).toThrow(
             /arm capability refused: eidnara-search \(explicit-search-only\) needs memory_injection=switchable/,
         );
         expect(() => at(101, ["host~aa"])).toThrow(/arms not in the qualification Q order/);
+        expect(() => at(103, ["host-oracle"])).toThrow(/arms not in the qualification Q order/);
+        expect(() => at(103, ["eidnara~aa"])).toThrow(/arms not in the qualification Q order/);
+        expect(() => at(104)).toThrow(/seed 104 is not pre-registered for qualification Q/);
         expect(() => at(101, undefined, "opencode")).toThrow(/qualification Q runs no opencode/);
         expect(() => armOrder({ tier: "M", seed: 201, qualification: "Q" })).toThrow(
             /qualification Q runs over tier S, not M/,
@@ -319,6 +336,18 @@ describe("persisted runs under a qualification", () => {
         expect(run(102, ["host-oracle", "host"]).run).toContain("host-oracle");
         expect(() => run(102, ["host", "host-oracle"])).toThrow(/is not a subsequence/);
         expect(() => run(201, ["host"])).toThrow(/qualification Q runs no seed 201/);
+        expect(run(102, ["eidnara", "eidnara~aa", "host", "host~aa"])).toEqual({
+            run: ["host", "eidnara", "host-oracle"],
+            pairs: [
+                ["host", "host"],
+                ["eidnara", "eidnara"],
+            ],
+        });
+        expect(() => run(102, ["eidnara~aa", "eidnara"])).toThrow(/is not a subsequence/);
+        expect(() => run(101, ["host", "host~aa"])).toThrow(/is not a subsequence/);
+        expect(run(103, ["eidnara", "host"])).toEqual({ run: ["host", "eidnara"], pairs: [] });
+        expect(() => run(103, ["host", "eidnara"])).toThrow(/is not a subsequence/);
+        expect(() => run(103, ["host-oracle"])).toThrow(/is not a subsequence/);
         const stale = { ...ref, sha256: "0".repeat(64) };
         const scenario = {
             manifest: { ...qualified.manifest, qualification_sha256: stale.sha256 },

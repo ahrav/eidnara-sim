@@ -1,7 +1,7 @@
 {
     "schema": "sim-qualification/v1",
     "id": "Q",
-    "revision": 1,
+    "revision": 2,
     "frozen": true,
     "tier": "S",
     "tier_preregistration_sha256": "583e428d34781097acacc4f302f9e857ed2037517a0f463492e963f1f106efca",
@@ -20,5 +20,22 @@
         ["host-oracle", "eidnara"]
     ],
     "controls": ["wrong-project-lookup"],
+    "aa_controls": {
+        "seeds": [102],
+        "pairs": [
+            ["host", "host"],
+            ["eidnara", "eidnara"]
+        ]
+    },
+    "holdout": {
+        "seeds": [103],
+        "arms": ["host", "eidnara"],
+        "order_by_seed": [["eidnara", "host"]],
+        "pooled": false
+    },
+    "ranking_gate": {
+        "order": ["host-oracle", "eidnara", "host"],
+        "items": ["P1", "P3", "P4:in", "P6:resume", "P8", "P12", "P13"]
+    },
     "claim": "descriptive"
 }

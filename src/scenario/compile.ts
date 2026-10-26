@@ -7,7 +7,7 @@ import { scheduleFaults, validateFault } from "./faults";
 import { bm25Ratio, cosine, type Embedder, round4 } from "./similarity";
 import { Tokens } from "./tokens";
 
-export const GENERATOR_VERSION = "sim-scenario/v4";
+export const GENERATOR_VERSION = "sim-scenario/v5";
 
 export const MANNER_WEIGHTS = {
     correction: 0.35,
@@ -383,6 +383,11 @@ export async function compileScenario(input: CompileInput) {
 
     const turns = new Map<string, Turn>();
     const key = (session: string, index: number) => `${session}#${index}`;
+    /**
+     * Sessions that end at a plan's latest conveyance, with its index: the conveyance stays the
+     * session's last request, so the project's next session opens with the P6 probe.
+     */
+    const sealed = new Map<string, number>();
     const byProject = (project: string) => sessions.filter((x) => x.project === project);
     const sessionOf = (id: string) => sessions.find((x) => x.id === id) as Session;
     const all = (x: Session) => range(0, x.turn_ms.length);
@@ -399,7 +404,8 @@ export async function compileScenario(input: CompileInput) {
                 .map((i) => [x, i] as const),
         );
         // A session's first turn stays free for a commit's cue; a turn that finds no later slot
-        // extends its session instead.
+        // extends its session instead. In a session a plan's conveyance ends, the new slot goes
+        // just before that conveyance, which moves to the session's new last slot.
         const open = free.filter(([, i]) => i > 0);
         const [session, slot] =
             open.length > 0 ? place.pick(open) : [candidates[candidates.length - 1] as Session, -1];
@@ -407,6 +413,15 @@ export async function compileScenario(input: CompileInput) {
         if (index < 0) {
             index = session.turn_ms.length;
             session.turn_ms.push(lastTurn(session) + 60_000);
+            const final = sealed.get(session.id);
+            if (final !== undefined) {
+                const conveyance = turns.get(key(session.id, final)) as Turn;
+                turns.delete(key(session.id, final));
+                conveyance.index = index;
+                turns.set(key(session.id, index), conveyance);
+                sealed.set(session.id, index);
+                index = final;
+            }
         }
         const t = { ...turn, session: session.id, index };
         turns.set(key(session.id, index), t);
@@ -496,6 +511,53 @@ export async function compileScenario(input: CompileInput) {
     };
 
     const sessionIndex = new Map(sessions.map((x, i) => [x.id, i]));
+    /** The project's next session after `x`, when its opening is free for a P6 probe. */
+    const resumeTarget = (x: Session, eligible: Session[]): Session | null => {
+        const next = sessions
+            .slice((sessionIndex.get(x.id) ?? 0) + 1)
+            .find((y) => y.project === x.project);
+        return next &&
+            eligible.includes(next) &&
+            !turns.has(key(next.id, 0)) &&
+            !openings.has(next.id) &&
+            !sealed.has(next.id)
+            ? next
+            : null;
+    };
+    /**
+     * Places a plan's latest conveyance in the last slot of a session, extending the session when
+     * that slot is taken or precedes `after`, and seals the session, so the P6 probe that opens
+     * the project's next session follows it with no request of the project between.
+     */
+    const takeFinal = (
+        pools: Session[][],
+        turn: Omit<Turn, "session" | "index">,
+        eligible: Session[],
+        after?: Turn,
+    ): Turn => {
+        const usable = (x: Session) =>
+            !x.forced_p90 &&
+            !sealed.has(x.id) &&
+            resumeTarget(x, eligible) !== null &&
+            (!after || (sessionIndex.get(x.id) ?? 0) >= (sessionIndex.get(after.session) ?? 0));
+        const pool = pools.map((xs) => xs.filter(usable)).find((xs) => xs.length > 0);
+        if (!pool) {
+            throw new Error(
+                `no session can end at the plan conveyance of ${turn.fact} with its project's next session free for the probe`,
+            );
+        }
+        const session = place.pick(pool);
+        let index = session.turn_ms.length - 1;
+        const taken = turns.has(key(session.id, index));
+        if (index === 0 || taken || (after?.session === session.id && index <= after.index)) {
+            index = session.turn_ms.length;
+            session.turn_ms.push(lastTurn(session) + 60_000);
+        }
+        const t: Turn = { ...turn, session: session.id, index };
+        turns.set(key(session.id, index), t);
+        sealed.set(session.id, index);
+        return t;
+    };
     const hostOf = (i: number) => p90[i % p90.length] as Session;
     const allSpecs = FACT_SPECS.flatMap((spec) => range(0, perType).map((i) => ({ ...spec, i })));
     const factSpecs = [
@@ -636,7 +698,7 @@ export async function compileScenario(input: CompileInput) {
         const planRevised = planExpect === "resume" && slot % 2 === 1;
         const updated = Boolean(tpl.update) || planRevised;
         const allowed = (m: Manner) =>
-            !((f.inSession || updated) && m === "hand_applied_diff") &&
+            !((f.inSession || updated || isPlan) && m === "hand_applied_diff") &&
             (reversible || m !== "stated_then_reversed") &&
             (MANNER_KINDS[m]?.includes(f.kind) ?? true);
         const at = pool.findIndex(allowed);
@@ -712,9 +774,16 @@ export async function compileScenario(input: CompileInput) {
             role: Turn["role"] = "conveyance",
         ) => {
             fact.cues.push(...[cueText].flat());
-            const t = committing(c)
-                ? takeOpening(early, { role, text, fact: id }, "commits", open.slice(0, -1))
-                : take(early, where, { role, text, fact: id });
+            const t =
+                isPlan && !planRevised
+                    ? takeFinal(
+                          [early, open.slice(0, -1)],
+                          { role, text, fact: id },
+                          inWindow(project.id),
+                      )
+                    : committing(c)
+                      ? takeOpening(early, { role, text, fact: id }, "commits", open.slice(0, -1))
+                      : take(early, where, { role, text, fact: id });
             land(t.session, c);
             expose(id, t);
             return t;
@@ -790,11 +859,11 @@ export async function compileScenario(input: CompileInput) {
               : undefined;
         if (updateText) {
             const updatePool = [sessionOf(conveyed.session), ...later(project.id)];
-            conveyed = take(
-                updatePool.slice(0, Math.max(1, Math.ceil(updatePool.length / 2))),
-                after(conveyed),
-                { role: "update", text: updateText, fact: id },
-            );
+            const half = updatePool.slice(0, Math.max(1, Math.ceil(updatePool.length / 2)));
+            const turn = { role: "update" as const, text: updateText, fact: id };
+            conveyed = planRevised
+                ? takeFinal([half, updatePool.slice(0, -1)], turn, inWindow(project.id), conveyed)
+                : take(half, after(conveyed), turn);
             fact.cues.push(updateText);
             expose(id, conveyed);
         }
@@ -957,12 +1026,13 @@ export async function compileScenario(input: CompileInput) {
             const truth = truthFor("apply", out);
             addProbe("P4", project.id, out ? outText : probeText, c, fromConveyed, truth);
         } else if (f.type === "P6") {
+            const target = resumeTarget(sessionOf(conveyed.session), inWindow(project.id));
             const t = addProbe(
                 "P6",
                 project.id,
                 probeText,
                 check,
-                fromConveyed,
+                target ? [target] : [],
                 truthFor(planExpect ?? "resume"),
                 all,
                 id,
@@ -1261,6 +1331,12 @@ export async function compileScenario(input: CompileInput) {
         }));
     }
     proveTwoPlansNeverOpen(plans, probes, order);
+    proveResumeFollowsPlan(
+        plans,
+        probes,
+        events,
+        (e) => (e.project as string | undefined) ?? projectOfSession.get(e.session as string) ?? "",
+    );
 
     const summary = sessions.map(({ turn_ms, ...x }, i) => {
         const prev = sessions[i - 1];
@@ -1491,6 +1567,39 @@ export function proveExposure(o: Exposure): void {
             }
         }
         p.ground_truth = { ...rest, sources: sources.map((e) => e.id) };
+    }
+}
+
+/**
+ * Refuses a P6 item whose project receives a request or a commit between its plan's latest
+ * conveyance and the probe: a task or a note there would be another candidate for "what we left
+ * unfinished".
+ */
+export function proveResumeFollowsPlan(
+    plans: PlanRecord[],
+    probes: ProbeItem[],
+    events: ReadonlyArray<Record<string, unknown> & { id: string }>,
+    projectOf: (e: Record<string, unknown>) => string,
+): void {
+    const order = new Map(events.map((e, i) => [e.id, i]));
+    for (const p of probes.filter((x) => x.type === "P6")) {
+        const at = order.get(p.event ?? "");
+        const plan = plans.find((x) => x.fact === p.fact);
+        const sources = (plan?.history ?? [])
+            .filter((h) => h.status !== "completed")
+            .map((h) => order.get(h.event) ?? -1)
+            .filter((i) => at !== undefined && i >= 0 && i < at);
+        if (at === undefined || sources.length === 0) {
+            throw new Error(`${p.id}: its plan has no conveyance before the probe`);
+        }
+        const from = Math.max(...sources);
+        for (const e of events.slice(from + 1, at)) {
+            if ((e.kind === "user_turn" || e.kind === "apply_diff") && projectOf(e) === p.project) {
+                throw new Error(
+                    `${p.id}: ${e.id} reaches ${p.project} between its plan's latest conveyance ${events[from]?.id} and the probe`,
+                );
+            }
+        }
     }
 }
 

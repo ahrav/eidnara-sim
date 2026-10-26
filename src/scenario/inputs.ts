@@ -5,7 +5,12 @@ import { parseJsonl } from "../corpus/entries";
 import { loadRepos } from "../corpus/repos";
 import { CORPUS_DIR } from "../corpus/sources";
 import { sha256Hex } from "../prereg/canonical";
-import { parseQualification, type Qualification, qualificationHash } from "../prereg/qualification";
+import {
+    parseQualification,
+    type Qualification,
+    qualificationHash,
+    qualificationSeed,
+} from "../prereg/qualification";
 import { TIERS, type Tier } from "../prereg/schema";
 import { parsePreregistration } from "../prereg/validate";
 import type { Bank, CompileInput, Project } from "./compile";
@@ -157,16 +162,23 @@ export function admittedArms(
     if (manifest.host !== undefined && !q.hosts.includes(manifest.host)) {
         throw new Error(`qualification ${q.id} runs no ${manifest.host} host`);
     }
-    const at = manifest.seed === undefined ? -1 : q.seeds.indexOf(manifest.seed);
-    if (at < 0) throw new Error(`qualification ${q.id} runs no seed ${manifest.seed}`);
-    const scheduled = q.arms.order_by_seed[at] ?? [];
-    const ranks = (manifest.order ?? []).map((arm) => scheduled.indexOf(arm));
+    const seat = manifest.seed === undefined ? null : qualificationSeed(q, manifest.seed);
+    if (!seat) throw new Error(`qualification ${q.id} runs no seed ${manifest.seed}`);
+    const scheduled = seat.order;
+    // An A/A control of a registered pair ranks just after its arm.
+    const rank = (arm: string) => {
+        const [own, tag] = arm.split("~") as [string, string | undefined];
+        if (tag === undefined) return 2 * scheduled.indexOf(arm);
+        const paired = seat.pairs.some(([a]) => a === own) && scheduled.includes(own);
+        return paired ? 2 * scheduled.indexOf(own) + 1 : -1;
+    };
+    const ranks = (manifest.order ?? []).map(rank);
     if (ranks.some((r, i) => r < 0 || (i > 0 && r <= (ranks[i - 1] as number)))) {
         throw new Error(
             `manifest order ${(manifest.order ?? []).join(",")} is not a subsequence of qualification ${q.id}'s seed ${manifest.seed} order ${scheduled.join(",")}`,
         );
     }
-    return { run: q.arms.run, pairs: [] };
+    return { run: seat.run, pairs: seat.pairs };
 }
 
 export function langOf(role: string): Project["lang"] {

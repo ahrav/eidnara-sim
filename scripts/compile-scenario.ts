@@ -12,14 +12,17 @@ import {
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { canonicalJson } from "../src/prereg/canonical";
+import { qualificationHash } from "../src/prereg/qualification";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { compileScenario } from "../src/scenario/compile";
-import { loadCompileInput, loadPrereg } from "../src/scenario/inputs";
+import { loadCompileInput, loadPrereg, loadQualification } from "../src/scenario/inputs";
 import { bedrockEmbedder, hashEmbedder } from "../src/scenario/similarity";
 
-const FLAGS = ["tier", "seed", "embedder", "out"];
+const FLAGS = ["tier", "seed", "embedder", "out", "qualification"];
 const usage = (why: string) => {
-    console.error(`${why}\nusage: --tier S|M|L|XL --seed <int> [--embedder local] [--out path]`);
+    console.error(
+        `${why}\nusage: --tier S|M|L|XL --seed <int> [--embedder local] [--out path] [--qualification Q]`,
+    );
     process.exit(2);
 };
 const args = new Map<string, string>();
@@ -34,13 +37,13 @@ for (let i = 0; i < argv.length; i += 2) {
     }
     args.set(name, value as string);
 }
-const [tier, seedArg, embedderArg, outArg] = FLAGS.map((f) => args.get(f));
+const [tier, seedArg, embedderArg, outArg, qualificationArg] = FLAGS.map((f) => args.get(f));
 const seed = Number(seedArg);
 if (!TIERS.includes(tier as Tier)) usage(`--tier must be one of ${TIERS.join(", ")}`);
 if (!/^\d+$/.test(seedArg ?? "")) usage("--seed must be a non-negative integer");
 if (![undefined, "local"].includes(embedderArg)) usage("--embedder accepts only local");
 const local = embedderArg === "local";
-const defaultName = `${tier}-${seed}${local ? ".local" : ""}.json`;
+const defaultName = `${tier}-${seed}${qualificationArg ? `-${qualificationArg}` : ""}${local ? ".local" : ""}.json`;
 const out = outArg ?? join(import.meta.dir, "..", "runs", "scenarios", defaultName);
 const config = loadConfig();
 const kind = (path: string) => {
@@ -92,17 +95,39 @@ if (statSync(out, { throwIfNoEntry: false })?.isDirectory()) {
     console.error(`--out ${out} is a directory; name the scenario file`);
     process.exit(2);
 }
-const registered = loadPrereg(tier as Tier).seeds;
+const qualification = (() => {
+    if (qualificationArg === undefined) return undefined;
+    try {
+        return loadQualification(qualificationArg);
+    } catch (caught) {
+        return usage(`--qualification ${qualificationArg}: ${(caught as Error).message}`);
+    }
+})();
+if (qualification && qualification.tier !== tier) {
+    usage(`qualification ${qualification.id} runs over tier ${qualification.tier}, not ${tier}`);
+}
+const registered = qualification
+    ? [...qualification.seeds, ...(qualification.holdout?.seeds ?? [])]
+    : loadPrereg(tier as Tier).seeds;
 if (!local && !registered.includes(seed)) {
-    console.error(
-        `seed ${seed} is not among tier ${tier}'s registered seeds ${registered.join(", ")}`,
-    );
+    const owner = qualification ? `qualification ${qualification.id}` : `tier ${tier}`;
+    console.error(`seed ${seed} is not among ${owner}'s registered seeds ${registered.join(", ")}`);
     process.exit(2);
 }
 mkdirSync(dirname(out), { recursive: true });
 const { aws_profile, region } = config.bedrock;
 const embedder = local ? hashEmbedder : bedrockEmbedder(aws_profile, region, cache);
-const scenario = await compileScenario(loadCompileInput(seed, tier as Tier, embedder, local));
+const scenario = await compileScenario({
+    ...loadCompileInput(seed, tier as Tier, embedder, local),
+    ...(qualification
+        ? {
+              qualification: {
+                  sha256: qualificationHash(qualification),
+                  controls: qualification.controls,
+              },
+          }
+        : {}),
+});
 const partial = `${out}.${randomBytes(6).toString("hex")}.tmp`;
 try {
     writeFileSync(partial, `${canonicalJson(scenario)}\n`, { flag: "wx" });

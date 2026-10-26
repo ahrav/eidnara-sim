@@ -15,11 +15,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { evidenceRun } from "../../scripts/evidence-run";
 import type { GradeRecord } from "../grade/probes";
+import { qualificationHash } from "../prereg/qualification";
 import type { ConverseBody } from "../proxy/classify";
 import type { CallRecord, Component } from "../proxy/records";
 import { partId, type RequestPart, requestParts } from "../proxy/requests";
 import type { Entry } from "../run/journal";
 import { holds, scenarioHash } from "../scenario/compile";
+import { loadQualification } from "../scenario/inputs";
 import { sessionHealth } from "./health";
 import {
     type ArmData,
@@ -1034,6 +1036,46 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     const manifest = readFileSync(manifestPath, "utf8");
     writeFileSync(manifestPath, manifest.replace('"order":["eidnara"]', '"order":["../x"]'));
     expect(() => loadRun(dir)).toThrow(/not a directory name/);
+    // Under a qualification, a control label is admitted only on a seed that registers its pair.
+    const q = loadQualification("Q");
+    const qualified = {
+        ...SCENARIO,
+        manifest: { seed: 101, tier: "S", qualification_sha256: qualificationHash(q) },
+    };
+    const scenarioPath = join(dir, "scenario.json");
+    writeFileSync(scenarioPath, JSON.stringify(qualified));
+    writeFileSync(
+        manifestPath,
+        JSON.stringify({
+            ...JSON.parse(manifest),
+            scenario_hash: scenarioHash(qualified as unknown as Record<string, unknown>),
+            tier: "S",
+            seed: 101,
+            order: ["host", "host~aa"],
+            qualification: { id: "Q", sha256: qualificationHash(q) },
+        }),
+    );
+    expect(() => loadRun(dir)).toThrow(/is not a subsequence of qualification Q's seed 101 order/);
+    // A hold-out run without controls is admitted only in its registered order and arms.
+    const holdout = { ...qualified, manifest: { ...qualified.manifest, seed: 103 } };
+    writeFileSync(scenarioPath, JSON.stringify(holdout));
+    const holdoutManifest = (order: string[]) =>
+        writeFileSync(
+            manifestPath,
+            JSON.stringify({
+                ...JSON.parse(manifest),
+                scenario_hash: scenarioHash(holdout as unknown as Record<string, unknown>),
+                tier: "S",
+                seed: 103,
+                order,
+                qualification: { id: "Q", sha256: qualificationHash(q) },
+            }),
+        );
+    holdoutManifest(["host-oracle"]);
+    expect(() => loadRun(dir)).toThrow(/is not a subsequence of qualification Q's seed 103 order/);
+    holdoutManifest(["host", "eidnara"]);
+    expect(() => loadRun(dir)).toThrow(/is not a subsequence/);
+    writeFileSync(scenarioPath, JSON.stringify(SCENARIO));
     writeFileSync(manifestPath, manifest);
     expect(() => evidenceRun([dir], root, null)).toThrow(/inside a run directory/);
     expect(() => evidenceRun([dir], join(dir, "ev"), null)).toThrow(/inside a run directory/);

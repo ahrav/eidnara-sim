@@ -32,7 +32,8 @@ export class Tokens {
     }
 
     number(): string {
-        return this.fresh(() => String(10000 + Math.floor(this.rng.next() * 89999)));
+        // Five digits up to 65535, so a figure a template states as a port is a valid one.
+        return this.fresh(() => String(10000 + Math.floor(this.rng.next() * 55536)));
     }
 
     codename(): string {

@@ -31,7 +31,7 @@ import {
     isArmName,
 } from "../hosts/profiles";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
-import { type Qualification, qualificationHash } from "../prereg/qualification";
+import { type Qualification, qualificationHash, qualificationSeed } from "../prereg/qualification";
 import type { Preregistration, Tier } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import { bedrockUpstream, Gateway } from "../proxy/gateway";
@@ -995,8 +995,9 @@ function refuseCapabilityGaps(arms: readonly string[]): void {
 
 /**
  * An A/A control label `<arm>~<tag>` runs right after its arm when the tier pre-registers the
- * `[arm, arm]` pair. Under a qualification the seed, its arm order, and the host come from the
- * qualification, which registers no A/A pair.
+ * `[arm, arm]` pair. Under a qualification the seed, its arm order, the host, and the A/A pairs
+ * come from the qualification: a registered seed with its whole-scenario A/A pairs, or a
+ * hold-out seed with none.
  */
 export function armOrder(
     o: Pick<RunOptions, "tier" | "seed" | "arms" | "qualification"> & { host?: string },
@@ -1004,15 +1005,21 @@ export function armOrder(
     refuseCapabilityGaps(o.arms ?? []);
     const prereg = preregOf(o);
     const q = qualificationOf(o);
-    const registry = q ?? prereg;
     const name = q ? `qualification ${q.id}` : o.tier;
-    const index = registry.seeds.indexOf(o.seed);
-    if (index < 0) throw new HarnessFailure(`seed ${o.seed} is not pre-registered for ${name}`);
+    const index = prereg.seeds.indexOf(o.seed);
+    const seat = q
+        ? qualificationSeed(q, o.seed)
+        : index < 0
+          ? null
+          : {
+                order: prereg.arms.order_by_seed[index] ?? prereg.arms.run,
+                pairs: prereg.aa_controls?.pairs ?? [],
+            };
+    if (!seat) throw new HarnessFailure(`seed ${o.seed} is not pre-registered for ${name}`);
     if (q && o.host !== undefined && !q.hosts.includes(o.host)) {
         throw new HarnessFailure(`qualification ${q.id} runs no ${o.host} host`);
     }
-    const order: string[] = registry.arms.order_by_seed[index] ?? registry.arms.run;
-    const pairs = q ? [] : (prereg.aa_controls?.pairs ?? []);
+    const { order, pairs } = seat;
     const control = (a: string) =>
         CONTROL_LABEL.test(a) && pairs.some(([x, y]) => x === armBase(a) && y === armBase(a));
     if (new Set(o.arms).size !== (o.arms ?? []).length) {
