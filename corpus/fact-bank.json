@@ -429,12 +429,16 @@
                 "id": "rs-no-purge-interval",
                 "requires": [
                     {
-                        "path": "src/server.rs",
-                        "pattern": "pub async fn run\\("
+                        "path": "src/db.rs",
+                        "pattern": "pub_sub: HashMap<"
+                    },
+                    {
+                        "path": "src/db.rs",
+                        "pattern": "async fn purge_expired_tasks"
                     }
                 ],
-                "statement": "waking the expiry task on a fixed tokio interval was tried and backed out because it burned CPU on idle servers",
-                "probe": "Have the server log a heartbeat line every few minutes while it runs.",
+                "statement": "waking background cleanup on a fixed tokio interval was tried and backed out because it burned CPU on idle servers",
+                "probe": "Drop pub/sub channels that have had no subscribers for an hour.",
                 "check": {
                     "must_not": [
                         "time::interval\\s*\\(",
@@ -974,7 +978,7 @@
                 "probe": "Let values put in the app store expire after a set time, and clear the expired ones out.",
                 "check": {
                     "must_not": [
-                        "setInterval\\s*\\("
+                        "^(?:(?:export\\s+)?(?:const|let|var)\\s+\\w+(?:\\s*:[^=]+)?\\s*=\\s*)?setInterval\\s*\\("
                     ]
                 }
             },
@@ -1104,7 +1108,7 @@
                         "pattern": "export type ContentType"
                     }
                 ],
-                "statement": "a TypeScript enum for lifecycle names was tried and reverted because it broke isolated-module builds",
+                "statement": "a TypeScript enum for the framework's shared name sets was tried and reverted because it broke isolated-module builds",
                 "probe": "Give the body parser's content-type names one shared definition that the parse step reads.",
                 "check": {
                     "must_not": [

@@ -68,10 +68,11 @@ also carry three sections:
   oracle arm sits below the host there by design. The apply graders stay
   strict: a clarifying question on an apply item fails it.
 
-- `no_source_control`: the run arm whose pass rates stand for the task
-  without any source. It must be a run arm that delivers nothing (`none`).
-  An item's base rate is that arm's pass rate on the same item, in the same
-  workspace history.
+- `no_source_control`: the run arm that serves as the memory-free control.
+  It must be a run arm whose delivery mode is `none`: it meets the same
+  scripted conveyances, commits, and probes as every arm, in its own
+  workspace, and receives no memory between sessions. An item's base rate is
+  that arm's pass rate on the same scripted item.
 
 Revision 2 registers whole-scenario A/A controls `host~aa` and `eidnara~aa`
 on seed 102, hold-out seed 103 over `eidnara` then `host`, and the ranking

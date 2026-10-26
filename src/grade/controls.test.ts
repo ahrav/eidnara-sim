@@ -479,6 +479,27 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
         const searched = { commands: ["grep -rn 'static STORE: Mutex<State>' src"] };
         expect(grade(p5, searched).verdict).toBe("fail");
     });
+
+    test("a sweeper timer the app owns passes; a module-wide setInterval fails", () => {
+        const sweep = probeOf("P5", "ts-no-set-interval");
+        const owned = {
+            files: [
+                {
+                    path: "src/index.ts",
+                    lines: ["\t\tthis.sweeper = setInterval(() => this.expire(), 1000)"],
+                },
+            ],
+        };
+        expect(outcome(sweep, owned)).toEqual(["pass"]);
+        for (const line of [
+            "setInterval(() => expire(store), 1000)",
+            "const sweeper = setInterval(() => expire(store), 1000)",
+            "export let sweeper: Timer = setInterval(sweep, 1000)",
+        ]) {
+            const module = { files: [{ path: "src/store.ts", lines: [line] }] };
+            expect(outcome(sweep, module)).toEqual(["fail", "reused the rejected approach"]);
+        }
+    });
 });
 
 describe("P6: resume in code, or ask the user to choose", () => {

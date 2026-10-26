@@ -37,12 +37,11 @@ export function pinnedTrees(repos: RepoSpec[]): PinnedTree[] {
     ]);
 }
 
+/** A path the pinned commit lacks reads as null; a checkout or commit git cannot read throws. */
 export const readPinned: ReadAt = (tree, path) => {
-    try {
-        return git(tree.dir, ["cat-file", "blob", `${tree.commit}:${path}`]);
-    } catch {
-        return null;
-    }
+    const listed = git(tree.dir, ["ls-tree", "--name-only", tree.commit, "--", path]).trim();
+    if (listed !== path) return null;
+    return git(tree.dir, ["cat-file", "blob", `${tree.commit}:${path}`]);
 };
 
 type Json = Record<string, unknown>;

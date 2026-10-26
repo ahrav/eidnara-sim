@@ -2263,9 +2263,12 @@ ran the check
 Guarantee: SIM-P81: Every Rust and TypeScript fact-bank template's `requires`
 entries hold in the base and twin corpus checkouts of its language at their
 pinned commits, so each task names code the agent's workspace holds.
-Check: `always` - a compile that admits a template whose presupposed
-construct is absent asks the agent about code it cannot find, and the item
-measures the ambiguity instead of memory.
+Check: `always` - for every Rust and TypeScript template and every base and
+twin corpus checkout of its language, each `requires` path exists at the
+pinned commit and its content matches the pattern (multiline) before a
+Titan or run compile succeeds; `always`, because one template that names an
+absent construct turns every item compiled from it into a question about
+code the agent cannot find.
 Fault/timing angle: none.
 Required faults and enabling state: the corpus checkouts from
 `bun run corpus:repos`.

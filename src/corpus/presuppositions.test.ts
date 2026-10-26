@@ -96,13 +96,19 @@ describe("the pinned corpus checkouts", () => {
         expect(checkPresuppositions(b, repos, true)).toBe(true);
     });
 
-    test.skipIf(!cloned)("are read from the object store at the pinned commit", () => {
-        const [base] = pinnedTrees(repos);
-        const head = readPinned(base as PinnedTree, "Cargo.toml");
-        expect(head).toContain("[package]");
-        expect(readPinned(base as PinnedTree, "no/such/file.rs")).toBeNull();
-        expect(
-            readPinned({ ...(base as PinnedTree), commit: "0".repeat(40) }, "Cargo.toml"),
-        ).toBeNull();
-    });
+    test.skipIf(!cloned)(
+        "are read at the pinned commit, and an unreadable commit or checkout throws",
+        () => {
+            const [base] = pinnedTrees(repos);
+            const head = readPinned(base as PinnedTree, "Cargo.toml");
+            expect(head).toContain("[package]");
+            expect(readPinned(base as PinnedTree, "no/such/file.rs")).toBeNull();
+            expect(() =>
+                readPinned({ ...(base as PinnedTree), commit: "0".repeat(40) }, "Cargo.toml"),
+            ).toThrow();
+            expect(() =>
+                readPinned({ ...(base as PinnedTree), dir: "/nowhere" }, "Cargo.toml"),
+            ).toThrow();
+        },
+    );
 });

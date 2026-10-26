@@ -73,8 +73,8 @@ export interface Qualification {
      */
     ranking_gate?: { order: string[]; items: string[] };
     /**
-     * The run arm that serves as the no-source control: it delivers nothing, so its pass rate on an
-     * item is the item's rate without any source.
+     * The run arm that serves as the memory-free control: it meets every scripted conveyance and
+     * receives no memory between sessions, so its pass rate on an item is the item's base rate.
      */
     no_source_control?: string;
     claim: "descriptive";

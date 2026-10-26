@@ -105,9 +105,10 @@ tree, path, and pattern; an `--embedder local` compile checks when all four
 checkouts are present. `bun run corpus:repos` checks the same requirements
 after it clones, and the corpus checker refuses a language template without
 a non-empty `requires` list of fixed project paths and valid patterns.
-A template's tasks name code each pinned tree holds, and a task that asks for
-behaviour asks for behaviour the tree lacks, so the agent has work to do at
-every probe.
+The check proves each named construct exists in each pinned tree. Whether a
+task still asks for behaviour the tree lacks is a reading of the source; the
+rr-campaign-3 audit (PR #44) records it per template, and SIM-P81 keeps it
+as an open question.
 
 ### Lines and supersession
 
@@ -255,9 +256,10 @@ registration adds its own items on top (`docs/run-command.md`):
 | wrong project | P11 (a P1 rule's task in the twin project), and with `wrong-project-lookup` P8-twin (a P8 question in the twin project) | the other project's rule stays out of the code; the other project's value is no answer |
 | should not apply | P2 (outside the rule's scope), a P4 `out` item, P5 (a rejected approach), P9 (a question nobody settled), P10 (an incidental anchor) | the baseline behaviour, the rule absent, an abstention |
 
-The no-source baseline of an item is the `host` arm's grade on the same
-item: that arm delivers nothing, and qualification Q registers it as
-`no_source_control`.
+The memory-free baseline of an item is the `host` arm's grade on the same
+scripted item: that arm meets the same conveyances, commits, and probes in
+its own workspace and receives no memory between sessions, and
+qualification Q registers it as `no_source_control`.
 
 The compiler adds P8-twin items only when its input names the qualification
 and the control; the manifest then records `qualification_sha256`, and a run
@@ -365,15 +367,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `ffe066fb` | 0.2762 | 0.4941 |
-| S | 102 | `c9e47e21` | 0.2666 | 0.5229 |
-| M | 201 | `25751240` | 0.3576 | 0.5807 |
-| M | 202 | `ed26978c` | 0.3537 | 0.5807 |
-| M | 203 | `0ebea8de` | 0.3213 | 0.5574 |
-| L | 301 | `479453ce` | 0.324 | 0.5807 |
-| L | 302 | `0a54863a` | 0.325 | 0.5807 |
-| L | 303 | `2d27b871` | 0.3242 | 0.5807 |
-| XL | 401 | `c3adb2df` | 0.3185 | 0.5807 |
+| S | 101 | `37bbb20e` | 0.2762 | 0.4941 |
+| S | 102 | `bfdbe254` | 0.2666 | 0.5229 |
+| M | 201 | `79836a33` | 0.3577 | 0.5807 |
+| M | 202 | `82e9af50` | 0.3538 | 0.5807 |
+| M | 203 | `298e1eea` | 0.3214 | 0.5574 |
+| L | 301 | `bc74f124` | 0.324 | 0.5807 |
+| L | 302 | `8c3ccdd4` | 0.325 | 0.5807 |
+| L | 303 | `9299ce3d` | 0.3242 | 0.5807 |
+| XL | 401 | `114cf20a` | 0.3185 | 0.5807 |
 
 Under qualification Q (revision 3, `e8c1f508`), which adds its P8-twin
 controls, the seeds compile to these scenarios; 103 is its exploratory
@@ -381,9 +383,9 @@ hold-out:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| Q | 101 | `4b50681d` | 0.2762 | 0.4941 |
-| Q | 102 | `ada0153c` | 0.2614 | 0.5229 |
-| Q | 103 | `51cc2f25` | 0.2706 | 0.4988 |
+| Q | 101 | `4ccd2b41` | 0.2762 | 0.4941 |
+| Q | 102 | `c0fe4cfd` | 0.2614 | 0.5229 |
+| Q | 103 | `57b3bd74` | 0.2706 | 0.4988 |
 
 ## Known limits
 
