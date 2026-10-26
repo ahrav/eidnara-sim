@@ -215,16 +215,18 @@ complete evidence only when the two agree:
   route other than the declared one.
 - `capabilities.json` also holds `source_capture`: the Kernel source
   descriptors (`srcdesc:*` observations) in `<arm>/final-store/kernel.sqlite`
-  by class (`messages`, `raw_tool_spans`, `repository_documents`) and how many
-  are live (a store holding a descriptor whose creation or retirement commit
-  its `commit_log` lacks reads as unreadable), and the settled `source_capture` counters the last daemon
-  generation reported. Before the final daemon stop, the driver reads those
+  by class (`messages`, `raw_tool_spans`, `repository_documents`), how many
+  of them are live, and the settled `source_capture` counters that the last
+  daemon generation reported. A store with a descriptor whose creation or
+  retirement commit is missing from its `commit_log` counts as unreadable. Before the final daemon stop, the driver reads those
   counters through the fixture's control socket (`settledSourceCapture`,
   waiting up to 30 s for every capture job to settle) into
   `<arm>/source-capture.json`; the counters are process-local, so they cover
   the generation since its last start, while the descriptors cover the whole
-  arm. A finish that finds the record already written (a resume after a
-  stop past the read) keeps it, since the resumed daemon generation started
+  arm. The driver writes an unread placeholder before the read and replaces
+  it with the result, so a harness killed mid-read leaves an unread record. A
+  finish that finds the record already written (a resume after a stop past
+  the read's start) keeps it, since the resumed daemon generation started
   afresh; `reset` removes it with the arm. A read that fails or times out is
   recorded with its error, the daemon
   still stops and its store is archived, and then the finish fails, so the

@@ -1958,6 +1958,17 @@ describe("HostDriver faults", () => {
         await expect(odd.finish()).rejects.toThrow(
             /source capture counters unread: malformed counters/,
         );
+        // A harness killed mid-read leaves the placeholder, which a resumed finish keeps unread.
+        const killed = fixture("eidnara").driver;
+        writeFileSync(
+            join(killed.armDir, "source-capture.json"),
+            JSON.stringify({ counters: null, error: "the counter read did not finish" }),
+        );
+        killed.daemon = fakeDaemon(PID + 15) as unknown as DaemonStack;
+        await killed.finish();
+        expect(
+            JSON.parse(readFileSync(join(killed.armDir, "source-capture.json"), "utf8")),
+        ).toEqual({ counters: null, error: "the counter read did not finish" });
         // A resumed finish keeps the record of the generation that ran the arm's events.
         const resumed = fixture("eidnara").driver;
         writeFileSync(

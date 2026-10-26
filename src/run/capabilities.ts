@@ -427,7 +427,8 @@ export function readDescriptors(
             .query(
                 `select count(*) as n from object_registry o
                  where o.object_id glob 'srcdesc:*' and o.object_kind = 'observation'
-                   and (o.created_commit_seq not in (select commit_seq from commit_log)
+                   and (o.created_commit_seq is null
+                     or o.created_commit_seq not in (select commit_seq from commit_log)
                      or (o.invalidated_commit_seq is not null
                          and o.invalidated_commit_seq not in (select commit_seq from commit_log)))`,
             )

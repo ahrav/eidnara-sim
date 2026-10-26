@@ -1677,7 +1677,17 @@ export class HostDriver implements ArmDriver {
                 armProfile(this.o.arm).source_capture &&
                 !existsSync(captureRecord)
             ) {
-                // Read before the stop: the counters live in the daemon process.
+                // Read before the stop: the counters live in the daemon process. The placeholder
+                // stands until the read is recorded, so a harness killed mid-read leaves an unread
+                // record a resume keeps.
+                const pending = { counters: null, error: "the counter read did not finish" };
+                let recorded = true;
+                try {
+                    writeWhole(captureRecord, `${JSON.stringify(pending)}\n`);
+                } catch (caught) {
+                    recorded = false;
+                    failure ??= caught;
+                }
                 const capture = await Promise.resolve()
                     .then(() => daemon.sourceCapture())
                     .then(
@@ -1691,7 +1701,7 @@ export class HostDriver implements ArmDriver {
                     );
                 // The record is evidence only; a failed write still lets the daemon stop.
                 try {
-                    writeWhole(captureRecord, `${JSON.stringify(capture)}\n`);
+                    if (recorded) writeWhole(captureRecord, `${JSON.stringify(capture)}\n`);
                 } catch (caught) {
                     failure ??= caught;
                 }
