@@ -223,12 +223,15 @@ complete evidence only when the two agree:
   waiting up to 30 s for every capture job to settle) into
   `<arm>/source-capture.json`; the counters are process-local, so they cover
   the generation since its last start, while the descriptors cover the whole
-  arm. A read that fails or times out is recorded with its error, the daemon
+  arm. A finish that finds the record already written (a resume after a
+  stop past the read) keeps it, since the resumed daemon generation started
+  afresh; `reset` removes it with the arm. A read that fails or times out is
+  recorded with its error, the daemon
   still stops and its store is archived, and then the finish fails, so the
   arm's recorded failure keeps a resume from replacing the record with a
   later generation's counters. Counters without numeric `admitted` and
-  `completed`, or with a value that is not a non-negative integer, count as
-  unread. An arm that consents to source capture and answered agent calls is a
+  `completed`, with a value that is not a non-negative integer (`null` only
+  for `oldest_deferred_age_ms`), or beside a recorded error count as unread. An arm that consents to source capture and answered agent calls is a
   mismatch when its final store is unreadable, holds no `messages`
   descriptor, or its counters were not read; a daemon arm without the
   consent is a mismatch when its final store holds any descriptor, or when

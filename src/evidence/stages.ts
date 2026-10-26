@@ -733,14 +733,22 @@ export function probeEvidence(
                 if (keep(d)) out[d.class] = (out[d.class] ?? 0) + 1;
             return out;
         };
+        // A creation or retirement on a boundary's own millisecond has no known order with it.
+        const bounds = from === null ? [probeDaemon] : [probeDaemon, from];
+        const descriptors = arm.descriptors ?? [];
+        if (
+            descriptors.some((d) => bounds.includes(d.created_ms) || d.retired_ms === probeDaemon)
+        ) {
+            return null;
+        }
         const live = (d: SourceDescriptor) =>
-            d.created_ms <= probeDaemon && (d.retired_ms === null || d.retired_ms > probeDaemon);
+            d.created_ms < probeDaemon && (d.retired_ms === null || d.retired_ms > probeDaemon);
         return {
             at_probe: byClass(live),
             since_source:
                 from === null
                     ? null
-                    : byClass((d) => d.created_ms >= from && d.created_ms <= probeDaemon),
+                    : byClass((d) => d.created_ms > from && d.created_ms < probeDaemon),
         };
     };
     const persistedHits = (): StoreObject[][] =>

@@ -1958,6 +1958,19 @@ describe("HostDriver faults", () => {
         await expect(odd.finish()).rejects.toThrow(
             /source capture counters unread: malformed counters/,
         );
+        // A resumed finish keeps the record of the generation that ran the arm's events.
+        const resumed = fixture("eidnara").driver;
+        writeFileSync(
+            join(resumed.armDir, "source-capture.json"),
+            JSON.stringify({ counters: { admitted: 9, completed: 9 }, error: null }),
+        );
+        const fresh = fakeDaemon(PID + 14);
+        fresh.capture = { admitted: 0, completed: 0 };
+        resumed.daemon = fresh as unknown as DaemonStack;
+        await resumed.finish();
+        expect(
+            JSON.parse(readFileSync(join(resumed.armDir, "source-capture.json"), "utf8")).counters,
+        ).toEqual({ admitted: 9, completed: 9 });
         const kl = fixture("eidnara-kl").driver;
         kl.daemon = fakeDaemon(PID + 12) as unknown as DaemonStack;
         await kl.finish();

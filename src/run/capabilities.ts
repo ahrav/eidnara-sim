@@ -479,6 +479,12 @@ function readCaptureCounters(
         if (raw.counters === null || raw.counters === undefined) {
             return { counters: null, counters_error: error ?? "no counters recorded" };
         }
+        if (error !== null || raw.error !== null) {
+            return {
+                counters: null,
+                counters_error: `the record also reports ${String(raw.error)}`,
+            };
+        }
         const problem = captureCountersProblem(raw.counters);
         if (problem) return { counters: null, counters_error: problem };
         return { counters: raw.counters as Record<string, number | null>, counters_error: null };

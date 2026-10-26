@@ -43,7 +43,8 @@ descriptors live at the probe and those published from the first source
 event to the probe (from a user-turn source's `BeginTurn`, since capture can
 publish while the turn runs, or a commit's `Event`), by class, read from
 `final-store/kernel.sqlite`; a descriptor whose creation or retirement commit
-the log lacks leaves the counts null. Every
+the log lacks, or a creation or retirement on a boundary's own millisecond,
+leaves the counts null. Every
 memory arm's probe-time state carries the same counts (null when the Kernel
 store is unreadable). The counts describe capture; the stage status and
 the attribution do not read them.

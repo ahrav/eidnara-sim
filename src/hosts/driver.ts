@@ -683,7 +683,7 @@ export class HostDriver implements ArmDriver {
         for (const dir of [this.o.armRoot, this.storeRoot])
             rmSync(dir, { recursive: true, force: true });
         rmSync(this.image, { force: true });
-        for (const stale of ["daemon.log", "transcripts.json"]) {
+        for (const stale of ["daemon.log", "transcripts.json", "source-capture.json"]) {
             rmSync(join(this.armDir, stale), { force: true });
         }
         mkdirSync(join(this.o.armRoot, "workspaces"), { recursive: true });
@@ -1668,7 +1668,15 @@ export class HostDriver implements ArmDriver {
         }
         try {
             const daemon = this.daemon;
-            if (daemon && checkFinalStore && armProfile(this.o.arm).source_capture) {
+            const captureRecord = join(this.armDir, "source-capture.json");
+            // A record an earlier finish wrote holds the generation that ran the arm's events; a
+            // resumed finish keeps it, since its own daemon generation started afresh.
+            if (
+                daemon &&
+                checkFinalStore &&
+                armProfile(this.o.arm).source_capture &&
+                !existsSync(captureRecord)
+            ) {
                 // Read before the stop: the counters live in the daemon process.
                 const capture = await Promise.resolve()
                     .then(() => daemon.sourceCapture())
@@ -1683,10 +1691,7 @@ export class HostDriver implements ArmDriver {
                     );
                 // The record is evidence only; a failed write still lets the daemon stop.
                 try {
-                    writeWhole(
-                        join(this.armDir, "source-capture.json"),
-                        `${JSON.stringify(capture)}\n`,
-                    );
+                    writeWhole(captureRecord, `${JSON.stringify(capture)}\n`);
                 } catch (caught) {
                     failure ??= caught;
                 }

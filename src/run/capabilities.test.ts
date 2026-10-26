@@ -239,6 +239,14 @@ test("an arm that consents to source capture must leave message descriptors and 
             ),
         );
     expect(nulls({ admitted: 1, completed: 1, oldest_deferred_age_ms: null })).toEqual([]);
+    const both = captured(armRoot([PI_ON, PASS]));
+    writeFileSync(
+        join(both, "..", "source-capture.json"),
+        JSON.stringify({ counters: { admitted: 1, completed: 1 }, error: "timed out" }),
+    );
+    expect(armMismatches(observeArm("eidnara", "pi", both, { agent: 2 }))).toEqual([
+        "source capture counters unread: the record also reports timed out",
+    ]);
     const deferred = observeArm(
         "eidnara",
         "pi",

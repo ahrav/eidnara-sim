@@ -418,6 +418,16 @@ describe("evidence stages on a memory arm", () => {
         // An arm without the consent keeps the stage as before; an unreadable store reads null.
         const plain = evidence(build({ calls, objects: [STORED], descriptors }));
         expect(stage(plain, "source")?.detail).toBeUndefined();
+        // A descriptor published on the probe's own millisecond has no known order with it.
+        const tied = evidence(
+            build({
+                calls,
+                objects: [STORED],
+                capture: true,
+                descriptors: [...descriptors, d("srcdesc:e:1", "messages", BEGIN_WALL)],
+            }),
+        );
+        expect(tied.probe_time.source_descriptors).toBeNull();
         const unread = evidence(
             build({ calls, objects: [STORED], capture: true, descriptors: null }),
         );
