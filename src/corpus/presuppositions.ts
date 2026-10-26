@@ -59,6 +59,15 @@ function templatesOf(bank: unknown, lang: string): { id: string; requires: unkno
     );
 }
 
+/** Invalid regular-expression syntax counts as a pattern mismatch. */
+const matches = (pattern: string, text: string) => {
+    try {
+        return new RegExp(pattern, "m").test(text);
+    } catch {
+        return false;
+    }
+};
+
 /** Patterns match with the `m` flag, so `^` and `$` anchor lines. */
 export function presuppositionProblems(
     bank: unknown,
@@ -81,7 +90,7 @@ export function presuppositionProblems(
                 const text = files.get(r.path);
                 if (text === null || text === undefined) {
                     problems.push(`${t.id}: ${at} has no ${r.path}`);
-                } else if (!new RegExp(r.pattern, "m").test(text)) {
+                } else if (!matches(r.pattern, text)) {
                     problems.push(`${t.id}: ${at} ${r.path} lacks /${r.pattern}/`);
                 }
             }

@@ -60,10 +60,12 @@ describe("template presuppositions", () => {
         const b = bank([
             { id: "rs-none" },
             { id: "rs-bad", requires: [{ path: "src/server.rs" }] },
+            template("rs-unclosed", ["src/server.rs", "[fn"]),
         ]);
         expect(presuppositionProblems(b, [TREES[0] as PinnedTree], read)).toEqual([
             "rs-none: names no requirement",
             "rs-bad: a requirement lacks a path or pattern",
+            "rs-unclosed: svc@aaaaaaa src/server.rs lacks /[fn/",
         ]);
     });
 
