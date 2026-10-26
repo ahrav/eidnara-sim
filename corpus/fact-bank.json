@@ -848,10 +848,14 @@
                     {
                         "path": "src/cookies.ts",
                         "pattern": "set maxAge\\("
+                    },
+                    {
+                        "path": "src/cookies.ts",
+                        "pattern": "set expires\\("
                     }
                 ],
                 "statement": "session cookies default to a max age of {value} seconds",
-                "probe": "When a cookie is set without an explicit maxAge, give it the default lifetime we agreed.",
+                "probe": "When a cookie is set with neither maxAge nor expires, give it the default lifetime we agreed.",
                 "authority": {
                     "path": "src/limits/cookie.ts",
                     "content": "// Default max age for session cookies, in seconds.\nexport const {TOKEN}_COOKIE_MAX_AGE = {value2}\n"
