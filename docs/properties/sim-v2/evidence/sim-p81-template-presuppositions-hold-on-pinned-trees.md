@@ -43,7 +43,7 @@ pattern.
 ### Q: Does every template target code the pinned trees hold?
 - Sources examined: mini-redis 3d93b42 and elysia e037eca source, their twins
   22d7d08 and 2eb6116, and every template in `corpus/fact-bank.json`.
-- Findings: 31 templates rewritten (the rr-campaign-3 PR body holds the
+- Findings: 26 templates rewritten (the rr-campaign-3 PR body holds the
   table); every requirement holds in all four trees.
 - Missing evidence: a check that a task asks for absent behaviour.
 - Conclusion: unresolved, needs a semantic check beyond pattern presence.
