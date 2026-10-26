@@ -734,6 +734,9 @@ export class HostDriver implements ArmDriver {
         this.switched = undone ? null : (state.switched ?? null);
         this.live = true;
         this.storeFaults = new Map(Object.entries(state.store_faults ?? {}));
+        // A record a cleanup finish wrote before the arm's last event belongs to a generation
+        // that has more events to run after this resume, so the final finish reads anew.
+        if (open !== null) rmSync(join(this.armDir, "source-capture.json"), { force: true });
         const checked = join(this.armDir, "transcripts.json");
         if (existsSync(checked)) {
             const record = this.readRecord<{
@@ -1669,8 +1672,8 @@ export class HostDriver implements ArmDriver {
         try {
             const daemon = this.daemon;
             const captureRecord = join(this.armDir, "source-capture.json");
-            // A record an earlier finish wrote holds the generation that ran the arm's events; a
-            // resumed finish keeps it, since its own daemon generation started afresh.
+            // A record an earlier finish wrote after the arm's last event holds the generation
+            // that ran it; a resumed finish keeps it, since its own generation started afresh.
             if (
                 daemon &&
                 checkFinalStore &&

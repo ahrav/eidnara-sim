@@ -219,8 +219,12 @@ function readDescriptors(db: Database, commits: Map<number, number>): SourceDesc
                  where object_id glob 'srcdesc:*' and object_kind = 'observation'`,
             )
             .all() as { id: string; class: string; created: number; invalidated: number | null }[];
-        const known = (seq: number | null) => seq === null || commits.has(seq);
-        if (rows.some((r) => !known(r.created) || !known(r.invalidated))) return null;
+        const known = (seq: number | null) => seq !== null && commits.has(seq);
+        if (
+            rows.some((r) => !known(r.created) || (r.invalidated !== null && !known(r.invalidated)))
+        ) {
+            return null;
+        }
         return rows.map((r) => ({
             id: r.id,
             class: r.class,

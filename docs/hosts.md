@@ -227,7 +227,9 @@ complete evidence only when the two agree:
   it with the result, so a harness killed mid-read leaves an unread record. A
   finish that finds the record already written (a resume after a stop past
   the read's start) keeps it, since the resumed daemon generation started
-  afresh; `reset` removes it with the arm. A read that fails or times out is
+  afresh; a resume that reopens the arm before its last event removes the
+  record a cleanup finish wrote, so the final finish reads the generation
+  that runs the remaining events, and `reset` removes it with the arm. A read that fails or times out is
   recorded with its error, the daemon
   still stops and its store is archived, and then the finish fails, so the
   arm's recorded failure keeps a resume from replacing the record with a

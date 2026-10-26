@@ -716,22 +716,24 @@ export function probeEvidence(
      */
     const sourceDescriptors = () => {
         if (arm.descriptors === null || probeDaemon === null) return null;
-        const firstWall = Math.min(
-            ...sources.flatMap((x) => {
-                // A user turn's capture can publish while the turn runs, which its BeginTurn
-                // opens; a commit lands between sessions, which its Event marks.
-                const e =
+        // A user turn's capture can publish while the turn runs, which its BeginTurn opens; a
+        // commit lands between sessions, which its Event marks. A source without either leaves
+        // the window unknown.
+        const walls = sources.map(
+            (x) =>
+                (
                     journal.find((j) => j.kind === "BeginTurn" && j.event === x.id) ??
-                    journal.find((j) => j.kind === "Event" && j.event === x.id);
-                return e ? [e.wall_ms] : [];
-            }),
+                    journal.find((j) => j.kind === "Event" && j.event === x.id)
+                )?.wall_ms,
         );
-        const from = Number.isFinite(firstWall) ? daemonMs(journal, firstWall) : null;
+        if (walls.some((w) => w === undefined)) return null;
+        const from = walls.length > 0 ? daemonMs(journal, Math.min(...(walls as number[]))) : null;
         const byClass = (keep: (d: SourceDescriptor) => boolean) => {
-            const out: Record<string, number> = {};
-            for (const d of arm.descriptors ?? [])
-                if (keep(d)) out[d.class] = (out[d.class] ?? 0) + 1;
-            return out;
+            const out = new Map<string, number>();
+            for (const d of arm.descriptors ?? []) {
+                if (keep(d)) out.set(d.class, (out.get(d.class) ?? 0) + 1);
+            }
+            return Object.fromEntries(out);
         };
         // A creation or retirement on a boundary's own millisecond has no known order with it.
         const bounds = from === null ? [probeDaemon] : [probeDaemon, from];
