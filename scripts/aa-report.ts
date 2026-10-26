@@ -11,6 +11,7 @@ import { dirname, join, resolve } from "node:path";
 import { GradeLog } from "../src/grade/probes";
 import { armBase, requireSeedOrder } from "../src/hosts/arms";
 import { sha256Hex } from "../src/prereg/canonical";
+import { qualificationSeed } from "../src/prereg/qualification";
 import type { Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bootstrapMean, disagreementRate, pairedDiffs } from "../src/report/paired";
@@ -23,7 +24,7 @@ import {
 } from "../src/run/journal";
 import { referenceArm } from "../src/run/run";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
-import { loadPrereg } from "../src/scenario/inputs";
+import { admittedArms, loadPrereg, loadQualification } from "../src/scenario/inputs";
 import {
     behaviourPlan,
     deliveredTurns,
@@ -93,13 +94,19 @@ function report(dir: string) {
     const clusterOf = (metric: string) => (item: string) =>
         runLevel.has(probeType(metric)) ? "run" : (fact.get(item) ?? item);
     const order = manifest.order as string[];
+    // A qualification run's seed order and A/A pairs come from the registration it recorded.
+    const admitted = admittedArms(manifest, scenario as { manifest?: Record<string, unknown> });
     const seedIndex = prereg.seeds.indexOf(manifest.seed);
-    if (seedIndex < 0) {
+    const seedOrder = manifest.qualification
+        ? qualificationSeed(loadQualification(manifest.qualification.id), manifest.seed)?.order
+        : seedIndex < 0
+          ? undefined
+          : (prereg.arms.order_by_seed[seedIndex] ?? prereg.arms.run);
+    if (!seedOrder) {
         throw new Error(`${dir}: seed ${manifest.seed} is not pre-registered for ${manifest.tier}`);
     }
-    const seedOrder: string[] = prereg.arms.order_by_seed[seedIndex] ?? prereg.arms.run;
     try {
-        requireSeedOrder(order, seedOrder, prereg.aa_controls?.pairs ?? []);
+        requireSeedOrder(order, seedOrder, admitted.pairs);
     } catch (caught) {
         throw new Error(`${dir}: ${(caught as Error).message}`);
     }

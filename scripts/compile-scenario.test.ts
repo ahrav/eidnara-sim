@@ -332,6 +332,43 @@ describe("compile-scenario arguments", () => {
         expect(existsSync(out)).toBe(false);
     });
 
+    test("under a qualification its hold-out seed compiles with its digest, and an unlisted seed is refused", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-cli-"));
+        const refused = run(
+            "--tier",
+            "S",
+            "--seed",
+            "104",
+            "--qualification",
+            "Q",
+            "--out",
+            join(dir, "r.json"),
+        );
+        expect(refused.exitCode).toBe(2);
+        expect(refused.stderr.toString()).toContain(
+            "qualification Q's registered seeds 101, 102, 103",
+        );
+        expect(run("--tier", "M", "--seed", "201", "--qualification", "Q").exitCode).toBe(2);
+        const out = join(dir, "q.json");
+        const r = run(
+            "--tier",
+            "S",
+            "--seed",
+            "103",
+            "--qualification",
+            "Q",
+            "--embedder",
+            "local",
+            "--out",
+            out,
+        );
+        expect(r.exitCode).toBe(0);
+        const scenario = JSON.parse(readFileSync(out, "utf8"));
+        expect(scenario.manifest.seed).toBe(103);
+        expect(scenario.manifest.qualification_sha256).toMatch(/^[0-9a-f]{64}$/);
+        expect(scenario.probes.some((p: { type: string }) => p.type === "P8-twin")).toBe(true);
+    }, 120_000);
+
     test("an output that names an existing directory is refused before compiling", () => {
         const out = mkdtempSync(join(tmpdir(), "sim-cli-"));
         const r = run("--tier", "S", "--seed", "101", "--embedder", "local", "--out", out);

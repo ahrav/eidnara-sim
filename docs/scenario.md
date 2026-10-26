@@ -5,7 +5,7 @@ scenario to `runs/scenarios/<tier>-<seed>.json`; a `--embedder local` compile
 defaults to `runs/scenarios/<tier>-<seed>.local.json`, so a stand-in never
 replaces a Titan scenario. The inputs are the seed, the
 tier's pre-registration in `prereg/<tier>.json`, the corpus under `corpus/`,
-and the generator version `sim-scenario/v4`. The same inputs produce the same
+and the generator version `sim-scenario/v5`. The same inputs produce the same
 bytes in any process, and a run reuses a cached `scenario.json` only when its
 top-level `schema`, generator version, pre-registration hash, and corpus
 inputs hash match the current inputs. The compiler scores cue and probe pairs with
@@ -16,10 +16,14 @@ the AWS profile in `sim.config.json`, and caches each vector in
 model to match; the tests use it, and its scenarios name the stand-in model in
 both `manifest.embedding_model` and `manifest.cue_probe_similarity`, so they
 do not witness SIM-P08. The CLI accepts exactly `--tier`, `--seed`,
-`--embedder`, and `--out`, each once with a value; any other token, an
-`--embedder` value other than `local`, or a non-integer seed exits with the
-usage line, and a Titan compile accepts only a seed the tier's pre-registration
-lists (`--embedder local` compiles any seed, which the tests use). An `--out` path, its directory, or its sibling `embeddings.jsonl` that resolves
+`--embedder`, `--out`, and `--qualification`, each once with a value; any
+other token, an `--embedder` value other than `local`, or a non-integer seed
+exits with the usage line, and a Titan compile accepts only a seed the tier's
+pre-registration lists (`--embedder local` compiles any seed, which the tests
+use). `--qualification Q` compiles under `prereg/Q.json` with its control
+items, as a qualification run does, to
+`runs/scenarios/<tier>-<seed>-Q.json`, and a Titan compile there accepts the
+registration's seeds and hold-out seeds. An `--out` path, its directory, or its sibling `embeddings.jsonl` that resolves
 inside `eidnara_checkout` is refused before any directory is created, as is an
 `--out` that names the cache file itself, and an `embeddings.jsonl` that is a
 hard link. The scenario is written to a random same-directory temporary name,
@@ -83,7 +87,8 @@ Each probe type gets `paired_items_per_probe_type / (seeds * hosts)` items;
 the pre-registration validator requires that division to be exact. Facts come
 from the templates in `corpus/fact-bank.json` (`sim-fact-bank/v3`), filled
 with generated tokens: `adjective_noun` words in lower, upper, and Pascal
-case, five-digit numbers, and `adjective-noun-NN` codenames, from the v1
+case, five-digit numbers from 10000 to 65535 (so a figure a template states
+as a port is a valid TCP port), and `adjective-noun-NN` codenames, from the v1
 harness word lists.
 
 ### Lines and supersession
@@ -142,7 +147,7 @@ pasted, and a P3 value read from its authoritative file).
 | P3 | decision | A later session opens with a commit of the template's authoritative file (one stable path per template) and a first turn naming that path and saying it replaces the stated figure; the commit removes the line's notes and check scripts, and the probe follows in a later session; the check requires the file's value and forbids the stated one |
 | P4 | scoped update | A second conveyance narrows the rule to one module; items alternate inside and outside it, with the alternation offset by seed parity so the pooled counts balance per language across seeds, and `check.side` says which (`in` or `out`); both sides carry the update's `check.scope` |
 | P5 | rejected approach | Later session; the check forbids the rejected approach |
-| P6 | plan | First turn of a later session, at least one hour after the previous session ends; see Plans below |
+| P6 | plan | First turn of the project's next session after the plan's latest conveyance, at least one hour after the previous session ends; see Plans below |
 | P7 | rationale | Later session; judge-graded against the reference reason |
 | P8 | lookup | Later session; the answer must carry the value |
 | P8-twin | the P8 fact | Qualification control `wrong-project-lookup` only: the same question in a session of the twin project after the conveyance; `ground_truth.expect` is `abstain`, `absent` holds the base project's value, `check.owner` names the base project, and `sources` are the base project's |
@@ -168,6 +173,18 @@ and forbids both in the diff, so the item passes on a question that names
 both tasks and no edit toward either. The compiler refuses a P6 probe that
 finds another plan of its project accepted and not completed.
 
+A plan's latest conveyance (its statement, or the change of plan in an odd
+slot) is the last request of its session: the compiler places it in the
+session's last slot, extending the session when that slot is taken, and a
+turn placed into that session later takes a new slot before it. The P6 probe
+opens the project's next session. So between the plan's latest conveyance
+and the probe the project receives no request and no commit, and its
+conversation's last open item is the plan, and the generic resume wording
+("what we left unfinished") names it alone. `proveResumeFollowsPlan`
+refuses a scenario in which a request or commit of the project falls between
+them. Plans take no committed note, so no plan's latest
+conveyance is a session's opening.
+
 ### Conveyance
 
 Conveyance manners follow the fixed weights 35/20/15/10/10/10 for correction,
@@ -176,8 +193,9 @@ then reversed. The compiler rounds each weight with largest remainders over
 the scenario's facts. P5 facts take the rejected-approach manner, P8 facts the
 direct statement, and P12 facts the tool error. Only rejected facts take the
 rejected-approach wording, and only constraint, decision, and tool-error facts
-take the tool-error manner. P13 facts, scoped updates, and P6 facts in odd
-slots take no diff, so no committed note goes stale before an update, and a template whose statement has no
+take the tool-error manner. P13 facts and scoped updates take no diff, so no
+committed note goes stale before an update; P6 facts take none, so a plan's
+conveyance can end its session (Plans above); and a template whose statement has no
 generated token takes no reversal, since its decoy would equal the statement.
 A reversed fact's checks forbid the decoy's rendering beside the final value:
 the decoy's `*_must_not` lists join every check, its `*_must` lists join the
@@ -328,15 +346,25 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `fbffe588` | 0.2687 | 0.4949 |
-| S | 102 | `b3d05f99` | 0.265 | 0.5075 |
-| M | 201 | `ebcad7b7` | 0.2584 | 0.5807 |
-| M | 202 | `3381852f` | 0.2578 | 0.551 |
-| M | 203 | `2d9a6d12` | 0.261 | 0.551 |
-| L | 301 | `632f07d8` | 0.2582 | 0.5807 |
-| L | 302 | `498e8f95` | 0.2603 | 0.5807 |
-| L | 303 | `bf0272b5` | 0.2615 | 0.5807 |
-| XL | 401 | `31c558a8` | 0.2579 | 0.5807 |
+| S | 101 | `1463d12e` | 0.2767 | 0.4802 |
+| S | 102 | `9bbb45a3` | 0.2689 | 0.5229 |
+| M | 201 | `eda5ff8e` | 0.2606 | 0.5807 |
+| M | 202 | `1ea62d69` | 0.2595 | 0.5807 |
+| M | 203 | `3498591b` | 0.2593 | 0.551 |
+| L | 301 | `0443dc48` | 0.2599 | 0.5807 |
+| L | 302 | `b834c8b7` | 0.2593 | 0.5807 |
+| L | 303 | `d1fc2004` | 0.2605 | 0.5807 |
+| XL | 401 | `274d5843` | 0.2607 | 0.5807 |
+
+Under qualification Q (revision 2, `d03fd8ca`), which adds its P8-twin
+controls, the seeds compile to these scenarios; 103 is its exploratory
+hold-out:
+
+| Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
+|---|---|---|---|---|
+| Q | 101 | `f36d5033` | 0.2767 | 0.4802 |
+| Q | 102 | `6ab5a114` | 0.2668 | 0.5229 |
+| Q | 103 | `c0b8dcf3` | 0.2705 | 0.4939 |
 
 ## Known limits
 

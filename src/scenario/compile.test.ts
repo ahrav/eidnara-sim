@@ -23,6 +23,7 @@ import {
     markerHits,
     type ProbeItem,
     proveExposure,
+    proveResumeFollowsPlan,
     proveTwoPlansNeverOpen,
     type Scenario,
     scenarioInputMismatch,
@@ -39,6 +40,7 @@ import {
 } from "./faults";
 import { CONSUMED_FILES, langOf, loadCompileInput, loadPrereg, verifyCorpus } from "./inputs";
 import { bm25Ratio, type Embedder, hashEmbedder } from "./similarity";
+import { Tokens } from "./tokens";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const inputS = (seed: number): CompileInput => loadCompileInput(seed, "S", hashEmbedder, true);
@@ -90,7 +92,7 @@ describe("SIM-P01: deterministic compile across processes", () => {
             expect(body.manifest).toMatchObject({
                 seed,
                 tier,
-                generator_version: "sim-scenario/v4",
+                generator_version: "sim-scenario/v5",
             });
         }, 180_000);
     }
@@ -793,6 +795,42 @@ describe("compiled S scenario", async () => {
     });
 });
 
+/**
+ * Every P6 item whose project hears anything between its plan's latest conveyance and the probe,
+ * read from the compiled events alone: the conveyance must be its session's last user turn, the
+ * probe must open the project's next session, and no plan may ride on a committed note.
+ */
+function resumeGaps(s: Scenario): string[] {
+    const projectOf = new Map(s.sessions.map((x) => [x.id, x.project]));
+    const at = new Map(s.events.map((e, i) => [e.id, i]));
+    const gaps: string[] = [];
+    for (const p of s.probes.filter((x) => x.type === "P6")) {
+        const plan = s.plans.find((x) => x.fact === p.fact);
+        const latest = plan?.history.filter((h) => h.status !== "completed").at(-1)?.event ?? "";
+        const from = at.get(latest) ?? -1;
+        const to = at.get(p.event ?? "") ?? -1;
+        const source = s.events[from];
+        const between = s.events
+            .slice(from + 1, to)
+            .filter(
+                (e) =>
+                    (e.kind === "user_turn" || e.kind === "apply_diff") &&
+                    ((e.project as string | undefined) ?? projectOf.get(e.session as string)) ===
+                        p.project,
+            );
+        const sessionTurns = s.events.filter(
+            (e) => e.kind === "user_turn" && e.session === source?.session,
+        );
+        if (from < 0 || to <= from) gaps.push(`${p.id}: no conveyance before the probe`);
+        if (between.length > 0) gaps.push(`${p.id}: ${between.map((e) => e.id).join(",")}`);
+        if (sessionTurns.at(-1)?.id !== latest) gaps.push(`${p.id}: ${latest} is not last`);
+        if (s.facts.find((f) => f.id === p.fact)?.manner === "hand_applied_diff") {
+            gaps.push(`${p.id}: its plan rides on a committed note`);
+        }
+    }
+    return gaps;
+}
+
 describe("over 100 seeds", () => {
     test("SIM-P09 holds for every scenario and the manner mix stays within 5 pp of the weights", async () => {
         const counts = new Map<Manner, number>();
@@ -812,6 +850,7 @@ describe("over 100 seeds", () => {
             ).toBeLessThanOrEqual(1);
             for (const f of s.facts) counts.set(f.manner, (counts.get(f.manner) ?? 0) + 1);
             total += s.facts.length;
+            expect(resumeGaps(s)).toEqual([]);
         }
         for (const [m, w] of Object.entries(MANNER_WEIGHTS)) {
             expect(Math.abs((counts.get(m as Manner) ?? 0) / total - w)).toBeLessThan(0.05);
@@ -1470,6 +1509,71 @@ describe("exposure proof", () => {
         expect(() => proveTwoPlansNeverOpen([plan("f-2", "e-4")], [probe], order)).toThrow(
             /is not accepted before it/,
         );
+    });
+});
+
+describe("P6 resume construction", () => {
+    test("a request or commit of the project between the plan's latest conveyance and the probe is refused", () => {
+        const probe = {
+            id: "q-6",
+            type: "P6",
+            fact: "f-2",
+            project: "p",
+            event: "e-5",
+        } as ProbeItem;
+        const plan = {
+            fact: "f-2",
+            project: "p",
+            expect: "resume" as const,
+            history: [
+                { event: "e-1", status: "accepted" as const, next: ["x"] },
+                { event: "e-3", status: "revised" as const, next: ["y"] },
+                { event: "e-6", status: "completed" as const, next: [] },
+            ],
+        };
+        const ev = (id: string, kind: string, extra: Record<string, unknown> = {}) => ({
+            id,
+            kind,
+            ...extra,
+        });
+        const projectOf = (e: Record<string, unknown>) =>
+            (e.project as string | undefined) ?? (e.session === "s-q" ? "q" : "p");
+        const events = (between: Record<string, unknown> & { id: string }) => [
+            ev("e-0", "session_start", { project: "p", session: "s-1" }),
+            ev("e-1", "user_turn", { session: "s-1" }),
+            ev("e-2", "user_turn", { session: "s-1" }),
+            ev("e-3", "user_turn", { session: "s-1" }),
+            between,
+            ev("e-5", "user_turn", { session: "s-2" }),
+            ev("e-6", "user_turn", { session: "s-2" }),
+        ];
+        // Turns between the accepted plan and its revision precede the latest conveyance.
+        const quiet = events(ev("e-4", "user_turn", { session: "s-q" }));
+        expect(() => proveResumeFollowsPlan([plan], [probe], quiet, projectOf)).not.toThrow();
+        const task = events(ev("e-4", "user_turn", { session: "s-1" }));
+        expect(() => proveResumeFollowsPlan([plan], [probe], task, projectOf)).toThrow(
+            /e-4 reaches p between its plan's latest conveyance e-3 and the probe/,
+        );
+        const note = events(ev("e-4", "apply_diff", { project: "p" }));
+        expect(() => proveResumeFollowsPlan([plan], [probe], note, projectOf)).toThrow(/e-4/);
+        expect(() =>
+            proveResumeFollowsPlan([{ ...plan, history: [] }], [probe], quiet, projectOf),
+        ).toThrow(/no conveyance before the probe/);
+    });
+
+    test("a compiled S scenario ends each plan's session at its latest conveyance", async () => {
+        for (const seed of [101, 102, 103]) {
+            const s = await compileScenario(inputS(seed));
+            expect([seed, resumeGaps(s)]).toEqual([seed, []]);
+        }
+    });
+
+    test("generated figures stay five-digit and within the TCP port range", () => {
+        const tokens = new Tokens(new Rng(7));
+        for (let i = 0; i < 20_000; i++) {
+            const n = Number(tokens.number());
+            expect(n >= 10_000 && n <= 65_535).toBe(true);
+        }
     });
 });
 

@@ -44,20 +44,53 @@ SIM-L03 check reads the tier's.
 instead of the tier's arm order. The registration binds one tier's
 pre-registration by hash and lists its own seeds, hosts, arms with one order
 per seed, descriptive contrasts between arms of different delivery modes,
-and the control items it adds to the scenario (`docs/scenario.md`). The
-validator (`bun run prereg:validate`) refuses a stale tier digest, a seed or
+and the control items it adds to the scenario (`docs/scenario.md`). It may
+also carry three sections:
+
+- `aa_controls` (`seeds`, `pairs`): whole-scenario A/A controls. On each
+  listed seed, each `[arm, arm]` pair runs `<arm>~aa` right after its arm,
+  over the same events as the rest of the run, so `aa-report` reads it on
+  its whole-scenario path, where realised user-sim rates must sit inside
+  their bands.
+- `holdout` (`seeds`, `arms`, `order_by_seed`, `pooled: false`):
+  exploratory seeds outside `seeds`, which need not be tier seeds, run over
+  `arms` in their own order. A hold-out
+  run is reported on its own and never pooled into the registered
+  contrasts or the ranking gate.
+- `ranking_gate` (`order`, `items`): the qualification's delivery-mode gate.
+  The pooled pass rates of `order` (oracle context, automatic delivery, no
+  delivery) hold from first to last on the positive sourced probes only:
+  P1, P3, P4 on its `in` side, P6 items that expect `resume`, P8, P12, and
+  P13 (`RANKING_GATE_ITEMS`). Avoid, abstain, and should-not-apply items
+  (P2, P5, P9, P10, P11, P1-control, P8-twin, a P4 `out` item, a P6
+  `clarify` item) are outside the gate: their right answer withholds or
+  leaves out what a source says, and the oracle note quotes it, so the
+  oracle arm sits below the host there by design. The apply graders stay
+  strict: a clarifying question on an apply item fails it.
+
+Revision 2 registers whole-scenario A/A controls `host~aa` and `eidnara~aa`
+on seed 102, hold-out seed 103 over `eidnara` then `host`, and the ranking
+gate over `host-oracle`, `eidnara`, `host`.
+
+The validator (`bun run prereg:validate`) refuses a stale tier digest, a seed or
 host the tier does not run, an arm without a profile or with a capability
 gap, an order that is not a permutation of the run arms, and a contrast
-between arms of one delivery mode. The run refuses a qualification over
-another tier, a seed or host it does not list, an arm outside the seed's
-order, and every A/A control label; the tier pre-registration still supplies
-the liveness bounds, user-sim, and grading rules. The manifest records
+between arms of one delivery mode; an A/A seed outside `seeds` or a pair
+that is not one run arm twice; a hold-out seed inside `seeds`, a hold-out arm
+outside the run arms, or a hold-out order that does not permute
+`holdout.arms`; and a ranking gate whose order is not one run arm per mode in
+that order or whose items differ from `RANKING_GATE_ITEMS`. The run refuses
+a qualification over another tier, a seed or host it does not list, an arm
+outside the seed's order, and an A/A control label the seed does not
+register; the tier pre-registration still supplies the liveness bounds,
+user-sim, and grading rules. The manifest records
 `qualification` (`{id, sha256}`, or `null` for a tier run), the scenario
 manifest records `qualification_sha256`. A resume compares both;
 `grade-run`, `pairing-check`, and `oracle-run` require the scenario's digest
 to equal the manifest's (none for a tier run), the registration to still
-hash to it, the host and seed to be ones it lists, and the order to be a
-subsequence of the seed's registered order. `scripts/report.ts` refuses a
+hash to it, the host and seed (registered or hold-out) to be ones it lists,
+and the order to be a subsequence of the seed's registered order, each A/A
+control right after its arm. `scripts/report.ts` refuses a
 qualification run, since the tier report reads the tier's gates and the
 qualification registers descriptive contrasts. Each tape must come from a finished
 run (its journal holds `EndRun`) of the same seed, scenario,

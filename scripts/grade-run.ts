@@ -41,6 +41,7 @@ import {
 } from "../src/grade/probes";
 import { armBase, requireSeedOrder } from "../src/hosts/arms";
 import { canonicalJson } from "../src/prereg/canonical";
+import { qualificationSeed } from "../src/prereg/qualification";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
 import { FaultInjector } from "../src/proxy/inject";
@@ -256,15 +257,18 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     // A qualification run's arms come from the registration it recorded, which must still hash
     // to the recorded digest.
     const admitted = admittedArms(manifest, scenario as { manifest?: Record<string, unknown> });
-    const registry = manifest.qualification ? loadQualification(manifest.qualification.id) : prereg;
     const name = manifest.qualification
         ? `qualification ${String(manifest.qualification.id)}`
         : String(manifest.tier);
-    const seedIndex = registry.seeds.indexOf(manifest.seed);
-    if (seedIndex < 0) {
+    const seedIndex = prereg.seeds.indexOf(manifest.seed);
+    const permitted = manifest.qualification
+        ? qualificationSeed(loadQualification(manifest.qualification.id), manifest.seed)?.order
+        : seedIndex < 0
+          ? undefined
+          : (prereg.arms.order_by_seed[seedIndex] ?? prereg.arms.run);
+    if (!permitted) {
         throw new Error(`seed ${String(manifest.seed)} is not pre-registered for ${name}`);
     }
-    const permitted = (registry.arms.order_by_seed[seedIndex] ?? registry.arms.run) as string[];
     requireSeedOrder(arms, permitted, admitted.pairs);
     const models = manifest.models as unknown;
     if (
