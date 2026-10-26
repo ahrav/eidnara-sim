@@ -103,7 +103,8 @@ describe("SIM-P01: deterministic compile across processes", () => {
     });
 
     test("an embedder other than the pre-registered model is refused", async () => {
-        await expect(compileScenario(loadCompileInput(101, "S", hashEmbedder))).rejects.toThrow(
+        const input = { ...inputS(101), prereg: loadPrereg("S") };
+        await expect(compileScenario(input)).rejects.toThrow(
             /differs from the pre-registered amazon.titan-embed-text-v2:0/,
         );
     });
