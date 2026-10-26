@@ -56,9 +56,10 @@ once at the pinned commit, and the `apply_diff` events land on that
 workspace between sessions. The agent's edits stay in the workspace, so a
 later session opens on the scripted commits plus everything the arm's agent
 changed before; arms of one seed share the scripted commits, and their trees
-differ by their agents' work. No probe of a project asks a P1 task before
-its P1 item, so no earlier probe turn can carry out a P1 task ahead of its
-probe. `forced_p90_sessions` sessions
+differ by their agents' work. The only earlier probe of a project that asks
+a P1 item's task is the P1 item of an earlier instance of the same line,
+which a revision re-asks at M and above (Known limits). `forced_p90_sessions`
+sessions
 draw their request count from the tail above p90: each base repository takes
 an equal share, a seeded draw assigns any remainder, and each share spreads
 evenly over that repository's sessions; every other session draws from the full fitted distribution with

@@ -2294,27 +2294,31 @@ Open questions:
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: partial - `src/scenario/compile.test.ts` checks the compiled S-101
-scenario; the Titan seeds were inspected for repeated texts at rr-campaign-3
+Exercised: partial - `src/scenario/compile.test.ts` checks the compiled
+S-101 and M-201 scenarios, framings stripped
 Guarantee: SIM-P82: No probe of a project asks a P1 item's task before that
-P1 item, so the persisted workspace holds no earlier attempt at the task when
-the P1 probe arrives.
-Check: `always` - for every P1 item, assert that no probe of its project
-whose text equals the P1 text precedes it in event order; `always`, because
-one earlier asking lets the agent finish the task before the rule is tested.
+P1 item, apart from the P1 item of an earlier instance of the same line,
+which a revision re-asks behind a framing.
+Check: `always` - for every P1 item, assert that every earlier probe of its
+project whose text, framing stripped, equals the P1 task is the P1 item of
+an earlier instance of the same line; `always`, because one earlier asking
+from another probe lets the agent finish the task before the rule is
+tested.
 Fault/timing angle: agent edits persist across sessions in each arm's
 workspace, so any earlier asking of the task stays in the tree.
 Required faults and enabling state: a scenario with P1 items.
 Confidence: medium -
 [evidence](evidence/sim-p82-no-probe-asks-a-p1-task-before-its-item.md). The
-test compares exact texts; a revised line's P1 at M and above repeats the
-task behind a framing, which the test does not count.
+test compares tasks with the bank's framings stripped; at S it finds no
+repeat, at M-201 ten same-line repeats.
 Existing check: `src/scenario/compile.test.ts` `no probe of a project asks a
-P1 task before that P1 item` (unaudited).
+P1 task before that P1 item, apart from an earlier instance of its line`
+(unaudited).
 Impact: a P1 item measures the earlier attempt instead of the rule.
 Open questions:
-- A revised constraint repeats its P1 task behind a framing at M and above.
-  Unresolved, needs per-instance probe texts in the fact bank.
+- A revised constraint's P1 at M and above meets the work the earlier
+  instance's P1 left in the workspace. Unresolved, needs per-instance probe
+  texts in the fact bank.
 
 ## Liveness
 

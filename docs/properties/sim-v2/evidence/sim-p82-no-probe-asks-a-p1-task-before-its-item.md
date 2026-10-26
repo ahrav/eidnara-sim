@@ -15,7 +15,10 @@ the same task earlier in the same workspace.
 scripted commits between sessions, so the agent's edits persist. Generator
 `sim-scenario/v6` compiles no control item, and
 `src/scenario/compile.test.ts` `no probe of a project asks a P1 task before
-that P1 item` checks the compiled S-101 scenario.
+that P1 item, apart from an earlier instance of its line` checks the
+compiled S-101 and M-201 scenarios with the bank's framings stripped: S-101
+has no repeat, and each of M-201's ten repeats is the P1 item of an earlier
+instance of the same line.
 
 ## Failure scenario
 

@@ -156,18 +156,36 @@ describe("compiled S scenario", async () => {
         }
     });
 
-    test("no probe of a project asks a P1 task before that P1 item", () => {
-        for (const p1 of s.probes.filter((p) => p.type === "P1")) {
-            const earlier = s.probes.filter(
-                (p) =>
-                    p.project === p1.project &&
-                    p.text === p1.text &&
-                    (order.get(p.event ?? "") ?? Infinity) < (order.get(p1.event ?? "") ?? -1),
-            );
-            expect({ item: p1.id, earlier: earlier.map((p) => p.id) }).toEqual({
-                item: p1.id,
-                earlier: [],
-            });
+    test("no probe of a project asks a P1 task before that P1 item, apart from an earlier instance of its line", async () => {
+        const framings = (input.bank.any?.framings ?? []) as string[];
+        const task = (shown: string | null | undefined) => {
+            const text = shown ?? "";
+            const framing = framings.find((f) => text.startsWith(`${f} `));
+            return framing ? text.slice(framing.length + 1) : text;
+        };
+        const m = await compileScenario(loadCompileInput(201, "M", hashEmbedder, true));
+        for (const sc of [s, m]) {
+            const at = new Map(sc.events.map((e, i) => [e.id, i]));
+            const lineOf = new Map(sc.facts.map((f) => [f.id, f.line]));
+            let repeats = 0;
+            for (const p1 of sc.probes.filter((p) => p.type === "P1")) {
+                const earlier = sc.probes.filter(
+                    (p) =>
+                        p.project === p1.project &&
+                        task(p.text) === task(p1.text) &&
+                        (at.get(p.event ?? "") ?? Infinity) < (at.get(p1.event ?? "") ?? -1),
+                );
+                const foreign = earlier.filter(
+                    (p) =>
+                        p.type !== "P1" || lineOf.get(p.fact ?? "") !== lineOf.get(p1.fact ?? ""),
+                );
+                expect({ item: p1.id, foreign: foreign.map((p) => p.id) }).toEqual({
+                    item: p1.id,
+                    foreign: [],
+                });
+                repeats += earlier.length;
+            }
+            expect(repeats).toBe(sc === s ? 0 : 10);
         }
     });
 
