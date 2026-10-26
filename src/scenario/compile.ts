@@ -807,12 +807,10 @@ export async function compileScenario(input: CompileInput) {
         } else if (manner === "hand_applied_diff") {
             const content = tpl.example ? `${render(tpl.example.content, vars)}\n` : note(written);
             const path = tpl.example ? render(tpl.example.path, vars) : `notes/${word}.md`;
-            // The turn names the committed file as added, which is how the agent meets it in its tree.
-            const verb = line.artifacts.has(path) ? "changed" : "added";
             const pushed =
                 revision > 0
-                    ? `I ${verb} \`${path}\`; it replaces something we set up earlier. Look it over before we continue.`
-                    : `I ${verb} \`${path}\`. Look it over before we continue.`;
+                    ? `I added \`${path}\`; it replaces something we set up earlier. Look it over before we continue.`
+                    : `I added \`${path}\`. Look it over before we continue.`;
             conveyed = cue(pushed, commits([{ path, content }]), content);
         } else if (manner === "tool_error") {
             const path = `scripts/check_${word}.sh`;

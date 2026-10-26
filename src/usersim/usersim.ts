@@ -49,6 +49,9 @@ export function proxyUserSim(
                     inferenceConfig: { maxTokens },
                 }),
                 signal: AbortSignal.timeout(deadlineMs),
+                // Each call opens its own connection to the gateway, whose HTTP/1 server closes an
+                // idle connection after its keep-alive timeout.
+                keepalive: false,
             });
         } catch (caught) {
             if ((caught as { name?: string }).name === "TimeoutError") {

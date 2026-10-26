@@ -670,17 +670,7 @@ describe("compiled S scenario", async () => {
         }
     });
 
-    test("a hand-applied commit's first turn names the file it adds", () => {
-        for (const f of s.facts.filter((x) => x.manner === "hand_applied_diff")) {
-            const add = s.events.find(
-                (e) => e.kind === "apply_diff" && e.fact === f.id && !e.remove,
-            );
-            const first = all.find((t) => t.session === add?.session && t.index === 0);
-            expect(first?.text).toContain(`\`${String(add?.path)}\``);
-        }
-    });
-
-    test("a hand-applied commit's turn says the user added the new file, and a P3 authority asks for no change yet", () => {
+    test("a hand-applied commit's first turn says the user added the file it adds, and a P3 authority asks for no change yet", () => {
         const added = s.facts.filter((x) => x.manner === "hand_applied_diff");
         expect(added.length).toBeGreaterThan(0);
         for (const f of added) {

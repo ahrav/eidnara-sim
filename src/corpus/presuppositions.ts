@@ -58,8 +58,8 @@ function templatesOf(bank: unknown, lang: string): { id: string; requires: unkno
     );
 }
 
-/** Invalid regular-expression syntax counts as a pattern mismatch. */
 const matches = (pattern: string, text: string) => {
+    if (pattern.trim() === "") return false;
     try {
         return new RegExp(pattern, "m").test(text);
     } catch {
@@ -107,7 +107,7 @@ export function checkPresuppositions(
     read: ReadAt = readPinned,
 ): boolean {
     const trees = pinnedTrees(repos);
-    const absent = trees.filter((t) => !existsSync(join(t.dir, ".git")));
+    const absent = read === readPinned ? trees.filter((t) => !existsSync(join(t.dir, ".git"))) : [];
     if (absent.length > 0) {
         if (!required) return false;
         throw new Error(

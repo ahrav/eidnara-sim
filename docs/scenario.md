@@ -367,15 +367,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `37bbb20e` | 0.2762 | 0.4941 |
-| S | 102 | `bfdbe254` | 0.2666 | 0.5229 |
-| M | 201 | `79836a33` | 0.3577 | 0.5807 |
-| M | 202 | `82e9af50` | 0.3538 | 0.5807 |
-| M | 203 | `298e1eea` | 0.3214 | 0.5574 |
-| L | 301 | `bc74f124` | 0.324 | 0.5807 |
-| L | 302 | `8c3ccdd4` | 0.325 | 0.5807 |
-| L | 303 | `9299ce3d` | 0.3242 | 0.5807 |
-| XL | 401 | `114cf20a` | 0.3185 | 0.5807 |
+| S | 101 | `99028671` | 0.2762 | 0.4941 |
+| S | 102 | `7aeb16bb` | 0.2666 | 0.5229 |
+| M | 201 | `3dd85ead` | 0.3577 | 0.5807 |
+| M | 202 | `811f10e8` | 0.3538 | 0.5807 |
+| M | 203 | `f1a49bd1` | 0.3214 | 0.5574 |
+| L | 301 | `97a9e586` | 0.324 | 0.5807 |
+| L | 302 | `bcba125f` | 0.325 | 0.5807 |
+| L | 303 | `68eb4d6c` | 0.3242 | 0.5807 |
+| XL | 401 | `9abefcdc` | 0.3185 | 0.5807 |
 
 Under qualification Q (revision 3, `e8c1f508`), which adds its P8-twin
 controls, the seeds compile to these scenarios; 103 is its exploratory
@@ -383,9 +383,9 @@ hold-out:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| Q | 101 | `4ccd2b41` | 0.2762 | 0.4941 |
-| Q | 102 | `c0fe4cfd` | 0.2614 | 0.5229 |
-| Q | 103 | `57b3bd74` | 0.2706 | 0.4988 |
+| Q | 101 | `c2fd1186` | 0.2762 | 0.4941 |
+| Q | 102 | `f8b24dde` | 0.2614 | 0.5229 |
+| Q | 103 | `0415f7bd` | 0.2706 | 0.4988 |
 
 ## Known limits
 

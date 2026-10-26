@@ -16,7 +16,7 @@
                     }
                 ],
                 "statement": "every new public constant under src/cmd carries the {TOKEN}_ prefix, for example {TOKEN}_MAX_ARGS",
-                "probe": "Put a cap on how many channels one SUBSCRIBE request may name, and reject requests above it.",
+                "probe": "Put a cap on how many channels one SUBSCRIBE request may name, kept in a public constant, and reject requests above it.",
                 "out_probe": "Pull the accept loop's retry backoff ceiling out into a named constant in the server module.",
                 "example": {
                     "path": "src/cmd/{token}.rs",
@@ -348,15 +348,15 @@
                 "requires": [
                     {
                         "path": "src/server.rs",
-                        "pattern": "acquire_owned\\(\\)"
+                        "pattern": "pub async fn run\\("
                     },
                     {
-                        "path": "src/server.rs",
-                        "pattern": "tokio::spawn\\("
+                        "path": "src/bin/server.rs",
+                        "pattern": "TcpListener::bind\\("
                     }
                 ],
-                "statement": "giving each connection its own OS thread was tried and backed out because thread counts exploded under load",
-                "probe": "Serve every new client concurrently without stalling the accept loop.",
+                "statement": "giving connections their own OS threads was tried and backed out because thread counts exploded under load",
+                "probe": "Accept admin clients on a second port and serve them alongside the main listener.",
                 "check": {
                     "must_not": [
                         "std::thread::spawn",
@@ -695,7 +695,7 @@
                     }
                 ],
                 "statement": "new exported constants under src/adapter carry the {TOKEN}_ prefix",
-                "probe": "Cap how many headers the adapter copies onto one response.",
+                "probe": "Cap how many headers the adapter copies onto one response, with the cap in an exported constant.",
                 "out_probe": "Add a ceiling on how many query keys the query parser keeps.",
                 "example": {
                     "path": "src/adapter/{token}.ts",

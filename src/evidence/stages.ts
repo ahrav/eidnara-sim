@@ -756,14 +756,6 @@ export function probeEvidence(
                 pointers: [],
             };
         }
-        if (present.length === 0) {
-            return {
-                stage: "persisted",
-                status: "n/a",
-                pointers: [],
-                detail: { objects: persistedHits().map((h) => h.length) },
-            };
-        }
         const hits = persistedHits();
         const before = hits.map((h) => h.filter(existsAt));
         if (before.every((h) => h.length > 0)) {

@@ -2277,9 +2277,9 @@ Confidence: medium -
 The patterns were written against the repository source and checked by
 `git cat-file` at the pinned commits; a pattern names a construct, so a task
 can still misread a construct the pattern finds.
-Existing check: `checkPresuppositions` in `loadCompileInput` and
-`scripts/corpus-repos.ts`; `requirementShapeProblems` in the corpus checker
-(unaudited).
+Existing check: `checkPresuppositions` in `loadCompileInput`,
+`presuppositionProblems` in `scripts/corpus-repos.ts`, and
+`requirementShapeProblems` in the corpus checker (unaudited).
 Impact: an agent asks which code a task means, and the item grades a
 clarifying question as a failure on every arm.
 Open questions:

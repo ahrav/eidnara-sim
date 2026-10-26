@@ -61,12 +61,31 @@ describe("template presuppositions", () => {
             { id: "rs-none" },
             { id: "rs-bad", requires: [{ path: "src/server.rs" }] },
             template("rs-unclosed", ["src/server.rs", "[fn"]),
+            template("rs-blank", ["src/server.rs", " "]),
         ]);
         expect(presuppositionProblems(b, [TREES[0] as PinnedTree], read)).toEqual([
             "rs-none: names no requirement",
             "rs-bad: a requirement lacks a path or pattern",
             "rs-unclosed: svc@aaaaaaa src/server.rs lacks /[fn/",
+            "rs-blank: svc@aaaaaaa src/server.rs lacks / /",
         ]);
+    });
+
+    test("a failed requirement refuses the bank, naming every problem", () => {
+        const repos = [
+            {
+                id: "svc",
+                role: "rust-service",
+                commit: "a".repeat(40),
+                twin: { id: "svc-twin", commit: "a".repeat(40), renames: [] },
+            },
+        ] as unknown as RepoSpec[];
+        const b = bank([template("rs-cap", ["src/server.rs", "MAX_CONNECTIONS"])]);
+        expect(() => checkPresuppositions(b, repos, true, read)).toThrow(
+            /presuppose constructs a pinned tree lacks:\nrs-cap: svc-twin@aaaaaaa src\/server\.rs lacks \/MAX_CONNECTIONS\/$/,
+        );
+        const fine = bank([template("rs-run", ["src/server.rs", "fn run"])]);
+        expect(checkPresuppositions(fine, repos, true, read)).toBe(true);
     });
 
     test("a missing checkout refuses a required check and skips an optional one", () => {

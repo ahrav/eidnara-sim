@@ -671,6 +671,29 @@ describe("tape and pairing", () => {
         }
     });
 
+    test("each proxied user-sim call opens its own connection to the gateway", async () => {
+        const ports: number[] = [];
+        const server = Bun.serve({
+            port: 0,
+            fetch: (req, srv) => {
+                ports.push(srv.requestIP(req)?.port ?? -1);
+                return Response.json({
+                    output: { message: { content: [{ text: "ok" }] } },
+                    stopReason: "end_turn",
+                });
+            },
+        });
+        try {
+            const llm = proxyUserSim(`http://127.0.0.1:${server.port}`, "m", 100, 5_000);
+            await llm({ system: "s", user: "one" });
+            await llm({ system: "s", user: "two" });
+            expect(ports).toHaveLength(2);
+            expect(ports[0]).not.toBe(ports[1]);
+        } finally {
+            server.stop(true);
+        }
+    });
+
     test("a replay source from another seed or scenario is refused", () => {
         const root = dir();
         writeFileSync(join(root, "tape.jsonl"), "");
