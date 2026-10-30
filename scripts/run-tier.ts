@@ -7,7 +7,7 @@ import { MAX_TIMER_MS, runTier } from "../src/run/run";
 const USAGE = `usage: --tier S --seed 101 --out <run dir> [--host pi|opencode] [--arms a,b]
     [--events N] [--faults <episodes.json>] [--context-limit N] [--models a,b]
     [--tapes <tape.jsonl>,...] [--side-model <id>] [--user-sim-model <id>] [--turns-await-jobs true|false]
-    [--qualification Q] [--wall-budget-ms N]`;
+    [--qualification Q] [--wall-budget-ms N] [--sim-upgrade <commit>]`;
 const arg = (name: string) => {
     const i = process.argv.indexOf(`--${name}`);
     if (i < 0) return undefined;
@@ -42,6 +42,7 @@ const KNOWN = [
     "turns-await-jobs",
     "qualification",
     "wall-budget-ms",
+    "sim-upgrade",
 ];
 const unknown = process.argv
     .slice(2)
@@ -91,6 +92,7 @@ await runTier({
     turnsAwaitJobs: awaitJobs(arg("turns-await-jobs")),
     qualification: arg("qualification"),
     wallBudgetMs,
+    simUpgrade: arg("sim-upgrade"),
 });
 // runTier resolves once the journal is sealed and every teardown step has run. A Pi launcher
 // that the runtime never reaped can still hold the event loop open, so the command exits here.

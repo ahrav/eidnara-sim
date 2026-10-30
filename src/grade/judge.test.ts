@@ -999,6 +999,9 @@ describe("P7 judge path", () => {
     });
 });
 
+/** Three attempts with no backoff, so a test of the retry path runs in milliseconds. */
+const FAST_RETRY = { attempts: 3, totalMs: 5_000, backoffMs: [0] };
+
 describe("proxy judge", () => {
     let server: ReturnType<typeof Bun.serve> | null = null;
     afterEach(() => server?.stop(true));
@@ -1038,13 +1041,67 @@ describe("proxy judge", () => {
     });
 
     test("a failed judge call is refused before its body is read", async () => {
-        server = Bun.serve({ port: 0, fetch: () => new Response("not json", { status: 502 }) });
+        let calls = 0;
+        server = Bun.serve({
+            port: 0,
+            fetch: () => {
+                calls++;
+                return new Response("not json", { status: 502 });
+            },
+        });
         const judge = proxyJudge(
             `http://127.0.0.1:${server.port}`,
             rules.judge.model,
             "anthropic.x",
+            { retry: FAST_RETRY },
         );
-        await expect(judge.verdict("prompt")).rejects.toThrow("judge call failed: 502");
+        await expect(judge.verdict("prompt")).rejects.toThrow(
+            "judge call failed after 3 attempt(s): judge call failed: 502",
+        );
+        expect(calls).toBe(3);
+    });
+
+    test("a judge call that fails in transport is retried with the same prompt, then answers", async () => {
+        const bodies: string[] = [];
+        server = Bun.serve({
+            port: 0,
+            fetch: async (req) => {
+                bodies.push(await req.text());
+                if (bodies.length === 1) return new Response("busy", { status: 503 });
+                return Response.json({
+                    output: { message: { content: [{ text: "first" }] } },
+                    stopReason: "end_turn",
+                });
+            },
+        });
+        const judge = proxyJudge(
+            `http://127.0.0.1:${server.port}`,
+            rules.judge.model,
+            "anthropic.x",
+            { retry: FAST_RETRY },
+        );
+        expect(await judge.verdict("prompt")).toBe("first");
+        expect(bodies).toHaveLength(2);
+        expect(bodies[1]).toBe(bodies[0] as string);
+    });
+
+    test("a judge call the gateway refuses with a 4xx is not retried", async () => {
+        let calls = 0;
+        server = Bun.serve({
+            port: 0,
+            fetch: () => {
+                calls++;
+                return new Response("bad", { status: 400 });
+            },
+        });
+        const judge = proxyJudge(
+            `http://127.0.0.1:${server.port}`,
+            rules.judge.model,
+            "anthropic.x",
+            { retry: FAST_RETRY },
+        );
+        await expect(judge.verdict("prompt")).rejects.toThrow("judge call failed: 400");
+        expect(calls).toBe(1);
     });
 
     test("a judge call that never completes is refused at its deadline", async () => {
@@ -1112,7 +1169,9 @@ describe("proxy judge", () => {
     });
 
     test("an unreachable gateway is a judge refusal", async () => {
-        const judge = proxyJudge("http://127.0.0.1:1", rules.judge.model, "anthropic.x");
+        const judge = proxyJudge("http://127.0.0.1:1", rules.judge.model, "anthropic.x", {
+            retry: FAST_RETRY,
+        });
         await expect(judge.verdict("prompt")).rejects.toThrow(GradeRefused);
     });
 

@@ -374,6 +374,9 @@ export class SnapshotRecorder {
                 throw new GitBound(`rule files of ${dir}: hashing timed out`);
             now[path] = blobId(join(dir, path));
         }
+        for (const path of this.inertRules(dir, project, ignoreFiles, baseline.files)) {
+            delete now[path];
+        }
         const changes: string[] = [];
         for (const path of new Set([
             ...Object.keys(baseline.files),
@@ -392,6 +395,46 @@ export class SnapshotRecorder {
             changes.push(".git/info/attributes (changed)");
         }
         return changes.sort();
+    }
+
+    /**
+     * Added rule files whose directory git ignores. Git skips traversal of excluded directories
+     * during `add --all` (gitignore(5)), so their contents stay out of the tree whatever their
+     * rule files say. Rule files the source tracks, root rule files, and rule files above a path
+     * `tree` adds with `--force` stay counted.
+     */
+    private inertRules(
+        dir: string,
+        project: string,
+        ignoreFiles: readonly string[],
+        tracked: Record<string, string>,
+    ): Set<string> {
+        const forced = this.state.forced?.[project] ?? this.state.forced?.[basename(dir)] ?? [];
+        const parentOf = (path: string) => path.slice(0, path.lastIndexOf("/") + 1);
+        const candidates = ignoreFiles.filter((path) => {
+            const parent = parentOf(path);
+            return (
+                tracked[path] === undefined &&
+                parent !== "" &&
+                !forced.some((f) => f.startsWith(parent))
+            );
+        });
+        if (candidates.length === 0) return new Set();
+        const parents = [...new Set(candidates.map(parentOf))];
+        const ignored = spawnSync("git", ["check-ignore", "-z", "--no-index", "--stdin"], {
+            cwd: dir,
+            env: gitEnv({ GIT_DIR: this.gitDir, GIT_WORK_TREE: dir }),
+            encoding: "utf8",
+            input: parents.map((path) => `${path}\0`).join(""),
+            ...(this.gitTimeoutMs ? { timeout: this.gitTimeoutMs, killSignal: "SIGKILL" } : {}),
+        });
+        if ((ignored.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
+            throw new GitBound(`git check-ignore: timed out after ${this.gitTimeoutMs} ms`);
+        }
+        // Only status 0 names ignored directories; on any other status every rule file counts.
+        if (ignored.status !== 0) return new Set();
+        const skipped = new Set(ignored.stdout.split("\0").filter(Boolean));
+        return new Set(candidates.filter((path) => skipped.has(parentOf(path))));
     }
 
     /**

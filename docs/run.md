@@ -102,7 +102,8 @@ entries of different arms are not ordered by scenario time.
 | `EndTurn` | The turn is answered, with `prompt_ms`, the wall time of the host's prompt call (`null` when the turn spent its deadline before the prompt); a probe turn carries `probe` and `state` (`completed`, or `failed` whenever the driver returned `failed`, even empty) |
 | `RegisterJob`, `EndJob` | A background job starts and ends; on resume, a job in flight at the kill gets an `EndJob` with outcome `failed(interrupted)` |
 | `FaultFired`, `FaultObserved` | A scheduled fault fires, and the driver returns its evidence |
-| `ItemState` | On resume, an in-flight turn or a scheduler fault without evidence is `failed(interrupted)`, as is a kill the fatal channel cut; the daemon exits; a scheduler fault the driver could not carry out, or an event whose delivery failed, is `failed` with `fatal: true`, as is a daemon exit outside an outage window; a sleep or summarizer fault that never fired is `missed` |
+| `ItemState` | On resume, an in-flight turn or a scheduler fault without evidence is `failed(interrupted)` with the `cause` that stopped the arm, as is a kill the fatal channel cut; the daemon exits; a scheduler fault the driver could not carry out, an event whose delivery failed, or a job past its deadline is `failed` with `fatal: true` and a `cause`, as is a daemon exit outside an outage window; a sleep or summarizer fault that never fired is `missed` |
+| `Recovered` | On resume, once per fatal `ItemState` of a recoverable cause, before any other entry of the arm but its clock offset; carries `recovers` (the fatal record's `seq`), `cause`, and the item the record names |
 | `Event` | A scheduled event is complete, with its outcome |
 | `StoreChecked` | A store check a daemon restart owed is settled, once per restart; carries the fault id, the check, and the turn or session end that settled it, or `event: null` at a later fault or the finish (`docs/oracles.md`) |
 
@@ -146,7 +147,8 @@ call through it is refused:
    host summarizes or captures in the background, and each job's deadline
    still counts from its `RegisterJob`: a timer per job stops the run once a
    job runs past it, whatever the arm is waiting on, after journaling a fatal
-   `ItemState` naming the job, so a resume refuses the run. A mid-fold kill that starts while the turn is prepared ends
+   `ItemState` naming the job with cause `job-deadline`, which a resume
+   takes up as an interruption (Fatal stops, below). A mid-fold kill that starts while the turn is prepared ends
    before the turn's `BeginTurn`. Every other event, a turn with a fault keyed to it included, in every attempt (so a
    fault's mechanism never cuts the preceding turn's background work), and every user turn under
    `turnsAwaitJobs` (`--turns-await-jobs true`, recorded in the manifest),
@@ -249,7 +251,49 @@ in flight.
 
 ## Resume
 
-A restarted harness opens the same journal. An arm order that repeats an arm is refused before anything is written.
+A restarted harness opens the same journal.
+
+### Fatal stops
+
+A fatal `ItemState` stops the run and carries one `cause`:
+
+| Cause | Written when | On resume |
+|---|---|---|
+| `job-deadline` | a job held the clock past `job_deadline_ms` (a host stall, a suspended machine, a hung call) | recovered |
+| `harness-transport` | a user turn's delivery failed with `TransportFailure`: a user-sim call whose bounded retries all failed in transport | recovered |
+| `daemon-exit` | the daemon exited outside an outage window | recovered |
+| `fault-error` | a scheduler fault's mechanism failed | refused |
+| `event-error` | an event's delivery failed for any other reason | refused |
+
+A record written before records carried `cause` takes it from its shape: a
+daemon exit, a fault, or a job names that cause, and an event's error names
+`harness-transport` when it is a user-sim timeout or 429/5xx, a closed socket,
+or a refused or reset connection, and `event-error` otherwise.
+
+A recoverable stop leaves the measurement intact up to the stop, so a resume
+applies the registered missingness policy (`in_flight_at_interrupt:
+failed(interrupted)`): it journals `Recovered` for each such record, then the
+usual recovery entries, each interruption marker carrying the cause (a stop
+with no fatal record, such as a kill or a reboot, is `harness-exit`), and the
+arm continues at its next event with the host session restarted through the
+driver's `resume`. The interrupted items are excluded from recall and counted
+in dependability; `grade-run` reports them per arm (`interruptions`: the
+interrupted turns by cause, the recovered stops by cause, the unexpected
+daemon exits, which stay an Eidnara reliability finding, and any unresolved
+stop; `src/run/interruptions.ts`). A failed fault mechanism or an unexplained
+delivery failure names a harness or driver defect whose effect on the arm is
+unknown, so such a run, and one whose journal is poisoned, tampered with, or
+bound to another identity, stays refused. The replay refuses a `Recovered`
+entry that names no pending fatal record of its arm or misreports its cause,
+any other arm entry of a resumed process before the recovery, and an
+`EndArm` with a fatal record unrecovered.
+
+A request, model call, or hold that settles after its arm stopped, or between
+arms, releases nothing: the run registers each through `Scheduler.jobHold`,
+whose release ends the job only while the arm that registered it runs. An arm
+journals `EndArm` only with its busy set empty, so such a job belongs to an
+arm that stopped early, and that arm's resume closes it as
+`failed(interrupted)`. An arm order that repeats an arm is refused before anything is written.
 A journal whose first entry is anything but `StartRun`, or that holds a
 second `StartRun`, is refused, as is one with entries after `EndRun`, a run
 record (`StartRun`, `ResumeRun`, `EndRun`) carrying an arm or a clock reading,
@@ -261,10 +305,9 @@ open, every sleep jump fired, and every fired scheduler fault observed or
 interrupted; evidence journaled after `EndArm` does not count. The clock keeps
 the highest wall reading it has seen, so a wall source that steps backward
 across an idle gap never counts the rollback twice. A journal holding a fatal
-`ItemState` (a daemon exit outside an outage window, a scheduler fault the
-driver could not carry out, or an event whose delivery failed), before or
-after `EndRun`, is a failed run and is
-refused with `HarnessFailure`; an arm with `EndArm` before every scheduled
+`ItemState` that no `Recovered` entry resolves, when its cause is not
+recoverable (Fatal stops, above) or the journal holds `EndRun`, is a failed
+run and is refused with `HarnessFailure`; an arm with `EndArm` before every scheduled
 event completed, a turn entry naming anything but a configured user turn, an
 `EndTurn` before its `BeginTurn`, a `FaultObserved` before its `FaultFired`,
 `Event` records outside the configured order or timestamped before their

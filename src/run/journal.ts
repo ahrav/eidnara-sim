@@ -47,6 +47,7 @@ const ENTRY_KINDS = [
     "CounterfactualSample",
     "DeleteMemoryObject",
     "CounterfactualDeletion",
+    "Recovered",
     "EndArm",
     "EndRun",
 ] as const;
@@ -291,6 +292,13 @@ export function pidNamespace(): string | undefined {
 
 /** A run that failed in a way the harness owns: the run is refused rather than retried. */
 export class HarnessFailure extends Error {}
+
+/**
+ * A harness call to the model gateway (user-sim or judge) that failed in transport, a timeout,
+ * a dropped connection, or a throttled or failing upstream, after its bounded retries. A run
+ * that stops on one is resumable: the turn it was preparing is journaled `failed(interrupted)`.
+ */
+export class TransportFailure extends HarnessFailure {}
 
 /**
  * A journal is read whole before it is replayed, so its size is bounded ahead of the read: a
