@@ -1,8 +1,16 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { linkSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { alerts, decide, parseCampaign, type RunRecord, runProgress } from "../src/run/campaign";
+import {
+    alertKey,
+    alerts,
+    decide,
+    openLog,
+    parseCampaign,
+    type RunRecord,
+    runProgress,
+} from "../src/run/campaign";
 import { Journal } from "../src/run/journal";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -47,6 +55,7 @@ test("the supervisor resumes a stopped run, finalizes it at EndRun, and gives up
         out,
         poll_ms: 50,
         max_resumes: 3,
+        relaunch_backoff_ms: 20,
         inode_paths: [],
         run_command: ["bun", fake],
         finalize_commands: [
@@ -80,11 +89,11 @@ test("the supervisor resumes a stopped run, finalizes it at EndRun, and gives up
             { command: "-e", exit: 3 },
         ],
     });
-    expect(bad).toMatchObject({ state: "gave-up", launches: 2, stalled: 2 });
+    expect(bad).toMatchObject({ state: "gave-up", launches: 3, stalled: 3 });
     expect(bad.last_error).toBe("error: run failed: fault f failed");
-    expect(stderr).toContain("bad GAVE UP: two attempts in a row made no progress");
+    expect(stderr).toContain("bad GAVE UP: 3 attempts in a row measured no event");
     expect(status.alerts).toContain(
-        "run bad GAVE UP: two attempts in a row made no progress; last error: error: run failed: fault f failed",
+        "run bad GAVE UP: 3 attempts in a row measured no event; last error: error: run failed: fault f failed",
     );
     const log = readFileSync(join(out, "campaign.log"), "utf8");
     expect(log).toContain("good resume 1");
@@ -100,6 +109,8 @@ const record = (over: Partial<RunRecord> = {}): RunRecord => ({
     launches: 0,
     stalled: 0,
     progress_at_launch: null,
+    launched_at: null,
+    stopped_at: null,
     last_error: null,
     finalize: [],
     gave_up_reason: null,
@@ -109,12 +120,19 @@ const record = (over: Partial<RunRecord> = {}): RunRecord => ({
 test("decide waits on a live run, bounds relaunches, and finalizes once", () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
     const progress = runProgress(dir);
-    expect(decide(record(), progress, true, 2)).toBe("wait");
-    expect(decide(record(), progress, false, 2)).toBe("launch");
-    expect(decide(record({ launches: 3 }), progress, false, 2)).toBe("give-up");
-    expect(decide(record({ stalled: 2 }), progress, false, 2)).toBe("give-up");
-    expect(decide(record({ state: "finalized" }), progress, false, 2)).toBe("none");
-    expect(decide(record(), { ...progress, ended: true }, false, 2)).toBe("finalize");
+    const act = (r: RunRecord, p = progress, running = false, now = 0) =>
+        decide(r, p, running, 2, now, 1_000).action;
+    expect(act(record(), progress, true)).toBe("wait");
+    expect(act(record())).toBe("launch");
+    expect(act(record({ launches: 3 }))).toBe("give-up");
+    expect(act(record({ stalled: 3 }))).toBe("give-up");
+    expect(act(record({ state: "finalized" }))).toBe("none");
+    expect(act(record({ state: "finalizing" }))).toBe("wait");
+    expect(act(record(), { ...progress, ended: true })).toBe("finalize");
+    // A run that stopped without measuring an event waits 1x, then 4x the backoff.
+    expect(act(record({ stalled: 1, stopped_at: 0 }), progress, false, 999)).toBe("wait");
+    expect(act(record({ stalled: 1, stopped_at: 0 }), progress, false, 1_000)).toBe("launch");
+    expect(act(record({ stalled: 2, stopped_at: 0 }), progress, false, 3_999)).toBe("wait");
 });
 
 test("alerts name a silent running run and a filesystem past 80% inode use", () => {
@@ -132,11 +150,19 @@ test("alerts name a silent running run and a filesystem past 80% inode use", () 
     const last = progress.last_entry_wall_ms as number;
     const got = alerts(
         spec,
-        [{ record: record({ state: "running" }), progress }],
+        [{ record: record({ state: "running", launched_at: last - 60_000 }), progress }],
         last + 5 * 60_000,
         (path) => (path === "/tmp" ? 0.85 : 0.5),
     );
     expect(got).toEqual(["run r journaled nothing for 5 min", "/tmp inode use 85.0% passes 80%"]);
+    // A relaunch counts from its launch, so a quiet journal from before it raises nothing yet.
+    const relaunched = record({ state: "running", launched_at: last + 4 * 60_000 });
+    expect(alerts(spec, [{ record: relaunched, progress }], last + 5 * 60_000, () => null)).toEqual(
+        [],
+    );
+    expect(alertKey("run r journaled nothing for 5 min")).toBe(
+        alertKey("run r journaled nothing for 7 min"),
+    );
 });
 
 test("a campaign file that lets a run pick its own --out, or repeats a name, is refused", () => {
@@ -153,4 +179,22 @@ test("a campaign file that lets a run pick its own --out, or repeats a name, is 
             ],
         }),
     ).toThrow("unique plain name");
+    expect(() =>
+        parseCampaign({ ...base, runs: [{ name: "r", args: [] }], run_command: "bun" }),
+    ).toThrow("run_command is not a non-empty list of strings");
+    expect(() =>
+        parseCampaign({ ...base, runs: [{ name: "r", args: [] }], finalize_commands: [[]] }),
+    ).toThrow("finalize_commands is not a list of non-empty string lists");
+});
+
+test("a supervisor log is opened only as a plain file, never through a link", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
+    const target = join(dir, "victim");
+    writeFileSync(target, "keep\n");
+    symlinkSync(target, join(dir, "link.log"));
+    expect(() => openLog(join(dir, "link.log"), true)).toThrow();
+    expect(readFileSync(target, "utf8")).toBe("keep\n");
+    linkSync(target, join(dir, "hard.log"));
+    expect(() => openLog(join(dir, "hard.log"), true)).toThrow("is not a plain file");
+    expect(readFileSync(target, "utf8")).toBe("keep\n");
 });

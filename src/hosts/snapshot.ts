@@ -416,7 +416,7 @@ export class SnapshotRecorder {
             return (
                 tracked[path] === undefined &&
                 parent !== "" &&
-                !forced.some((f) => f.startsWith(parent))
+                !forced.some((f) => f.startsWith(parent) || parent.startsWith(`${f}/`))
             );
         });
         if (candidates.length === 0) return new Set();

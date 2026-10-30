@@ -84,7 +84,49 @@ test("transientUserSim accepts timeouts, 429 and 5xx, and transport errors, and 
     expect(transientUserSim(new HarnessFailure("user-sim call failed: 429"))).toBe(true);
     expect(transientUserSim(new TypeError("fetch failed"))).toBe(true);
     expect(transientUserSim(new HarnessFailure("user-sim call failed: 403"))).toBe(false);
+    expect(transientUserSim(new SyntaxError("Unexpected token < in JSON"))).toBe(false);
     expect(transientUserSim(new HarnessFailure("e-1: delivered text carries markers K"))).toBe(
         false,
     );
+});
+
+test("a backoff that wakes past the budget starts no further attempt", async () => {
+    let t = 0;
+    let calls = 0;
+    const failure = withRetry(
+        "judge call",
+        { attempts: 3, totalMs: 1_000, backoffMs: [100] },
+        () => true,
+        async () => {
+            calls++;
+            throw new Error("reset");
+        },
+        async () => {
+            // The sleep overshoots the whole budget.
+            t += 5_000;
+        },
+        () => t,
+    );
+    await expect(failure).rejects.toThrow("judge call failed after 1 attempt(s): reset");
+    expect(calls).toBe(1);
+});
+
+test("a backoff that would end past the budget stops before sleeping", async () => {
+    let t = 0;
+    let slept = 0;
+    const failure = withRetry(
+        "judge call",
+        { attempts: 3, totalMs: 1_000, backoffMs: [2_000] },
+        () => true,
+        async () => {
+            t += 100;
+            throw new Error("reset");
+        },
+        async () => {
+            slept++;
+        },
+        () => t,
+    );
+    await expect(failure).rejects.toThrow("after 1 attempt(s)");
+    expect(slept).toBe(0);
 });

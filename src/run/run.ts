@@ -508,7 +508,10 @@ function manifestProblems(m: Manifest, compiledEvents: number): string[] {
     return problems;
 }
 
-/** The manifest's execution fields (everything but the per-invocation preflight), as one digest. */
+/**
+ * The manifest's execution fields (everything but the per-invocation preflight and the sim
+ * revisions a resume appends), as one digest.
+ */
 export function manifestIdentity(manifest: Manifest): string {
     const { preflight: _preflight, sim_revisions: _revisions, ...fields } = manifest;
     return sha256Hex(canonicalJson(fields));
@@ -600,8 +603,9 @@ const CLEAN_WORKTREE = createHash("sha256").digest("hex");
 /**
  * The tracked paths that decide what an arm is shown and what its run records: the
  * pre-registration and its schema, the scenario compiler and corpus, the user-sim (persona,
- * behaviour plan, tape and pairing), the oracle note, the arm profiles, call classification,
- * records, and fault injection, the clock and its injection, and the resource sampler.
+ * behaviour plan, tape and pairing), the seeded generator, the oracle note, the host driver,
+ * arm profiles, workspace snapshots, and store checks, call classification, records, and fault
+ * injection, the clock and its injection, and the resource sampler.
  */
 export const MEASUREMENT_PATHS = [
     "prereg",
@@ -610,10 +614,14 @@ export const MEASUREMENT_PATHS = [
     "src/corpus",
     "corpus",
     "src/usersim",
+    "src/rng.ts",
     "src/oracle",
     "src/run/oracle-note.ts",
     "src/hosts/arms.ts",
     "src/hosts/profiles.ts",
+    "src/hosts/driver.ts",
+    "src/hosts/snapshot.ts",
+    "src/hosts/storecheck.ts",
     "src/proxy/classify.ts",
     "src/proxy/records.ts",
     "src/proxy/inject.ts",
@@ -628,6 +636,60 @@ export const MEASUREMENT_PATHS = [
  * and no path in `MEASUREMENT_PATHS` differs between them. Every other pinned input (the
  * pre-registration, scenario, binaries, corpus, arm configuration) is compared as on any resume.
  */
+/**
+ * Decides the sim revision a resume runs under and returns the `sim_revisions` entry to record,
+ * or null when the run stays at its latest revision (the last `sim_revisions` entry, each link
+ * checked again since the field lies outside the execution digest, or `sim_commit`). Any other
+ * changed input in `changed`, or a moved revision without a matching `--sim-upgrade`, refuses.
+ */
+export function simRevision(
+    manifest: Pick<Manifest, "sim_commit" | "sim_worktree" | "sim_revisions">,
+    current: { sim_commit: string; sim_worktree: string },
+    simUpgrade: string | undefined,
+    changed: readonly string[],
+    root = ROOT,
+): SimRevision | null {
+    let latest = { commit: manifest.sim_commit, worktree: manifest.sim_worktree };
+    for (const r of manifest.sim_revisions ?? []) {
+        if (r?.from_commit !== latest.commit) {
+            throw new HarnessFailure(
+                `manifest.json sim_revisions breaks its chain at ${r?.commit}`,
+            );
+        }
+        requireRecoveryUpgrade(latest, r, root);
+        latest = { commit: r.commit, worktree: r.worktree };
+    }
+    const moved = [
+        ...(current.sim_commit === latest.commit ? [] : ["sim_commit"]),
+        ...(current.sim_worktree === latest.worktree ? [] : ["sim_worktree"]),
+    ];
+    if (changed.length > 0 || (moved.length > 0 && simUpgrade === undefined)) {
+        const hint =
+            changed.length === 0
+                ? " (a harness-recovery change resumes with --sim-upgrade <commit>)"
+                : "";
+        throw new HarnessFailure(
+            `inputs changed since the run started: ${[...changed, ...moved].join(", ")}${hint}`,
+        );
+    }
+    if (moved.length === 0) {
+        if (simUpgrade !== undefined && simUpgrade !== latest.commit) {
+            throw new HarnessFailure(
+                `--sim-upgrade names ${simUpgrade}; the run is at ${latest.commit}`,
+            );
+        }
+        return null;
+    }
+    if (simUpgrade !== current.sim_commit) {
+        throw new HarnessFailure(
+            `--sim-upgrade names ${simUpgrade}; this checkout runs ${current.sim_commit}`,
+        );
+    }
+    const to = { commit: current.sim_commit, worktree: current.sim_worktree };
+    requireRecoveryUpgrade(latest, to, root);
+    return { ...to, from_commit: latest.commit, arms: [], accepted_wall_ms: Date.now() };
+}
+
 export function requireRecoveryUpgrade(
     from: { commit: string; worktree: string },
     to: { commit: string; worktree: string },
@@ -1520,56 +1582,16 @@ export async function loadManifest(
             const names = differs.map(([k]) => k).join(", ");
             throw new HarnessFailure(`resume options differ from the manifest: ${names}`);
         }
-        // The run's sim revision is the last one a resume recorded, or the one that started it.
-        const latest = manifest.sim_revisions?.at(-1) ?? {
-            commit: manifest.sim_commit,
-            worktree: manifest.sim_worktree,
-        };
         const current = digests();
         const changed = Object.entries({
             ...current,
-            sim_commit:
-                current.sim_commit === latest.commit ? manifest.sim_commit : current.sim_commit,
-            sim_worktree:
-                current.sim_worktree === latest.worktree
-                    ? manifest.sim_worktree
-                    : current.sim_worktree,
             tape_sha256: tapeDigests(manifest.tapes),
             arms: armConfigs(manifest.order, manifest.side_model ?? manifest.models[0] ?? ""),
-        }).filter(([k, v]) => !sameJson(manifest[k as keyof Manifest], v));
-        const names = changed.map(([k]) => k);
-        const simOnly =
-            names.length > 0 && names.every((k) => k === "sim_commit" || k === "sim_worktree");
-        let revision: SimRevision | null = null;
-        if (simOnly && o.simUpgrade !== undefined) {
-            if (o.simUpgrade !== current.sim_commit) {
-                throw new HarnessFailure(
-                    `--sim-upgrade names ${o.simUpgrade}; this checkout runs ${current.sim_commit}`,
-                );
-            }
-            requireRecoveryUpgrade(latest, {
-                commit: current.sim_commit,
-                worktree: current.sim_worktree,
-            });
-            revision = {
-                commit: current.sim_commit,
-                worktree: current.sim_worktree,
-                from_commit: latest.commit,
-                arms: [],
-                accepted_wall_ms: Date.now(),
-            };
-        } else if (names.length > 0) {
-            const hint = simOnly
-                ? " (a harness-recovery change resumes with --sim-upgrade <commit>)"
-                : "";
-            throw new HarnessFailure(
-                `inputs changed since the run started: ${names.join(", ")}${hint}`,
-            );
-        } else if (o.simUpgrade !== undefined && o.simUpgrade !== latest.commit) {
-            throw new HarnessFailure(
-                `--sim-upgrade names ${o.simUpgrade}; the run is at ${latest.commit}`,
-            );
-        }
+        })
+            .filter(([k]) => k !== "sim_commit" && k !== "sim_worktree")
+            .filter(([k, v]) => !sameJson(manifest[k as keyof Manifest], v))
+            .map(([k]) => k);
+        const revision = simRevision(manifest, current, o.simUpgrade, changed);
         checks = await probe(manifest.order);
         const intercepted = (p: Preflight) =>
             p.time_injection.map((t) => [t.name, t.path, t.intercepted, t.wall_clock_only]);
@@ -2623,6 +2645,15 @@ async function runArms(
                     if (stopped) throw stopped;
                     return last;
                 }),
+            // A failed arm stops as the teardown stops it, without the final checks, so its
+            // resume finds no recorded finish failure.
+            abort: async () => {
+                try {
+                    sampler.stop();
+                } finally {
+                    await driver.stop();
+                }
+            },
         };
     }
     await scheduler.run();

@@ -102,7 +102,7 @@ entries of different arms are not ordered by scenario time.
 | `EndTurn` | The turn is answered, with `prompt_ms`, the wall time of the host's prompt call (`null` when the turn spent its deadline before the prompt); a probe turn carries `probe` and `state` (`completed`, or `failed` whenever the driver returned `failed`, even empty) |
 | `RegisterJob`, `EndJob` | A background job starts and ends; on resume, a job in flight at the kill gets an `EndJob` with outcome `failed(interrupted)` |
 | `FaultFired`, `FaultObserved` | A scheduled fault fires, and the driver returns its evidence |
-| `ItemState` | On resume, an in-flight turn or a scheduler fault without evidence is `failed(interrupted)` with the `cause` that stopped the arm, as is a kill the fatal channel cut; the daemon exits; a scheduler fault the driver could not carry out, an event whose delivery failed, or a job past its deadline is `failed` with `fatal: true` and a `cause`, as is a daemon exit outside an outage window; a sleep or summarizer fault that never fired is `missed` |
+| `ItemState` | On resume, an in-flight turn or a scheduler fault without evidence is `failed(interrupted)` with the `cause` that stopped the arm; a kill the fatal channel cut is `failed(interrupted)`; the daemon exits; a scheduler fault the driver could not carry out, an event whose delivery failed, or a job past its deadline is `failed` with `fatal: true` and a `cause`, as is a daemon exit outside an outage window; a sleep or summarizer fault that never fired is `missed` |
 | `Recovered` | On resume, once per fatal `ItemState` of a recoverable cause, before any other entry of the arm but its clock offset; carries `recovers` (the fatal record's `seq`), `cause`, and the item the record names |
 | `Event` | A scheduled event is complete, with its outcome |
 | `StoreChecked` | A store check a daemon restart owed is settled, once per restart; carries the fault id, the check, and the turn or session end that settled it, or `event: null` at a later fault or the finish (`docs/oracles.md`) |
@@ -186,7 +186,10 @@ call through it is refused:
    anything else, or a delivery that rejects, fails the run: a fatal
    `ItemState` names the event (poisoning the run when that record cannot be
    appended), the fatal channel cuts a pending kill like any other in-flight
-   driver call, and a later process refuses the journal. An `EndTurn` that cannot be
+   driver call, and a later process takes the run up or refuses it by the
+   record's cause (Fatal stops, below); a rejection that the harness's own stop
+   (a signal or the wall budget) caused journals no fatal record, so the resume
+   marks the turn interrupted as after a kill. An `EndTurn` that cannot be
    appended poisons the run the same way. When a fault keyed
    to the turn fired, the scheduler quiesces again before `BeginTurn`, so a
    job the fault's callback started ends first. The outcome's `failed` string is copied
@@ -214,8 +217,10 @@ ends before the arm does, and before a failed finish surfaces), closes any
 outage window and the current session,
 and journals `EndArm`, so nothing an arm started runs into the next arm. When `reset`, the
 `StartArm` append, an event, or a fault throws, the scheduler waits for a
-mid-fold restart still in flight, calls `finish`, waits for every job the
-finish itself started (a job the failed work left open is the resume's to
+mid-fold restart still in flight, calls the driver's `abort` (the stop a
+signal teardown runs, without `finish`'s final checks, so the failed arm leaves
+no recorded finish failure for its resume; a driver without `abort` gets
+`finish`), waits for every job the stop itself started (a job the failed work left open is the resume's to
 close), then fails with the original error; the arm's journal ends before `EndArm`, so a resume takes it up again.
 
 Each arm's driver receives an `ArmHandle` through `bind` once the arm has
@@ -237,7 +242,7 @@ forever), `observe`, and `daemonExited` (its detail must be an object), and ever
 so a callback a finished arm left behind is refused instead of writing under
 the next arm. An arm that ends without `EndArm` disarms every proxy fault on
 its way out, so a late call cannot take an experiment fault after the arm
-aborted. The run wires the gateway and the host driver to the scheduler's `jobStart`, `jobEnd`, `observe`, and `daemonExited`, which route through the running arm's handle, so they carry the same checks. `observe("history_summarizer")` fires the session's mid-fold
+aborted. The run wires the gateway and the host driver to the scheduler's `jobHold`, `observe`, and `daemonExited`, which route through the running arm's handle, so they carry the same checks; `jobHold` registers a job and returns its release, which acts only while that arm runs (Fatal stops, below). `observe("history_summarizer")` fires the session's mid-fold
 SIGKILL on the first observed summarizer call. `daemonExited` inside an outage
 window is journaled as expected and closes the window (a failed append of
 that record is fatal, so a watcher that swallows the throw cannot let the run

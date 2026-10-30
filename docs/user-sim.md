@@ -8,7 +8,7 @@ turns the behaviour plan marks. A Haiku 5.5 call through the capture proxy
 pre-registered turn deadline, which the host prompt then shares. Up to three
 attempts share that deadline, two and eight seconds apart: an attempt that
 timed out, a dropped connection, or a 429 or 5xx status is sent again with
-the same prompt, and a call whose attempts all fail stops the run as a
+the same prompt (a reply body that is not JSON is not), and a call whose attempts all fail stops the run as a
 `harness-transport` stop that a resume takes up (`docs/run.md`). The reply is
 used only once an attempt succeeds, and the tape key, the pairing record, and
 the scripted text are computed from the script and the session context, not

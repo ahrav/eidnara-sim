@@ -67,6 +67,11 @@ export interface ArmDriver {
      * still owed are journaled.
      */
     finish?(): Promise<TurnOutcome | undefined | void>;
+    /**
+     * Stops everything a failed arm runs, leaving it for a resume: the terminal checks `finish`
+     * makes are skipped. The scheduler calls `finish` when a driver has no `abort`.
+     */
+    abort?(): Promise<void>;
 }
 
 /**
@@ -116,19 +121,25 @@ export const RECOVERABLE_CAUSES: ReadonlySet<FatalCause> = new Set<FatalCause>([
     "daemon-exit",
 ]);
 
-/** The transport errors a fatal record written before records carried `cause` names. */
+/**
+ * The transport errors an event's fatal record written before records carried `cause` names:
+ * the message starts with the user-sim's own timeout or 429/5xx refusal, or with the error
+ * `fetch` raises for a closed socket or a reset or refused connection. A host or driver error
+ * that only wraps such text stays `event-error`.
+ */
 const RECORDED_TRANSPORT =
-    /user-sim call timed out|user-sim call failed: (?:429|5\d\d)|socket connection was closed unexpectedly|ECONNRESET|ECONNREFUSED/;
+    /^(?:user-sim call timed out|user-sim call failed: (?:429|5\d\d)|The socket connection was closed unexpectedly|(?:TypeError: )?(?:read |connect )?ECONN(?:RESET|REFUSED)\b)/;
 
 /**
- * The cause of a fatal `ItemState`: its `cause` field, or, on a record from before that field,
- * the cause its shape and error text name.
+ * The cause of a fatal `ItemState`. A daemon exit, a fault, and a job name their cause by
+ * shape; an event's record names `harness-transport` or `event-error` in `cause`, and one from
+ * before that field is classified by its error text.
  */
 export function fatalCause(e: Entry): FatalCause {
-    if (typeof e.cause === "string") return e.cause as FatalCause;
     if (e.daemon_exit !== undefined) return "daemon-exit";
     if (e.fault !== undefined) return "fault-error";
     if (e.job !== undefined) return "job-deadline";
+    if (e.cause === "harness-transport" || e.cause === "event-error") return e.cause;
     return RECORDED_TRANSPORT.test(String(e.error ?? "")) ? "harness-transport" : "event-error";
 }
 
@@ -532,7 +543,8 @@ export class Scheduler {
                     }
                     if (!finishing) {
                         priorJobs = new Set(this.clock?.busyIds() ?? []);
-                        await driver.finish?.().catch(() => undefined);
+                        const stop = driver.abort ? driver.abort() : driver.finish?.();
+                        await stop?.catch(() => undefined);
                     }
                     await this.drainNew(priorJobs);
                     throw caught;
@@ -990,6 +1002,7 @@ export class Scheduler {
                     return;
                 }
                 case "Recovered": {
+                    if (!awaiting) throw fail("Recovered outside a resume's recovery", e);
                     const f = unresolved.get(e.recovers as number);
                     if (!f || f.arm !== e.arm) {
                         throw fail(`Recovered names no pending fatal record (${e.recovers})`, e);
@@ -1019,6 +1032,9 @@ export class Scheduler {
                             outage = null;
                         } else if (e.state !== "failed" || named.length !== 1) {
                             throw fail("fatal ItemState of unknown shape", e);
+                        }
+                        if (e.cause !== undefined && e.cause !== fatalCause(e)) {
+                            throw fail("fatal ItemState names a cause its shape contradicts", e);
                         }
                         unresolved.set(e.seq, e);
                         return;
@@ -1169,7 +1185,14 @@ export class Scheduler {
         for (const f of fatals) {
             this.log({ kind: "Recovered", recovers: f.seq, cause: fatalCause(f), ...fatalItem(f) });
         }
-        const cause: string = fatals[0] ? fatalCause(fatals[0]) : "harness-exit";
+        // A resume killed after its `Recovered` entries left them as the arm's last entries;
+        // their cause still names what stopped the arm.
+        const lastWork = [...mine].reverse().find((e) => e.kind !== "ClockOffset");
+        const cause: string = fatals[0]
+            ? fatalCause(fatals[0])
+            : lastWork?.kind === "Recovered"
+              ? String(lastWork.cause)
+              : "harness-exit";
         const kinds = (k: string) => mine.filter((e) => e.kind === k);
         const done = new Set(kinds("Event").map((e) => e.event));
         const ended = new Set(kinds("EndTurn").map((e) => e.event));
@@ -1525,8 +1548,9 @@ export class Scheduler {
     }
 
     /**
-     * Stops the run for a job past its deadline, with the failure journaled first, so a resume
-     * refuses the run rather than finishing it over the violation.
+     * Stops the run for a job past its deadline, with the failure journaled first (cause
+     * `job-deadline`), so the resume marks what was in flight interrupted rather than running
+     * on over the violation.
      */
     private overdue(id: string): void {
         if (this.fatal) return;
@@ -1621,6 +1645,9 @@ export class Scheduler {
                 if (!wellFormed) throw new Error(`driver outcome is ${describe(got)}`);
             } catch (caught) {
                 if (caught === this.fatal) throw caught;
+                // The harness's own stop (a signal or the wall budget) ends the call; the open
+                // turn is the resume's to mark interrupted, as after a kill.
+                if (this.o.stopped?.()) throw caught;
                 const error = caught instanceof Error ? caught.message : String(caught);
                 this.fatal ??= new HarnessFailure(`event ${e.id} failed: ${error}`);
                 const cause: FatalCause =

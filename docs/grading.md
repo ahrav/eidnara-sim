@@ -536,8 +536,9 @@ cannot call, and the divergences are listed below.
 `proxyJudge` sends each verdict request through the capture proxy with the
 `judge` component header, bounded by a per-call deadline (900 s by default)
 covering the request and the body read, whose expiry is a judge refusal. Up
-to three attempts share that deadline, each with an equal part of it, two and
-eight seconds apart (`src/run/retry.ts`): an attempt that timed out, a dropped
+to three attempts share that deadline, the first two with a third of it each
+and the last with what remains, two and eight seconds apart; an attempt never
+starts once the deadline has passed (`src/run/retry.ts`): an attempt that timed out, a dropped
 connection, a broken-off body, or a 429 or 5xx status is sent again with the
 same prompt, and any other refusal (a 4xx, a redirect, a reply that is not
 JSON) ends the call at once. A

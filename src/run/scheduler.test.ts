@@ -7236,9 +7236,12 @@ describe("resume after harness interruptions", () => {
         const opened: (string | null)[] = [];
         const resumed = new Journal(path);
         const n = resumed.entries.length;
+        // The run's clock hook journals the arm's offset ahead of the recovery, as in production.
+        const onClock = () => ({ offset_s: 0, offset_wall_ms: 1, offset_settled_ms: 1 });
         await new Scheduler({
             ...options,
             journal: resumed,
+            onClock,
             drivers: {
                 a: {
                     ...fakeDriver(second),
@@ -7246,6 +7249,11 @@ describe("resume after harness interruptions", () => {
                 },
             },
         }).run();
+        expect(resumed.entries.slice(n, n + 3).map((e) => e.kind)).toEqual([
+            "ResumeRun",
+            "ClockOffset",
+            "Recovered",
+        ]);
         const added = resumed.entries.slice(n);
         expect(added).toContainEqual(
             expect.objectContaining({
@@ -7322,5 +7330,173 @@ describe("resume after harness interruptions", () => {
             }),
         );
         expect(resumed.entries.at(-1)?.kind).toBe("EndRun");
+    });
+});
+
+describe("fatal causes on resume", () => {
+    const journalWith = (fatal: Record<string, unknown>, after: Record<string, unknown>[] = []) => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const start = { order: ["a"], scenario: scenarioId(fixtureEvents(2), []) };
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
+        j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
+        const seq = j.append({
+            kind: "ItemState",
+            arm: "a",
+            scenario_ms: 5,
+            fatal: true,
+            ...fatal,
+        }).seq;
+        for (const e of after) j.append({ arm: "a", scenario_ms: 5, ...e, recovers: seq } as never);
+        j.close();
+        return path;
+    };
+    const run = (path: string, log: string[] = []) =>
+        new Scheduler({
+            events: fixtureEvents(2),
+            faults: [],
+            journal: new Journal(path),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver(log) },
+        }).run();
+    const event = { event: "e-000001", state: "failed" };
+
+    test("a recorded transport error is recovered only when the message starts with it", async () => {
+        const recovered = [
+            "user-sim call timed out after 900000 ms",
+            "The socket connection was closed unexpectedly. For more information, pass `verbose: true`",
+            "user-sim call failed: 503",
+        ];
+        for (const error of recovered) await run(journalWith({ ...event, error }));
+        const refused = [
+            "OpenCode turn not aborted after a rejected prompt (read ECONNRESET)",
+            "user-sim call failed: 400",
+        ];
+        for (const error of refused) {
+            await expect(run(journalWith({ ...event, error }))).rejects.toThrow(
+                "run failed: event e-000001 failed",
+            );
+        }
+    });
+
+    test("a fatal record whose cause contradicts its shape, or of unknown shape, is refused", async () => {
+        const cases: [Record<string, unknown>, RegExp][] = [
+            [
+                { job: "x", state: "failed", error: "x", cause: "harness-transport" },
+                /cause its shape contradicts/,
+            ],
+            [{ ...event, error: "x", cause: "job-deadline" }, /run failed: event e-000001 failed/],
+            [{ job: "j", event: "e-000001", state: "failed", error: "x" }, /unknown shape/],
+            [{ job: "j", state: "failed(interrupted)", error: "x" }, /unknown shape/],
+            [
+                { daemon_exit: { signal: "KILL" }, expected: true },
+                /fatal daemon exit of unknown shape/,
+            ],
+        ];
+        for (const [fatal, refusal] of cases) {
+            await expect(run(journalWith(fatal))).rejects.toThrow(refusal);
+        }
+    });
+
+    test("a Recovered entry outside a resume's recovery is refused", async () => {
+        const path = journalWith({ ...event, error: "user-sim call timed out after 5 ms" }, [
+            { kind: "Recovered", cause: "harness-transport", event: "e-000001" },
+        ]);
+        await expect(run(path)).rejects.toThrow("Recovered outside a resume's recovery");
+    });
+
+    test("a resume killed after its recovery keeps the stop's cause on the interruption marker", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const start = { order: ["a"], scenario: scenarioId(fixtureEvents(2), []) };
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
+        j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
+        const error = "busy set held the clock past 5 ms: job:x";
+        const fatal = j.append({
+            kind: "ItemState",
+            arm: "a",
+            scenario_ms: 5,
+            job: "x",
+            state: "failed",
+            error,
+            fatal: true,
+        });
+        j.append({ kind: "ResumeRun", arm: null, scenario_ms: 0, ...start });
+        j.append({
+            kind: "Recovered",
+            arm: "a",
+            scenario_ms: 5,
+            recovers: fatal.seq,
+            cause: "job-deadline",
+            job: "x",
+        });
+        j.close();
+        await run(path);
+        expect(readJournal(path)).toContainEqual(
+            expect.objectContaining({
+                kind: "ItemState",
+                event: "e-000001",
+                cause: "job-deadline",
+            }),
+        );
+    });
+
+    test("a resume after a plain kill marks the open turn with cause harness-exit", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const start = { order: ["a"], scenario: scenarioId(fixtureEvents(2), []) };
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
+        j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
+        j.close();
+        await run(path);
+        const entries = readJournal(path);
+        expect(entries).toContainEqual(
+            expect.objectContaining({
+                kind: "ItemState",
+                event: "e-000001",
+                cause: "harness-exit",
+            }),
+        );
+        expect(entries.some((e) => e.kind === "Recovered")).toBe(false);
+    });
+
+    test("a stop raised during a turn leaves no fatal record, and a failed arm is aborted, not finished", async () => {
+        const path = join(dir(), "j.jsonl");
+        let reason: string | null = null;
+        const calls: string[] = [];
+        const driver: ArmDriver = {
+            ...fakeDriver([], 0, (e) => {
+                if (e.id === "e-000001") {
+                    reason = "SIGTERM";
+                    throw new HarnessFailure("run stopping: SIGTERM");
+                }
+            }),
+            finish: async () => void calls.push("finish"),
+            abort: async () => void calls.push("abort"),
+        };
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(2),
+                faults: [],
+                journal: new Journal(path),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: driver },
+                stopped: () => reason,
+            }).run(),
+        ).rejects.toThrow("run stopping: SIGTERM");
+        expect(readJournal(path).some((e) => e.kind === "ItemState" && e.fatal === true)).toBe(
+            false,
+        );
+        expect(calls).toEqual(["abort"]);
+        await run(path);
+        expect(readJournal(path).at(-1)?.kind).toBe("EndRun");
     });
 });

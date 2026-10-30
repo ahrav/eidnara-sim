@@ -47,9 +47,12 @@ latest revision (the last entry of the manifest's `sim_revisions`, or
 `sim_commit` when there is none) and this one are clean checkouts, this commit
 descends from it, and no path in `MEASUREMENT_PATHS` (`src/run/run.ts`: the
 pre-registration and its schema, the scenario compiler and corpus, the
-user-sim, the oracle note, the arm profiles, call classification, records, and
-fault injection, the clock and its injection, and the resource sampler)
-differs between them; every other pinned input is compared as on any resume.
+user-sim, the seeded generator, the oracle note, the host driver, arm
+profiles, workspace snapshots, and store checks, call classification, records,
+and fault injection, the clock and its injection, and the resource sampler)
+differs between them; every link of a recorded `sim_revisions` chain is
+checked again on each resume, since the field lies outside the execution
+digest, and a checkout back at an earlier revision counts as a move; every other pinned input is compared as on any resume.
 Once every check passes, the manifest gains a `sim_revisions` entry (`commit`,
 `worktree`, `from_commit`, the arms without `EndArm`, `accepted_wall_ms`), and
 each `Preflight` entry keeps binding the same execution digest, which leaves
@@ -395,11 +398,15 @@ finalize steps; both exist for tests). Every `poll_ms` the supervisor:
   restarted supervisor picks up runs it did not launch;
 - launches a run that has not started, and relaunches one that stopped
   before `EndRun` (a resume) until it has relaunched `max_resumes` times,
-  or until two attempts in a row journaled nothing past their `Preflight`,
-  the sign of a refusal every resume repeats; either ends the run as
-  `gave-up`, logged with a banner on stderr and an `ALERT` line;
+  or until three attempts in a row measured no event (an `Event` other than
+  `failed(interrupted)`), the sign of a refusal or an outage every resume
+  repeats; each such attempt quadruples the wait before the next launch,
+  from `relaunch_backoff_ms` (60 s) up to 30 minutes; either limit ends the
+  run as `gave-up`, logged with a banner on stderr and an `ALERT` line;
 - on `EndRun`, runs `grade-run`, `evidence-run --out <out>/evidence`, and
-  `pairing-check` once, logging each exit code (a nonzero one is an alert);
+  `pairing-check` once, beside the poll loop, each bounded by
+  `finalize_timeout_ms` (six hours), logging each exit code (a nonzero one, or
+  a killed step, is an alert);
 - writes `<out>/campaign-status.json` (`sim-campaign-status/v1`): per run,
   the state, launches, last `error:` line of its log, events done and total,
   failed and interrupted turns, daemon exits, journal resumes, unresolved
@@ -410,7 +417,12 @@ finalize steps; both exist for tests). Every `poll_ms` the supervisor:
   deadline), a failed finalize step, and each `inode_paths` filesystem whose
   inode use passes 80%.
 
-Each attempt logs to `<out>/logs/<name>.log`; the previous attempt's log moves
+Before it writes anything, the supervisor loads the configuration and refuses
+an `out` that overlaps the Eidnara checkout, a Pi install, or the corpus
+checkouts, or that lies unignored inside this checkout, as `run-tier` does.
+Its logs are opened without following links and must be plain single-link
+files. A step that fails for one run is logged as an alert and leaves the other
+runs supervised. Each attempt logs to `<out>/logs/<name>.log`; the previous attempt's log moves
 to `<name>.attempt<k>.log`. `<out>/campaign.log` keeps every decision. Runs
 are launched detached, so stopping the supervisor leaves them running and
 starting it again resumes supervision; `--once` makes one pass and exits,

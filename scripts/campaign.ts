@@ -3,19 +3,21 @@ import {
     closeSync,
     existsSync,
     mkdirSync,
-    openSync,
     readFileSync,
     renameSync,
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { loadConfig } from "../src/config/config";
 import { writeAtomic } from "../src/run/atomic";
 import {
+    alertKey,
     alerts,
     type CampaignSpec,
     decide,
     finalizeArgv,
     lastError,
     launchArgv,
+    openLog,
     parseCampaign,
     type RunProgress,
     type RunRecord,
@@ -23,6 +25,7 @@ import {
     runProgress,
 } from "../src/run/campaign";
 import { leaseHeld } from "../src/run/journal";
+import { requireOutsideCheckout, requireOutsideIdentity } from "../src/run/run";
 
 const USAGE = "usage: bun scripts/campaign.ts <campaign.json> [--once]";
 const ROOT = resolve(import.meta.dir, "..");
@@ -30,11 +33,18 @@ const ROOT = resolve(import.meta.dir, "..");
 const args = process.argv.slice(2);
 const once = args.includes("--once");
 const files = args.filter((a) => a !== "--once");
-if (files.length !== 1 || args.some((a) => a.startsWith("--") && a !== "--once")) {
+if (files.length !== 1 || files.some((a) => a.startsWith("--"))) {
     console.error(USAGE);
     process.exit(2);
 }
 const spec: CampaignSpec = parseCampaign(JSON.parse(readFileSync(files[0] as string, "utf8")));
+const config = loadConfig();
+requireOutsideCheckout(spec.out, config.eidnara_checkout);
+requireOutsideCheckout(spec.out, config.pi_install, "the Pi install");
+if (config.upgrade?.pi_install) {
+    requireOutsideCheckout(spec.out, config.upgrade.pi_install, "the upgrade Pi install");
+}
+requireOutsideIdentity(spec.out);
 const logs = join(spec.out, "logs");
 mkdirSync(logs, { recursive: true });
 const statusPath = join(spec.out, "campaign-status.json");
@@ -42,7 +52,16 @@ const campaignLog = join(spec.out, "campaign.log");
 
 const say = (line: string, loud = false) => {
     const stamped = `${new Date().toISOString()} ${line}`;
-    appendFileSync(campaignLog, `${stamped}\n`);
+    try {
+        const fd = openLog(campaignLog, false);
+        try {
+            appendFileSync(fd, `${stamped}\n`);
+        } finally {
+            closeSync(fd);
+        }
+    } catch (caught) {
+        console.error(`campaign.log: ${(caught as Error).message}`);
+    }
     if (loud) {
         const bar = "!".repeat(Math.min(100, stamped.length));
         console.error(`${bar}\n${stamped}\n${bar}`);
@@ -55,41 +74,37 @@ const fresh = (name: string): RunRecord => ({
     launches: 0,
     stalled: 0,
     progress_at_launch: null,
+    launched_at: null,
+    stopped_at: null,
     last_error: null,
     finalize: [],
     gave_up_reason: null,
 });
+const KEPT: (keyof RunRecord)[] = [
+    "state",
+    "launches",
+    "stalled",
+    "progress_at_launch",
+    "launched_at",
+    "stopped_at",
+    "last_error",
+    "finalize",
+    "gave_up_reason",
+];
 const saved = existsSync(statusPath)
-    ? (JSON.parse(readFileSync(statusPath, "utf8")).runs as RunRecord[])
+    ? (JSON.parse(readFileSync(statusPath, "utf8")).runs as Record<string, unknown>[])
     : [];
 const records = new Map(
     spec.runs.map((r) => {
+        const record = fresh(r.name);
         const old = saved.find((s) => s.name === r.name);
-        return [r.name, old ? { ...fresh(r.name), ...pick(old) } : fresh(r.name)];
+        for (const k of KEPT) {
+            if (old && old[k] !== undefined) Object.assign(record, { [k]: old[k] });
+        }
+        if (record.state === "finalizing") record.state = "pending";
+        return [r.name, record];
     }),
 );
-function pick(r: RunRecord): RunRecord {
-    const {
-        name,
-        state,
-        launches,
-        stalled,
-        progress_at_launch,
-        last_error,
-        finalize,
-        gave_up_reason,
-    } = r;
-    return {
-        name,
-        state,
-        launches,
-        stalled,
-        progress_at_launch,
-        last_error,
-        finalize,
-        gave_up_reason,
-    };
-}
 const children = new Map<string, ReturnType<typeof Bun.spawn>>();
 const argv = (command: string[]) =>
     command[0] === "bun" ? [process.execPath, ...command.slice(1)] : command;
@@ -98,7 +113,7 @@ const logOf = (name: string) => join(logs, `${name}.log`);
 function launch(run: CampaignSpec["runs"][number], record: RunRecord, progress: RunProgress) {
     const log = logOf(run.name);
     if (existsSync(log)) renameSync(log, join(logs, `${run.name}.attempt${record.launches}.log`));
-    const fd = openSync(log, "a");
+    const fd = openLog(log, true);
     const command = argv(launchArgv(spec, run));
     try {
         const child = Bun.spawn(command, {
@@ -115,28 +130,39 @@ function launch(run: CampaignSpec["runs"][number], record: RunRecord, progress: 
         closeSync(fd);
     }
     record.launches++;
-    record.progress_at_launch = progress.lifecycle_entries;
+    record.progress_at_launch = progress.measured_events;
+    record.launched_at = Date.now();
     record.state = "running";
     const what = progress.started ? `resume ${record.launches - 1}` : "launch";
     say(`${run.name} ${what}: ${command.join(" ")}`);
 }
 
-function finalize(name: string, record: RunRecord) {
+async function finalize(name: string, record: RunRecord) {
+    record.state = "finalizing";
     record.finalize = [];
     for (const command of finalizeArgv(spec, name)) {
         const tool = basename(command[1] ?? command[0] ?? "step").replace(/\.ts$/, "");
-        const fd = openSync(join(logs, `${name}.${tool}.log`), "w");
+        let exit: number | null = null;
         try {
-            const r = Bun.spawnSync(argv(command), {
-                cwd: ROOT,
-                env: process.env,
-                stdout: fd,
-                stderr: fd,
-            });
-            record.finalize.push({ command: tool, exit: r.exitCode });
-        } finally {
-            closeSync(fd);
+            const fd = openLog(join(logs, `${name}.${tool}.log`), true);
+            try {
+                const child = Bun.spawn(argv(command), {
+                    cwd: ROOT,
+                    env: process.env,
+                    stdin: "ignore",
+                    stdout: fd,
+                    stderr: fd,
+                    timeout: spec.finalize_timeout_ms,
+                    killSignal: "SIGKILL",
+                });
+                exit = await child.exited;
+            } finally {
+                closeSync(fd);
+            }
+        } catch (caught) {
+            say(`${name} ${tool}: ${(caught as Error).message}`, true);
         }
+        record.finalize.push({ command: tool, exit });
     }
     record.state = "finalized";
     const exits = record.finalize.map((f) => `${f.command}=${f.exit}`).join(" ");
@@ -150,6 +176,44 @@ const live = (name: string) => {
     const child = children.get(name);
     return child !== undefined && child.exitCode === null && child.signalCode === null;
 };
+const empty = (now: number) => runProgress(join(spec.out, ".no-run"), now);
+
+function step(run: CampaignSpec["runs"][number], record: RunRecord, now: number): RunProgress {
+    const dir = runDir(spec, run.name);
+    const progress = runProgress(dir, now);
+    const running = live(run.name) || (existsSync(dir) && leaseHeld(dir));
+    if (record.state === "running" && !running) {
+        const log = existsSync(logOf(run.name)) ? readFileSync(logOf(run.name), "utf8") : "";
+        record.last_error = lastError(log) ?? record.last_error;
+        record.stalled =
+            progress.measured_events === record.progress_at_launch ? record.stalled + 1 : 0;
+        record.stopped_at = now;
+        record.state = "pending";
+        if (!progress.ended) say(`${run.name} stopped: ${record.last_error ?? "no error line"}`);
+    }
+    const decision = decide(
+        record,
+        progress,
+        running,
+        spec.max_resumes,
+        now,
+        spec.relaunch_backoff_ms,
+    );
+    if (decision.action === "launch") launch(run, record, progress);
+    if (decision.action === "finalize") {
+        finalize(run.name, record).catch((caught) => {
+            record.state = "finalized";
+            say(`${run.name} finalize failed: ${(caught as Error).message}`, true);
+        });
+    }
+    if (decision.action === "give-up") {
+        record.state = "gave-up";
+        record.gave_up_reason = decision.reason;
+        say(`${run.name} GAVE UP: ${decision.reason}`, true);
+    }
+    if (decision.action === "wait" && running) record.state = "running";
+    return progress;
+}
 
 let raised = new Set<string>();
 for (;;) {
@@ -157,68 +221,42 @@ for (;;) {
     const rows: { record: RunRecord; progress: RunProgress }[] = [];
     for (const run of spec.runs) {
         const record = records.get(run.name) as RunRecord;
-        const dir = runDir(spec, run.name);
-        let progress: RunProgress;
         try {
-            progress = runProgress(dir, now);
+            rows.push({ record, progress: step(run, record, now) });
         } catch (caught) {
-            record.last_error = `journal unreadable: ${(caught as Error).message}`;
-            progress = runProgress("/nonexistent", now);
+            record.last_error = `supervisor: ${(caught as Error).message}`;
+            say(`ALERT run ${run.name}: supervisor step failed: ${record.last_error}`, true);
+            rows.push({ record, progress: empty(now) });
         }
-        const running = live(run.name) || (existsSync(dir) && leaseHeld(dir));
-        if (record.state === "running" && !running) {
-            const log = existsSync(logOf(run.name)) ? readFileSync(logOf(run.name), "utf8") : "";
-            record.last_error = lastError(log) ?? record.last_error;
-            record.stalled =
-                progress.lifecycle_entries === record.progress_at_launch ? record.stalled + 1 : 0;
-            record.state = "pending";
-            if (!progress.ended)
-                say(`${run.name} stopped: ${record.last_error ?? "no error line"}`);
-        }
-        switch (decide(record, progress, running, spec.max_resumes)) {
-            case "launch":
-                launch(run, record, progress);
-                break;
-            case "finalize":
-                finalize(run.name, record);
-                break;
-            case "give-up":
-                record.state = "gave-up";
-                record.gave_up_reason =
-                    record.stalled >= 2
-                        ? `two attempts in a row made no progress; last error: ${record.last_error}`
-                        : `stopped after ${record.launches - 1} resumes; last error: ${record.last_error}`;
-                say(`${run.name} GAVE UP: ${record.gave_up_reason}`, true);
-                break;
-            default:
-                if (running) record.state = "running";
-        }
-        rows.push({ record, progress });
     }
     const raisedNow = alerts(spec, rows, now);
-    for (const a of raisedNow) if (!raised.has(a)) say(`ALERT ${a}`, true);
-    raised = new Set(raisedNow);
-    writeAtomic(
-        statusPath,
-        `${JSON.stringify(
-            {
-                schema: "sim-campaign-status/v1",
-                updated_at: new Date(now).toISOString(),
-                alerts: raisedNow,
-                runs: rows.map(({ record, progress }) => ({
-                    ...record,
-                    ...progress,
-                    eta_at:
-                        progress.eta_ms === null || record.state !== "running"
-                            ? null
-                            : new Date(now + progress.eta_ms).toISOString(),
-                })),
-            },
-            null,
-            2,
-        )}\n`,
-    );
-    const open = rows.filter((r) => r.record.state === "pending" || r.record.state === "running");
+    for (const a of raisedNow) if (!raised.has(alertKey(a))) say(`ALERT ${a}`, true);
+    raised = new Set(raisedNow.map(alertKey));
+    try {
+        writeAtomic(
+            statusPath,
+            `${JSON.stringify(
+                {
+                    schema: "sim-campaign-status/v1",
+                    updated_at: new Date(now).toISOString(),
+                    alerts: raisedNow,
+                    runs: rows.map(({ record, progress }) => ({
+                        ...record,
+                        ...progress,
+                        eta_at:
+                            progress.eta_ms === null || record.state !== "running"
+                                ? null
+                                : new Date(now + progress.eta_ms).toISOString(),
+                    })),
+                },
+                null,
+                2,
+            )}\n`,
+        );
+    } catch (caught) {
+        say(`ALERT campaign-status.json: ${(caught as Error).message}`, true);
+    }
+    const open = rows.filter((r) => r.record.state !== "finalized" && r.record.state !== "gave-up");
     if (open.length === 0) {
         const bad = rows.filter(
             (r) => r.record.state === "gave-up" || r.record.finalize.some((f) => f.exit !== 0),
@@ -229,6 +267,6 @@ for (;;) {
         );
         process.exit(bad.length > 0 ? 1 : 0);
     }
-    if (once) process.exit(0);
+    if (once && !rows.some((r) => r.record.state === "finalizing")) process.exit(0);
     await Bun.sleep(spec.poll_ms);
 }
