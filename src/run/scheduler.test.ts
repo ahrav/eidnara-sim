@@ -7388,7 +7388,7 @@ describe("fatal causes on resume", () => {
                 { job: "x", state: "failed", error: "x", cause: "harness-transport" },
                 /cause its shape contradicts/,
             ],
-            [{ ...event, error: "x", cause: "job-deadline" }, /run failed: event e-000001 failed/],
+            [{ ...event, error: "x", cause: "daemon-exit" }, /run failed: event e-000001 failed/],
             [{ job: "j", event: "e-000001", state: "failed", error: "x" }, /unknown shape/],
             [{ job: "j", state: "failed(interrupted)", error: "x" }, /unknown shape/],
             [

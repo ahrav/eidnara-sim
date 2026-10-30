@@ -52,7 +52,11 @@ profiles, workspace snapshots, and store checks, call classification, records,
 and fault injection, the clock and its injection, and the resource sampler)
 differs between them; every link of a recorded `sim_revisions` chain is
 checked again on each resume, since the field lies outside the execution
-digest, and a checkout back at an earlier revision counts as a move; every other pinned input is compared as on any resume.
+digest, and a checkout back at an earlier revision counts as a move; every
+`Preflight` entry names the sim commit and working-tree digest its invocation
+ran, and a resume refuses a manifest whose latest revision is not the one the
+journal's last such entry names. The new `sim_revisions` entry is written only
+after the journal checks pass, just before this invocation's `Preflight`; every other pinned input is compared as on any resume.
 Once every check passes, the manifest gains a `sim_revisions` entry (`commit`,
 `worktree`, `from_commit`, the arms without `EndArm`, `accepted_wall_ms`), and
 each `Preflight` entry keeps binding the same execution digest, which leaves
@@ -403,7 +407,7 @@ finalize steps; both exist for tests). Every `poll_ms` the supervisor:
   repeats; each such attempt quadruples the wait before the next launch,
   from `relaunch_backoff_ms` (60 s) up to 30 minutes; either limit ends the
   run as `gave-up`, logged with a banner on stderr and an `ALERT` line;
-- on `EndRun`, runs `grade-run`, `evidence-run --out <out>/evidence`, and
+- on `EndRun`, runs `grade-run`, `evidence-run` (into the run directory), and
   `pairing-check` once, beside the poll loop, each bounded by
   `finalize_timeout_ms` (six hours), logging each exit code (a nonzero one, or
   a killed step, is an alert);
@@ -417,7 +421,10 @@ finalize steps; both exist for tests). Every `poll_ms` the supervisor:
   deadline), a failed finalize step, and each `inode_paths` filesystem whose
   inode use passes 80%.
 
-Before it writes anything, the supervisor loads the configuration and refuses
+A run name may not be `logs`, `evidence`, `campaign.log`, or
+`campaign-status.json`. A restarted supervisor restores each run's record from
+`campaign-status.json` (refusing a file of any other shape) only while the
+run's command line is unchanged; a changed one starts the record over. Before it writes anything, the supervisor loads the configuration and refuses
 an `out` that overlaps the Eidnara checkout, a Pi install, or the corpus
 checkouts, or that lies unignored inside this checkout, as `run-tier` does.
 Its logs are opened without following links and must be plain single-link

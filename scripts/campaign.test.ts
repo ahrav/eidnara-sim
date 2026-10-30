@@ -101,10 +101,32 @@ test("the supervisor resumes a stopped run, finalizes it at EndRun, and gives up
         "good stopped: error: run failed: user-sim call failed after 3 attempt(s)",
     );
     expect(readFileSync(join(out, "logs", "good.attempt1.log"), "utf8")).toContain("user-sim call");
+    // A restarted supervisor keeps finished records, and starts over a run whose command changed.
+    writeFileSync(
+        join(dir, "campaign.json"),
+        JSON.stringify({ ...spec, runs: [spec.runs[0], { name: "bad", args: ["--mode", "ok"] }] }),
+    );
+    const again = Bun.spawnSync(
+        [process.execPath, "scripts/campaign.ts", join(dir, "campaign.json")],
+        { cwd: ROOT, timeout: 60_000 },
+    );
+    const after = JSON.parse(readFileSync(join(out, "campaign-status.json"), "utf8"));
+    expect(after.runs.find((x: { name: string }) => x.name === "good")).toMatchObject({
+        state: "finalized",
+        launches: 2,
+    });
+    expect(after.runs.find((x: { name: string }) => x.name === "bad")).toMatchObject({
+        state: "finalized",
+    });
+    expect(readFileSync(join(out, "campaign.log"), "utf8")).toContain(
+        "bad: its command line changed, so its record starts over",
+    );
+    expect(again.exitCode).toBe(1);
 });
 
 const record = (over: Partial<RunRecord> = {}): RunRecord => ({
     name: "r",
+    argv: [],
     state: "pending",
     launches: 0,
     stalled: 0,
@@ -179,6 +201,9 @@ test("a campaign file that lets a run pick its own --out, or repeats a name, is 
             ],
         }),
     ).toThrow("unique plain name");
+    expect(() => parseCampaign({ ...base, runs: [{ name: "logs", args: [] }] })).toThrow(
+        "unique plain name",
+    );
     expect(() =>
         parseCampaign({ ...base, runs: [{ name: "r", args: [] }], run_command: "bun" }),
     ).toThrow("run_command is not a non-empty list of strings");

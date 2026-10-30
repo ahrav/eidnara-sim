@@ -86,7 +86,6 @@ import {
 import {
     type Entry,
     Journal,
-    readJournal,
     readJsonl,
     releaseLease,
     requireAppendable,
@@ -1465,7 +1464,7 @@ export async function loadManifest(
     o: RunOptions,
     scenario: Scenario,
     checks?: Preflight,
-): Promise<{ manifest: Manifest; checks: Preflight }> {
+): Promise<{ manifest: Manifest; checks: Preflight; revision?: SimRevision }> {
     const path = join(o.out, "manifest.json");
     /** Preflight probes the environment once the build is known to match the audited daemon capabilities. */
     const probe = async (order: readonly string[]) => {
@@ -1633,18 +1632,7 @@ export async function loadManifest(
         const preflightLog = join(o.out, "preflight.jsonl");
         dropCutTail(preflightLog);
         appendFileSync(preflightLog, `${JSON.stringify(checks)}\n`);
-        if (revision) {
-            // Recorded once every check passed, before the journal's next entry.
-            const ended = new Set(
-                readJournal(join(o.out, "journal.jsonl"))
-                    .filter((e) => e.kind === "EndArm")
-                    .map((e) => e.arm),
-            );
-            revision.arms = manifest.order.filter((arm) => !ended.has(arm));
-            manifest.sim_revisions = [...(manifest.sim_revisions ?? []), revision];
-            writeAtomic(path, `${JSON.stringify(manifest, null, 2)}\n`);
-        }
-        return { manifest, checks };
+        return revision ? { manifest, checks, revision } : { manifest, checks };
     }
     requireMechanisms(wanted.fault_override ?? scenario.faults, wanted.models);
     sources(
@@ -2051,7 +2039,7 @@ async function runArms(
     requireJournalShape(journal.entries);
     if (!fresh) rmSync(join(o.out, "toolbin"), { recursive: true, force: true });
     const compiled = await tracked(() => loadScenario(o));
-    const { manifest, checks } = await tracked(() => loadManifest(o, compiled));
+    const { manifest, checks, revision } = await tracked(() => loadManifest(o, compiled));
     requirePlainArtifacts(o.out, manifest.order);
     requireJournalShape(
         journal.entries,
@@ -2071,6 +2059,26 @@ async function runArms(
             "manifest.json differs from the manifest this run's journal binds",
         );
     }
+    // Each `Preflight` names the sim revision its invocation ran, so the manifest's latest
+    // revision, which lies outside the bound digest, must be the one the journal last ran.
+    const ran = journal.entries.filter((e) => e.kind === "Preflight" && e.sim_commit).at(-1);
+    const lastSim = manifest.sim_revisions?.at(-1) ?? {
+        commit: manifest.sim_commit,
+        worktree: manifest.sim_worktree,
+    };
+    if (ran && (ran.sim_commit !== lastSim.commit || ran.sim_worktree !== lastSim.worktree)) {
+        throw new HarnessFailure(
+            `manifest.json names sim revision ${lastSim.commit}; the journal last ran ${String(ran.sim_commit)}`,
+        );
+    }
+    if (revision) {
+        // Recorded once every check passed, just before the journal's entry for this invocation.
+        const ended = new Set(journal.entries.filter((e) => e.kind === "EndArm").map((e) => e.arm));
+        revision.arms = manifest.order.filter((arm) => !ended.has(arm));
+        manifest.sim_revisions = [...(manifest.sim_revisions ?? []), revision];
+        writeAtomic(join(o.out, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+    }
+    const sim = simIdentity();
     journal.append({
         kind: "Preflight",
         arm: null,
@@ -2078,6 +2086,7 @@ async function runArms(
         time_injection: checks.time_injection,
         hosts: checks.hosts,
         manifest_sha256: manifestDigest,
+        ...sim,
     });
     const scenario = { ...compiled, faults: manifest.fault_override ?? compiled.faults };
     const allEvents: ScenarioEvent[] = scenario.events.map(

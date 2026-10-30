@@ -70,6 +70,7 @@ const say = (line: string, loud = false) => {
 
 const fresh = (name: string): RunRecord => ({
     name,
+    argv: launchArgv(spec, spec.runs.find((r) => r.name === name) as CampaignSpec["runs"][number]),
     state: "pending",
     launches: 0,
     stalled: 0,
@@ -91,13 +92,26 @@ const KEPT: (keyof RunRecord)[] = [
     "finalize",
     "gave_up_reason",
 ];
-const saved = existsSync(statusPath)
-    ? (JSON.parse(readFileSync(statusPath, "utf8")).runs as Record<string, unknown>[])
-    : [];
+function savedRuns(): Record<string, unknown>[] {
+    if (!existsSync(statusPath)) return [];
+    const status = JSON.parse(readFileSync(statusPath, "utf8"));
+    const runs = status?.runs;
+    const plain = (r: unknown) => typeof r === "object" && r !== null && !Array.isArray(r);
+    if (status?.schema !== "sim-campaign-status/v1" || !Array.isArray(runs) || !runs.every(plain)) {
+        throw new Error(
+            `${statusPath} is no sim-campaign-status/v1 file; move it aside to start over`,
+        );
+    }
+    return runs;
+}
+const saved = savedRuns();
 const records = new Map(
     spec.runs.map((r) => {
         const record = fresh(r.name);
-        const old = saved.find((s) => s.name === r.name);
+        const found = saved.find((s) => s.name === r.name);
+        const old =
+            found && JSON.stringify(found.argv) === JSON.stringify(record.argv) ? found : undefined;
+        if (found && !old) say(`${r.name}: its command line changed, so its record starts over`);
         for (const k of KEPT) {
             if (old && old[k] !== undefined) Object.assign(record, { [k]: old[k] });
         }

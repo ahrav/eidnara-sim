@@ -96,6 +96,13 @@ export interface ProxyControl {
 export { HarnessFailure, TransportFailure };
 
 /**
+ * The busy set held the clock past `job_deadline_ms` while the scheduler waited on it. Thrown
+ * inside a driver call (a probe turn's `quiesceJobs`), it stops the run as `job-deadline`, as
+ * the per-job timer does.
+ */
+export class DeadlineOverrun extends HarnessFailure {}
+
+/**
  * Why a fatal `ItemState` stopped the run: a job held the clock past its deadline, a harness
  * call to the model gateway failed in transport, the daemon exited outside an outage window,
  * a scheduler fault's mechanism failed, or an event's delivery failed otherwise.
@@ -130,6 +137,17 @@ export const RECOVERABLE_CAUSES: ReadonlySet<FatalCause> = new Set<FatalCause>([
 const RECORDED_TRANSPORT =
     /^(?:user-sim call timed out|user-sim call failed: (?:429|5\d\d)|The socket connection was closed unexpectedly|(?:TypeError: )?(?:read |connect )?ECONN(?:RESET|REFUSED)\b)/;
 
+/** The causes an event's fatal record may carry: a delivery cut by transport or a job overrun. */
+const EVENT_CAUSES: ReadonlySet<FatalCause> = new Set<FatalCause>([
+    "harness-transport",
+    "job-deadline",
+    "event-error",
+]);
+
+/** A probe turn's wait on its background jobs that ran past the deadline (`DeadlineOverrun`). */
+const RECORDED_OVERRUN =
+    /^(?:busy set held the clock past|background jobs kept the quiet window open past) \d+ ms/;
+
 /**
  * The cause of a fatal `ItemState`. A daemon exit, a fault, and a job name their cause by
  * shape; an event's record names `harness-transport` or `event-error` in `cause`, and one from
@@ -139,8 +157,10 @@ export function fatalCause(e: Entry): FatalCause {
     if (e.daemon_exit !== undefined) return "daemon-exit";
     if (e.fault !== undefined) return "fault-error";
     if (e.job !== undefined) return "job-deadline";
-    if (e.cause === "harness-transport" || e.cause === "event-error") return e.cause;
-    return RECORDED_TRANSPORT.test(String(e.error ?? "")) ? "harness-transport" : "event-error";
+    if (EVENT_CAUSES.has(e.cause as FatalCause)) return e.cause as FatalCause;
+    const error = String(e.error ?? "");
+    if (RECORDED_OVERRUN.test(error)) return "job-deadline";
+    return RECORDED_TRANSPORT.test(error) ? "harness-transport" : "event-error";
 }
 
 /** Whether `e` is a fatal `ItemState`, the record that stops a run. */
@@ -266,6 +286,8 @@ export class Scheduler {
     /** One deadline timer per open job, so a job overruns its bound whatever the arm is waiting on. */
     private readonly jobTimers = new Map<string, ReturnType<typeof setTimeout>>();
     private fatal: HarnessFailure | null = null;
+    /** The cause of the fatal record this process journaled, for the markers its cut leaves. */
+    private fatalCause: FatalCause | null = null;
     private failed: Promise<never> | null = null;
     private fail: ((error: HarnessFailure) => void) | null = null;
 
@@ -332,6 +354,7 @@ export class Scheduler {
      * wakes find it on disk, and a record that cannot land has already poisoned the run.
      */
     private recordFatal(entry: { kind: EntryKind; [field: string]: unknown }, what: string): void {
+        this.fatalCause ??= (entry.cause as FatalCause | undefined) ?? null;
         try {
             this.record(entry, what);
         } catch {
@@ -1011,6 +1034,14 @@ export class Scheduler {
                     if (e.cause !== cause || !RECOVERABLE_CAUSES.has(cause)) {
                         throw fail(`Recovered for fatal record ${f.seq} misreports its cause`, e);
                     }
+                    const item = fatalItem(f);
+                    if (
+                        Object.entries(item).some(
+                            ([k, v]) => JSON.stringify(e[k]) !== JSON.stringify(v),
+                        )
+                    ) {
+                        throw fail(`Recovered for fatal record ${f.seq} misnames its item`, e);
+                    }
                     unresolved.delete(f.seq);
                     awaiting &&= unresolved.size > 0;
                     return;
@@ -1335,7 +1366,7 @@ export class Scheduler {
                 id.startsWith("job:") ? (this.jobStarted.get(id.slice(4)) ?? entered) : entered,
             );
             if (performance.now() > Math.min(...live) + limitMs) {
-                throw new HarnessFailure(
+                throw new DeadlineOverrun(
                     `busy set held the clock past ${this.o.idleLimitMs} ms: ${busy().join(", ")}`,
                 );
             }
@@ -1359,7 +1390,7 @@ export class Scheduler {
         while (Date.now() - quietSince < settle) {
             await this.untilFatal(Bun.sleep(this.o.jobPollMs ?? 50));
             if (Date.now() > limit) {
-                throw new HarnessFailure(
+                throw new DeadlineOverrun(
                     `background jobs kept the quiet window open past ${this.o.idleLimitMs} ms`,
                 );
             }
@@ -1385,7 +1416,7 @@ export class Scheduler {
             if (this.fatal) throw this.fatal;
             this.checkStop();
             if (Date.now() > limit) {
-                throw new HarnessFailure(
+                throw new DeadlineOverrun(
                     `busy set held the clock past ${this.o.idleLimitMs} ms: ${pending().join(", ")}`,
                 );
             }
@@ -1454,8 +1485,9 @@ export class Scheduler {
         } catch (caught) {
             if (caught === this.fatal) {
                 try {
+                    const cut = this.fatalCause ? { cause: this.fatalCause } : {};
                     this.record(
-                        { kind: "ItemState", fault: f.id, state: "failed(interrupted)" },
+                        { kind: "ItemState", fault: f.id, state: "failed(interrupted)", ...cut },
                         `fault ${f.id} was cut`,
                     );
                 } catch {
@@ -1533,7 +1565,7 @@ export class Scheduler {
                 id.startsWith("job:") ? (this.jobStarted.get(id.slice(4)) ?? entered) : entered,
             );
             if (busy.length > 0 && performance.now() > Math.min(...live) + limitMs) {
-                throw new HarnessFailure(
+                throw new DeadlineOverrun(
                     `busy set held the clock past ${this.o.idleLimitMs} ms: ${busy.join(", ")}`,
                 );
             }
@@ -1651,7 +1683,11 @@ export class Scheduler {
                 const error = caught instanceof Error ? caught.message : String(caught);
                 this.fatal ??= new HarnessFailure(`event ${e.id} failed: ${error}`);
                 const cause: FatalCause =
-                    caught instanceof TransportFailure ? "harness-transport" : "event-error";
+                    caught instanceof TransportFailure
+                        ? "harness-transport"
+                        : caught instanceof DeadlineOverrun
+                          ? "job-deadline"
+                          : "event-error";
                 this.recordFatal(
                     { kind: "ItemState", event: e.id, state: "failed", error, fatal: true, cause },
                     `event ${e.id} failed`,
@@ -1821,6 +1857,7 @@ export class Scheduler {
                     this.fatal ??= new HarnessFailure(
                         "daemon exited outside a scheduled outage window",
                     );
+                    this.fatalCause ??= "daemon-exit";
                 }
                 try {
                     this.record(

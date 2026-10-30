@@ -29,12 +29,14 @@ export interface CampaignSpec {
 export const DEFAULT_RUN = ["bun", "scripts/run-tier.ts"];
 export const DEFAULT_FINALIZE = [
     ["bun", "scripts/grade-run.ts", "{dir}"],
-    ["bun", "scripts/evidence-run.ts", "{dir}", "--out", "{evidence}"],
+    ["bun", "scripts/evidence-run.ts", "{dir}"],
     ["bun", "scripts/pairing-check.ts", "{dir}"],
 ];
 export const INODE_ALERT = 0.8;
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
+/** Names of the supervisor's own files and directories under `out`. */
+export const RESERVED = new Set(["logs", "evidence", "campaign.log", "campaign-status.json"]);
 
 export function parseCampaign(raw: unknown): CampaignSpec {
     const o = raw as Partial<CampaignSpec> | null;
@@ -47,7 +49,12 @@ export function parseCampaign(raw: unknown): CampaignSpec {
     if (!Array.isArray(o?.runs) || o.runs.length === 0) problems.push("runs is empty");
     const names = new Set<string>();
     for (const r of o?.runs ?? []) {
-        if (typeof r?.name !== "string" || !NAME.test(r.name) || names.has(r.name)) {
+        if (
+            typeof r?.name !== "string" ||
+            !NAME.test(r.name) ||
+            RESERVED.has(r.name) ||
+            names.has(r.name)
+        ) {
             problems.push(`run name ${JSON.stringify(r?.name)} is not a unique plain name`);
         } else names.add(r.name);
         if (!strings(r?.args)) problems.push(`run ${r?.name} args are not strings`);
@@ -174,6 +181,8 @@ export function runProgress(dir: string, now = Date.now()): RunProgress {
 
 export interface RunRecord {
     name: string;
+    /** The launch command line the record describes; a changed one starts a fresh record. */
+    argv: string[];
     state: "pending" | "running" | "finalizing" | "finalized" | "gave-up";
     launches: number;
     stalled: number;

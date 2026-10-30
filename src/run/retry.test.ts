@@ -47,7 +47,7 @@ test("the attempts and backoffs together stay inside the total budget", async ()
             calls++;
             // Each attempt runs to its own deadline and times out.
             time.spend(ms);
-            throw new TypeError("The socket connection was closed unexpectedly");
+            throw new Error("The socket connection was closed unexpectedly");
         },
         time.sleep,
         time.now,
@@ -83,6 +83,12 @@ test("transientUserSim accepts timeouts, 429 and 5xx, and transport errors, and 
     expect(transientUserSim(new HarnessFailure("user-sim call failed: 503"))).toBe(true);
     expect(transientUserSim(new HarnessFailure("user-sim call failed: 429"))).toBe(true);
     expect(transientUserSim(new TypeError("fetch failed"))).toBe(true);
+    const reset = Object.assign(new Error("The socket connection was closed unexpectedly"), {
+        code: "ECONNRESET",
+    });
+    expect(transientUserSim(reset)).toBe(true);
+    // A successful body of the wrong shape is the gateway's answer, not a transport failure.
+    expect(transientUserSim(new TypeError("content.map is not a function"))).toBe(false);
     expect(transientUserSim(new HarnessFailure("user-sim call failed: 403"))).toBe(false);
     expect(transientUserSim(new SyntaxError("Unexpected token < in JSON"))).toBe(false);
     expect(transientUserSim(new HarnessFailure("e-1: delivered text carries markers K"))).toBe(

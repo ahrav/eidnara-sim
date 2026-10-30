@@ -264,16 +264,20 @@ A fatal `ItemState` stops the run and carries one `cause`:
 
 | Cause | Written when | On resume |
 |---|---|---|
-| `job-deadline` | a job held the clock past `job_deadline_ms` (a host stall, a suspended machine, a hung call) | recovered |
+| `job-deadline` | a job held the clock past `job_deadline_ms` (a host stall, a suspended machine, a hung call), by its own timer or, as `DeadlineOverrun`, during a probe turn's wait on its background jobs (an event record) | recovered |
 | `harness-transport` | a user turn's delivery failed with `TransportFailure`: a user-sim call whose bounded retries all failed in transport | recovered |
 | `daemon-exit` | the daemon exited outside an outage window | recovered |
 | `fault-error` | a scheduler fault's mechanism failed | refused |
 | `event-error` | an event's delivery failed for any other reason | refused |
 
-A record written before records carried `cause` takes it from its shape: a
-daemon exit, a fault, or a job names that cause, and an event's error names
-`harness-transport` when it is a user-sim timeout or 429/5xx, a closed socket,
-or a refused or reset connection, and `event-error` otherwise.
+A daemon exit, a fault, and a job take their cause from the record's shape; an
+event's record carries `harness-transport`, `job-deadline`, or `event-error`,
+and the replay refuses a stored cause its shape contradicts. An event record
+from before records carried `cause` takes it from the start of its error
+text: a deadline overrun names `job-deadline`; a user-sim timeout or 429/5xx,
+a closed socket, or a reset or refused connection names `harness-transport`;
+anything else, a host error that only wraps such text included, names
+`event-error`.
 
 A recoverable stop leaves the measurement intact up to the stop, so a resume
 applies the registered missingness policy (`in_flight_at_interrupt:
@@ -289,7 +293,8 @@ stop; `src/run/interruptions.ts`). A failed fault mechanism or an unexplained
 delivery failure names a harness or driver defect whose effect on the arm is
 unknown, so such a run, and one whose journal is poisoned, tampered with, or
 bound to another identity, stays refused. The replay refuses a `Recovered`
-entry that names no pending fatal record of its arm or misreports its cause,
+entry outside a resume's recovery, one that names no pending fatal record of
+its arm, and one that misreports the record's cause or item,
 any other arm entry of a resumed process before the recovery, and an
 `EndArm` with a fatal record unrecovered.
 

@@ -51,9 +51,34 @@ export async function withRetry<T>(
     }
 }
 
+/** Errno codes and `fetch` messages of a connection that failed, reset, or closed mid-reply. */
+const NETWORK_CODES = new Set([
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ECONNABORTED",
+    "EPIPE",
+    "ETIMEDOUT",
+    "EHOSTUNREACH",
+    "ENETUNREACH",
+    "ConnectionClosed",
+    "ConnectionRefused",
+    "FailedToOpenSocket",
+]);
+const NETWORK_TEXT =
+    /socket connection was closed|fetch failed|Unable to connect|ECONN(?:RESET|REFUSED)/;
+
+export const transientNetwork: Transient = (caught) => {
+    const e = caught as { code?: unknown; message?: unknown; name?: unknown } | null;
+    if (e?.name === "TimeoutError") return true;
+    if (typeof e?.code === "string" && NETWORK_CODES.has(e.code)) return true;
+    return typeof e?.message === "string" && NETWORK_TEXT.test(e.message);
+};
+
 export const transientUserSim: Transient = (caught) => {
-    // A reply body that is not JSON is the gateway's answer, so it stands.
-    if (caught instanceof SyntaxError) return false;
-    if (!(caught instanceof HarnessFailure)) return true;
-    return /^user-sim call (?:timed out after \d+ ms|failed: (?:429|5\d\d))$/.test(caught.message);
+    if (caught instanceof HarnessFailure) {
+        return /^user-sim call (?:timed out after \d+ ms|failed: (?:429|5\d\d))$/.test(
+            caught.message,
+        );
+    }
+    return transientNetwork(caught);
 };
