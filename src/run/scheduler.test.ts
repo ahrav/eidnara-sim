@@ -7370,6 +7370,7 @@ describe("fatal causes on resume", () => {
             "The socket connection was closed unexpectedly. For more information, pass `verbose: true`",
             "user-sim call failed: 503",
             "Unable to connect. Is the computer able to access the url?",
+            "fetch failed",
         ];
         for (const error of recovered) await run(journalWith({ ...event, error }));
         const refused = [
