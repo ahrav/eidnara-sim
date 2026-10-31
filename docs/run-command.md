@@ -424,7 +424,7 @@ finalize steps; both exist for tests). Every `poll_ms` the supervisor:
   inode use passes 80%.
 
 A run name may not be `logs`, `evidence`, `campaign.log`, or
-`campaign-status.json`, or start with `lease.`. A restarted supervisor restores each run's record from
+`campaign-status.json`, start with `lease.`, or pass 200 characters. A restarted supervisor restores each run's record from
 `campaign-status.json` (refusing a file of any other shape) only while the
 run's command line is unchanged; a changed one starts the record over for a
 run that has not started, and refuses the start for a run whose directory
@@ -446,7 +446,8 @@ are launched detached, so stopping the supervisor leaves them running and
 starting it again resumes supervision; `--once` makes one pass and exits,
 for a cron entry, after waiting for any finalize steps that pass started
 (each bounded by `finalize_timeout_ms`). A lease failure other than a live
-holder exits 2 under `--once` too. The supervisor exits 0 once every run is finalized with
+holder exits 2 under `--once` too, and a `--once` pass exits 1 while any run
+has given up or failed a finalize step. The supervisor exits 0 once every run is finalized with
 clean finalize steps, and 1 when any run gave up or a step failed. It inherits
 `PATH` and `SIM_CONFIG` from its environment:
 

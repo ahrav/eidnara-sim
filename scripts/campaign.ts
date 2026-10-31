@@ -329,7 +329,7 @@ for (;;) {
             record.last_error = `supervisor: ${(caught as Error).message}`;
             record.step_failures++;
             say(`ALERT run ${run.name}: supervisor step failed: ${record.last_error}`, true);
-            if (record.step_failures >= STALL_LIMIT && record.state !== "running") {
+            if (record.step_failures >= STALL_LIMIT && !live(run.name)) {
                 record.state = "gave-up";
                 record.gave_up_reason = `${record.step_failures} supervisor steps in a row failed; last: ${record.last_error}`;
                 say(`${run.name} GAVE UP: ${record.gave_up_reason}`, true);
@@ -377,6 +377,11 @@ for (;;) {
         );
         process.exit(bad.length > 0 ? 1 : 0);
     }
-    if (once && !rows.some((r) => r.record.state === "finalizing")) process.exit(0);
+    if (once && !rows.some((r) => r.record.state === "finalizing")) {
+        const failed = rows.some(
+            (r) => r.record.state === "gave-up" || r.record.finalize.some((f) => f.exit !== 0),
+        );
+        process.exit(failed ? 1 : 0);
+    }
     await Bun.sleep(spec.poll_ms);
 }

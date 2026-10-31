@@ -53,6 +53,7 @@ export function parseCampaign(raw: unknown): CampaignSpec {
         if (
             typeof r?.name !== "string" ||
             !NAME.test(r.name) ||
+            r.name.length > 200 ||
             RESERVED.has(r.name) ||
             r.name.startsWith("lease.") ||
             names.has(r.name)
@@ -88,6 +89,9 @@ export function parseCampaign(raw: unknown): CampaignSpec {
         if (v !== undefined && !(Number.isSafeInteger(v) && (v as number) >= 0)) {
             problems.push(`${k} is not a non-negative integer`);
         }
+    }
+    if (o?.finalize_timeout_ms !== undefined && !((o.finalize_timeout_ms as number) > 0)) {
+        problems.push("finalize_timeout_ms is not positive");
     }
     if (problems.length > 0) throw new Error(`campaign: ${problems.join("; ")}`);
     const spec = o as CampaignSpec;
