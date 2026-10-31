@@ -120,7 +120,31 @@ function savedRuns(): Record<string, unknown>[] {
     const status = JSON.parse(readFileSync(statusPath, "utf8"));
     const runs = status?.runs;
     const plain = (r: unknown) => typeof r === "object" && r !== null && !Array.isArray(r);
-    if (status?.schema !== "sim-campaign-status/v1" || !Array.isArray(runs) || !runs.every(plain)) {
+    const count = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0;
+    const stamp = (v: unknown) => v === null || count(v);
+    const states = new Set(["pending", "running", "finalizing", "finalized", "gave-up"]);
+    const valid = (r: Record<string, unknown>) =>
+        typeof r.name === "string" &&
+        states.has(r.state as string) &&
+        ["launches", "stalled", "step_failures"].every((k) => r[k] === undefined || count(r[k])) &&
+        ["progress_at_launch", "launched_at", "stopped_at"].every(
+            (k) => r[k] === undefined || stamp(r[k]),
+        ) &&
+        Array.isArray(r.argv) &&
+        (r.finalize === undefined ||
+            (Array.isArray(r.finalize) &&
+                r.finalize.every(
+                    (f: unknown) =>
+                        plain(f) &&
+                        typeof (f as { command?: unknown }).command === "string" &&
+                        ((f as { exit?: unknown }).exit === null ||
+                            Number.isInteger((f as { exit?: unknown }).exit)),
+                )));
+    if (
+        status?.schema !== "sim-campaign-status/v1" ||
+        !Array.isArray(runs) ||
+        !runs.every((r) => plain(r) && valid(r))
+    ) {
         throw new Error(
             `${statusPath} is no sim-campaign-status/v1 file; move it aside to start over`,
         );

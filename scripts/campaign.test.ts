@@ -302,3 +302,31 @@ test("a linked run directory is never launched or finalized, and raises an alert
     const status = JSON.parse(readFileSync(join(out, "campaign-status.json"), "utf8"));
     expect(status.runs[0]).toMatchObject({ launches: 0, step_failures: 1 });
 });
+
+test("a status file whose records carry impossible counters is refused", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
+    const out = join(dir, "runs");
+    mkdirSync(out, { recursive: true });
+    const spec = {
+        schema: "sim-campaign/v1",
+        out,
+        inode_paths: [],
+        run_command: ["bun", "-e", "process.exit(0)"],
+        runs: [{ name: "r", args: [] }],
+    };
+    writeFileSync(join(dir, "campaign.json"), JSON.stringify(spec));
+    const argv = ["bun", "-e", "process.exit(0)", "--out", join(out, "r")];
+    writeFileSync(
+        join(out, "campaign-status.json"),
+        JSON.stringify({
+            schema: "sim-campaign-status/v1",
+            runs: [{ name: "r", argv, state: "pending", launches: -5, stalled: 0 }],
+        }),
+    );
+    const r = Bun.spawnSync(
+        [process.execPath, "scripts/campaign.ts", join(dir, "campaign.json"), "--once"],
+        { cwd: ROOT, timeout: 30_000 },
+    );
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("is no sim-campaign-status/v1 file");
+});
