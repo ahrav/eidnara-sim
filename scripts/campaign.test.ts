@@ -340,16 +340,17 @@ test("a status file whose records carry impossible counters is refused", () => {
     expect(r.stderr.toString()).toContain("is no sim-campaign-status/v1 file");
 });
 
-test("a signal to the supervisor kills its finalize steps before the lease is released", async () => {
+test("a signal to the supervisor kills its finalize steps and their helpers before the lease is released", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
     const out = join(dir, "runs");
     const fake = join(dir, "fake-run.ts");
     writeFileSync(fake, FAKE_RUN);
     const pid = join(dir, "finalizer.pid");
     const slow = join(dir, "slow.ts");
+    // The step starts a helper of its own, which must die with it.
     writeFileSync(
         slow,
-        `require("node:fs").writeFileSync(${JSON.stringify(pid)}, String(process.pid));\nawait Bun.sleep(60_000);\n`,
+        `const helper = Bun.spawn(["sleep", "60"]);\nrequire("node:fs").writeFileSync(${JSON.stringify(pid)}, String(helper.pid));\nawait Bun.sleep(60_000);\n`,
     );
     const spec = {
         schema: "sim-campaign/v1",

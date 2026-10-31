@@ -70,9 +70,15 @@ try {
 }
 const finalizers = new Set<ReturnType<typeof Bun.spawn>>();
 // A finalize step outliving this supervisor would race the next one's finalize of the same run,
-// so the steps die before the lease is released.
+// so each step's process group dies before the lease is released.
 process.on("exit", () => {
-    for (const child of finalizers) child.kill("SIGKILL");
+    for (const child of finalizers) {
+        try {
+            process.kill(-child.pid, "SIGKILL");
+        } catch {
+            child.kill("SIGKILL");
+        }
+    }
     releaseLease(spec.out, lease);
 });
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => process.exit(130));
@@ -259,6 +265,7 @@ async function finalize(name: string, record: RunRecord) {
                     stderr: fd,
                     timeout: spec.finalize_timeout_ms,
                     killSignal: "SIGKILL",
+                    detached: true,
                 });
                 finalizers.add(child);
                 try {
