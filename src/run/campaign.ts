@@ -5,6 +5,7 @@ import {
     ftruncateSync,
     openSync,
     readFileSync,
+    readSync,
     statfsSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -35,7 +36,7 @@ export const DEFAULT_FINALIZE = [
 export const INODE_ALERT = 0.8;
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
-/** Names of the supervisor's own files and directories under `out`. */
+/** Names of the supervisor's own files and directories under `out`, besides its `lease.*` files. */
 export const RESERVED = new Set(["logs", "evidence", "campaign.log", "campaign-status.json"]);
 
 export function parseCampaign(raw: unknown): CampaignSpec {
@@ -53,6 +54,7 @@ export function parseCampaign(raw: unknown): CampaignSpec {
             typeof r?.name !== "string" ||
             !NAME.test(r.name) ||
             RESERVED.has(r.name) ||
+            r.name.startsWith("lease.") ||
             names.has(r.name)
         ) {
             problems.push(`run name ${JSON.stringify(r?.name)} is not a unique plain name`);
@@ -190,6 +192,8 @@ export interface RunRecord {
     launched_at: number | null;
     stopped_at: number | null;
     last_error: string | null;
+    /** Consecutive polls whose step for this run threw. */
+    step_failures: number;
     finalize: { command: string; exit: number | null }[];
     gave_up_reason: string | null;
 }
@@ -280,8 +284,31 @@ export function alerts(
     return out;
 }
 
-/** Alerts compared without their numbers, so a growing count raises one alert, not one per poll. */
-export const alertKey = (alert: string) => alert.replace(/\d+(?:\.\d+)?/g, "#");
+/**
+ * Alerts compared without the numbers that change between polls (a silence's minutes, an inode
+ * percentage), so a growing count raises one alert, not one per poll.
+ */
+export const alertKey = (alert: string) =>
+    alert.replace(/for \d+ min$/, "for # min").replace(/inode use [\d.]+%/, "inode use #%");
+
+/** The last `error:` line within the last `tail` bytes of a log. */
+export function lastErrorIn(path: string, tail = 64 * 1024): string | null {
+    let fd: number;
+    try {
+        fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    } catch {
+        return null;
+    }
+    try {
+        const size = fstatSync(fd).size;
+        const length = Math.min(size, tail);
+        const buf = Buffer.alloc(length);
+        readSync(fd, buf, 0, length, size - length);
+        return lastError(buf.toString("utf8"));
+    } finally {
+        closeSync(fd);
+    }
+}
 
 /**
  * Opens a supervisor log without following a link; the path must be absent or a regular

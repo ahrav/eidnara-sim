@@ -2,8 +2,10 @@ import {
     appendFileSync,
     closeSync,
     existsSync,
+    lstatSync,
     mkdirSync,
     readFileSync,
+    realpathSync,
     renameSync,
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -15,7 +17,7 @@ import {
     type CampaignSpec,
     decide,
     finalizeArgv,
-    lastError,
+    lastErrorIn,
     launchArgv,
     openLog,
     parseCampaign,
@@ -23,8 +25,9 @@ import {
     type RunRecord,
     runDir,
     runProgress,
+    STALL_LIMIT,
 } from "../src/run/campaign";
-import { leaseHeld } from "../src/run/journal";
+import { leaseHeld, releaseLease, takeLease } from "../src/run/journal";
 import { requireOutsideCheckout, requireOutsideIdentity } from "../src/run/run";
 
 const USAGE = "usage: bun scripts/campaign.ts <campaign.json> [--once]";
@@ -45,8 +48,26 @@ if (config.upgrade?.pi_install) {
     requireOutsideCheckout(spec.out, config.upgrade.pi_install, "the upgrade Pi install");
 }
 requireOutsideIdentity(spec.out);
+mkdirSync(spec.out, { recursive: true });
+// One supervisor per campaign: a second one, an overlapping cron pass included, stops here.
+let lease: ReturnType<typeof takeLease>;
+try {
+    lease = takeLease(spec.out);
+} catch (caught) {
+    console.error(`another supervisor holds ${spec.out}: ${(caught as Error).message}`);
+    process.exit(once ? 0 : 2);
+}
+process.on("exit", () => releaseLease(spec.out, lease));
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => process.exit(130));
 const logs = join(spec.out, "logs");
 mkdirSync(logs, { recursive: true });
+if (
+    lstatSync(logs).isSymbolicLink() ||
+    realpathSync(logs) !== join(realpathSync(spec.out), "logs")
+) {
+    console.error(`${logs} must be a plain directory inside ${spec.out}`);
+    process.exit(2);
+}
 const statusPath = join(spec.out, "campaign-status.json");
 const campaignLog = join(spec.out, "campaign.log");
 
@@ -78,6 +99,7 @@ const fresh = (name: string): RunRecord => ({
     launched_at: null,
     stopped_at: null,
     last_error: null,
+    step_failures: 0,
     finalize: [],
     gave_up_reason: null,
 });
@@ -89,6 +111,7 @@ const KEPT: (keyof RunRecord)[] = [
     "launched_at",
     "stopped_at",
     "last_error",
+    "step_failures",
     "finalize",
     "gave_up_reason",
 ];
@@ -129,6 +152,10 @@ function launch(run: CampaignSpec["runs"][number], record: RunRecord, progress: 
     if (existsSync(log)) renameSync(log, join(logs, `${run.name}.attempt${record.launches}.log`));
     const fd = openLog(log, true);
     const command = argv(launchArgv(spec, run));
+    // A launch that cannot even start counts as an attempt that measured nothing.
+    record.launches++;
+    record.progress_at_launch = progress.measured_events;
+    record.launched_at = Date.now();
     try {
         const child = Bun.spawn(command, {
             cwd: ROOT,
@@ -140,12 +167,13 @@ function launch(run: CampaignSpec["runs"][number], record: RunRecord, progress: 
         });
         child.unref();
         children.set(run.name, child);
+    } catch (caught) {
+        record.stalled++;
+        record.stopped_at = Date.now();
+        throw caught;
     } finally {
         closeSync(fd);
     }
-    record.launches++;
-    record.progress_at_launch = progress.measured_events;
-    record.launched_at = Date.now();
     record.state = "running";
     const what = progress.started ? `resume ${record.launches - 1}` : "launch";
     say(`${run.name} ${what}: ${command.join(" ")}`);
@@ -197,8 +225,7 @@ function step(run: CampaignSpec["runs"][number], record: RunRecord, now: number)
     const progress = runProgress(dir, now);
     const running = live(run.name) || (existsSync(dir) && leaseHeld(dir));
     if (record.state === "running" && !running) {
-        const log = existsSync(logOf(run.name)) ? readFileSync(logOf(run.name), "utf8") : "";
-        record.last_error = lastError(log) ?? record.last_error;
+        record.last_error = lastErrorIn(logOf(run.name)) ?? record.last_error;
         record.stalled =
             progress.measured_events === record.progress_at_launch ? record.stalled + 1 : 0;
         record.stopped_at = now;
@@ -237,15 +264,23 @@ for (;;) {
         const record = records.get(run.name) as RunRecord;
         try {
             rows.push({ record, progress: step(run, record, now) });
+            record.step_failures = 0;
         } catch (caught) {
             record.last_error = `supervisor: ${(caught as Error).message}`;
+            record.step_failures++;
             say(`ALERT run ${run.name}: supervisor step failed: ${record.last_error}`, true);
+            if (record.step_failures >= STALL_LIMIT && record.state !== "running") {
+                record.state = "gave-up";
+                record.gave_up_reason = `${record.step_failures} supervisor steps in a row failed; last: ${record.last_error}`;
+                say(`${run.name} GAVE UP: ${record.gave_up_reason}`, true);
+            }
             rows.push({ record, progress: empty(now) });
         }
     }
     const raisedNow = alerts(spec, rows, now);
     for (const a of raisedNow) if (!raised.has(alertKey(a))) say(`ALERT ${a}`, true);
     raised = new Set(raisedNow.map(alertKey));
+    let persisted = true;
     try {
         writeAtomic(
             statusPath,
@@ -268,10 +303,11 @@ for (;;) {
             )}\n`,
         );
     } catch (caught) {
+        persisted = false;
         say(`ALERT campaign-status.json: ${(caught as Error).message}`, true);
     }
     const open = rows.filter((r) => r.record.state !== "finalized" && r.record.state !== "gave-up");
-    if (open.length === 0) {
+    if (open.length === 0 && persisted) {
         const bad = rows.filter(
             (r) => r.record.state === "gave-up" || r.record.finalize.some((f) => f.exit !== 0),
         );

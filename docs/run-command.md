@@ -427,9 +427,16 @@ A run name may not be `logs`, `evidence`, `campaign.log`, or
 run's command line is unchanged; a changed one starts the record over. Before it writes anything, the supervisor loads the configuration and refuses
 an `out` that overlaps the Eidnara checkout, a Pi install, or the corpus
 checkouts, or that lies unignored inside this checkout, as `run-tier` does.
-Its logs are opened without following links and must be plain single-link
-files. A step that fails for one run is logged as an alert and leaves the other
-runs supervised. Each attempt logs to `<out>/logs/<name>.log`; the previous attempt's log moves
+It takes the lease of `out` (`lease.<n>.json`, as a run directory's), so a
+second supervisor on the same campaign, an overlapping `--once` pass
+included, stops at once (exit 0 under `--once`, 2 otherwise). `out/logs` must
+be a plain directory, and its logs are opened without following links and
+must be plain single-link files. A step that fails for one run is logged as an
+alert and leaves the other runs supervised; three such failures in a row for a
+run that is not running give it up. A launch that cannot start counts as an
+attempt that measured nothing. The last error is read from the last 64 KiB of
+the attempt's log. A poll whose status write fails keeps the campaign open, so
+the supervisor never reports a finished campaign it could not record. Each attempt logs to `<out>/logs/<name>.log`; the previous attempt's log moves
 to `<name>.attempt<k>.log`. `<out>/campaign.log` keeps every decision. Runs
 are launched detached, so stopping the supervisor leaves them running and
 starting it again resumes supervision; `--once` makes one pass and exits,

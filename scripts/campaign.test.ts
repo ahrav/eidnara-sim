@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { linkSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+    existsSync,
+    linkSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -134,6 +142,7 @@ const record = (over: Partial<RunRecord> = {}): RunRecord => ({
     launched_at: null,
     stopped_at: null,
     last_error: null,
+    step_failures: 0,
     finalize: [],
     gave_up_reason: null,
     ...over,
@@ -185,6 +194,7 @@ test("alerts name a silent running run and a filesystem past 80% inode use", () 
     expect(alertKey("run r journaled nothing for 5 min")).toBe(
         alertKey("run r journaled nothing for 7 min"),
     );
+    expect(alertKey("run s101 GAVE UP: x")).not.toBe(alertKey("run s102 GAVE UP: x"));
 });
 
 test("a campaign file that lets a run pick its own --out, or repeats a name, is refused", () => {
@@ -222,4 +232,48 @@ test("a supervisor log is opened only as a plain file, never through a link", ()
     linkSync(target, join(dir, "hard.log"));
     expect(() => openLog(join(dir, "hard.log"), true)).toThrow("is not a plain file");
     expect(readFileSync(target, "utf8")).toBe("keep\n");
+});
+
+test("a second supervisor on a campaign another one holds stops before it acts", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
+    const out = join(dir, "runs");
+    const sleeper = join(dir, "sleep.ts");
+    writeFileSync(
+        sleeper,
+        `require("node:fs").writeFileSync(${JSON.stringify(join(dir, "pid"))}, String(process.pid));\nawait Bun.sleep(30_000);\n`,
+    );
+    const spec = {
+        schema: "sim-campaign/v1",
+        out,
+        poll_ms: 50,
+        inode_paths: [],
+        run_command: ["bun", sleeper],
+        runs: [{ name: "r", args: [] }],
+    };
+    writeFileSync(join(dir, "campaign.json"), JSON.stringify(spec));
+    const first = Bun.spawn([process.execPath, "scripts/campaign.ts", join(dir, "campaign.json")], {
+        cwd: ROOT,
+        stdout: "ignore",
+        stderr: "ignore",
+    });
+    try {
+        const deadline = Date.now() + 20_000;
+        const leased = () =>
+            existsSync(out) && readdirSync(out).some((name) => name.startsWith("lease."));
+        while (!leased()) {
+            if (Date.now() > deadline) throw new Error("the first supervisor never took its lease");
+            Bun.sleepSync(50);
+        }
+        const second = Bun.spawnSync(
+            [process.execPath, "scripts/campaign.ts", join(dir, "campaign.json"), "--once"],
+            { cwd: ROOT, timeout: 30_000 },
+        );
+        expect(second.exitCode).toBe(0);
+        expect(second.stderr.toString()).toContain("another supervisor holds");
+    } finally {
+        first.kill("SIGKILL");
+        const pid = join(dir, "pid");
+        for (let i = 0; i < 100 && !existsSync(pid); i++) Bun.sleepSync(50);
+        if (existsSync(pid)) process.kill(Number(readFileSync(pid, "utf8")), "SIGKILL");
+    }
 });
