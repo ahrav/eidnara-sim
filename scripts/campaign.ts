@@ -68,7 +68,13 @@ try {
     );
     process.exit(held && once ? 0 : 2);
 }
-process.on("exit", () => releaseLease(spec.out, lease));
+const finalizers = new Set<ReturnType<typeof Bun.spawn>>();
+// A finalize step outliving this supervisor would race the next one's finalize of the same run,
+// so the steps die before the lease is released.
+process.on("exit", () => {
+    for (const child of finalizers) child.kill("SIGKILL");
+    releaseLease(spec.out, lease);
+});
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => process.exit(130));
 const logs = join(spec.out, "logs");
 mkdirSync(logs, { recursive: true });
@@ -254,7 +260,12 @@ async function finalize(name: string, record: RunRecord) {
                     timeout: spec.finalize_timeout_ms,
                     killSignal: "SIGKILL",
                 });
-                exit = await child.exited;
+                finalizers.add(child);
+                try {
+                    exit = await child.exited;
+                } finally {
+                    finalizers.delete(child);
+                }
             } finally {
                 closeSync(fd);
             }

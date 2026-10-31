@@ -339,3 +339,49 @@ test("a status file whose records carry impossible counters is refused", () => {
     expect(r.exitCode).not.toBe(0);
     expect(r.stderr.toString()).toContain("is no sim-campaign-status/v1 file");
 });
+
+test("a signal to the supervisor kills its finalize steps before the lease is released", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
+    const out = join(dir, "runs");
+    const fake = join(dir, "fake-run.ts");
+    writeFileSync(fake, FAKE_RUN);
+    const pid = join(dir, "finalizer.pid");
+    const slow = join(dir, "slow.ts");
+    writeFileSync(
+        slow,
+        `require("node:fs").writeFileSync(${JSON.stringify(pid)}, String(process.pid));\nawait Bun.sleep(60_000);\n`,
+    );
+    const spec = {
+        schema: "sim-campaign/v1",
+        out,
+        poll_ms: 50,
+        inode_paths: [],
+        relaunch_backoff_ms: 20,
+        run_command: ["bun", fake],
+        finalize_commands: [["bun", slow]],
+        runs: [{ name: "good", args: ["--mode", "ok"] }],
+    };
+    writeFileSync(join(dir, "campaign.json"), JSON.stringify(spec));
+    const supervisor = Bun.spawn(
+        [process.execPath, "scripts/campaign.ts", join(dir, "campaign.json")],
+        { cwd: ROOT, stdout: "ignore", stderr: "ignore" },
+    );
+    const deadline = Date.now() + 30_000;
+    while (!existsSync(pid)) {
+        if (Date.now() > deadline) throw new Error("the finalize step never started");
+        await Bun.sleep(50);
+    }
+    const finalizer = Number(readFileSync(pid, "utf8"));
+    supervisor.kill("SIGTERM");
+    await supervisor.exited;
+    await Bun.sleep(200);
+    const alive = (() => {
+        try {
+            process.kill(finalizer, 0);
+            return true;
+        } catch {
+            return false;
+        }
+    })();
+    expect(alive).toBe(false);
+});

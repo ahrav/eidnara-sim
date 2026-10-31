@@ -135,7 +135,7 @@ export const RECOVERABLE_CAUSES: ReadonlySet<FatalCause> = new Set<FatalCause>([
  * that only wraps such text stays `event-error`.
  */
 const RECORDED_TRANSPORT =
-    /^(?:user-sim call timed out|user-sim call failed: (?:429|5\d\d)|The socket connection was closed unexpectedly|(?:TypeError: )?(?:read |connect )?ECONN(?:RESET|REFUSED)\b)/;
+    /^(?:user-sim call timed out|user-sim call failed: (?:429|5\d\d)|The socket connection was closed unexpectedly|Unable to connect|fetch failed|(?:TypeError: )?(?:read |connect )?ECONN(?:RESET|REFUSED)\b)/;
 
 /** The causes an event's fatal record may carry: a delivery cut by transport or a job overrun. */
 const EVENT_CAUSES: ReadonlySet<FatalCause> = new Set<FatalCause>([
