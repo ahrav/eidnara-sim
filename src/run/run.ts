@@ -2066,7 +2066,19 @@ async function runArms(
         commit: manifest.sim_commit,
         worktree: manifest.sim_worktree,
     };
-    if (ran && (ran.sim_commit !== lastSim.commit || ran.sim_worktree !== lastSim.worktree)) {
+    // A kill between the revision's manifest write and its `Preflight` leaves the journal one
+    // revision behind, at the entry's own `from_commit`, while this checkout runs the entry.
+    const sim = simIdentity();
+    const cut =
+        "from_commit" in lastSim &&
+        ran?.sim_commit === lastSim.from_commit &&
+        sim.sim_commit === lastSim.commit &&
+        sim.sim_worktree === lastSim.worktree;
+    if (
+        ran &&
+        !cut &&
+        (ran.sim_commit !== lastSim.commit || ran.sim_worktree !== lastSim.worktree)
+    ) {
         throw new HarnessFailure(
             `manifest.json names sim revision ${lastSim.commit}; the journal last ran ${String(ran.sim_commit)}`,
         );
@@ -2078,7 +2090,6 @@ async function runArms(
         manifest.sim_revisions = [...(manifest.sim_revisions ?? []), revision];
         writeAtomic(join(o.out, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
     }
-    const sim = simIdentity();
     journal.append({
         kind: "Preflight",
         arm: null,

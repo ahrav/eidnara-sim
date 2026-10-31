@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
     existsSync,
     linkSync,
+    mkdirSync,
     mkdtempSync,
     readdirSync,
     readFileSync,
@@ -276,4 +277,28 @@ test("a second supervisor on a campaign another one holds stops before it acts",
         for (let i = 0; i < 100 && !existsSync(pid); i++) Bun.sleepSync(50);
         if (existsSync(pid)) process.kill(Number(readFileSync(pid, "utf8")), "SIGKILL");
     }
+});
+
+test("a linked run directory is never launched or finalized, and raises an alert", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
+    const out = join(dir, "runs");
+    const elsewhere = join(dir, "elsewhere");
+    mkdirSync(out, { recursive: true });
+    mkdirSync(elsewhere);
+    symlinkSync(elsewhere, join(out, "r"));
+    const spec = {
+        schema: "sim-campaign/v1",
+        out,
+        inode_paths: [],
+        run_command: ["bun", "-e", "process.exit(0)"],
+        runs: [{ name: "r", args: [] }],
+    };
+    writeFileSync(join(dir, "campaign.json"), JSON.stringify(spec));
+    const r = Bun.spawnSync(
+        [process.execPath, "scripts/campaign.ts", join(dir, "campaign.json"), "--once"],
+        { cwd: ROOT, timeout: 30_000 },
+    );
+    expect(r.stderr.toString()).toContain("is a link; a run directory must be a plain directory");
+    const status = JSON.parse(readFileSync(join(out, "campaign-status.json"), "utf8"));
+    expect(status.runs[0]).toMatchObject({ launches: 0, step_failures: 1 });
 });

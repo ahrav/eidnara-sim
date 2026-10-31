@@ -139,6 +139,19 @@ const records = new Map(
             if (old && old[k] !== undefined) Object.assign(record, { [k]: old[k] });
         }
         if (record.state === "finalizing") record.state = "pending";
+        // A finalized record stands only while its run directory still ends in `EndRun`.
+        if (record.state === "finalized") {
+            let ended = false;
+            try {
+                ended = runProgress(runDir(spec, r.name)).ended;
+            } catch {
+                ended = false;
+            }
+            if (!ended) {
+                say(`${r.name}: recorded finalized, but its journal has no EndRun; it starts over`);
+                Object.assign(record, fresh(r.name));
+            }
+        }
         return [r.name, record];
     }),
 );
@@ -222,6 +235,9 @@ const empty = (now: number) => runProgress(join(spec.out, ".no-run"), now);
 
 function step(run: CampaignSpec["runs"][number], record: RunRecord, now: number): RunProgress {
     const dir = runDir(spec, run.name);
+    if (lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        throw new Error(`${dir} is a link; a run directory must be a plain directory`);
+    }
     const progress = runProgress(dir, now);
     const running = live(run.name) || (existsSync(dir) && leaseHeld(dir));
     if (record.state === "running" && !running) {
