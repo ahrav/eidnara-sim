@@ -68,8 +68,45 @@ try {
     );
     process.exit(held && once ? 0 : 2);
 }
-process.on("exit", () => releaseLease(spec.out, lease));
-for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => process.exit(130));
+/** The process groups of finalize steps still running, each led by its step. */
+const finalizers = new Set<number>();
+/** Kills a finalize step's process group; true while any member is still alive. */
+const killGroup = (pgid: number): boolean => {
+    try {
+        process.kill(-pgid, "SIGKILL");
+        process.kill(-pgid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+};
+// A finalize step outliving this supervisor would race the next one's finalize of the same run,
+// so each step's process group is gone before the lease is released. A signal waits for the
+// groups to empty (up to ten seconds); the exit hook kills them as a last resort.
+let released = false;
+const release = () => {
+    if (released) return;
+    released = true;
+    releaseLease(spec.out, lease);
+};
+process.on("exit", () => {
+    for (const pgid of finalizers) killGroup(pgid);
+    release();
+});
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.on(signal, async () => {
+        const deadline = Date.now() + 10_000;
+        while ([...finalizers].filter(killGroup).length > 0 && Date.now() < deadline) {
+            await Bun.sleep(50);
+        }
+        if ([...finalizers].some(killGroup)) {
+            console.error("a finalize step survived SIGKILL; the campaign lease stays held");
+            process.exit(130);
+        }
+        release();
+        process.exit(130);
+    });
+}
 const logs = join(spec.out, "logs");
 mkdirSync(logs, { recursive: true });
 if (
@@ -253,8 +290,17 @@ async function finalize(name: string, record: RunRecord) {
                     stderr: fd,
                     timeout: spec.finalize_timeout_ms,
                     killSignal: "SIGKILL",
+                    detached: true,
                 });
-                exit = await child.exited;
+                finalizers.add(child.pid);
+                try {
+                    exit = await child.exited;
+                } finally {
+                    // Helpers the step left behind end with it before its group is forgotten.
+                    const until = Date.now() + 10_000;
+                    while (killGroup(child.pid) && Date.now() < until) await Bun.sleep(50);
+                    finalizers.delete(child.pid);
+                }
             } finally {
                 closeSync(fd);
             }

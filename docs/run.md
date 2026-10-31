@@ -275,7 +275,8 @@ event's record carries `harness-transport`, `job-deadline`, or `event-error`,
 and the replay refuses a stored cause its shape contradicts. An event record
 from before records carried `cause` takes it from the start of its error
 text: a deadline overrun names `job-deadline`; a user-sim timeout or 429/5xx,
-a closed socket, or a reset or refused connection names `harness-transport`;
+a closed socket, a connection `fetch` could not open, or a reset or refused
+connection names `harness-transport`;
 anything else, a host error that only wraps such text included, names
 `event-error`.
 
