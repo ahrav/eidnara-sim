@@ -110,27 +110,36 @@ test("the supervisor resumes a stopped run, finalizes it at EndRun, and gives up
         "good stopped: error: run failed: user-sim call failed after 3 attempt(s)",
     );
     expect(readFileSync(join(out, "logs", "good.attempt1.log"), "utf8")).toContain("user-sim call");
-    // A restarted supervisor keeps finished records, and starts over a run whose command changed.
-    writeFileSync(
-        join(dir, "campaign.json"),
-        JSON.stringify({ ...spec, runs: [spec.runs[0], { name: "bad", args: ["--mode", "ok"] }] }),
+    // A restarted supervisor keeps finished records, refuses a changed command for a run that
+    // started, and starts over the record of one that has not.
+    const restart = (runs: unknown[]) => {
+        writeFileSync(join(dir, "campaign.json"), JSON.stringify({ ...spec, runs }));
+        return Bun.spawnSync(
+            [process.execPath, "scripts/campaign.ts", join(dir, "campaign.json")],
+            {
+                cwd: ROOT,
+                timeout: 60_000,
+            },
+        );
+    };
+    const changed = restart([spec.runs[0], { name: "bad", args: ["--mode", "ok"] }]);
+    expect(changed.exitCode).toBe(2);
+    expect(changed.stderr.toString()).toContain(
+        "bad: its command line changed after the run started",
     );
-    const again = Bun.spawnSync(
-        [process.execPath, "scripts/campaign.ts", join(dir, "campaign.json")],
-        { cwd: ROOT, timeout: 60_000 },
-    );
+    const added = restart([spec.runs[0], spec.runs[1], { name: "new", args: ["--mode", "ok"] }]);
     const after = JSON.parse(readFileSync(join(out, "campaign-status.json"), "utf8"));
     expect(after.runs.find((x: { name: string }) => x.name === "good")).toMatchObject({
         state: "finalized",
         launches: 2,
     });
     expect(after.runs.find((x: { name: string }) => x.name === "bad")).toMatchObject({
+        state: "gave-up",
+    });
+    expect(after.runs.find((x: { name: string }) => x.name === "new")).toMatchObject({
         state: "finalized",
     });
-    expect(readFileSync(join(out, "campaign.log"), "utf8")).toContain(
-        "bad: its command line changed, so its record starts over",
-    );
-    expect(again.exitCode).toBe(1);
+    expect(added.exitCode).toBe(1);
 });
 
 const record = (over: Partial<RunRecord> = {}): RunRecord => ({
@@ -260,7 +269,7 @@ test("a second supervisor on a campaign another one holds stops before it acts",
     try {
         const deadline = Date.now() + 20_000;
         const leased = () =>
-            existsSync(out) && readdirSync(out).some((name) => name.startsWith("lease."));
+            existsSync(out) && readdirSync(out).some((name) => /^lease\.\d+\.json$/.test(name));
         while (!leased()) {
             if (Date.now() > deadline) throw new Error("the first supervisor never took its lease");
             Bun.sleepSync(50);

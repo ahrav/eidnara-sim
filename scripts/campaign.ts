@@ -54,8 +54,19 @@ let lease: ReturnType<typeof takeLease>;
 try {
     lease = takeLease(spec.out);
 } catch (caught) {
-    console.error(`another supervisor holds ${spec.out}: ${(caught as Error).message}`);
-    process.exit(once ? 0 : 2);
+    // A live holder is another supervisor; any other lease failure is this pass's own error.
+    const held = (() => {
+        try {
+            return leaseHeld(spec.out);
+        } catch {
+            return false;
+        }
+    })();
+    const why = (caught as Error).message;
+    console.error(
+        held ? `another supervisor holds ${spec.out}: ${why}` : `lease of ${spec.out}: ${why}`,
+    );
+    process.exit(held && once ? 0 : 2);
 }
 process.on("exit", () => releaseLease(spec.out, lease));
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => process.exit(130));
@@ -158,7 +169,16 @@ const records = new Map(
         const found = saved.find((s) => s.name === r.name);
         const old =
             found && JSON.stringify(found.argv) === JSON.stringify(record.argv) ? found : undefined;
-        if (found && !old) say(`${r.name}: its command line changed, so its record starts over`);
+        if (found && !old) {
+            // A started run keeps the identity its manifest pins, so its command stays fixed.
+            if (existsSync(join(runDir(spec, r.name), "journal.jsonl"))) {
+                console.error(
+                    `${r.name}: its command line changed after the run started; restore it or give the run a new name`,
+                );
+                process.exit(2);
+            }
+            say(`${r.name}: its command line changed, so its record starts over`);
+        }
         for (const k of KEPT) {
             if (old && old[k] !== undefined) Object.assign(record, { [k]: old[k] });
         }

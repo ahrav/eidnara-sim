@@ -55,8 +55,10 @@ checked again on each resume, since the field lies outside the execution
 digest, and a checkout back at an earlier revision counts as a move; every
 `Preflight` entry names the sim commit and working-tree digest its invocation
 ran, and a resume refuses a manifest whose latest revision is not the one the
-journal's last such entry names. The new `sim_revisions` entry is written only
-after the journal checks pass, just before this invocation's `Preflight`; every other pinned input is compared as on any resume.
+journal's last such entry names, except the state a kill leaves between the
+two writes: the journal names the entry's `from_commit` and this checkout runs
+the entry itself. The new `sim_revisions` entry is written only after the
+journal checks pass, just before this invocation's `Preflight`; every other pinned input is compared as on any resume.
 Once every check passes, the manifest gains a `sim_revisions` entry (`commit`,
 `worktree`, `from_commit`, the arms without `EndArm`, `accepted_wall_ms`), and
 each `Preflight` entry keeps binding the same execution digest, which leaves
@@ -422,9 +424,11 @@ finalize steps; both exist for tests). Every `poll_ms` the supervisor:
   inode use passes 80%.
 
 A run name may not be `logs`, `evidence`, `campaign.log`, or
-`campaign-status.json`. A restarted supervisor restores each run's record from
+`campaign-status.json`, or start with `lease.`. A restarted supervisor restores each run's record from
 `campaign-status.json` (refusing a file of any other shape) only while the
-run's command line is unchanged; a changed one starts the record over. Before it writes anything, the supervisor loads the configuration and refuses
+run's command line is unchanged; a changed one starts the record over for a
+run that has not started, and refuses the start for a run whose directory
+holds a journal, since its manifest pins the options it started with. Before it writes anything, the supervisor loads the configuration and refuses
 an `out` that overlaps the Eidnara checkout, a Pi install, or the corpus
 checkouts, or that lies unignored inside this checkout, as `run-tier` does.
 It takes the lease of `out` (`lease.<n>.json`, as a run directory's), so a
@@ -440,7 +444,9 @@ the supervisor never reports a finished campaign it could not record. Each attem
 to `<name>.attempt<k>.log`. `<out>/campaign.log` keeps every decision. Runs
 are launched detached, so stopping the supervisor leaves them running and
 starting it again resumes supervision; `--once` makes one pass and exits,
-for a cron entry. The supervisor exits 0 once every run is finalized with
+for a cron entry, after waiting for any finalize steps that pass started
+(each bounded by `finalize_timeout_ms`). A lease failure other than a live
+holder exits 2 under `--once` too. The supervisor exits 0 once every run is finalized with
 clean finalize steps, and 1 when any run gave up or a step failed. It inherits
 `PATH` and `SIM_CONFIG` from its environment:
 
