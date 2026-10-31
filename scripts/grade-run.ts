@@ -50,6 +50,7 @@ import type { CallRecord } from "../src/proxy/records";
 import { RecordWriter } from "../src/proxy/records";
 import { Rng } from "../src/rng";
 import { writeAtomic } from "../src/run/atomic";
+import { type ArmInterruptions, interruptions } from "../src/run/interruptions";
 import {
     type Entry,
     keepCompleteLines,
@@ -75,6 +76,12 @@ export interface Summary {
     p11: Record<string, { n: number; weighted_score: number }>;
     p3: { arm: string; delta_mem: { delta: number; n: number } | null }[];
     judge_errors: number;
+    /**
+     * Per arm, the turns journaled `failed(interrupted)` and their causes, the fatal stops a
+     * resume took up, and the unexpected daemon exits, which the report separates from the
+     * graded items (`src/run/interruptions.ts`).
+     */
+    interruptions: Record<string, ArmInterruptions>;
     /** The last `seq` of the journal this pass graded, so a later resume marks the summary stale. */
     journal_seq: number;
     /** The grader implementation (`graderDigest`) and the eidnara-sim revision this pass ran. */
@@ -887,6 +894,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
         p11,
         p3,
         judge_errors: judgeErrors,
+        interruptions: interruptions(entries),
         journal_seq: entries.at(-1)?.seq ?? 0,
         grader: { digest: grader, ...graderSim },
     };

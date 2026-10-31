@@ -97,6 +97,7 @@ import { contains, realExisting } from "./paths";
 import { type Preflight, piCli, preflight, preflightDrift } from "./preflight";
 import { PRICE_TABLE, type PriceTable } from "./price";
 import { running } from "./procs";
+import { gatewayRetry, transientUserSim, withRetry } from "./retry";
 import { ResourceSampler } from "./sampler";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent, Scheduler } from "./scheduler";
 import { FAKETIME_LIB, writeOffset } from "./timeinject";
@@ -126,6 +127,22 @@ export interface RunOptions {
      * whole scenario can finish in one invocation; the manifest records it.
      */
     wallBudgetMs?: number;
+    /**
+     * The eidnara-sim commit a resume may take up a run under although the run's latest
+     * recorded revision differs (`--sim-upgrade <commit>`); it must name the commit this
+     * process runs, and `requireRecoveryUpgrade` sets the conditions.
+     */
+    simUpgrade?: string;
+}
+
+/** One eidnara-sim revision a resume took a run up under, after the one that started it. */
+export interface SimRevision {
+    commit: string;
+    worktree: string;
+    from_commit: string;
+    /** The arms without `EndArm` when the revision took over. */
+    arms: string[];
+    accepted_wall_ms: number;
 }
 
 export interface Manifest {
@@ -151,6 +168,11 @@ export interface Manifest {
     sim_commit: string;
     /** Digest of the eidnara-sim working tree's uncommitted content at the start (`treeIdentity`). */
     sim_worktree: string;
+    /**
+     * Every later revision a resume ran the run under (`--sim-upgrade`), in order; outside the
+     * execution digest, so the `Preflight` entries journaled before an upgrade still bind.
+     */
+    sim_revisions?: SimRevision[];
     /**
      * SHA-256 of the daemon, OpenCode, and Pi executables and of the plugin builds the hosts
      * load; a resume must present the same.
@@ -485,9 +507,12 @@ function manifestProblems(m: Manifest, compiledEvents: number): string[] {
     return problems;
 }
 
-/** The manifest's execution fields (everything but the per-invocation preflight), as one digest. */
+/**
+ * The manifest's execution fields (everything but the per-invocation preflight and the sim
+ * revisions a resume appends), as one digest.
+ */
 export function manifestIdentity(manifest: Manifest): string {
-    const { preflight: _preflight, ...fields } = manifest;
+    const { preflight: _preflight, sim_revisions: _revisions, ...fields } = manifest;
     return sha256Hex(canonicalJson(fields));
 }
 
@@ -569,6 +594,140 @@ function git(dir: string, args: string[]): string {
 
 function gitHead(dir: string): string {
     return git(dir, ["rev-parse", "HEAD"]).trim();
+}
+
+/** The `treeIdentity` worktree digest of a checkout with no uncommitted content. */
+const CLEAN_WORKTREE = createHash("sha256").digest("hex");
+
+/**
+ * The tracked paths that decide what an arm is shown and what its run records: the
+ * pre-registration and its schema, the scenario compiler and corpus, the user-sim (persona,
+ * behaviour plan, tape and pairing), the seeded generator, the oracle note, the host driver,
+ * arm profiles, workspace snapshots, and store checks, call classification, records, and fault
+ * injection, the clock and its injection, and the resource sampler.
+ */
+export const MEASUREMENT_PATHS = [
+    "prereg",
+    "src/prereg",
+    "src/scenario",
+    "src/corpus",
+    "corpus",
+    "src/usersim",
+    "src/rng.ts",
+    "src/oracle",
+    "src/run/oracle-note.ts",
+    "src/hosts/arms.ts",
+    "src/hosts/profiles.ts",
+    "src/hosts/driver.ts",
+    "src/hosts/snapshot.ts",
+    "src/hosts/storecheck.ts",
+    "src/proxy/classify.ts",
+    "src/proxy/records.ts",
+    "src/proxy/inject.ts",
+    "src/run/clock.ts",
+    "src/run/timeinject.ts",
+    "src/run/sampler.ts",
+];
+
+/**
+ * Refuses a resume under eidnara-sim revision `to` of a run whose latest revision is `from`
+ * unless the change is harness recovery only: both trees are clean, `to` descends from `from`,
+ * and no path in `MEASUREMENT_PATHS` differs between them. Every other pinned input (the
+ * pre-registration, scenario, binaries, corpus, arm configuration) is compared as on any resume.
+ */
+/**
+ * Decides the sim revision a resume runs under and returns the `sim_revisions` entry to record,
+ * or null when the run stays at its latest revision (the last `sim_revisions` entry, each link
+ * checked again since the field lies outside the execution digest, or `sim_commit`). Any other
+ * changed input in `changed`, or a moved revision without a matching `--sim-upgrade`, refuses.
+ */
+export function simRevision(
+    manifest: Pick<Manifest, "sim_commit" | "sim_worktree" | "sim_revisions">,
+    current: { sim_commit: string; sim_worktree: string },
+    simUpgrade: string | undefined,
+    changed: readonly string[],
+    root = ROOT,
+): SimRevision | null {
+    let latest = { commit: manifest.sim_commit, worktree: manifest.sim_worktree };
+    for (const r of manifest.sim_revisions ?? []) {
+        if (r?.from_commit !== latest.commit) {
+            throw new HarnessFailure(
+                `manifest.json sim_revisions breaks its chain at ${r?.commit}`,
+            );
+        }
+        requireRecoveryUpgrade(latest, r, root);
+        latest = { commit: r.commit, worktree: r.worktree };
+    }
+    const moved = [
+        ...(current.sim_commit === latest.commit ? [] : ["sim_commit"]),
+        ...(current.sim_worktree === latest.worktree ? [] : ["sim_worktree"]),
+    ];
+    if (changed.length > 0 || (moved.length > 0 && simUpgrade === undefined)) {
+        const hint =
+            changed.length === 0
+                ? " (a harness-recovery change resumes with --sim-upgrade <commit>)"
+                : "";
+        throw new HarnessFailure(
+            `inputs changed since the run started: ${[...changed, ...moved].join(", ")}${hint}`,
+        );
+    }
+    if (moved.length === 0) {
+        if (simUpgrade !== undefined && simUpgrade !== latest.commit) {
+            throw new HarnessFailure(
+                `--sim-upgrade names ${simUpgrade}; the run is at ${latest.commit}`,
+            );
+        }
+        return null;
+    }
+    if (simUpgrade !== current.sim_commit) {
+        throw new HarnessFailure(
+            `--sim-upgrade names ${simUpgrade}; this checkout runs ${current.sim_commit}`,
+        );
+    }
+    const to = { commit: current.sim_commit, worktree: current.sim_worktree };
+    requireRecoveryUpgrade(latest, to, root);
+    return { ...to, from_commit: latest.commit, arms: [], accepted_wall_ms: Date.now() };
+}
+
+export function requireRecoveryUpgrade(
+    from: { commit: string; worktree: string },
+    to: { commit: string; worktree: string },
+    root = ROOT,
+): void {
+    if (from.worktree !== CLEAN_WORKTREE || to.worktree !== CLEAN_WORKTREE) {
+        throw new HarnessFailure(
+            "--sim-upgrade needs a run started, and resumed, from clean eidnara-sim checkouts",
+        );
+    }
+    const ancestor = Bun.spawnSync([
+        GIT,
+        "-C",
+        root,
+        "merge-base",
+        "--is-ancestor",
+        from.commit,
+        to.commit,
+    ]);
+    if (ancestor.exitCode !== 0) {
+        throw new HarnessFailure(
+            `--sim-upgrade: ${to.commit} does not descend from the run's revision ${from.commit}`,
+        );
+    }
+    const touched = git(root, [
+        "diff",
+        "--name-only",
+        from.commit,
+        to.commit,
+        "--",
+        ...MEASUREMENT_PATHS,
+    ])
+        .split("\n")
+        .filter((line) => line !== "");
+    if (touched.length > 0) {
+        throw new HarnessFailure(
+            `--sim-upgrade: ${from.commit}..${to.commit} changes measurement paths: ${touched.join(", ")}`,
+        );
+    }
 }
 
 /**
@@ -1305,7 +1464,7 @@ export async function loadManifest(
     o: RunOptions,
     scenario: Scenario,
     checks?: Preflight,
-): Promise<{ manifest: Manifest; checks: Preflight }> {
+): Promise<{ manifest: Manifest; checks: Preflight; revision?: SimRevision }> {
     const path = join(o.out, "manifest.json");
     /** Preflight probes the environment once the build is known to match the audited daemon capabilities. */
     const probe = async (order: readonly string[]) => {
@@ -1422,15 +1581,16 @@ export async function loadManifest(
             const names = differs.map(([k]) => k).join(", ");
             throw new HarnessFailure(`resume options differ from the manifest: ${names}`);
         }
+        const current = digests();
         const changed = Object.entries({
-            ...digests(),
+            ...current,
             tape_sha256: tapeDigests(manifest.tapes),
             arms: armConfigs(manifest.order, manifest.side_model ?? manifest.models[0] ?? ""),
-        }).filter(([k, v]) => !sameJson(manifest[k as keyof Manifest], v));
-        if (changed.length > 0) {
-            const names = changed.map(([k]) => k).join(", ");
-            throw new HarnessFailure(`inputs changed since the run started: ${names}`);
-        }
+        })
+            .filter(([k]) => k !== "sim_commit" && k !== "sim_worktree")
+            .filter(([k, v]) => !sameJson(manifest[k as keyof Manifest], v))
+            .map(([k]) => k);
+        const revision = simRevision(manifest, current, o.simUpgrade, changed);
         checks = await probe(manifest.order);
         const intercepted = (p: Preflight) =>
             p.time_injection.map((t) => [t.name, t.path, t.intercepted, t.wall_clock_only]);
@@ -1472,7 +1632,7 @@ export async function loadManifest(
         const preflightLog = join(o.out, "preflight.jsonl");
         dropCutTail(preflightLog);
         appendFileSync(preflightLog, `${JSON.stringify(checks)}\n`);
-        return { manifest, checks };
+        return revision ? { manifest, checks, revision } : { manifest, checks };
     }
     requireMechanisms(wanted.fault_override ?? scenario.faults, wanted.models);
     sources(
@@ -1802,10 +1962,10 @@ async function runArms(
     const holdForCpu = (sampler: ResourceSampler, arm: string) => {
         sampler.sample();
         const hold = `settle-cpu-${arm}-${jobSeq++}`;
-        scheduler.jobStart(hold);
+        const release = scheduler.jobHold(hold);
         const end = () => {
             try {
-                scheduler.jobEnd(hold);
+                release();
             } catch (caught) {
                 samplerFailure ??= caught;
                 stop.reason ??= `post-turn hold failed: ${(caught as Error).message}`;
@@ -1879,7 +2039,7 @@ async function runArms(
     requireJournalShape(journal.entries);
     if (!fresh) rmSync(join(o.out, "toolbin"), { recursive: true, force: true });
     const compiled = await tracked(() => loadScenario(o));
-    const { manifest, checks } = await tracked(() => loadManifest(o, compiled));
+    const { manifest, checks, revision } = await tracked(() => loadManifest(o, compiled));
     requirePlainArtifacts(o.out, manifest.order);
     requireJournalShape(
         journal.entries,
@@ -1899,6 +2059,37 @@ async function runArms(
             "manifest.json differs from the manifest this run's journal binds",
         );
     }
+    // Each `Preflight` names the sim revision its invocation ran, so the manifest's latest
+    // revision, which lies outside the bound digest, must be the one the journal last ran.
+    const ran = journal.entries.filter((e) => e.kind === "Preflight" && e.sim_commit).at(-1);
+    const lastSim = manifest.sim_revisions?.at(-1) ?? {
+        commit: manifest.sim_commit,
+        worktree: manifest.sim_worktree,
+    };
+    // A kill between the revision's manifest write and its `Preflight` leaves the journal one
+    // revision behind, at the entry's own `from_commit`, while this checkout runs the entry.
+    const sim = simIdentity();
+    const cut =
+        "from_commit" in lastSim &&
+        ran?.sim_commit === lastSim.from_commit &&
+        sim.sim_commit === lastSim.commit &&
+        sim.sim_worktree === lastSim.worktree;
+    if (
+        ran &&
+        !cut &&
+        (ran.sim_commit !== lastSim.commit || ran.sim_worktree !== lastSim.worktree)
+    ) {
+        throw new HarnessFailure(
+            `manifest.json names sim revision ${lastSim.commit}; the journal last ran ${String(ran.sim_commit)}`,
+        );
+    }
+    if (revision) {
+        // Recorded once every check passed, just before the journal's entry for this invocation.
+        const ended = new Set(journal.entries.filter((e) => e.kind === "EndArm").map((e) => e.arm));
+        revision.arms = manifest.order.filter((arm) => !ended.has(arm));
+        manifest.sim_revisions = [...(manifest.sim_revisions ?? []), revision];
+        writeAtomic(join(o.out, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+    }
     journal.append({
         kind: "Preflight",
         arm: null,
@@ -1906,6 +2097,7 @@ async function runArms(
         time_injection: checks.time_injection,
         hosts: checks.hosts,
         manifest_sha256: manifestDigest,
+        ...sim,
     });
     const scenario = { ...compiled, faults: manifest.fault_override ?? compiled.faults };
     const allEvents: ScenarioEvent[] = scenario.events.map(
@@ -2073,16 +2265,12 @@ async function runArms(
         },
         arrival: () => {
             if (scope.arm === "" || scheduler.runningArm() !== scope.arm) return;
-            const id = `request-${jobSeq++}`;
-            scheduler.jobStart(id);
-            return () => scheduler.jobEnd(id);
+            return scheduler.jobHold(`request-${jobSeq++}`);
         },
         observe: (e) => {
             if (scheduler.runningArm() !== scope.arm) return;
             scheduler.observe(e.component);
-            const id = `${e.component}-${jobSeq++}`;
-            scheduler.jobStart(id);
-            return () => scheduler.jobEnd(id);
+            return scheduler.jobHold(`${e.component}-${jobSeq++}`);
         },
         requestDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
         firstArrival,
@@ -2130,12 +2318,23 @@ async function runArms(
         plan: behaviourPlan(scripted, prereg, seed, pinned),
         tape,
         pairing,
-        llm: proxyUserSim(
-            gateway.urls[0] as string,
-            manifest.user_sim_model ?? prereg.user_sim.model,
-            prereg.user_sim.max_tokens,
-            prereg.liveness_bounds.turn_deadline_ms,
-        ),
+        // A user-sim call that fails in transport is sent again, within the turn deadline the
+        // single call had; the reply is used only once an attempt succeeds, so the tape key,
+        // the pairing record, and the scripted text a retried turn delivers are its first
+        // attempt's.
+        llm: (prompt) =>
+            withRetry(
+                "user-sim call",
+                gatewayRetry(prereg.liveness_bounds.turn_deadline_ms),
+                transientUserSim,
+                (attemptMs) =>
+                    proxyUserSim(
+                        gateway.urls[0] as string,
+                        manifest.user_sim_model ?? prereg.user_sim.model,
+                        prereg.user_sim.max_tokens,
+                        attemptMs,
+                    )(prompt),
+            ),
         normalise: normaliser(prereg.divergence_policy.normalisation),
         keys: [
             ...scenario.facts.flatMap((f) => [f.id, f.template]),
@@ -2307,15 +2506,14 @@ async function runArms(
             settle: () => scheduler.quiesceJobs(),
             now,
         });
-        let cpuJob: string | null = null;
+        let cpuJob: (() => void) | null = null;
         const onBusy = (busy: boolean) => {
             if (busy && cpuJob === null) {
-                const id = `daemon-cpu-${arm}-${jobSeq++}`;
-                scheduler.jobStart(id);
-                cpuJob = id;
+                cpuJob = scheduler.jobHold(`daemon-cpu-${arm}-${jobSeq++}`);
             } else if (!busy && cpuJob !== null) {
-                scheduler.jobEnd(cpuJob);
+                const release = cpuJob;
                 cpuJob = null;
+                release();
             }
         };
         const sampler = new ResourceSampler({
@@ -2467,6 +2665,15 @@ async function runArms(
                     if (stopped) throw stopped;
                     return last;
                 }),
+            // A failed arm stops as the teardown stops it, without the final checks, so its
+            // resume finds no recorded finish failure.
+            abort: async () => {
+                try {
+                    sampler.stop();
+                } finally {
+                    await driver.stop();
+                }
+            },
         };
     }
     await scheduler.run();

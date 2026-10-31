@@ -1505,6 +1505,7 @@ export const graderDigest = (): string =>
             "../proxy/records.ts",
             "../proxy/classify.ts",
             "../prereg/canonical.ts",
+            "../run/retry.ts",
         ]
             .map((f) => readFileSync(join(import.meta.dir, f), "utf8"))
             .join("\n"),

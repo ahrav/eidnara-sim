@@ -9,7 +9,8 @@ PATH=<opencode release>/node_modules/.bin:$PATH \
 bun scripts/run-tier.ts --tier S --seed 101 --out runs/S-101-pi \
     [--host pi|opencode] [--arms host,eidnara] [--events N] \
     [--faults episodes.json] [--context-limit N] [--models a,b] \
-    [--tapes tape.jsonl,...] [--qualification Q] [--wall-budget-ms N]
+    [--tapes tape.jsonl,...] [--qualification Q] [--wall-budget-ms N] \
+    [--sim-upgrade <commit>]
 ```
 
 The v1 harness closure resolves `opencode` through a shell, and that shell
@@ -38,6 +39,35 @@ reads it from the manifest before its preflight and runs under it, and a
 resume naming another value is refused. `scripts/tier.ts`
 runs every campaign run under the registered budget, and the tier report's
 SIM-L03 check reads the tier's.
+
+`--sim-upgrade <commit>` lets a resume take up a run under a newer
+eidnara-sim commit, for a change that is harness recovery only. The value must
+name the commit this checkout runs. The resume is refused unless the run's
+latest revision (the last entry of the manifest's `sim_revisions`, or
+`sim_commit` when there is none) and this one are clean checkouts, this commit
+descends from it, and no path in `MEASUREMENT_PATHS` (`src/run/run.ts`: the
+pre-registration and its schema, the scenario compiler and corpus, the
+user-sim, the seeded generator, the oracle note, the host driver, arm
+profiles, workspace snapshots, and store checks, call classification, records,
+and fault injection, the clock and its injection, and the resource sampler)
+differs between them; every link of a recorded `sim_revisions` chain is
+checked again on each resume, since the field lies outside the execution
+digest, and a checkout back at an earlier revision counts as a move; every
+`Preflight` entry names the sim commit and working-tree digest its invocation
+ran, and a resume refuses a manifest whose latest revision is not the one the
+journal's last such entry names, except the state a kill leaves between the
+two writes: the journal names the entry's `from_commit` and this checkout runs
+the entry itself. The new `sim_revisions` entry is written only after the
+journal checks pass, just before this invocation's `Preflight`; every other pinned input is compared as on any resume.
+Once every check passes, the manifest gains a `sim_revisions` entry (`commit`,
+`worktree`, `from_commit`, the arms without `EndArm`, `accepted_wall_ms`), and
+each `Preflight` entry keeps binding the same execution digest, which leaves
+`sim_revisions` out. `sim_commit` keeps naming the revision that started the
+run. Without the flag, a changed revision is refused as before, with a hint
+when the revision is the only changed input. Graders run after `EndRun` over
+the recorded artefacts and each grade records its grader digest, so a grader
+change is outside this check: `grade-run` grades every run of a campaign with
+the grader it runs.
 
 `--qualification Q` runs under the qualification registration
 `prereg/Q.json` (`sim-qualification/v1`, `src/prereg/qualification.ts`)
@@ -340,6 +370,93 @@ reopens `resources.jsonl` on resume. Every host launch uses the launcher
 this invocation's preflight wrote and probed. A periodic sample that fails
 (for example, a full disk under `resources.jsonl`) stops the sampler and the
 run the same way a signal does, so the teardown runs.
+
+## Campaign supervisor
+
+`scripts/campaign.ts <campaign.json> [--once]` runs a list of `run-tier`
+jobs to the end and keeps their state where an operator sees it. The
+campaign file:
+
+```json
+{
+    "schema": "sim-campaign/v1",
+    "out": "/abs/campaign/Q",
+    "args": ["--tier", "S", "--qualification", "Q", "--host", "pi",
+             "--wall-budget-ms", "345600000"],
+    "runs": [
+        { "name": "S-101-host", "args": ["--seed", "101", "--arms", "host"] },
+        { "name": "S-102-eidnara", "args": ["--seed", "102", "--arms", "eidnara,eidnara~aa"] }
+    ],
+    "max_resumes": 6,
+    "poll_ms": 60000,
+    "stale_ms": 2700000,
+    "inode_paths": ["/tmp"]
+}
+```
+
+Each run is `bun scripts/run-tier.ts`, the shared `args`, the run's `args`,
+and `--out <out>/<name>` (`run_command` replaces the first part, and
+`finalize_commands`, with `{dir}` and `{evidence}` placeholders, the
+finalize steps; both exist for tests). Every `poll_ms` the supervisor:
+
+- reads each run's journal and manifest and treats a run as running while
+  the child it launched lives or the run directory's lease is held, so a
+  restarted supervisor picks up runs it did not launch;
+- launches a run that has not started, and relaunches one that stopped
+  before `EndRun` (a resume) until it has relaunched `max_resumes` times,
+  or until three attempts in a row measured no event (an `Event` other than
+  `failed(interrupted)`), the sign of a refusal or an outage every resume
+  repeats; each such attempt quadruples the wait before the next launch,
+  from `relaunch_backoff_ms` (60 s) up to 30 minutes; either limit ends the
+  run as `gave-up`, logged with a banner on stderr and an `ALERT` line;
+- on `EndRun`, runs `grade-run`, `evidence-run` (into the run directory), and
+  `pairing-check` once, beside the poll loop, each bounded by
+  `finalize_timeout_ms` (six hours), logging each exit code (a nonzero one, or
+  a killed step, is an alert);
+- writes `<out>/campaign-status.json` (`sim-campaign-status/v1`): per run,
+  the state, launches, last `error:` line of its log, events done and total,
+  failed and interrupted turns, daemon exits, journal resumes, unresolved
+  fatal causes, the last entry's wall time, and the ETA at the event rate of
+  the last six hours; plus the current alerts;
+- raises an alert for a run that gave up, a running run whose journal gained
+  no entry for `stale_ms` (45 minutes by default, past the 20-minute job
+  deadline), a failed finalize step, and each `inode_paths` filesystem whose
+  inode use passes 80%.
+
+A run name may not be `logs`, `evidence`, `campaign.log`, or
+`campaign-status.json`, start with `lease.`, or pass 200 characters. A restarted supervisor restores each run's record from
+`campaign-status.json` (refusing a file of any other shape) only while the
+run's command line is unchanged; a changed one starts the record over for a
+run that has not started, and refuses the start for a run whose directory
+holds a journal, since its manifest pins the options it started with. Before it writes anything, the supervisor loads the configuration and refuses
+an `out` that overlaps the Eidnara checkout, a Pi install, or the corpus
+checkouts, or that lies unignored inside this checkout, as `run-tier` does.
+It takes the lease of `out` (`lease.<n>.json`, as a run directory's), so a
+second supervisor on the same campaign, an overlapping `--once` pass
+included, stops at once (exit 0 under `--once`, 2 otherwise). `out/logs` must
+be a plain directory, and its logs are opened without following links and
+must be plain single-link files. A step that fails for one run is logged as an
+alert and leaves the other runs supervised; three such failures in a row for a
+run that is not running give it up. A launch that cannot start counts as an
+attempt that measured nothing. The last error is read from the last 64 KiB of
+the attempt's log. A poll whose status write fails keeps the campaign open, so
+the supervisor never reports a finished campaign it could not record. Each attempt logs to `<out>/logs/<name>.log`; the previous attempt's log moves
+to `<name>.attempt<k>.log`. `<out>/campaign.log` keeps every decision. Runs
+are launched detached, so stopping the supervisor leaves them running and
+starting it again resumes supervision; `--once` makes one pass and exits,
+for a cron entry, after waiting for any finalize steps that pass started
+(each bounded by `finalize_timeout_ms`). A lease failure other than a live
+holder exits 2 under `--once` too, and a `--once` pass exits 1 while any run
+has given up or failed a finalize step. The supervisor exits 0 once every run is finalized with
+clean finalize steps, and 1 when any run gave up or a step failed. It inherits
+`PATH` and `SIM_CONFIG` from its environment:
+
+```sh
+PATH=<opencode release>/node_modules/.bin:$PATH SIM_CONFIG=<sim.config.json> \
+    nohup bun scripts/campaign.ts campaign.json > campaign.out 2>&1 &
+jq '.alerts, (.runs[] | {name, state, events_done, events_total, eta_at, last_error})' \
+    <out>/campaign-status.json
+```
 
 ## Journal check
 

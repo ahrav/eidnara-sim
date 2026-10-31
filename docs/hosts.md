@@ -194,8 +194,8 @@ complete evidence only when the two agree:
   DISABLED` line, and each Pi boot must match the arm's Eidnara compaction
   (`eidnara_reduce` registered when on, `compaction-off mode` when off; a
   registration naming neither mode is a mismatch); a host-only arm must hold
-  no boot. A mismatch fails the event, so the journal records it fatal and a
-  resume refuses the run.
+  no boot. A mismatch fails the event, so the journal records it fatal
+  (`event-error`) and a resume refuses the run.
 - Before `EndArm`, once the arm's finish and every job it started have
   ended, a session still open when the arm ended (an `--events` prefix can
   stop inside one) gets the same boot check, and the run writes

@@ -1,6 +1,7 @@
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import { COMPONENT_HEADER } from "../proxy/classify";
 import type { Rng } from "../rng";
+import { gatewayRetry, type RetryPolicy, withRetry } from "../run/retry";
 import type { ProbeItem } from "../scenario/compile";
 import {
     AnswerRefused,
@@ -183,9 +184,17 @@ export interface JudgeClient {
 }
 
 export interface ProxyJudgeOptions {
-    /** Wall-clock bound on one verdict request, after which the call is refused. */
+    /**
+     * Wall-clock bound on one verdict, its retries included, after which the call is refused.
+     * Up to three attempts share it, as `gatewayRetry` sets out.
+     */
     deadlineMs?: number;
+    /** Replaces `gatewayRetry(deadlineMs)`, for tests that need short backoffs. */
+    retry?: RetryPolicy;
 }
+
+/** A judge attempt that failed in transport: a timeout, a dropped connection, or a 429 or 5xx. */
+class JudgeTransport extends Error {}
 
 export function parseVerdict(text: string): RawVerdict {
     const word = text
@@ -219,35 +228,65 @@ export function proxyJudge(
     return {
         identity: judgeIdentity(model),
         async verdict(prompt) {
-            let body: { output?: { message?: { content?: unknown } }; stopReason?: unknown };
-            try {
-                const response = await fetch(
-                    `${gatewayUrl}/model/${encodeURIComponent(model)}/converse`,
-                    {
-                        method: "POST",
-                        headers: {
-                            [COMPONENT_HEADER]: "judge",
-                            "content-type": "application/json",
+            type Body = { output?: { message?: { content?: unknown } }; stopReason?: unknown };
+            const attempt = async (attemptMs: number): Promise<Body> => {
+                let response: Response;
+                try {
+                    response = await fetch(
+                        `${gatewayUrl}/model/${encodeURIComponent(model)}/converse`,
+                        {
+                            method: "POST",
+                            headers: {
+                                [COMPONENT_HEADER]: "judge",
+                                "content-type": "application/json",
+                            },
+                            body: JSON.stringify({
+                                messages: [{ role: "user", content: [{ text: prompt }] }],
+                                inferenceConfig: { maxTokens: 256 },
+                            }),
+                            signal: AbortSignal.timeout(attemptMs),
+                            redirect: "error",
+                            keepalive: false,
                         },
-                        body: JSON.stringify({
-                            messages: [{ role: "user", content: [{ text: prompt }] }],
-                            inferenceConfig: { maxTokens: 256 },
-                        }),
-                        signal: AbortSignal.timeout(deadlineMs),
-                        redirect: "error",
-                        keepalive: false,
-                    },
-                );
-                if (!response.ok) throw new GradeRefused(`judge call failed: ${response.status}`);
-                body = (await response.json()) as typeof body;
-            } catch (caught) {
-                if ((caught as Error).name === "TimeoutError") {
-                    throw new GradeRefused(`judge call timed out after ${deadlineMs} ms`);
+                    );
+                } catch (caught) {
+                    const error = caught as Error;
+                    if (error.name === "TimeoutError") {
+                        throw new JudgeTransport(`judge call timed out after ${attemptMs} ms`);
+                    }
+                    // A redirect is the gateway's answer, refused as `redirect: "error"` asks.
+                    if (/redirect/i.test(error.message)) {
+                        throw new GradeRefused(`judge call failed: ${error.message}`);
+                    }
+                    throw new JudgeTransport(`judge call failed: ${error.message}`);
                 }
-                if (caught instanceof SyntaxError)
-                    throw new GradeRefused("judge reply is not JSON");
+                if (response.status === 429 || response.status >= 500) {
+                    throw new JudgeTransport(`judge call failed: ${response.status}`);
+                }
+                if (!response.ok) throw new GradeRefused(`judge call failed: ${response.status}`);
+                try {
+                    return (await response.json()) as Body;
+                } catch (caught) {
+                    if (caught instanceof SyntaxError) {
+                        throw new GradeRefused("judge reply is not JSON");
+                    }
+                    if ((caught as Error).name === "TimeoutError") {
+                        throw new JudgeTransport(`judge call timed out after ${attemptMs} ms`);
+                    }
+                    throw new JudgeTransport(`judge reply broke off: ${(caught as Error).message}`);
+                }
+            };
+            let body: Body;
+            try {
+                body = await withRetry(
+                    "judge call",
+                    options.retry ?? gatewayRetry(deadlineMs),
+                    (caught) => caught instanceof JudgeTransport,
+                    attempt,
+                );
+            } catch (caught) {
                 if (caught instanceof GradeRefused) throw caught;
-                throw new GradeRefused(`judge call failed: ${(caught as Error).message}`);
+                throw new GradeRefused((caught as Error).message);
             }
             if (body?.stopReason !== "end_turn") {
                 throw new GradeRefused(`judge reply stopped for ${String(body?.stopReason)}`);

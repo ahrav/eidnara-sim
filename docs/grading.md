@@ -106,7 +106,12 @@ changes, or removes a `.gitignore` or `.gitattributes`, or edits
 files from the diff, and an attribute (`ident`, `eol`, a clean driver) would
 rewrite the content git indexes. The baseline is the source's `.gitignore` and
 `.gitattributes` blobs and the clone's `exclude` and `attributes` files,
-recorded at reset. The probe turn's rule check runs before the workspace is
+recorded at reset. A rule file the agent adds inside a directory git already
+ignores counts as no change: git skips traversal of an excluded directory, so
+nothing under it reaches the indexed tree whatever its rule files say (a
+`.gitignore` an agent writes under `target/` fails no turn). A rule file the
+source tracks, one at the workspace root, and one above a path the recorder
+adds with `--force` always count. The probe turn's rule check runs before the workspace is
 indexed, and a turn with changed rules keeps its start tree as its end tree;
 a `git add` that fails under changed rule files (an attribute that names an
 encoding git lacks) fails the turn the same way, at the turn's start or the
@@ -530,7 +535,13 @@ cannot call, and the divergences are listed below.
 
 `proxyJudge` sends each verdict request through the capture proxy with the
 `judge` component header, bounded by a per-call deadline (900 s by default)
-covering the request and the body read, whose expiry is a judge refusal. A
+covering the request and the body read, whose expiry is a judge refusal. Up
+to three attempts share that deadline, the first two with a third of it each
+and the last with what remains, two and eight seconds apart; an attempt never
+starts once the deadline has passed (`src/run/retry.ts`): an attempt that timed out, a dropped
+connection, a broken-off body, or a 429 or 5xx status is sent again with the
+same prompt, and any other refusal (a 4xx, a redirect, a reply that is not
+JSON) ends the call at once. A
 reply whose `stopReason` is not `end_turn` (a truncated or filtered
 generation) is a judge refusal before its text is read. It refuses a judge model from the agent model's
 family (SIM-P43), where the family is the provider segment of the model id

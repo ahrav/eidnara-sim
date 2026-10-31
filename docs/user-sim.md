@@ -5,7 +5,15 @@ is the hidden script: the user-sim delivers its probe, paste, and plain task
 turns verbatim, and writes a short reply in front of the script text for the
 turns the behaviour plan marks. A Haiku 5.5 call through the capture proxy
 (component `user-sim`, asserted by header) writes each reply, bounded by the
-pre-registered turn deadline, which the host prompt then shares; the persona
+pre-registered turn deadline, which the host prompt then shares. Up to three
+attempts share that deadline, two and eight seconds apart: an attempt that
+timed out, a dropped connection, or a 429 or 5xx status is sent again with
+the same prompt (a reply body that is not JSON is not), and a call whose attempts all fail stops the run as a
+`harness-transport` stop that a resume takes up (`docs/run.md`). The reply is
+used only once an attempt succeeds, and the tape key, the pairing record, and
+the scripted text are computed from the script and the session context, not
+the attempt, so a retried turn delivers what a first-attempt success would
+have (its reply text is the successful attempt's, as any live reply is); the persona
 and the label's instruction go in the system prompt, and the agent's last
 reply and the script text that follows the reply go in the user message as
 quoted data, with any `>>>` in them spaced so the quote cannot close

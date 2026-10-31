@@ -3,7 +3,13 @@ import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { FaultEpisode } from "../scenario/faults";
 import { Clock } from "./clock";
 import { withDeadline } from "./deadline";
-import { type Entry, type EntryKind, HarnessFailure, type Journal } from "./journal";
+import {
+    type Entry,
+    type EntryKind,
+    HarnessFailure,
+    type Journal,
+    TransportFailure,
+} from "./journal";
 import type { OffsetWrite } from "./timeinject";
 
 export interface ScenarioEvent {
@@ -61,6 +67,11 @@ export interface ArmDriver {
      * still owed are journaled.
      */
     finish?(): Promise<TurnOutcome | undefined | void>;
+    /**
+     * Stops everything a failed arm runs, leaving it for a resume: the terminal checks `finish`
+     * makes are skipped. The scheduler calls `finish` when a driver has no `abort`.
+     */
+    abort?(): Promise<void>;
 }
 
 /**
@@ -82,7 +93,94 @@ export interface ProxyControl {
     reset(): void;
 }
 
-export { HarnessFailure };
+export { HarnessFailure, TransportFailure };
+
+/**
+ * The busy set held the clock past `job_deadline_ms` while the scheduler waited on it. Thrown
+ * inside a driver call (a probe turn's `quiesceJobs`), it stops the run as `job-deadline`, as
+ * the per-job timer does.
+ */
+export class DeadlineOverrun extends HarnessFailure {}
+
+/**
+ * Why a fatal `ItemState` stopped the run: a job held the clock past its deadline, a harness
+ * call to the model gateway failed in transport, the daemon exited outside an outage window,
+ * a scheduler fault's mechanism failed, or an event's delivery failed otherwise.
+ */
+export type FatalCause =
+    | "job-deadline"
+    | "harness-transport"
+    | "daemon-exit"
+    | "fault-error"
+    | "event-error";
+
+/**
+ * The causes a resume recovers from. Each leaves the measurement intact up to the stop: the
+ * in-flight turn, job, or fault is journaled `failed(interrupted)` with the cause, which the
+ * missingness policy excludes from recall and counts in dependability, and the arm continues at
+ * its next event with a fresh host session. A fault mechanism that failed, or a delivery that
+ * failed for any other reason, names a harness or driver defect whose effect on the arm is
+ * unknown, so such a run stays refused.
+ */
+export const RECOVERABLE_CAUSES: ReadonlySet<FatalCause> = new Set<FatalCause>([
+    "job-deadline",
+    "harness-transport",
+    "daemon-exit",
+]);
+
+/**
+ * The transport errors an event's fatal record written before records carried `cause` names:
+ * the message starts with the user-sim's own timeout or 429/5xx refusal, or with the error
+ * `fetch` raises for a closed socket or a reset or refused connection. A host or driver error
+ * that only wraps such text stays `event-error`.
+ */
+const RECORDED_TRANSPORT =
+    /^(?:user-sim call timed out|user-sim call failed: (?:429|5\d\d)|The socket connection was closed unexpectedly|(?:TypeError: )?(?:read |connect )?ECONN(?:RESET|REFUSED)\b)/;
+
+/** The causes an event's fatal record may carry: a delivery cut by transport or a job overrun. */
+const EVENT_CAUSES: ReadonlySet<FatalCause> = new Set<FatalCause>([
+    "harness-transport",
+    "job-deadline",
+    "event-error",
+]);
+
+/** A probe turn's wait on its background jobs that ran past the deadline (`DeadlineOverrun`). */
+const RECORDED_OVERRUN =
+    /^(?:busy set held the clock past|background jobs kept the quiet window open past) \d+ ms/;
+
+/**
+ * The cause of a fatal `ItemState`. A daemon exit, a fault, and a job name their cause by
+ * shape; an event's record names `harness-transport` or `event-error` in `cause`, and one from
+ * before that field is classified by its error text.
+ */
+export function fatalCause(e: Entry): FatalCause {
+    if (e.daemon_exit !== undefined) return "daemon-exit";
+    if (e.fault !== undefined) return "fault-error";
+    if (e.job !== undefined) return "job-deadline";
+    if (EVENT_CAUSES.has(e.cause as FatalCause)) return e.cause as FatalCause;
+    const error = String(e.error ?? "");
+    if (RECORDED_OVERRUN.test(error)) return "job-deadline";
+    return RECORDED_TRANSPORT.test(error) ? "harness-transport" : "event-error";
+}
+
+/** Whether `e` is a fatal `ItemState`, the record that stops a run. */
+export const isFatal = (e: Entry): boolean => e.kind === "ItemState" && e.fatal === true;
+
+/** The item a fatal record names, as `Recovered` carries it. */
+function fatalItem(e: Entry): Record<string, unknown> {
+    if (e.daemon_exit !== undefined) return { daemon_exit: e.daemon_exit };
+    if (e.fault !== undefined) return { fault: e.fault };
+    if (e.job !== undefined) return { job: e.job };
+    return { event: e.event };
+}
+
+/** The fatal records of `entries` that no `Recovered` entry resolves yet. */
+export function pendingFatals(entries: readonly Entry[]): Entry[] {
+    const resolved = new Set(
+        entries.filter((e) => e.kind === "Recovered").map((e) => e.recovers as number),
+    );
+    return entries.filter((e) => isFatal(e) && !resolved.has(e.seq));
+}
 
 /** The identity `StartRun` records and a resume must present again. */
 export function scenarioId(events: ScenarioEvent[], faults: FaultEpisode[]): string {
@@ -188,6 +286,8 @@ export class Scheduler {
     /** One deadline timer per open job, so a job overruns its bound whatever the arm is waiting on. */
     private readonly jobTimers = new Map<string, ReturnType<typeof setTimeout>>();
     private fatal: HarnessFailure | null = null;
+    /** The cause of the fatal record this process journaled, for the markers its cut leaves. */
+    private fatalCause: FatalCause | null = null;
     private failed: Promise<never> | null = null;
     private fail: ((error: HarnessFailure) => void) | null = null;
 
@@ -254,6 +354,7 @@ export class Scheduler {
      * wakes find it on disk, and a record that cannot land has already poisoned the run.
      */
     private recordFatal(entry: { kind: EntryKind; [field: string]: unknown }, what: string): void {
+        this.fatalCause ??= (entry.cause as FatalCause | undefined) ?? null;
         try {
             this.record(entry, what);
         } catch {
@@ -307,7 +408,11 @@ export class Scheduler {
         const entries = this.o.journal.entries.filter(
             (e) => e.kind !== "Preflight" && e.kind !== "CounterfactualSample",
         );
-        const fatal = entries.find((e) => e.kind === "ItemState" && e.fatal === true);
+        const pending = pendingFatals(entries);
+        const fatal =
+            entries.at(-1)?.kind === "EndRun"
+                ? pending[0]
+                : pending.find((e) => !RECOVERABLE_CAUSES.has(fatalCause(e)));
         if (fatal) {
             const cause = fatal.fault
                 ? `fault ${fatal.fault} failed`
@@ -461,7 +566,8 @@ export class Scheduler {
                     }
                     if (!finishing) {
                         priorJobs = new Set(this.clock?.busyIds() ?? []);
-                        await driver.finish?.().catch(() => undefined);
+                        const stop = driver.abort ? driver.abort() : driver.finish?.();
+                        await stop?.catch(() => undefined);
                     }
                     await this.drainNew(priorJobs);
                     throw caught;
@@ -550,6 +656,10 @@ export class Scheduler {
         let outage: string | null = null;
         let clockMs = 0;
         let session: string | null = null;
+        // Fatal records no `Recovered` entry resolves yet; after a `ResumeRun`, the resumed
+        // process journals their recovery before any other arm entry but its clock offset.
+        const unresolved = new Map<number, Entry>();
+        let awaiting = false;
         const scheduled = this.o.faults.filter((f) => f.trigger.kind !== "first_summarizer_call");
         const holdsClock = new Set<unknown>(
             this.o.faults
@@ -569,6 +679,7 @@ export class Scheduler {
             }
             if (e.kind === "ResumeRun") {
                 identity(e);
+                awaiting = unresolved.size > 0;
                 return;
             }
             if (e.kind === "EndRun") {
@@ -608,6 +719,10 @@ export class Scheduler {
             if (open === null || e.arm !== open) {
                 throw fail(`${e.kind} for arm ${e.arm} outside its arm`, e);
             }
+            if (awaiting && e.kind !== "Recovered" && e.kind !== "ClockOffset") {
+                const [first] = unresolved.keys();
+                throw fail(`${e.kind} precedes the recovery of fatal record ${first}`, e);
+            }
             // A fired fault's mechanism holds the clock as a turn does, from its `FaultFired`
             // until its `FaultObserved` or interruption marker; proxy faults and laptop sleeps
             // have no mechanism here, so they hold nothing.
@@ -632,6 +747,9 @@ export class Scheduler {
             };
             switch (e.kind) {
                 case "EndArm": {
+                    if ([...unresolved.values()].some((f) => f.arm === open)) {
+                        throw fail(`arm ${open} has EndArm with a fatal record unrecovered`, e);
+                    }
                     if (done < events.length) {
                         throw fail(`arm ${open} has EndArm before its events completed`, e);
                     }
@@ -906,7 +1024,52 @@ export class Scheduler {
                     summarised = true;
                     return;
                 }
+                case "Recovered": {
+                    if (!awaiting) throw fail("Recovered outside a resume's recovery", e);
+                    const f = unresolved.get(e.recovers as number);
+                    if (!f || f.arm !== e.arm) {
+                        throw fail(`Recovered names no pending fatal record (${e.recovers})`, e);
+                    }
+                    const cause = fatalCause(f);
+                    if (e.cause !== cause || !RECOVERABLE_CAUSES.has(cause)) {
+                        throw fail(`Recovered for fatal record ${f.seq} misreports its cause`, e);
+                    }
+                    const item = fatalItem(f);
+                    if (
+                        Object.entries(item).some(
+                            ([k, v]) => JSON.stringify(e[k]) !== JSON.stringify(v),
+                        )
+                    ) {
+                        throw fail(`Recovered for fatal record ${f.seq} misnames its item`, e);
+                    }
+                    unresolved.delete(f.seq);
+                    awaiting &&= unresolved.size > 0;
+                    return;
+                }
                 case "ItemState": {
+                    if (e.fatal === true) {
+                        const named = ["event", "job", "fault"].filter(
+                            (k) => typeof e[k] === "string",
+                        );
+                        if (e.daemon_exit !== undefined) {
+                            const detail = e.daemon_exit;
+                            const plain =
+                                typeof detail === "object" &&
+                                detail !== null &&
+                                !Array.isArray(detail);
+                            if (!plain || e.expected !== false || named.length > 0) {
+                                throw fail("fatal daemon exit of unknown shape", e);
+                            }
+                            outage = null;
+                        } else if (e.state !== "failed" || named.length !== 1) {
+                            throw fail("fatal ItemState of unknown shape", e);
+                        }
+                        if (e.cause !== undefined && e.cause !== fatalCause(e)) {
+                            throw fail("fatal ItemState names a cause its shape contradicts", e);
+                        }
+                        unresolved.set(e.seq, e);
+                        return;
+                    }
                     if (e.daemon_exit !== undefined) {
                         const detail = e.daemon_exit;
                         if (
@@ -1046,6 +1209,21 @@ export class Scheduler {
      * so a job such a turn started can register, then journals them.
      */
     private resume(mine: Entry[]): Entry[] {
+        // The fatal records the arm stopped on are resolved first, so every interruption marker
+        // below carries the cause that stopped the arm; an arm stopped without one (a kill, a
+        // reboot) was interrupted by the harness process's exit.
+        const fatals = pendingFatals(mine);
+        for (const f of fatals) {
+            this.log({ kind: "Recovered", recovers: f.seq, cause: fatalCause(f), ...fatalItem(f) });
+        }
+        // A resume killed after its `Recovered` entries left them as the arm's last entries;
+        // their cause still names what stopped the arm.
+        const lastWork = [...mine].reverse().find((e) => e.kind !== "ClockOffset");
+        const cause: string = fatals[0]
+            ? fatalCause(fatals[0])
+            : lastWork?.kind === "Recovered"
+              ? String(lastWork.cause)
+              : "harness-exit";
         const kinds = (k: string) => mine.filter((e) => e.kind === k);
         const done = new Set(kinds("Event").map((e) => e.event));
         const ended = new Set(kinds("EndTurn").map((e) => e.event));
@@ -1065,7 +1243,7 @@ export class Scheduler {
         }
         for (const [job, n] of open) {
             for (let i = 0; i < n; i++) {
-                this.log({ kind: "EndJob", job, outcome: "failed(interrupted)" });
+                this.log({ kind: "EndJob", job, outcome: "failed(interrupted)", cause });
             }
         }
         const firedIds = new Set(kinds("FaultFired").map((e) => e.fault));
@@ -1100,7 +1278,12 @@ export class Scheduler {
                 if (!observed.has(f.id) && f.type !== "laptop_sleep") {
                     this.interrupted.push(f.id);
                     if (!marked.has(f.id)) {
-                        this.log({ kind: "ItemState", fault: f.id, state: "failed(interrupted)" });
+                        this.log({
+                            kind: "ItemState",
+                            fault: f.id,
+                            state: "failed(interrupted)",
+                            cause,
+                        });
                     }
                 }
                 continue;
@@ -1117,7 +1300,7 @@ export class Scheduler {
             if (f.strategy === "persistent" || (target && !begun.has(target.id))) {
                 this.o.proxy?.arm(f.id, this.arm as string);
             } else if (!marked.has(f.id)) {
-                this.log({ kind: "ItemState", fault: f.id, state: "failed(interrupted)" });
+                this.log({ kind: "ItemState", fault: f.id, state: "failed(interrupted)", cause });
             }
         }
         const journaled = new Set(kinds("UserTurn").map((e) => e.event));
@@ -1129,9 +1312,14 @@ export class Scheduler {
                 : this.o.recoverTurn?.(e.event as string);
             if (user) this.log({ kind: "UserTurn", event: e.event, ...user, recovered: true });
             if (!marked.has(e.event)) {
-                this.log({ kind: "ItemState", event: e.event, state: "failed(interrupted)" });
+                this.log({
+                    kind: "ItemState",
+                    event: e.event,
+                    state: "failed(interrupted)",
+                    cause,
+                });
             }
-            this.log({ kind: "Event", event: e.event, outcome: "failed(interrupted)" });
+            this.log({ kind: "Event", event: e.event, outcome: "failed(interrupted)", cause });
         }
         return answered;
     }
@@ -1178,7 +1366,7 @@ export class Scheduler {
                 id.startsWith("job:") ? (this.jobStarted.get(id.slice(4)) ?? entered) : entered,
             );
             if (performance.now() > Math.min(...live) + limitMs) {
-                throw new HarnessFailure(
+                throw new DeadlineOverrun(
                     `busy set held the clock past ${this.o.idleLimitMs} ms: ${busy().join(", ")}`,
                 );
             }
@@ -1202,7 +1390,7 @@ export class Scheduler {
         while (Date.now() - quietSince < settle) {
             await this.untilFatal(Bun.sleep(this.o.jobPollMs ?? 50));
             if (Date.now() > limit) {
-                throw new HarnessFailure(
+                throw new DeadlineOverrun(
                     `background jobs kept the quiet window open past ${this.o.idleLimitMs} ms`,
                 );
             }
@@ -1228,7 +1416,7 @@ export class Scheduler {
             if (this.fatal) throw this.fatal;
             this.checkStop();
             if (Date.now() > limit) {
-                throw new HarnessFailure(
+                throw new DeadlineOverrun(
                     `busy set held the clock past ${this.o.idleLimitMs} ms: ${pending().join(", ")}`,
                 );
             }
@@ -1297,8 +1485,9 @@ export class Scheduler {
         } catch (caught) {
             if (caught === this.fatal) {
                 try {
+                    const cut = this.fatalCause ? { cause: this.fatalCause } : {};
                     this.record(
-                        { kind: "ItemState", fault: f.id, state: "failed(interrupted)" },
+                        { kind: "ItemState", fault: f.id, state: "failed(interrupted)", ...cut },
                         `fault ${f.id} was cut`,
                     );
                 } catch {
@@ -1309,7 +1498,14 @@ export class Scheduler {
             const error = caught instanceof Error ? caught.message : String(caught);
             this.fatal ??= new HarnessFailure(`fault ${f.id} failed: ${error}`);
             this.recordFatal(
-                { kind: "ItemState", fault: f.id, state: "failed", error, fatal: true },
+                {
+                    kind: "ItemState",
+                    fault: f.id,
+                    state: "failed",
+                    error,
+                    fatal: true,
+                    cause: "fault-error",
+                },
                 `fault ${f.id} failed`,
             );
             throw caught;
@@ -1369,7 +1565,7 @@ export class Scheduler {
                 id.startsWith("job:") ? (this.jobStarted.get(id.slice(4)) ?? entered) : entered,
             );
             if (busy.length > 0 && performance.now() > Math.min(...live) + limitMs) {
-                throw new HarnessFailure(
+                throw new DeadlineOverrun(
                     `busy set held the clock past ${this.o.idleLimitMs} ms: ${busy.join(", ")}`,
                 );
             }
@@ -1384,15 +1580,23 @@ export class Scheduler {
     }
 
     /**
-     * Stops the run for a job past its deadline, with the failure journaled first, so a resume
-     * refuses the run rather than finishing it over the violation.
+     * Stops the run for a job past its deadline, with the failure journaled first (cause
+     * `job-deadline`), so the resume marks what was in flight interrupted rather than running
+     * on over the violation.
      */
     private overdue(id: string): void {
         if (this.fatal) return;
         const error = `busy set held the clock past ${this.o.idleLimitMs} ms: job:${id}`;
         this.fatal = new HarnessFailure(error);
         this.recordFatal(
-            { kind: "ItemState", job: id, state: "failed", error, fatal: true },
+            {
+                kind: "ItemState",
+                job: id,
+                state: "failed",
+                error,
+                fatal: true,
+                cause: "job-deadline",
+            },
             `job ${id} deadline`,
         );
     }
@@ -1473,10 +1677,19 @@ export class Scheduler {
                 if (!wellFormed) throw new Error(`driver outcome is ${describe(got)}`);
             } catch (caught) {
                 if (caught === this.fatal) throw caught;
+                // The harness's own stop (a signal or the wall budget) ends the call; the open
+                // turn is the resume's to mark interrupted, as after a kill.
+                if (this.o.stopped?.()) throw caught;
                 const error = caught instanceof Error ? caught.message : String(caught);
                 this.fatal ??= new HarnessFailure(`event ${e.id} failed: ${error}`);
+                const cause: FatalCause =
+                    caught instanceof TransportFailure
+                        ? "harness-transport"
+                        : caught instanceof DeadlineOverrun
+                          ? "job-deadline"
+                          : "event-error";
                 this.recordFatal(
-                    { kind: "ItemState", event: e.id, state: "failed", error, fatal: true },
+                    { kind: "ItemState", event: e.id, state: "failed", error, fatal: true, cause },
                     `event ${e.id} failed`,
                 );
                 throw caught;
@@ -1644,10 +1857,17 @@ export class Scheduler {
                     this.fatal ??= new HarnessFailure(
                         "daemon exited outside a scheduled outage window",
                     );
+                    this.fatalCause ??= "daemon-exit";
                 }
                 try {
                     this.record(
-                        { kind: "ItemState", daemon_exit: detail, expected, fatal: !expected },
+                        {
+                            kind: "ItemState",
+                            daemon_exit: detail,
+                            expected,
+                            fatal: !expected,
+                            ...(expected ? {} : { cause: "daemon-exit" }),
+                        },
                         "daemon exit",
                     );
                 } finally {
@@ -1680,6 +1900,22 @@ export class Scheduler {
 
     jobEnd(id: string): void {
         this.live().jobEnd(id);
+    }
+
+    /**
+     * Registers a job on the running arm and returns its release. The release ends the job while
+     * that arm runs and does nothing once the arm is over: an arm journals `EndArm` only with its
+     * busy set empty, so a job still open when its arm ends belongs to an arm that stopped
+     * early, and that arm's resume closes it as `failed(interrupted)`. A request, call, or
+     * hold that settles after its arm, or between arms, therefore never reaches the next arm.
+     */
+    jobHold(id: string): () => void {
+        const handle = this.live();
+        const generation = this.generation;
+        handle.jobStart(id);
+        return () => {
+            if (generation === this.generation) handle.jobEnd(id);
+        };
     }
 
     /** A classified model call of the running arm; a history summarizer call can fire the mid-fold kill. */

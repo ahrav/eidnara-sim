@@ -2884,9 +2884,72 @@ describe("probe snapshots", () => {
         const outcome = await fresh.event(
             ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
         );
-        expect(outcome.failed).toBe(
-            "rule files changed: .gitignore (added), deep/er/.gitignore (added)",
+        // The root rule ignores deep/er, so the rule file there is inert; the root one fails the turn.
+        expect(outcome.failed).toBe("rule files changed: .gitignore (added)");
+    });
+
+    test("a rule file added inside an ignored directory fails no probe turn, then or later", async () => {
+        const repo = gitRepo();
+        writeFileSync(join(repo, ".gitignore"), "target/\n");
+        const g = (...args: string[]) =>
+            spawnSync("git", args, {
+                cwd: repo,
+                env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+            });
+        g("add", ".gitignore");
+        g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "ignore target");
+        const { driver, hosts } = fixture("host", { p: repo });
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reset();
+        const host = hosts.at(-1) as FakeHost;
+        const ws = fresh.workspace("p");
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        host.onPrompt = () => {
+            mkdirSync(join(ws, "target", "smac-check", "g"), { recursive: true });
+            writeFileSync(join(ws, "target", "smac-check", "g", ".gitignore"), "*\n");
+            writeFileSync(join(ws, "target", "smac-check", ".gitattributes"), "* -diff\n");
+            writeFileSync(join(ws, "lib.rs"), "fn lib() {}\n");
+        };
+        const first = await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
         );
+        expect(first.failed).toBeUndefined();
+        host.onPrompt = () => writeFileSync(join(ws, "more.rs"), "fn more() {}\n");
+        const later = await fresh.event(
+            ev("user_turn", { id: "e-2", session: "s-0", text: "go", probe: "q-2" }),
+        );
+        expect(later.failed).toBeUndefined();
+        // A rule file outside the ignored directory still fails the turn that adds it.
+        host.onPrompt = () => writeFileSync(join(ws, ".gitattributes"), "*.rs -diff\n");
+        const effective = await fresh.event(
+            ev("user_turn", { id: "e-3", session: "s-0", text: "go", probe: "q-3" }),
+        );
+        expect(effective.failed).toBe("rule files changed: .gitattributes (added)");
+    });
+
+    test("an edit to a tracked rule file inside an ignored directory still fails the probe turn", async () => {
+        const repo = gitRepo();
+        writeFileSync(join(repo, ".gitignore"), "vendor/\n");
+        mkdirSync(join(repo, "vendor"));
+        writeFileSync(join(repo, "vendor", ".gitignore"), "*.o\n");
+        const g = (...args: string[]) =>
+            spawnSync("git", args, {
+                cwd: repo,
+                env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+            });
+        g("add", "-f", ".gitignore", "vendor/.gitignore");
+        g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "rules");
+        const { driver, hosts } = fixture("host", { p: repo });
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reset();
+        const host = hosts.at(-1) as FakeHost;
+        const ws = fresh.workspace("p");
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        host.onPrompt = () => writeFileSync(join(ws, "vendor", ".gitignore"), "*\n");
+        const outcome = await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(outcome.failed).toBe("rule files changed: vendor/.gitignore (changed)");
     });
 
     test("an exclude or ignore file past the size cap reads as a changed rule", () => {
