@@ -130,7 +130,7 @@ opening `Background from earlier sessions on ` or a note carries a marker
 earlier user message does; the next session starts without it.
 
 Each daemon variant provides a fixed capability set, read from the Eidnara
-source at commit `0d7c680f5` (`AUDITED_EIDNARA`):
+source at commit `8df8e2ff0` (`AUDITED_EIDNARA`):
 
 | Variant | Search route | Embeddings | Memory reviewer | Side calls | Memory injection | Source capture |
 |---|---|---|---|---|---|---|
@@ -174,12 +174,15 @@ script prints the `git diff` to read, and after that reading the pin moves to
 the commit. Exit 2 (`broken`): a probe fails, so `DAEMON_VARIANTS` needs
 revising before the pin moves. The pin names only merged commits, so a run
 built from an unmerged branch stops at preflight once its fixture sources
-differ from the pin's. At `0d7c680f5` the verdict is `unchanged`; against
-the previous pin `1c56ba033` it is `reread`, for one changed source,
-`crates/host-runtime/src/model_execution/pi.rs`: the Pi backend now drops
-stdout lines of the event types its transcript parser ignores before they
-count against the bounded output, and still launches Pi with
-`--no-extensions`, so every capability reading stays as recorded.
+differ from the pin's. At `8df8e2ff0` the verdict is `unchanged`; against
+the previous pin `0d7c680f5` it is `reread`, for two changed sources.
+`crates/daemon/src/config.rs` adds the user-only keys
+`contradiction_candidates.enabled` and `verifier.enabled`, both default false,
+which no arm sets. `crates/daemon/src/source_capture.rs` adds the
+memory-capture `decisions_*` counters to the settled `source_capture` report,
+each an unsigned integer, and keeps the `source_capture_enabled &&
+memory_enabled` consent gate, so every capability reading and the counter
+record's shape check stay as recorded.
 
 ## Capability evidence
 
