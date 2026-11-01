@@ -40,7 +40,7 @@ export interface DaemonCapabilities {
 }
 
 /** The Eidnara commit whose source `DAEMON_VARIANTS` was read from. */
-export const AUDITED_EIDNARA = "0d7c680f5515857318519666e9a35e0a3f519735";
+export const AUDITED_EIDNARA = "8df8e2ff0c5e058f030911a14fd06b4e184c0ce5";
 
 /**
  * One mechanical reading behind a capability: `file` at the audited commit matches `pattern`
