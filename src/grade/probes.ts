@@ -373,7 +373,8 @@ function appliedParts(parts: Segment[], forced: boolean): Segment[] {
             const group = groupBody(p.seg);
             if (!group || p.body) return scanned || p.body ? [p] : [];
             const inner = reachableParts(group.body, undefined);
-            return appliedParts(inner, forced || line.length > 1 || writesFile(p.seg));
+            const outer = forced || line.length > 1 || writesFile(p.seg) || substitutes(p.seg);
+            return appliedParts(inner, outer);
         });
     });
 }

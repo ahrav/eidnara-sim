@@ -553,6 +553,7 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "rg --hostname-bin=./x spawn_blocking src",
             "xargs -a /tmp/args sed -n -e '/spawn_blocking/p' src/db.rs",
             "/tmp/rg spawn_blocking src",
+            "{ cat; } <<< 'spawn_blocking(f)'",
         ]) {
             const g = grade(blocking, { files: [digest], commands: [applied] });
             expect([applied, g.verdict, g.reason]).toEqual([
