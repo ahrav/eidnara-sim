@@ -367,7 +367,9 @@ scheduled interrupt's abort the server refuses or fails leaves the turn to run
 on under its deadline, reported as it ends. A
 prompt request that fails before the server answers is aborted the same way,
 and an abort that fails stops the run, since the turn's completion cannot be
-established. A Pi interrupt sends `abort` and reads the turn's own `agent_end`
+established. A Pi or OpenCode turn still running after its abort's drain wait
+stops the run as `host-abort`, which a resume recovers (`docs/run.md`); the
+other stops here are `event-error`. A Pi interrupt sends `abort` and reads the turn's own `agent_end`
 within the drain wait, whatever the abort's answer; the turn is `interrupted`
 only when the last assistant message stopped with `aborted`. A prompt the host
 refused, a prompt request that failed before Pi accepted it or the OpenCode

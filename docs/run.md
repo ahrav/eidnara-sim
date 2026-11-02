@@ -267,17 +267,20 @@ A fatal `ItemState` stops the run and carries one `cause`:
 | `job-deadline` | a job held the clock past `job_deadline_ms` (a host stall, a suspended machine, a hung call), by its own timer or, as `DeadlineOverrun`, during a probe turn's wait on its background jobs (an event record) | recovered |
 | `harness-transport` | a user turn's delivery failed with `TransportFailure`: a user-sim call whose bounded retries all failed in transport | recovered |
 | `host-teardown` | an event's delivery failed with exactly `host tree <pid> survived SIGKILL`: the host's process tree outlived the kill that stopped it (a session close), and the record carries the tree's `host_pid` | recovered |
+| `host-abort` | a user turn's delivery failed with exactly a drain error of `src/hosts/arms.ts`: `Pi turn still running <n> ms after abort (<reason>)`, `Pi turn still running <n> ms after the user's abort`, or `OpenCode turn still running 30 s after abort`. The harness had already ended the turn at its deadline or the user's abort, and the host process kept it running | recovered |
 | `daemon-exit` | the daemon exited outside an outage window | recovered |
 | `fault-error` | a scheduler fault's mechanism failed | refused |
 | `event-error` | an event's delivery failed for any other reason | refused |
 
 A daemon exit, a fault, and a job take their cause from the record's shape; an
-event's record carries `harness-transport`, `job-deadline`, `host-teardown`, or
-`event-error`, and the replay refuses a stored cause its shape contradicts. A
-host teardown takes its cause from the whole error text, so a record written
-before `host-teardown` existed, which stores `event-error` with that text,
-names `host-teardown` too; a stored `host-teardown` must carry the `host_pid`
-its error names, and a stored `event-error` on that text must carry none. A
+event's record carries `harness-transport`, `job-deadline`, `host-teardown`,
+`host-abort`, or `event-error`, and the replay refuses a stored cause its shape
+contradicts. A host teardown and a host abort take their cause from the whole
+error text, so a record written before its cause existed, which stores
+`event-error` with that text, names `host-teardown` or `host-abort` too; a
+stored `host-teardown` must carry the `host_pid` its error names, a stored
+`event-error` on that text must carry none, and a stored `host-abort` or
+`event-error` is the only cause a drain error may carry. A
 `session_end` that stops on a host teardown first reports a daemon already
 gone (`daemon-exit`), since the teardown cut the session_end before the
 driver's own daemon check. An event record
