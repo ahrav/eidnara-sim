@@ -65,8 +65,18 @@ test("cutTurns honors a marker only between its turn's BeginTurn and its interru
         ...turn("e-4", { kind: "BeginTurn" }, marker, { kind: "Event", outcome: "ok" }),
         // Never closed by an Event.
         ...turn("e-5", { kind: "BeginTurn" }, marker),
+        // An EndTurn between the marker and the Event.
+        ...turn("e-6", { kind: "BeginTurn" }, marker, { kind: "EndTurn" }, cutEvent),
+        // After an Event closed the turn.
+        ...turn("e-7", { kind: "BeginTurn" }, { kind: "Event", outcome: "ok" }, marker, cutEvent),
+        // Two markers on one turn.
+        ...turn("e-8", { kind: "BeginTurn" }, marker, marker, cutEvent),
+        // A second marker after the turn was cut.
+        ...turn("e-9", { kind: "BeginTurn" }, marker, cutEvent, marker),
     ];
     const { cut, invalid } = cutTurns(entries);
     expect([...cut]).toEqual([["a/e-1", "harness-exit"]]);
-    expect(invalid.sort()).toEqual(["a/e-2", "a/e-3", "a/e-4", "a/e-5"]);
+    expect(invalid.sort()).toEqual(
+        ["e-2", "e-3", "e-4", "e-5", "e-6", "e-7", "e-8", "e-9"].map((e) => `a/${e}`),
+    );
 });

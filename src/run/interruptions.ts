@@ -46,37 +46,44 @@ export function interruptions(entries: readonly Entry[]): Record<string, ArmInte
 
 /**
  * The turns a stop cut, read in journal order: a `failed(interrupted)` marker naming an event
- * counts when it follows its arm's `BeginTurn` for that event, precedes any `EndTurn` for it, is
- * the turn's only marker, and is followed by the turn's `Event` with outcome
- * `failed(interrupted)`. `cut` maps `<arm>/<event>` to the marker's cause; `invalid` names
- * every other marker the same way.
+ * counts when it follows its arm's `BeginTurn` for that event, comes before any `EndTurn` or
+ * `Event` for it, is the turn's only marker, and is followed by the turn's `Event` with outcome
+ * `failed(interrupted)` and no `EndTurn` in between. `cut` maps `<arm>/<event>` to the marker's
+ * cause; `invalid` names every turn whose markers break that shape, which `cut` leaves out.
  */
 export function cutTurns(entries: readonly Entry[]): {
     cut: Map<string, string>;
     invalid: string[];
 } {
     const begun = new Set<string>();
-    const ended = new Set<string>();
+    const closed = new Set<string>();
     const pending = new Map<string, string>();
     const cut = new Map<string, string>();
-    const invalid: string[] = [];
+    const bad = new Set<string>();
     for (const e of entries) {
         if (typeof e.event !== "string") continue;
         const key = `${e.arm}/${e.event}`;
         if (e.kind === "BeginTurn") begun.add(key);
-        if (e.kind === "EndTurn") ended.add(key);
-        if (e.kind === "ItemState" && e.state === "failed(interrupted)") {
-            const open = begun.has(key) && !ended.has(key);
-            if (open && !pending.has(key) && !cut.has(key)) {
-                pending.set(key, typeof e.cause === "string" ? e.cause : "unrecorded");
-            } else invalid.push(key);
+        if (e.kind === "EndTurn") {
+            if (pending.has(key)) bad.add(key);
+            closed.add(key);
         }
-        if (e.kind === "Event" && pending.has(key)) {
-            if (e.outcome === "failed(interrupted)") cut.set(key, pending.get(key) as string);
-            else invalid.push(key);
-            pending.delete(key);
+        if (e.kind === "ItemState" && e.state === "failed(interrupted)") {
+            if (!begun.has(key) || closed.has(key) || pending.has(key) || cut.has(key)) {
+                bad.add(key);
+            } else pending.set(key, typeof e.cause === "string" ? e.cause : "unrecorded");
+        }
+        if (e.kind === "Event") {
+            const cause = pending.get(key);
+            if (cause !== undefined) {
+                if (e.outcome === "failed(interrupted)") cut.set(key, cause);
+                else bad.add(key);
+                pending.delete(key);
+            }
+            closed.add(key);
         }
     }
-    invalid.push(...pending.keys());
-    return { cut, invalid };
+    for (const key of pending.keys()) bad.add(key);
+    for (const key of bad) cut.delete(key);
+    return { cut, invalid: [...bad] };
 }
