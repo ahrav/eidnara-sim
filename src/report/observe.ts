@@ -199,19 +199,27 @@ const graded =
  */
 const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: true }> = {
     failed_turns: {
-        value: (_, arm) =>
-            new Set(
+        value: (_, arm) => {
+            // An interrupted `session_end` also carries `failed(interrupted)`; only a turn has a
+            // `BeginTurn`.
+            const turns = new Set(
+                arm.journal.filter((e) => e.kind === "BeginTurn").map((e) => e.event),
+            );
+            return new Set(
                 arm.journal
                     .filter(
                         (e) =>
                             (e.kind === "EndTurn" && e.outcome !== "ok") ||
-                            (e.kind === "Event" && e.outcome === "failed(interrupted)") ||
+                            (e.kind === "Event" &&
+                                e.outcome === "failed(interrupted)" &&
+                                turns.has(e.event)) ||
                             (e.kind === "ItemState" &&
                                 e.event !== undefined &&
                                 e.state === "failed(interrupted)"),
                     )
                     .map((e) => String(e.event)),
-            ).size,
+            ).size;
+        },
         delta: false,
     },
     hangs: {

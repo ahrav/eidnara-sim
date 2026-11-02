@@ -1358,7 +1358,76 @@ export class Scheduler {
             }
             this.log({ kind: "Event", event: e.event, outcome: "failed(interrupted)", cause });
         }
+        // A `session_end` a recoverable stop cut, recovered now or by a resume killed before it
+        // went on, has no turn to mark and no host left to close: the stop's cleanup or the
+        // resume's reap stopped the host, and the driver's owed store checks run at the next
+        // event or the finish. A stop names the event it cut, or, for a daemon exit, the event
+        // the exit was found after. The session ends here, interrupted, as `step` ends it,
+        // unless it owes a check or cleanup only the driver's `session_end` runs.
+        const cut = (r: Entry) =>
+            typeof r.event === "string"
+                ? r.event
+                : (r.daemon_exit as { after?: unknown } | undefined)?.after;
+        const stops = [
+            ...kinds("Recovered").map((r) => ({ event: cut(r), cause: String(r.cause) })),
+            ...fatals.map((f) => ({ event: cut(f), cause: fatalCause(f) })),
+        ];
+        for (const stop of stops) {
+            const end = this.o.events.find((x) => x.id === stop.event && x.kind === "session_end");
+            if (!end || done.has(end.id) || !this.endable(end, mine)) continue;
+            for (const p of this.o.faults) {
+                if (p.trigger.session === end.session && p.seam.layer === PROXY_LAYER)
+                    this.o.proxy?.disarm(p.id, this.arm as string);
+            }
+            this.missSummarizers(end.session);
+            const outcome = "failed(interrupted)";
+            this.log({ kind: "Event", event: end.id, outcome, cause: stop.cause });
+            done.add(end.id);
+            this.session = null;
+        }
         return answered;
+    }
+
+    /**
+     * Whether a resume can end the cut `session_end` `end` without the driver. The driver's
+     * `session_end` alone runs the transcript check, at the arm's first session end and at the
+     * first one after a host upgrade, and ends a session's store fill and second client; such a
+     * session end is delivered again, which the resumed driver refuses.
+     */
+    private endable(end: ScenarioEvent, mine: Entry[]): boolean {
+        const kindOf = (id: unknown) => this.o.events.find((x) => x.id === id)?.kind;
+        const ends = mine.filter(
+            (e) => e.kind === "Event" && e.outcome === "ok" && kindOf(e.event) === "session_end",
+        );
+        if (ends.length === 0) return false;
+        // An upgrade the driver skipped (no upgraded host configured) leaves no check owed.
+        const skipped = (fault: unknown) =>
+            mine.some(
+                (e) =>
+                    e.kind === "FaultObserved" &&
+                    e.fault === fault &&
+                    (e.evidence as { skipped?: unknown } | undefined)?.skipped !== undefined,
+            );
+        const upgrade = [...mine]
+            .reverse()
+            .find((e) => e.kind === "FaultFired" && e.type === "host_upgrade" && !skipped(e.fault));
+        if (upgrade && !ends.some((e) => e.seq > upgrade.seq)) return false;
+        return !this.o.faults.some(
+            (f) =>
+                f.trigger.session === end.session &&
+                (f.type === "store_full" || f.type === "two_hosts_one_daemon"),
+        );
+    }
+
+    /** Journals each summarizer-call fault of `session` that never fired as `missed`. */
+    private missSummarizers(session: string): void {
+        for (const f of this.o.faults) {
+            if (f.trigger.kind !== "first_summarizer_call" || f.trigger.session !== session)
+                continue;
+            if (this.fired.has(`${this.arm}/${f.id}`)) continue;
+            this.record({ kind: "ItemState", fault: f.id, state: "missed" }, `missed ${f.id}`);
+            this.fired.add(`${this.arm}/${f.id}`);
+        }
     }
 
     /** The `session_start` event of `session`, the one a resumed arm reopens, or null. */
@@ -1797,18 +1866,7 @@ export class Scheduler {
                     this.o.proxy?.disarm(f.id, this.arm as string);
             }
             await this.pendingKill;
-            for (const f of this.o.faults) {
-                const unfired = !this.fired.has(`${this.arm}/${f.id}`);
-                if (f.trigger.kind !== "first_summarizer_call" || f.trigger.session !== e.session)
-                    continue;
-                if (unfired) {
-                    this.record(
-                        { kind: "ItemState", fault: f.id, state: "missed" },
-                        `missed ${f.id}`,
-                    );
-                    this.fired.add(`${this.arm}/${f.id}`);
-                }
-            }
+            this.missSummarizers(e.session);
             this.session = null;
         }
         await this.pendingKill;

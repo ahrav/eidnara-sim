@@ -117,7 +117,17 @@ divergence index. `scripts/pairing-check.ts <run>` reports those
 mismatches, the divergences, each arm's reply sources and fallbacks, probe
 or paste text that differs from the script, non-filler turns left unsent,
 and each arm's rates; it exits 1 on any of them or on a rate outside its
-band.
+band. A turn a stop cut, journaled `failed(interrupted)` by an
+`ItemState` marker that closes a turn its arm began and never ended,
+followed by the turn's `failed(interrupted)` `Event` (`cutTurns` in
+`src/run/interruptions.ts`), is
+listed under `interrupted_turns` and exempt from the delivery checks
+(`undelivered_turns`, `non_filler_unsent`, `missing_turns`, and the
+`journal_pairing_mismatch` count and interrupt-flag checks): the
+missingness policy excludes it from the paired measures and counts it, so
+it does not fail the check. A marker that closes no such turn is listed
+under `invalid_interruptions` and fails it, as does a recovered
+`UserTurn` with no marker.
 
 ## Journal
 
@@ -162,8 +172,12 @@ count inside the scenario and the journal complete for the manifest order
 and the scheduled events with no corrupt terminated line (`requireComplete`,
 as `grade-run.ts` does), requires a pre-registered seed and the run arms
 in the seed's relative order, requires each paired turn to match one
-journaled, unrecovered `UserTurn` of the same delivery and label (a reactive
-label from the tape or a live call, a scripted one from the script), checks each
+journaled, unrecovered `UserTurn` of the same delivery and label. A turn
+the journal marks `failed(interrupted)` (`cutTurns`; any other marker is
+refused) may instead carry the `UserTurn` its resume
+recovered from the pairing log, or none; it needs no pairing row when it
+has no `UserTurn`. A reactive label's text comes from the tape or a live
+call, a scripted one's from the script. The report checks each
 pairing record's shape and arm (`readPairing`, which
 `pairing-check.ts` shares, refusing a corrupt terminated line), binds each
 record to its scheduled turn's session and index, admits one turn per arm
@@ -194,7 +208,11 @@ used. Each entry carries `sim-claim-boundary/v1`
 (docs/claim-boundary.md). It reports, per arm and leaving P7 aside, the excluded grades and
 the probes the run reached (through their turn, or for P14 through the
 session that ended in the prefix) that the arm has no grade for, and the items
-graded on one side only, which pair nothing. A grading run cut short converges on its rerun: the rerun grades
+graded on one side only, which pair nothing. Per the missingness policy,
+it lists each arm's interrupted turns with their cause
+(`interrupted_turns`) and the reached items whose turn either arm's stop
+cut (`interrupted_items`); such an item leaves the pair on both arms and
+counts as neither missing nor unpaired. A grading run cut short converges on its rerun: the rerun grades
 every item again and the report pairs each side's latest grade. For each metric,
 verdicts as `<type>.pass` and each numeric grade metric, it reports the
 mean difference with a percentile bootstrap interval that resamples the

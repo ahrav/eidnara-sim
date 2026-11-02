@@ -2117,6 +2117,8 @@ async function runArms(
 
     const drivers: Record<string, ArmDriver> = {};
     const samplers = new Map<string, ResourceSampler>();
+    /** The arms this process reset, whose daemon the reset started. */
+    const reset = new Set<string>();
     const proxyFaults = scenario.faults.filter((f) => f.seam.layer === "proxy-sink");
     const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
     const callsPath = join(o.out, "calls.jsonl");
@@ -2215,9 +2217,11 @@ async function runArms(
                 : undefined;
         },
         stopped: () => stop.reason,
+        // A fresh arm's daemon is up once its reset returns; a resumed arm's replacement daemon
+        // starts in the driver's resume, whose wrapper runs the hold.
         onArmReady: (arm) => {
             const sampler = samplers.get(arm);
-            if (sampler) holdForCpu(sampler, arm);
+            if (sampler && reset.has(arm)) holdForCpu(sampler, arm);
         },
         verify: async (point) => {
             const ending = scheduler.currentArm;
@@ -2545,6 +2549,7 @@ async function runArms(
                 tracked(async () => {
                     scope.arm = arm;
                     await driver.reset();
+                    reset.add(arm);
                     sampler.start();
                 }),
             resume: (open, interrupted) =>
@@ -2554,6 +2559,10 @@ async function runArms(
                     if (open) markSession(arm, armRoot);
                     await driver.resume(open, interrupted);
                     sampler.start();
+                    // The resume starts a replacement daemon, which works through its store
+                    // before it settles; the hold samples that work, so the busy daemon holds the
+                    // clock and the arm's next event or finish waits for it, as after a reset.
+                    holdForCpu(sampler, arm);
                 }),
             event: (e) =>
                 tracked(async () => {
