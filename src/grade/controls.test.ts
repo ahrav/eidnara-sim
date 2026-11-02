@@ -548,6 +548,8 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "git grep --open-files-in-pager=vi spawn_blocking",
             "{ cat > src/cmd/digest.rs; } <<'EOF'\nspawn_blocking(move || hash(value))\nEOF",
             "sed -n -i '/spawn_blocking/p' src/db.rs",
+            "sed -n --in-pla=.bak '/spawn_blocking/p' src/db.rs",
+            'bat --paging=always --pager="sh -c x" spawn_blocking.rs',
         ]) {
             const g = grade(blocking, { files: [digest], commands: [applied] });
             expect([applied, g.verdict, g.reason]).toEqual([

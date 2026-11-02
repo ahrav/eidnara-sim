@@ -239,8 +239,7 @@ const toolArguments = (command: string): boolean => {
     }
 };
 const researchCall = (x: Command) => toolArguments(x.command) || SEARCH_RECORD.test(x.command);
-const INSPECTS =
-    /^(cat|less|more|head|tail|nl|wc|grep|egrep|fgrep|rg|ag|ls|stat|file|read|view|bat|sed|find|git)$/;
+const INSPECTS = /^(cat|head|tail|nl|wc|grep|egrep|fgrep|rg|ag|ls|stat|file|read|sed|find|git)$/;
 /** `git` global options ahead of the subcommand, with the ones that take the next word. */
 const GIT_GLOBAL =
     /^(--no-pager|-P|--paginate|--no-optional-locks|--no-replace-objects|--literal-pathspecs|--bare|--git-dir=.*|--work-tree=.*|--namespace=.*)$/;
@@ -264,7 +263,9 @@ function sedPrints(words: string[]): boolean {
         else if (w === "--expression") scripts.push(words[++i] ?? "");
         else if (w.startsWith("--expression=")) scripts.push(w.slice(13));
         else if (/^--(in-place|file)/.test(w)) return false;
-        else if (w.startsWith("--")) continue;
+        else if (/^--(regexp-extended|separate|unbuffered|null-data|posix|debug|sandbox)$/.test(w))
+            continue;
+        else if (w.startsWith("--")) return false;
         else if (w.startsWith("-") && w.length > 1) {
             for (let j = 1; j < w.length; j++) {
                 const flag = w[j] as string;
