@@ -266,13 +266,17 @@ A fatal `ItemState` stops the run and carries one `cause`:
 |---|---|---|
 | `job-deadline` | a job held the clock past `job_deadline_ms` (a host stall, a suspended machine, a hung call), by its own timer or, as `DeadlineOverrun`, during a probe turn's wait on its background jobs (an event record) | recovered |
 | `harness-transport` | a user turn's delivery failed with `TransportFailure`: a user-sim call whose bounded retries all failed in transport | recovered |
+| `host-teardown` | an event's delivery failed with exactly `host tree <pid> survived SIGKILL`: the host's process tree outlived the kill that stopped it (a session close), and the record carries the tree's `host_pid` | recovered |
 | `daemon-exit` | the daemon exited outside an outage window | recovered |
 | `fault-error` | a scheduler fault's mechanism failed | refused |
 | `event-error` | an event's delivery failed for any other reason | refused |
 
 A daemon exit, a fault, and a job take their cause from the record's shape; an
-event's record carries `harness-transport`, `job-deadline`, or `event-error`,
-and the replay refuses a stored cause its shape contradicts. An event record
+event's record carries `harness-transport`, `job-deadline`, `host-teardown`, or
+`event-error`, and the replay refuses a stored cause its shape contradicts. A
+host teardown takes its cause from the whole error text, so a record written
+before `host-teardown` existed, which stores `event-error` with that text,
+names `host-teardown` too. An event record
 from before records carried `cause` takes it from the start of its error
 text: a deadline overrun names `job-deadline`; a user-sim timeout or 429/5xx,
 a closed socket, a connection `fetch` could not open, or a reset or refused
@@ -286,7 +290,10 @@ failed(interrupted)`): it journals `Recovered` for each such record, then the
 usual recovery entries, each interruption marker carrying the cause (a stop
 with no fatal record, such as a kill or a reboot, is `harness-exit`), and the
 arm continues at its next event with the host session restarted through the
-driver's `resume`. The interrupted items are excluded from recall and counted
+driver's `resume`. An event a stop left without an open turn, such as a
+`session_end` whose host close failed in teardown, is delivered again: the
+resume reaps the recorded tree and reopens no session, so the repeated close
+has no host to stop and the event's store and boot checks run. The interrupted items are excluded from recall and counted
 in dependability; `grade-run` reports them per arm (`interruptions`: the
 interrupted turns by cause, the recovered stops by cause, the unexpected
 daemon exits, which stay an Eidnara reliability finding, and any unresolved
