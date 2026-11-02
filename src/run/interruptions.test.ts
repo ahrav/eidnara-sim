@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { interruptions } from "./interruptions";
+import { cutTurns, interruptions } from "./interruptions";
 import type { Entry } from "./journal";
 
 let seq = 0;
@@ -47,4 +47,26 @@ test("interruptions count interrupted turns, recovered stops, and daemon exits p
             unresolved: ["job-deadline"],
         },
     });
+});
+
+test("cutTurns honors a marker only between its turn's BeginTurn and its interrupted Event", () => {
+    seq = 0;
+    const turn = (event: string, ...kinds: Record<string, unknown>[]) =>
+        kinds.map((k) => at({ event, ...k }));
+    const marker = { kind: "ItemState", state: "failed(interrupted)", cause: "harness-exit" };
+    const cutEvent = { kind: "Event", outcome: "failed(interrupted)" };
+    const entries = [
+        ...turn("e-1", { kind: "BeginTurn" }, marker, cutEvent),
+        // Before its BeginTurn.
+        ...turn("e-2", marker, { kind: "BeginTurn" }, cutEvent),
+        // After its EndTurn.
+        ...turn("e-3", { kind: "BeginTurn" }, { kind: "EndTurn" }, marker, cutEvent),
+        // Closed by an Event that reports the turn ok.
+        ...turn("e-4", { kind: "BeginTurn" }, marker, { kind: "Event", outcome: "ok" }),
+        // Never closed by an Event.
+        ...turn("e-5", { kind: "BeginTurn" }, marker),
+    ];
+    const { cut, invalid } = cutTurns(entries);
+    expect([...cut]).toEqual([["a/e-1", "harness-exit"]]);
+    expect(invalid.sort()).toEqual(["a/e-2", "a/e-3", "a/e-4", "a/e-5"]);
 });

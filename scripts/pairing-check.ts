@@ -4,6 +4,7 @@ import { CORPUS_DIR } from "../src/corpus/sources";
 import { requireOrder } from "../src/hosts/arms";
 import { sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
+import { cutTurns } from "../src/run/interruptions";
 import { readJournal, requireComplete } from "../src/run/journal";
 import { CallIndex, referenceArm, requireAdmittedOrder } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
@@ -175,20 +176,11 @@ const journalDelivered = new Set(
 );
 // A turn a stop cut is journaled `failed(interrupted)`; the missingness policy excludes it from
 // the paired measures and counts it, so it is reported beside the checks rather than as a break.
-// A marker counts only when it closes a turn its arm began and never ended.
-const turnKeys = (kind: string) =>
-    new Set(journal.filter((e) => e.kind === kind).map((e) => `${e.arm} ${e.event}`));
-const [begunTurns, endedTurns] = [turnKeys("BeginTurn"), turnKeys("EndTurn")];
-const interruptedTurns = new Set<string>();
-const invalidInterruptions: string[] = [];
-for (const e of journal) {
-    if (e.kind !== "ItemState" || e.state !== "failed(interrupted)") continue;
-    if (typeof e.event !== "string") continue;
-    const key = `${e.arm} ${e.event}`;
-    const open = begunTurns.has(key) && !endedTurns.has(key) && !interruptedTurns.has(key);
-    if (open) interruptedTurns.add(key);
-    else invalidInterruptions.push(key);
-}
+// A marker counts only when it closes a turn its arm began and never ended, and the turn's
+// Event names it.
+const cutJournal = cutTurns(journal);
+const interruptedTurns = new Set([...cutJournal.cut.keys()].map((k) => k.replace("/", " ")));
+const invalidInterruptions = cutJournal.invalid.map((k) => k.replace("/", " "));
 const unsent = turns
     .filter((r) => script.get(r.event)?.role !== "filler")
     .filter((r) => !interruptedTurns.has(`${r.arm} ${r.event}`))
@@ -303,6 +295,7 @@ const journalPairingMismatch = (manifest.order as string[]).flatMap((arm) => {
         if (u.session !== row.session || (u.label !== row.label && !relabel))
             off.add(String(u.event));
         if (u.delivered === true && !row.delivered) off.add(String(u.event));
+        if (cut(String(u.event)) && u.delivered !== row.delivered) off.add(String(u.event));
         // A recovered UserTurn stands only for a turn a stop cut, whose interrupt never ran.
         if (u.recovered === true && !cut(String(u.event))) off.add(String(u.event));
         if (u.label === "interrupt" && u.interrupted !== true && !cut(String(u.event)))

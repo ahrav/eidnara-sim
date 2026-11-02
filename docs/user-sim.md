@@ -118,7 +118,9 @@ mismatches, the divergences, each arm's reply sources and fallbacks, probe
 or paste text that differs from the script, non-filler turns left unsent,
 and each arm's rates; it exits 1 on any of them or on a rate outside its
 band. A turn a stop cut, journaled `failed(interrupted)` by an
-`ItemState` marker that closes a turn its arm began and never ended, is
+`ItemState` marker that closes a turn its arm began and never ended,
+followed by the turn's `failed(interrupted)` `Event` (`cutTurns` in
+`src/run/interruptions.ts`), is
 listed under `interrupted_turns` and exempt from the delivery checks
 (`undelivered_turns`, `non_filler_unsent`, `missing_turns`, and the
 `journal_pairing_mismatch` count and interrupt-flag checks): the
@@ -171,8 +173,8 @@ and the scheduled events with no corrupt terminated line (`requireComplete`,
 as `grade-run.ts` does), requires a pre-registered seed and the run arms
 in the seed's relative order, requires each paired turn to match one
 journaled, unrecovered `UserTurn` of the same delivery and label. A turn
-the journal marks `failed(interrupted)`, by a marker that closes a turn its
-arm began and never ended, may instead carry the `UserTurn` its resume
+the journal marks `failed(interrupted)` (`cutTurns`; any other marker is
+refused) may instead carry the `UserTurn` its resume
 recovered from the pairing log, or none; it needs no pairing row when it
 has no `UserTurn`. A reactive label's text comes from the tape or a live
 call, a scripted one's from the script. The report checks each

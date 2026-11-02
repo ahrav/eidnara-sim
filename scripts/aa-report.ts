@@ -15,6 +15,7 @@ import { qualificationSeed } from "../src/prereg/qualification";
 import type { Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bootstrapMean, disagreementRate, pairedDiffs } from "../src/report/paired";
+import { cutTurns } from "../src/run/interruptions";
 import {
     readJournal,
     releaseLease,
@@ -349,19 +350,12 @@ function report(dir: string) {
     // A turn a stop cut is journaled `failed(interrupted)`: the missingness policy keeps it out of
     // the paired measures, and the report counts it per arm with its cause. A resume recovers its
     // UserTurn from the pairing log, or journals none when the log had no row yet.
-    // Each marker closes a turn its arm began and never ended.
-    const turnKeys = (kind: string) =>
-        new Set(entries.filter((e) => e.kind === kind).map((e) => `${e.arm}/${e.event}`));
-    const [begun, endedTurns] = [turnKeys("BeginTurn"), turnKeys("EndTurn")];
-    const interrupted = new Map<string, string>();
-    for (const e of entries) {
-        if (e.kind !== "ItemState" || e.state !== "failed(interrupted)") continue;
-        if (typeof e.event !== "string") continue;
-        const key = `${e.arm}/${e.event}`;
-        if (!begun.has(key) || endedTurns.has(key) || interrupted.has(key)) {
-            throw new Error(`${dir}/journal.jsonl: interruption of ${key} closes no open turn`);
-        }
-        interrupted.set(key, String(e.cause ?? "unrecorded"));
+    // Each marker closes a turn its arm began and never ended, and the turn's Event names it.
+    const { cut: interrupted, invalid: badMarkers } = cutTurns(entries);
+    if (badMarkers.length > 0) {
+        throw new Error(
+            `${dir}/journal.jsonl: interruption of ${badMarkers.join(", ")} closes no open turn`,
+        );
     }
     const controls = order.filter((a) => a !== armBase(a));
     if (controls.length === 0) throw new Error(`${dir}: manifest order names no A/A control`);

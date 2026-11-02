@@ -424,6 +424,8 @@ describe("aa-report", () => {
             (m) => m.metric === "P6.reread_files",
         );
         expect(p6?.n).toBe(5);
+        // The surviving arm's grade for the cut item leaves the count too.
+        expect(r?.graded_items).toBe((before?.graded_items as number) - 2);
         // A marker that closes no begun turn is refused.
         const unbegun = rated.filter((e) => !(cut(e) && e.kind === "BeginTurn"));
         writeFileSync(join(dir, "journal.jsonl"), journalText(unbegun));
