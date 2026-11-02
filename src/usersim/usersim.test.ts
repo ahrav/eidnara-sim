@@ -1012,6 +1012,65 @@ describe("tape and pairing", () => {
         expect(last.fallback).toEqual(["fact"]);
     });
 
+    test("a live pushback that names a ledger fact's identity falls back, and the prompt holds conveyed facts settled", async () => {
+        const withdrawal =
+            "I'd like to see the evidence behind that rejected-approach memory before it stays in the project record. Can you point me to the commit, issue, or benchmark where the blocking pool starvation was actually observed? Without that, I'd rather not have a memory entry that steers future work away from `spawn_blocking` on hearsay.";
+        const replies = [
+            { text: withdrawal, stop: "end_turn" },
+            { text: "Why did the test skip the empty-frame case?", stop: "end_turn" },
+            { text: "Just move it onto SPAWN_BLOCKING.", stop: "end_turn" },
+            { text: "Did you check ticket 55174 first?", stop: "end_turn" },
+            { text: "Name it SABLE_URCHIN_MAX_KEYS?", stop: "end_turn" },
+        ];
+        const prompts: Prompt[] = [];
+        const llm: Llm = async (p) => {
+            prompts.push(p);
+            return replies.shift() ?? { text: "Fine.", stop: "end_turn" };
+        };
+        const pushback = (n: number): ScriptTurn => ({
+            ...(script[1] as ScriptTurn),
+            id: `e-p${n}`,
+            index: n,
+        });
+        const root = dir();
+        const pairing = new Pairing(join(root, "pairing.jsonl"), () => "a");
+        const labels = new Map([1, 2, 3, 4, 5].map((n) => [`e-p${n}`, "pushback" as Label]));
+        const user = new UserSim({
+            seed: 101,
+            plan: { ...plan, labels },
+            tape: new Tape(join(root, "tape.jsonl")),
+            pairing,
+            llm,
+            normalise: normaliser(prereg.divergence_policy.normalisation),
+            keys: ["f-0032"],
+            facts: [
+                "moving command execution onto spawn_blocking was tried and reverted because it starved the runtime's blocking pool",
+                "the internal ticket for the cache rewrite is 55174",
+                "every new public constant under src/cmd carries the SABLE_URCHIN_ prefix, for example SABLE_URCHIN_MAX_ARGS",
+            ],
+        });
+        const agent =
+            "I saved that as a rejected approach in project memory. I'm relying on what you've told me here.";
+        const causes: (string[] | undefined)[] = [];
+        for (const n of [1, 2, 3, 4, 5]) {
+            const d = await user.deliver("a", pushback(n), `${agent} (${n})`);
+            causes.push((pairing.records.at(-1) as { fallback?: string[] }).fallback);
+            if (n !== 2) expect(d.text).toStartWith("I'm not convinced by that.");
+            else expect(d.text).toStartWith("Why did the test skip");
+        }
+        expect(causes).toEqual([
+            ["fact-token"],
+            undefined,
+            ["fact-token"],
+            ["fact-token"],
+            ["fact-token"],
+        ]);
+        const system = prompts[0]?.system ?? "";
+        expect(system).toContain("says it saved to memory or notes, is true and settled");
+        expect(system).toContain("never ask for its source or evidence");
+        expect(system).toContain("change, archive, forget, or delete it");
+    });
+
     test("a replay source's taped reply must be the one its pairing row delivered", async () => {
         const first = dir();
         await play(sim(first, counting()).user, "a", outputs);
