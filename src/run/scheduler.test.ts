@@ -7215,7 +7215,7 @@ describe("user turns at their scheduled time", () => {
 });
 
 describe("resume after harness interruptions", () => {
-    test("a host tree that outlives SIGKILL at a session_end stops the run; the resume delivers the session_end again and finishes the arm", async () => {
+    test("a host tree that outlives SIGKILL at a session_end stops the run; the resume ends the session interrupted and finishes the arm", async () => {
         const events = fixtureEvents(2);
         const options = { events, faults: [], settleMs: 0, order: ["a"] };
         // `legacy` rewrites the fatal record as a harness without `host-teardown` wrote it.
@@ -7258,7 +7258,10 @@ describe("resume after harness interruptions", () => {
                 journal: resumed,
                 drivers: {
                     a: {
-                        ...fakeDriver(second),
+                        // A resumed driver holds no session, so it cannot end one.
+                        ...fakeDriver(second, 0, (e) => {
+                            if (e.kind === "session_end") throw new Error("names no project");
+                        }),
                         resume: async (open) => void opened.push(open?.id ?? null),
                         finish: async () => {
                             finished++;
@@ -7280,10 +7283,14 @@ describe("resume after harness interruptions", () => {
                 cause: "host-teardown",
                 event: "e-999999",
             });
-            // The resume reopens no session, delivers the session_end again, then finishes.
+            // The resume reopens no session, ends the cut one interrupted, then finishes.
             expect(opened).toEqual([null]);
-            expect(second).toEqual(["session_end:e-999999"]);
-            expect(added[2]).toMatchObject({ event: "e-999999", outcome: "ok" });
+            expect(second).toEqual([]);
+            expect(added[2]).toMatchObject({
+                event: "e-999999",
+                outcome: "failed(interrupted)",
+                cause: "host-teardown",
+            });
             expect(finished).toBe(1);
             expect(interruptions(resumed.entries).a?.stops_by_cause).toEqual({
                 "host-teardown": 1,

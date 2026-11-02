@@ -1358,7 +1358,39 @@ export class Scheduler {
             }
             this.log({ kind: "Event", event: e.event, outcome: "failed(interrupted)", cause });
         }
+        // A `session_end` a recoverable stop cut, recovered now or by a resume killed before it
+        // went on, has no turn to mark and no host left to close: the stop's cleanup or the
+        // resume's reap stopped the host, and the driver's owed store checks run at the next
+        // event or the finish. The session ends here, interrupted, as `step` ends it.
+        const stops = [
+            ...kinds("Recovered").map((r) => ({ event: r.event, cause: String(r.cause) })),
+            ...fatals.map((f) => ({ event: f.event, cause: fatalCause(f) })),
+        ];
+        for (const stop of stops) {
+            const end = this.o.events.find((x) => x.id === stop.event && x.kind === "session_end");
+            if (!end || done.has(end.id)) continue;
+            for (const p of this.o.faults) {
+                if (p.trigger.session === end.session && p.seam.layer === PROXY_LAYER)
+                    this.o.proxy?.disarm(p.id, this.arm as string);
+            }
+            this.missSummarizers(end.session);
+            const outcome = "failed(interrupted)";
+            this.log({ kind: "Event", event: end.id, outcome, cause: stop.cause });
+            done.add(end.id);
+            this.session = null;
+        }
         return answered;
+    }
+
+    /** Journals each summarizer-call fault of `session` that never fired as `missed`. */
+    private missSummarizers(session: string): void {
+        for (const f of this.o.faults) {
+            if (f.trigger.kind !== "first_summarizer_call" || f.trigger.session !== session)
+                continue;
+            if (this.fired.has(`${this.arm}/${f.id}`)) continue;
+            this.record({ kind: "ItemState", fault: f.id, state: "missed" }, `missed ${f.id}`);
+            this.fired.add(`${this.arm}/${f.id}`);
+        }
     }
 
     /** The `session_start` event of `session`, the one a resumed arm reopens, or null. */
@@ -1797,18 +1829,7 @@ export class Scheduler {
                     this.o.proxy?.disarm(f.id, this.arm as string);
             }
             await this.pendingKill;
-            for (const f of this.o.faults) {
-                const unfired = !this.fired.has(`${this.arm}/${f.id}`);
-                if (f.trigger.kind !== "first_summarizer_call" || f.trigger.session !== e.session)
-                    continue;
-                if (unfired) {
-                    this.record(
-                        { kind: "ItemState", fault: f.id, state: "missed" },
-                        `missed ${f.id}`,
-                    );
-                    this.fired.add(`${this.arm}/${f.id}`);
-                }
-            }
+            this.missSummarizers(e.session);
             this.session = null;
         }
         await this.pendingKill;

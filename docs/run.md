@@ -294,10 +294,12 @@ failed(interrupted)`): it journals `Recovered` for each such record, then the
 usual recovery entries, each interruption marker carrying the cause (a stop
 with no fatal record, such as a kill or a reboot, is `harness-exit`), and the
 arm continues at its next event with the host session restarted through the
-driver's `resume`. An event a stop left without an open turn, such as a
-`session_end` whose host close failed in teardown, is delivered again: the
-resume reaps the recorded tree and reopens no session, so the repeated close
-has no host to stop and the event's store and boot checks run. The interrupted items are excluded from recall and counted
+driver's `resume`. A `session_end` a recoverable stop cut, such as one whose
+host close failed in teardown, has no turn to mark: the resume reaps the
+recorded tree, journals the `session_end`'s `Event` as `failed(interrupted)`
+with the cause, records its session's unfired summarizer faults as `missed`,
+and reopens no session. The driver's owed store checks run at the next event
+or at the arm's finish. The interrupted items are excluded from recall and counted
 in dependability; `grade-run` reports them per arm (`interruptions`: the
 interrupted turns by cause, the recovered stops by cause, the unexpected
 daemon exits, which stay an Eidnara reliability finding, and any unresolved
