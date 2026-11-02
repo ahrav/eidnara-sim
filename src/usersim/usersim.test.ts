@@ -1015,17 +1015,27 @@ describe("tape and pairing", () => {
     test("a live pushback that names a ledger fact's identity falls back, and the prompt holds conveyed facts settled", async () => {
         const withdrawal =
             "I'd like to see the evidence behind that rejected-approach memory before it stays in the project record. Can you point me to the commit, issue, or benchmark where the blocking pool starvation was actually observed? Without that, I'd rather not have a memory entry that steers future work away from `spawn_blocking` on hearsay.";
-        const replies = [
-            { text: withdrawal, stop: "end_turn" },
-            { text: "Why did the test skip the empty-frame case?", stop: "end_turn" },
-            { text: "Just move it onto SPAWN_BLOCKING.", stop: "end_turn" },
-            { text: "Did you check ticket 55174 first?", stop: "end_turn" },
-            { text: "Name it SABLE_URCHIN_MAX_KEYS?", stop: "end_turn" },
+        const replies: [string, boolean][] = [
+            [withdrawal, true],
+            ["Why did the test skip the empty-frame case?", false],
+            ["Just move it onto SPAWN_BLOCKING.", true],
+            ["Did you check ticket 55174 first?", true],
+            ["Name it SABLE_URCHIN_MAX_KEYS?", true],
+            ["Is the SABLE_URCHIN prefix right here?", true],
+            ["Rerun it with RUST_BACKTRACE=1 and check key_len.", false],
+            ["Why does pewter_gecko_roundtrip still fail?", true],
+            ["Is that a TawnyEgretError again?", true],
+            ["Drop the quiet_hare tag from the errors.", true],
+            ["Rename ping_echo_quiet_vole first.", true],
+            ["Is tawny-egret-14 the right alias?", true],
+            ["Does respawn_blocking_ok still pass?", false],
+            ["The quiet hare test is flaky; check 155174 bytes.", false],
         ];
+        const queue = replies.map(([text]) => ({ text, stop: "end_turn" }));
         const prompts: Prompt[] = [];
         const llm: Llm = async (p) => {
             prompts.push(p);
-            return replies.shift() ?? { text: "Fine.", stop: "end_turn" };
+            return queue.shift() ?? { text: "Fine.", stop: "end_turn" };
         };
         const pushback = (n: number): ScriptTurn => ({
             ...(script[1] as ScriptTurn),
@@ -1034,7 +1044,17 @@ describe("tape and pairing", () => {
         });
         const root = dir();
         const pairing = new Pairing(join(root, "pairing.jsonl"), () => "a");
-        const labels = new Map([1, 2, 3, 4, 5].map((n) => [`e-p${n}`, "pushback" as Label]));
+        const turns = replies.map((_r, i) => i + 1);
+        const labels = new Map(turns.map((n) => [`e-p${n}`, "pushback" as Label]));
+        const statements = [
+            "moving command execution onto spawn_blocking was tried and reverted because it starved the runtime's blocking pool",
+            "the internal ticket for the cache rewrite is 55174",
+            "every new public constant under src/cmd carries the SABLE_URCHIN_ prefix, for example SABLE_URCHIN_MAX_ARGS",
+            "error strings returned from src/cmd start with the tag [quiet_hare]",
+            "test functions you add end their names with _quiet_vole",
+        ];
+        const paste =
+            "CI went red:\n```\ntest pewter_gecko_roundtrip ... FAILED\nTawnyEgretError { key_len: 57585 }\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n```";
         const user = new UserSim({
             seed: 101,
             plan: { ...plan, labels },
@@ -1043,28 +1063,22 @@ describe("tape and pairing", () => {
             llm,
             normalise: normaliser(prereg.divergence_policy.normalisation),
             keys: ["f-0032"],
-            facts: [
-                "moving command execution onto spawn_blocking was tried and reverted because it starved the runtime's blocking pool",
-                "the internal ticket for the cache rewrite is 55174",
-                "every new public constant under src/cmd carries the SABLE_URCHIN_ prefix, for example SABLE_URCHIN_MAX_ARGS",
-            ],
+            facts: [...statements, paste],
+            statements,
         });
         const agent =
             "I saved that as a rejected approach in project memory. I'm relying on what you've told me here.";
-        const causes: (string[] | undefined)[] = [];
-        for (const n of [1, 2, 3, 4, 5]) {
+        const seen: [string, boolean][] = [];
+        for (const n of turns) {
             const d = await user.deliver("a", pushback(n), `${agent} (${n})`);
-            causes.push((pairing.records.at(-1) as { fallback?: string[] }).fallback);
-            if (n !== 2) expect(d.text).toStartWith("I'm not convinced by that.");
-            else expect(d.text).toStartWith("Why did the test skip");
+            const record = pairing.records.at(-1) as { fallback?: string[] };
+            const [text] = replies[n - 1] as [string, boolean];
+            const fell = record.fallback !== undefined;
+            expect(record.fallback ?? ["fact-token"]).toEqual(["fact-token"]);
+            expect(d.text.startsWith(fell ? "I'm not convinced by that." : text)).toBe(true);
+            seen.push([text, fell]);
         }
-        expect(causes).toEqual([
-            ["fact-token"],
-            undefined,
-            ["fact-token"],
-            ["fact-token"],
-            ["fact-token"],
-        ]);
+        expect(seen).toEqual(replies);
         const system = prompts[0]?.system ?? "";
         expect(system).toContain("says it saved to memory or notes, is true and settled");
         expect(system).toContain("never ask for its source or evidence");

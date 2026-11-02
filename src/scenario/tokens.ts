@@ -2,11 +2,11 @@ import type { Rng } from "../rng";
 
 // ADJ and NOUN match the v1 A/B harness word lists in eidnara
 // packages/e2e-tests/src/ab-eval/world.ts.
-const ADJ =
+export const ADJ =
     "amber brisk cobalt dusky ember fallow gilded hollow ivory jaunty kelp lunar mossy nimble ochre pewter quiet russet sable tawny umber velvet wistful xeric yonder zephyr briny cinder drowsy fable".split(
         " ",
     );
-const NOUN =
+export const NOUN =
     "otter heron falcon marmot lynx badger egret ibis jackal kestrel lemur magpie newt oriole puffin quokka raven stoat tapir urchin vole walrus yak zebu bison condor dingo gecko hare koala".split(
         " ",
     );

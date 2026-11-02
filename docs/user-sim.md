@@ -111,29 +111,42 @@ too. A reply that is empty, that stopped for any reason other than `end_turn`
 or `stop_sequence` (`max_tokens`, a guardrail or content filter, a context
 window overflow), that carries a probe-announcement marker or a ledger
 key, that repeats a rendered ledger statement or cue (`fact`), or that
-names a generated identity a ledger statement or cue carries (`fact-token`:
-a bracketed tag such as `[ember_magpie]`, an identifier with an underscore
-such as `spawn_blocking` or the prefix `SABLE_URCHIN_`, a hyphenated code
-ending in digits such as `tawny-hare-93`, a run of four or more digits, or a
-`<Word>Error` name, matched case-insensitively as a whole identifier,
-`factTokens` in `src/usersim/usersim.ts`) is replaced by a fixed line for
-its label, and the record lists the cause in `fallback`. The identity check
-covers every ledger fact of the scenario, conveyed or not: a reply that names
-a conveyed fact can question, restate, or withdraw it, and one that names a
-fact before its conveyance turn conveys it outside its compiled manner. Over
-the c7 S runs (seeds 101 to 103, every arm, 5,945 user-sim call responses) the
-check matches 249 replies, 4.2%. A fact whose wording carries no such
-identity, such as `a single global Mutex around the whole store`, is held by
-the prompt alone.
+names a fact identity (`fact-token`, `factIdentities` in
+`src/usersim/usersim.ts`) is replaced by a fixed line for its label, and the
+record lists the cause in `fallback`. The whole delivered text is checked
+against the markers again before it is sent, and a hit stops the run.
+
+A fact identity is one of three things. The first is an identifier with an
+underscore or a five-digit number in a rendered ledger statement, such as
+`spawn_blocking`, `SABLE_URCHIN` from the prefix `SABLE_URCHIN_`,
+`quiet_vole` from the suffix `_quiet_vole`, or `55174`; a reply matches it
+case-insensitively with no letter or digit on either side, so
+`SABLE_URCHIN_MAX_KEYS` names `SABLE_URCHIN`. The second is a five-digit
+number in a cue. The third is an adjective-noun pair from the scenario
+generator's word lists (`Tokens` in `src/scenario/tokens.ts`) that a
+statement or cue carries in any joined form; a reply word names it when the
+word's letters, lowercased, contain the pair, so `[ember_magpie]`,
+`tawny-hare-93`, `TawnyEgretError`, and `pewter_gecko_roundtrip` all count,
+and two separate words such as `quiet hare` do not. A cue also carries the
+pasted tool output and surrounding wording of its conveyance, so its other
+identifiers, such as `RUST_BACKTRACE` and `key_len` in a pasted failure,
+stay ordinary words. The identity check covers every ledger fact of the
+scenario, conveyed or not: a reply that names a conveyed fact can question,
+restate, or withdraw it, and one that names a fact before its conveyance turn
+conveys it outside its compiled manner. Over the c7 S runs (seeds 101 to 103,
+every arm, 5,945 user-sim call responses) the check matches 255 replies,
+4.3%. A fact whose wording carries no
+such identity, such as `a single global Mutex around the whole store`, is
+held by the prompt alone.
 
 The user-sim lies under `MEASUREMENT_PATHS` (`src/run/run.ts`), so a run
 keeps the user-sim of the eidnara-sim revision it started under: a resume
 from another revision is refused, and `--sim-upgrade` refuses a revision
 range that changes `src/usersim/` (`docs/run-command.md`). The settled-fact
 prompt and the `fact-token` check apply to runs started from a revision that
-carries them.
-The whole delivered text is checked against the markers again before it is
-sent, and a hit stops the run.
+carries them. A run that replays a tape recorded under an earlier user-sim
+(`--tapes`) applies the check to the replayed replies too, so a taped reply
+that names a fact identity is delivered as the fixed line.
 
 The prefix hash chains each record's prefix and delivered-text hashes with
 the hash of the next agent reply (the session's last agent call that

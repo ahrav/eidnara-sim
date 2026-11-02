@@ -13,6 +13,7 @@ import { COMPONENT_HEADER } from "../proxy/classify";
 import { readJournal, requireAppendable } from "../run/journal";
 import { HarnessFailure } from "../run/scheduler";
 import { markerHits } from "../scenario/compile";
+import { ADJ, NOUN } from "../scenario/tokens";
 import { LABELS, type Label, type Plan } from "./plan";
 
 /**
@@ -685,26 +686,37 @@ export interface UserSimOptions {
     keys: readonly string[];
     /** Rendered ledger statements and cues a generated reply must never repeat. */
     facts?: readonly string[];
+    /** The rendered ledger statements alone. */
+    statements?: readonly string[];
 }
 
-const FACT_TOKEN =
-    /\[[a-z][a-z_]*\]|\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+_?|\b[a-z]+(?:-[a-z]+)*-\d+\b|\b\d{4,}\b|\b[A-Z][a-z]+(?:[A-Z][a-z]+)+Error\b/g;
+const IDENTIFIER = /[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+|\b\d{5}\b/g;
+const NUMBER = /\b\d{5}\b/g;
+const PAIR = new RegExp(`(?:${ADJ.join("|")})(?:${NOUN.join("|")})`, "g");
+const pairsIn = (text: string): string[] =>
+    (text.match(/[A-Za-z0-9_-]+/g) ?? []).flatMap(
+        (w) =>
+            w
+                .toLowerCase()
+                .replace(/[^a-z]/g, "")
+                .match(PAIR) ?? [],
+    );
 
-/** Ledger-fact token matches flag replies that name a fact in wording other than its rendered statement. */
-export function factTokens(facts: readonly string[]): string[] {
-    return [...new Set(facts.flatMap((f) => f.match(FACT_TOKEN) ?? []).map((t) => t.toLowerCase()))]
-        .filter((t) => t.length >= 4)
-        .sort();
+export function factIdentities(
+    statements: readonly string[],
+    cues: readonly string[] = [],
+): { names: string[]; pairs: string[] } {
+    const names = [
+        ...statements.flatMap((s) => s.match(IDENTIFIER) ?? []),
+        ...cues.flatMap((c) => c.match(NUMBER) ?? []),
+    ].map((t) => t.toLowerCase());
+    const pairs = [...statements, ...cues].flatMap(pairsIn);
+    return { names: [...new Set(names)].sort(), pairs: [...new Set(pairs)].sort() };
 }
 
-function tokenPattern(tokens: readonly string[]): RegExp | null {
-    if (tokens.length === 0) return null;
-    // A token ending in `_` is a name prefix, so a longer identifier that starts with it matches.
-    const alts = tokens.map((t) => {
-        const escaped = t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        return t.endsWith("_") ? escaped : `${escaped}(?![A-Za-z0-9_])`;
-    });
-    return new RegExp(`(?<![A-Za-z0-9_])(?:${alts.join("|")})`, "i");
+function namesPattern(names: readonly string[]): RegExp | null {
+    if (names.length === 0) return null;
+    return new RegExp(`(?<![A-Za-z0-9])(?:${names.join("|")})(?![A-Za-z0-9])`, "i");
 }
 
 /**
@@ -714,10 +726,17 @@ function tokenPattern(tokens: readonly string[]): RegExp | null {
  * arm or run that already answered them, and from a live call once they differ.
  */
 export class UserSim {
-    private readonly tokens: RegExp | null;
+    private readonly names: RegExp | null;
+    private readonly pairs: ReadonlySet<string>;
 
     constructor(private readonly o: UserSimOptions) {
-        this.tokens = tokenPattern(factTokens(o.facts ?? []));
+        const ids = factIdentities(o.statements ?? [], o.facts ?? []);
+        this.names = namesPattern(ids.names);
+        this.pairs = new Set(ids.pairs);
+    }
+
+    private namesFact(text: string): boolean {
+        return (this.names?.test(text) ?? false) || pairsIn(text).some((p) => this.pairs.has(p));
     }
 
     async deliver(arm: string, t: ScriptTurn, lastAgent: string | AgentReply): Promise<Delivery> {
@@ -830,7 +849,7 @@ export class UserSim {
         // The script conveys each fact once; a reply that repeats one conveys it again.
         const fact = (this.o.facts ?? []).some((f) => got.text.includes(f)) ? ["fact"] : [];
         // A reply naming a fact's identity can question, restate, or withdraw that fact.
-        const named = this.tokens?.test(got.text) ? ["fact-token"] : [];
+        const named = this.namesFact(got.text) ? ["fact-token"] : [];
         const fallback = [...empty, ...cut, ...hits, ...fact, ...named];
         if (fallback.length === 0) return { key, text: got.text, source };
         return { key, text: FALLBACK[label] ?? "", source, fallback };

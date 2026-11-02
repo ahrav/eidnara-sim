@@ -2352,6 +2352,7 @@ async function runArms(
             ...scenario.probes.map((p) => p.id),
         ],
         facts: scenario.facts.flatMap((f) => [f.statement, ...f.cues]),
+        statements: scenario.facts.map((f) => f.statement),
     });
     const scriptedById = new Map(scripted.map((t) => [t.id, t]));
     const eventOrder = new Map(allEvents.map((e, i) => [e.id, i]));
