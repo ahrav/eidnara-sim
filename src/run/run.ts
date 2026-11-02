@@ -65,6 +65,7 @@ import {
     type AgentReply,
     agentReplyOf,
     checkTapeSources,
+    factMatcher,
     normaliser,
     Pairing,
     proxyUserSim,
@@ -1532,6 +1533,10 @@ export async function loadManifest(
                 scenario.events
                     .filter((e) => e.kind === "user_turn")
                     .map((e) => [String(e.id), String((e as { text?: unknown }).text ?? "")]),
+            ),
+            namesFact: factMatcher(
+                (scenario.facts ?? []).map((f) => f.statement),
+                (scenario.facts ?? []).flatMap((f) => [f.statement, ...f.cues]),
             ),
         });
     if (existsSync(path)) {

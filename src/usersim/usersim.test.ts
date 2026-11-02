@@ -25,6 +25,7 @@ import {
 import {
     agentReplyOf,
     checkTapeSources,
+    factMatcher,
     type Llm,
     normaliser,
     Pairing,
@@ -1083,6 +1084,51 @@ describe("tape and pairing", () => {
         expect(system).toContain("says it saved to memory or notes, is true and settled");
         expect(system).toContain("never ask for its source or evidence");
         expect(system).toContain("change, archive, forget, or delete it");
+    });
+
+    test("a replay source's fact-token causes must match the run's identity check", async () => {
+        const first = dir();
+        const statements = ["the internal ticket for the cache rewrite is 55174"];
+        const user = new UserSim({
+            seed: 101,
+            plan,
+            tape: new Tape(join(first, "tape.jsonl")),
+            pairing: new Pairing(join(first, "pairing.jsonl"), () => "a"),
+            llm: async () => ({ text: "Check ticket 55174 first.", stop: "end_turn" }),
+            normalise: normaliser(prereg.divergence_policy.normalisation),
+            keys: ["f-0000", "q-0001"],
+            facts: statements,
+            statements,
+        });
+        await play(user, "a", outputs);
+        writeFileSync(
+            join(first, "manifest.json"),
+            JSON.stringify({ seed: 101, scenario_hash: "abc", order: ["a"], events: 5 }),
+        );
+        writeFileSync(
+            join(first, "journal.jsonl"),
+            '{"seq":0,"wall_ms":0,"kind":"EndRun","arm":null,"scenario_ms":0}\n',
+        );
+        const run = {
+            seed: 101,
+            scenario_hash: "abc",
+            order: ["a"],
+            events: 5,
+            turns: script.map((t) => t.id),
+            scripted: new Map(script.map((t) => [t.id, t.text])),
+        };
+        const tape = [join(first, "tape.jsonl")];
+        const same = { ...run, namesFact: factMatcher(statements, statements) };
+        expect(() => checkTapeSources(tape, same)).not.toThrow();
+        expect(() => checkTapeSources(tape, run)).not.toThrow();
+        expect(() => checkTapeSources(tape, { ...run, namesFact: () => false })).toThrow("a e-2");
+        const plain = dir();
+        await play(sim(plain, counting()).user, "a", outputs);
+        writeFileSync(join(plain, "manifest.json"), readFileSync(join(first, "manifest.json")));
+        writeFileSync(join(plain, "journal.jsonl"), readFileSync(join(first, "journal.jsonl")));
+        const older = [join(plain, "tape.jsonl")];
+        expect(() => checkTapeSources(older, run)).not.toThrow();
+        expect(() => checkTapeSources(older, { ...run, namesFact: () => true })).toThrow("a e-2");
     });
 
     test("a replay source's taped reply must be the one its pairing row delivered", async () => {

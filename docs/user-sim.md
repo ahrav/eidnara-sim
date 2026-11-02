@@ -144,9 +144,13 @@ keeps the user-sim of the eidnara-sim revision it started under: a resume
 from another revision is refused, and `--sim-upgrade` refuses a revision
 range that changes `src/usersim/` (`docs/run-command.md`). The settled-fact
 prompt and the `fact-token` check apply to runs started from a revision that
-carries them. A run that replays a tape recorded under an earlier user-sim
-(`--tapes`) applies the check to the replayed replies too, so a taped reply
-that names a fact identity is delivered as the fixed line.
+carries them. A run that replays tapes (`--tapes`) refuses a source whose
+recorded `fact-token` causes disagree with its own identity check
+(`checkTapeSources` with `factMatcher`), so a tape recorded under an earlier
+user-sim whose replies name a fact identity is refused as a source rather
+than replayed with different text. `scripts/pairing-check.ts` checks a
+run's own tape without the identity check, so a run recorded before this
+check still passes it.
 
 The prefix hash chains each record's prefix and delivered-text hashes with
 the hash of the next agent reply (the session's last agent call that
