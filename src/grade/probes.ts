@@ -220,21 +220,24 @@ function binary(type: string, pass: boolean, extra: Outcome["metrics"] = {}, rea
     return outcome;
 }
 
-/**
- * The Eidnara plugins' memory and search tools. A call's arguments are the subject the agent
- * looked up, recorded, or dismissed, so P5 reads the call as research about an approach. The
- * rule matches the tool name that `toolCommand` in `src/hosts/arms.ts` records as a command's
- * first word.
- */
-const MEMORY_TOOLS = new Set(["eidnara_search", "eidnara_memory", "eidnara_note"]);
-const memoryToolCall = (x: Command) => MEMORY_TOOLS.has(/^\s*(\S*)/.exec(x.command)?.[1] ?? "");
+const RESEARCH_TOOLS = new Set([
+    "eidnara_search",
+    "eidnara_memory",
+    "eidnara_note",
+    "todowrite",
+    "todoread",
+]);
+const SEARCH_RECORD = /^(grep|glob) \S+( [A-Za-z_]\w*=\S+)*\n/;
+const researchCall = (x: Command) =>
+    RESEARCH_TOOLS.has(/^\s*(\S*)/.exec(x.command)?.[1] ?? "") || SEARCH_RECORD.test(x.command);
 const INSPECTS =
-    /^(cat|less|more|head|tail|nl|wc|grep|egrep|fgrep|rg|ag|ls|tree|stat|file|read|view|bat|sed|find|git)$/;
+    /^(cat|less|more|head|tail|nl|wc|grep|egrep|fgrep|rg|ag|ls|stat|file|read|view|bat|sed|find|git)$/;
 /** `git` global options ahead of the subcommand, with the ones that take the next word. */
 const GIT_GLOBAL = /^(--no-pager|-P|--paginate|--no-optional-locks|--git-dir=.*|--work-tree=.*)$/;
-const GIT_GLOBAL_VALUE = /^(-C|-c|--git-dir|--work-tree)$/;
+const GIT_GLOBAL_VALUE = /^(-C|--git-dir|--work-tree)$/;
 const GIT_READS = /^(grep|log|show|diff|blame|status|ls-files|rev-parse)$/;
 const FIND_ACTS = /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
+const RUNS_OR_WRITES = /^(--output(=.*)?|--pre(=.*)?)$/;
 /** `writesFile` treats unquoted `>` redirections as file writes, with exceptions for `/dev/null` and descriptor targets (`2>&1`). */
 const writesFile = (seg: string): boolean => {
     let quote = "";
@@ -250,18 +253,16 @@ const writesFile = (seg: string): boolean => {
                 .slice(i + 1)
                 .replace(/^[>|]/, "")
                 .trimStart();
-            if (!/^(&\d*-?|\/dev\/null)(\s|$)/.test(target)) return true;
+            if (!/^(&\d+-?|&-|\/dev\/null)(\s|$)/.test(target)) return true;
         }
     }
     return false;
 };
 const inspects = (p: Segment): boolean => {
-    const seg = unprefixed(p.seg);
-    if (p.body || /\$\(|`/.test(seg) || writesFile(seg)) return false;
-    return inspectsWords(shellWords(seg));
+    if (p.body || /\$\(|`|[<>]\(/.test(p.seg) || writesFile(p.seg)) return false;
+    return inspectsWords(shellWords(unprefixed(p.seg)));
 };
-const XARGS_VALUE =
-    /^(-[IiEeLlnPsda]|--(replace|eof|max-lines|max-args|max-procs|max-chars|delimiter|arg-file))$/;
+const XARGS_VALUE = /^(-[IELnPsda]|--(max-args|max-procs|max-chars|delimiter|arg-file))$/;
 function inspectsWords(words: string[]): boolean {
     const command = words[0] ?? "";
     if (command === "xargs") {
@@ -269,9 +270,9 @@ function inspectsWords(words: string[]): boolean {
         while (i < words.length && (words[i] as string).startsWith("-")) {
             i += XARGS_VALUE.test(words[i] as string) ? 2 : 1;
         }
-        return i < words.length && words[i] !== "xargs" && inspectsWords(words.slice(i));
+        return i < words.length && inspectsWords(words.slice(i));
     }
-    if (!INSPECTS.test(command)) return false;
+    if (!INSPECTS.test(command) || words.some((w) => RUNS_OR_WRITES.test(w))) return false;
     if (command === "sed") return !words.some((w) => /^(-[^-]*i|--in-place)/.test(w));
     if (command === "find") return !words.some((w) => FIND_ACTS.test(w));
     if (command !== "git") return true;
@@ -284,12 +285,28 @@ function inspectsWords(words: string[]): boolean {
     }
     return GIT_READS.test(words[i] ?? "");
 }
+function appliedParts(parts: Segment[], forced: boolean): Segment[] {
+    const pipelines: Segment[][] = [];
+    for (const p of parts) {
+        const open = pipelines.at(-1);
+        if (p.piped && open) open.push(p);
+        else pipelines.push([p]);
+    }
+    return pipelines.flatMap((line) => {
+        const scanned = forced || !line.every((p) => !groupBody(p.seg) && inspects(p));
+        return line.flatMap((p) => {
+            const group = groupBody(p.seg);
+            if (!group) return scanned ? [p] : [];
+            const inner = reachableParts(group.body, undefined);
+            return appliedParts(inner, forced || line.length > 1 || writesFile(p.seg));
+        });
+    });
+}
 const appliedCommandText = (r: ArtefactReader) =>
     r
         .commands()
-        .filter((x) => !memoryToolCall(x))
-        .flatMap(executedParts)
-        .filter((p) => !inspects(p))
+        .filter((x) => !researchCall(x))
+        .flatMap((x) => appliedParts(reachableParts(x.command, x.exit), false))
         .map((p) => (p.body ? `${p.seg}\n${p.body.replace(/\n$/, "")}` : p.seg))
         .join("\n");
 /** Changed paths join the added lines so a check pattern can match a file name. */
@@ -506,6 +523,7 @@ interface Segment {
     seg: string;
     /** Heredoc bodies the segment's commands consume, kept apart from the command words. */
     body: string;
+    piped?: boolean;
 }
 function splitShell(command: string): Segment[] {
     const out: Segment[] = [];
@@ -639,7 +657,7 @@ const reachableParts = (command: string, exit: number | null | undefined): Segme
     let guard = ";";
     const guarded = parts.map((p) => {
         guard = p.op === "|" ? guard : p.op;
-        return { ...p, op: guard };
+        return { ...p, op: guard, piped: p.op === "|" };
     });
     const sure = sureParts(parts);
     const lastList = guarded.reduce((n, p, i) => (/^[;&\n]$/.test(p.op) ? i : n), 0);

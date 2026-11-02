@@ -488,14 +488,22 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             'eidnara_search {"query":"DIGEST checksum hash command spawn_blocking"}',
             'eidnara_memory {"action":"create","content":"spawn_blocking starved the pool"}',
             'eidnara_note {"action":"write","content":"avoid spawn_blocking"}',
+            'todowrite {"todos":[{"content":"keep hashing off spawn_blocking"}]}',
+            "grep src\nspawn_blocking\n*.rs",
+            "glob src\n**/*spawn_blocking*",
             "grep -rn spawn_blocking src 2>/dev/null | head -20",
-            "cd repo && rg -n 'spawn_blocking' src/ || true",
+            "cd repo && rg -n 'spawn_blocking' src/",
             "git log --oneline -S spawn_blocking",
             "git -C repo grep -n spawn_blocking",
-            "sed -n '1,40p' src/db.rs; cat src/cmd/mod.rs | grep -n spawn_blocking",
+            "sed -n '/spawn_blocking/p' src/db.rs",
+            "cat src/cmd/mod.rs | grep -n spawn_blocking",
             "find src -name '*.rs' -newer Cargo.toml | xargs grep -l spawn_blocking",
+            "{ grep -n spawn_blocking src/db.rs; grep -c spawn_blocking src/server.rs; }",
         ];
-        expect(outcome(blocking, { files: [digest], commands: looked })).toEqual(["pass"]);
+        for (const command of looked) {
+            const g = grade(blocking, { files: [digest], commands: [command] });
+            expect([command, g.verdict]).toEqual([command, "pass"]);
+        }
         for (const applied of [
             "sed -i 's/hash(&value)/spawn_blocking(move || hash(\\&value))/' src/cmd/digest.rs",
             "cat > src/cmd/digest.rs <<'EOF'\nlet sum = tokio::task::spawn_blocking(move || hash(value)).await?;\nEOF",
@@ -503,6 +511,12 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "find src -name '*.rs' -exec sed -i 's/block_on/spawn_blocking/' {} +",
             "echo 'tokio::task::spawn_blocking(f);' >> src/cmd/digest.rs",
             "cat $(echo spawn_blocking)",
+            "write src/cmd/digest.rs\nlet sum = tokio::task::spawn_blocking(move || hash(value)).await?;",
+            "sed 's/block_on/spawn_blocking/' src/db.rs | tee /tmp/db.rs",
+            "{ sed 's/block_on/spawn_blocking/' src/db.rs; } > /tmp/db.rs",
+            "X=$(sed -i 's/block_on/spawn_blocking/' src/db.rs) cat src/db.rs",
+            "grep spawn_blocking src/db.rs >& /tmp/out",
+            "git -c diff.external=./x diff spawn_blocking",
         ]) {
             const g = grade(blocking, { files: [digest], commands: [applied] });
             expect([applied, g.verdict, g.reason]).toEqual([
