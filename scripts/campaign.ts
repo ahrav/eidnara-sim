@@ -253,7 +253,10 @@ function launch(run: CampaignSpec["runs"][number], record: RunRecord, progress: 
     const log = logOf(run.name);
     if (existsSync(log)) renameSync(log, join(logs, `${run.name}.attempt${record.launches}.log`));
     const fd = openLog(log, true);
-    const command = argv(launchArgv(spec, run, progress.started));
+    // run-tier resumes any run directory that holds a manifest, a run stopped before `StartRun`
+    // included.
+    const resume = progress.started || existsSync(join(runDir(spec, run.name), "manifest.json"));
+    const command = argv(launchArgv(spec, run, resume));
     // A launch that cannot even start counts as an attempt that measured nothing.
     record.launches++;
     record.progress_at_launch = progress.measured_events;

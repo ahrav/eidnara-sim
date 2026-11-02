@@ -163,7 +163,10 @@ test("a campaign's sim_upgrade rides on resumes only, keeps restored records, an
         inode_paths: [],
         run_command: ["bun", fake],
         finalize_commands: [["bun", "-e", "process.exit(0)"]],
-        runs: [{ name: "good", args: ["--mode", "ok"] }],
+        runs: [
+            { name: "good", args: ["--mode", "ok"] },
+            { name: "bad", args: ["--mode", "refuse"] },
+        ],
     };
     const supervise = (over: Record<string, unknown>) => {
         writeFileSync(join(dir, "campaign.json"), JSON.stringify({ ...spec, ...over }));
@@ -180,20 +183,36 @@ test("a campaign's sim_upgrade rides on resumes only, keeps restored records, an
     expect(refused.exitCode).toBe(2);
     expect(refused.stderr.toString()).toContain(`sim_upgrade names ${other}; this checkout runs`);
     expect(existsSync(out)).toBe(false);
-    expect(supervise({ sim_upgrade: head }).exitCode).toBe(0);
-    const argvs = readFileSync(join(out, "good", "argv.jsonl"), "utf8")
-        .trim()
-        .split("\n")
-        .map((l) => JSON.parse(l));
-    const base = ["--mode", "ok", "--out", join(out, "good")];
-    expect(argvs).toEqual([base, [...base, "--sim-upgrade", head]]);
+    expect(supervise({ sim_upgrade: head }).exitCode).toBe(1);
+    const argvs = (name: string) =>
+        readFileSync(join(out, name, "argv.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l));
+    const base = (name: string, mode: string) => ["--mode", mode, "--out", join(out, name)];
+    const good = base("good", "ok");
+    expect(argvs("good")).toEqual([good, [...good, "--sim-upgrade", head]]);
+    // A run that stopped before `StartRun` left a manifest, so its relaunch is a resume too.
+    const bad = base("bad", "refuse");
+    const upgraded = [...bad, "--sim-upgrade", head];
+    expect(argvs("bad")).toEqual([bad, upgraded, upgraded]);
     const status = JSON.parse(readFileSync(join(out, "campaign-status.json"), "utf8"));
-    expect(status.runs[0]).toMatchObject({ state: "finalized", argv: ["bun", fake, ...base] });
-    // Dropping the field leaves the started run's record standing.
-    expect(supervise({}).exitCode).toBe(0);
+    expect(status.runs[0]).toMatchObject({ state: "finalized", argv: ["bun", fake, ...good] });
+    // Dropping the field leaves every started run's record standing.
+    expect(supervise({}).exitCode).toBe(1);
+    const after = JSON.parse(readFileSync(join(out, "campaign-status.json"), "utf8"));
+    expect(after.runs.map((r: { state: string }) => r.state)).toEqual(["finalized", "gave-up"]);
     expect(() => parseCampaign({ ...spec, sim_upgrade: "abc123" })).toThrow(
         "sim_upgrade is not a full commit hash",
     );
+    // The supervisor owns the flag, so a campaign's own arguments may not name it.
+    const flagged = { ...spec, sim_upgrade: head };
+    expect(() => parseCampaign({ ...flagged, args: ["--sim-upgrade", head] })).toThrow(
+        "shared args name --sim-upgrade",
+    );
+    expect(() =>
+        parseCampaign({ ...flagged, runs: [{ name: "r", args: ["--sim-upgrade", head] }] }),
+    ).toThrow("run r names its own --sim-upgrade");
 });
 
 const record = (over: Partial<RunRecord> = {}): RunRecord => ({

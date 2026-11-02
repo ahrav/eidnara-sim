@@ -7733,6 +7733,7 @@ describe("fatal causes on resume", () => {
             "OpenCode turn not aborted after its deadline",
             "OpenCode abort still pending 10000 ms after the deadline",
             `${aborts[0]}\nsecond line`,
+            `${aborts[2]}\n`,
         ];
         for (const error of refused) {
             expect(fatalCause(at({ ...event, error, cause: "event-error" }))).toBe("event-error");

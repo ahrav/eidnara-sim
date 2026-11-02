@@ -66,10 +66,15 @@ export function parseCampaign(raw: unknown): CampaignSpec {
             problems.push(`run name ${JSON.stringify(r?.name)} is not a unique plain name`);
         } else names.add(r.name);
         if (!strings(r?.args)) problems.push(`run ${r?.name} args are not strings`);
-        if ((r?.args ?? []).includes("--out")) problems.push(`run ${r?.name} names its own --out`);
+        for (const flag of ["--out", "--sim-upgrade"]) {
+            if ((r?.args ?? []).includes(flag))
+                problems.push(`run ${r?.name} names its own ${flag}`);
+        }
     }
     if (o?.args !== undefined && !strings(o.args)) problems.push("args are not strings");
-    if ((o?.args ?? []).includes("--out")) problems.push("shared args name --out");
+    for (const flag of ["--out", "--sim-upgrade"]) {
+        if ((o?.args ?? []).includes(flag)) problems.push(`shared args name ${flag}`);
+    }
     const command = (v: unknown) => strings(v) && (v as string[]).length > 0;
     if (o?.run_command !== undefined && !command(o.run_command)) {
         problems.push("run_command is not a non-empty list of strings");

@@ -400,8 +400,10 @@ and `--out <out>/<name>` (`run_command` replaces the first part, and
 `finalize_commands`, with `{dir}` and `{evidence}` placeholders, the
 finalize steps; both exist for tests). An optional `sim_upgrade` (a full
 commit hash) moves the campaign's runs to a harness-recovery revision: every
-resume appends `--sim-upgrade <sim_upgrade>`, a first launch does not, and the
-supervisor refuses to start unless its own checkout is at that commit. A
+resume (a launch into a run directory that holds a manifest) appends
+`--sim-upgrade <sim_upgrade>`, a first launch does not, and the supervisor
+refuses to start unless its own checkout is at that commit. The supervisor
+owns `--out` and `--sim-upgrade`, so neither `args` list may name them. A
 record's command line is the one without the flag, so adding or dropping the
 field keeps every record. Every `poll_ms` the supervisor:
 
