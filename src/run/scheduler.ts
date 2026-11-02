@@ -140,6 +140,9 @@ export const RECOVERABLE_CAUSES: ReadonlySet<FatalCause> = new Set<FatalCause>([
  */
 const HOST_TEARDOWN = /^host tree (\d+) survived SIGKILL$/;
 
+/** Whether `error` is a host teardown's whole error text. */
+export const isHostTeardown = (error: string): boolean => HOST_TEARDOWN.test(error);
+
 /**
  * The transport errors an event's fatal record written before records carried `cause` names:
  * the message starts with the user-sim's own timeout or 429/5xx refusal, or with the error
@@ -184,12 +187,17 @@ export function fatalCause(e: Entry): FatalCause {
 }
 
 /**
- * Whether the `cause` a fatal record stores agrees with `fatalCause`: equal, or `event-error`
- * on a host teardown recorded before that cause existed.
+ * Whether the `cause` a fatal record stores agrees with `fatalCause`. A host teardown stores
+ * `host-teardown` with the `host_pid` its error names, or, recorded before that cause existed,
+ * `event-error` with no `host_pid`.
  */
 function storedCauseAgrees(e: Entry): boolean {
     const cause = fatalCause(e);
-    return e.cause === cause || (cause === "host-teardown" && e.cause === "event-error");
+    if (cause !== "host-teardown") return e.cause === cause;
+    const pid = Number(HOST_TEARDOWN.exec(String(e.error))?.[1]);
+    return e.cause === "host-teardown"
+        ? e.host_pid === pid
+        : e.cause === "event-error" && e.host_pid === undefined;
 }
 
 /** Whether `e` is a fatal `ItemState`, the record that stops a run. */

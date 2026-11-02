@@ -99,7 +99,14 @@ import { PRICE_TABLE, type PriceTable } from "./price";
 import { running } from "./procs";
 import { gatewayRetry, transientUserSim, withRetry } from "./retry";
 import { ResourceSampler } from "./sampler";
-import { type ArmDriver, HarnessFailure, type ScenarioEvent, Scheduler } from "./scheduler";
+import {
+    type ArmDriver,
+    HarnessFailure,
+    isHostTeardown,
+    type ScenarioEvent,
+    Scheduler,
+    type TurnOutcome,
+} from "./scheduler";
 import { FAKETIME_LIB, writeOffset } from "./timeinject";
 import { SYSTEM_PATH, TOOLCHAIN_PROBES } from "./toolchain";
 
@@ -2557,7 +2564,22 @@ async function runArms(
                         if (e.kind === "session_start") markSession(arm, armRoot);
                         if (e.kind === "session_end") {
                             agentText.delete(`${arm}/${e.session}`);
-                            const out = await driver.event(e);
+                            let out: TurnOutcome;
+                            try {
+                                out = await driver.event(e);
+                            } catch (caught) {
+                                // A host teardown stops the session_end before the driver's
+                                // daemon check; a daemon already gone is reported first, so the
+                                // resume's replacement daemon cannot hide the exit.
+                                const teardown = isHostTeardown(
+                                    caught instanceof Error ? caught.message : String(caught),
+                                );
+                                const pid = driver.daemonPid();
+                                if (teardown && driver.daemon && (pid === null || !running(pid))) {
+                                    scheduler.daemonExited({ after: e.id });
+                                }
+                                throw caught;
+                            }
                             requireBoots(arm, armRoot);
                             return out;
                         }

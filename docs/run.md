@@ -276,7 +276,11 @@ event's record carries `harness-transport`, `job-deadline`, `host-teardown`, or
 `event-error`, and the replay refuses a stored cause its shape contradicts. A
 host teardown takes its cause from the whole error text, so a record written
 before `host-teardown` existed, which stores `event-error` with that text,
-names `host-teardown` too. An event record
+names `host-teardown` too; a stored `host-teardown` must carry the `host_pid`
+its error names, and a stored `event-error` on that text must carry none. A
+`session_end` that stops on a host teardown first reports a daemon already
+gone (`daemon-exit`), since the teardown cut the session_end before the
+driver's own daemon check. An event record
 from before records carried `cause` takes it from the start of its error
 text: a deadline overrun names `job-deadline`; a user-sim timeout or 429/5xx,
 a closed socket, a connection `fetch` could not open, or a reset or refused

@@ -7505,6 +7505,19 @@ describe("fatal causes on resume", () => {
         await expect(
             run(journalWith({ ...event, error: "driver outcome is null", cause: "host-teardown" })),
         ).rejects.toThrow("run failed: event e-000001 failed");
+        // A new record names the pid its error names; an old one carries none.
+        const mismatched: Record<string, unknown>[] = [
+            { cause: "host-teardown" },
+            { cause: "host-teardown", host_pid: 7 },
+            { cause: "host-teardown", host_pid: "1450848" },
+            { cause: "event-error", host_pid: 1450848 },
+        ];
+        for (const fields of mismatched) {
+            await expect(run(journalWith({ ...event, error, ...fields }))).rejects.toThrow(
+                /cause its shape contradicts/,
+            );
+        }
+        await run(journalWith({ ...event, error, cause: "host-teardown", host_pid: 1450848 }));
     });
 
     test("a fatal record whose cause contradicts its shape, or of unknown shape, is refused", async () => {
