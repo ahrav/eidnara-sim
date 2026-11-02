@@ -509,6 +509,7 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "rg '$(spawn_blocking)' src",
             "grep spawn_blocking src >& /dev/null",
             "/usr/bin/rg -n spawn_blocking src",
+            "grep -n spawn_blocking src >\"/dev/null\" 2>'/dev/null'",
         ];
         for (const command of looked) {
             const g = grade(blocking, { files: [digest], commands: [command] });
@@ -537,6 +538,7 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "git diff --ext-diff spawn_blocking",
             "GIT_EXTERNAL_DIFF=./x git diff spawn_blocking",
             'grep "$(echo spawn_blocking)" src',
+            "grep -n spawn_blocking src > '/tmp/out'",
         ]) {
             const g = grade(blocking, { files: [digest], commands: [applied] });
             expect([applied, g.verdict, g.reason]).toEqual([

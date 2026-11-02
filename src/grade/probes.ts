@@ -284,7 +284,8 @@ const writesFile = (seg: string): boolean => {
             const target = seg
                 .slice(i + 1)
                 .replace(/^[>|]/, "")
-                .trimStart();
+                .trimStart()
+                .replace(/^(&?\s*)(["'])\/dev\/null\2/, "$1/dev/null");
             if (!/^(&\d+-?|&-|&?\s*\/dev\/null)(\s|$)/.test(target)) return true;
         }
     }
