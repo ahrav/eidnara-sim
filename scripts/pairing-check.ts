@@ -173,14 +173,28 @@ const journalDelivered = new Set(
         .filter((e) => e.kind === "UserTurn" && e.delivered === true && e.recovered !== true)
         .map((e) => `${e.arm} ${e.event}`),
 );
+// A turn a stop cut is journaled `failed(interrupted)`; the missingness policy excludes it from
+// the paired measures and counts it, so it is reported beside the checks rather than as a break.
+const interruptedTurns = new Set(
+    journal
+        .filter(
+            (e) =>
+                e.kind === "ItemState" &&
+                e.state === "failed(interrupted)" &&
+                typeof e.event === "string",
+        )
+        .map((e) => `${e.arm} ${e.event}`),
+);
 const unsent = turns
     .filter((r) => script.get(r.event)?.role !== "filler")
+    .filter((r) => !interruptedTurns.has(`${r.arm} ${r.event}`))
     .filter((r) => !r.delivered || !journalDelivered.has(`${r.arm} ${r.event}`))
     .map((r) => `${r.arm} ${r.event}`);
 // A filler the user-sim queued but the host never received is a pairing break too; only a
 // filler the plan skipped is undelivered by design.
 const undeliveredTurns = turns
     .filter((r) => script.get(r.event)?.role === "filler" && r.delivered)
+    .filter((r) => !interruptedTurns.has(`${r.arm} ${r.event}`))
     .filter((r) => !journalDelivered.has(`${r.arm} ${r.event}`))
     .map((r) => `${r.arm} ${r.event}`);
 // A reactive label's text comes from the tape or a live call; a scripted label's from the script.
@@ -522,7 +536,9 @@ const report = {
     journal_pairing_mismatch: journalPairingMismatch,
     invalid_divergences: invalidDivergences,
     missing_turns: (manifest.order as string[]).flatMap((arm) =>
-        scheduled.map((e) => `${arm} ${e.id}`).filter((key) => !recorded.has(key)),
+        scheduled
+            .map((e) => `${arm} ${e.id}`)
+            .filter((key) => !recorded.has(key) && !interruptedTurns.has(key)),
     ),
     incomplete: [
         ...(manifest.order as string[])
@@ -531,10 +547,7 @@ const report = {
         ...(journal.some((e) => e.kind === "EndRun") ? [] : ["EndRun"]),
         ...incompleteRun,
     ],
-    interrupted_turns: journal
-        .filter((e) => e.kind === "Event" && e.outcome === "failed(interrupted)")
-        .map((e) => `${e.arm} ${e.event}`)
-        .filter((key) => recorded.has(key)),
+    interrupted_turns: [...interruptedTurns].filter((key) => prefix.has(key.split(" ")[1] ?? "")),
 };
 console.log(JSON.stringify(report, null, 2));
 const failed =
@@ -561,6 +574,5 @@ const failed =
     report.missing_events.length +
     report.journal_pairing_mismatch.length +
     report.invalid_divergences.length +
-    report.incomplete.length +
-    report.interrupted_turns.length;
+    report.incomplete.length;
 process.exit(failed > 0 ? 1 : 0);

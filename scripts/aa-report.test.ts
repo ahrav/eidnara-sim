@@ -17,7 +17,7 @@ import { sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
-import { behaviourPlan, type Label, realisedRates } from "../src/usersim/plan";
+import { behaviourPlan, deliveredTurns, type Label, realisedRates } from "../src/usersim/plan";
 import { tapeDigests } from "../src/usersim/usersim";
 import { aaReport } from "./aa-report";
 
@@ -361,6 +361,70 @@ describe("aa-report", () => {
         );
         writeFileSync(join(dir, "journal.jsonl"), journalText(summed));
         expect(aaReport(dir)).toHaveLength(1);
+    });
+
+    test("a turn a stop cut on one arm leaves the pair, is counted with its cause, and reports", () => {
+        const prereg = loadPrereg("S");
+        const dir = gradedRun("S", preregistrationHash(prereg));
+        const [before] = aaReport(dir) as unknown as Array<Record<string, unknown>>;
+        const read = (name: string) =>
+            readFileSync(join(dir, name), "utf8")
+                .split("\n")
+                .filter((l) => l !== "")
+                .map((l) => JSON.parse(l) as Record<string, unknown>);
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        // The resume after a kill in host's e-3 (probe p-2): the UserTurn recovered from the
+        // pairing log, the interruption marker, and no EndTurn, snapshot, or grade.
+        const cut = (e: Record<string, unknown>) => e.arm === "host" && e.event === "e-3";
+        const entries = read("journal.jsonl").flatMap((e) => {
+            if (cut(e) && e.kind === "UserTurn") return [{ ...e, recovered: true }];
+            if (cut(e) && e.kind === "EndTurn") return [];
+            if (e.kind === "SnapshotArtefacts" && e.arm === "host" && e.item === "p-2") return [];
+            if (cut(e) && e.kind === "Event") {
+                const marker = { arm: "host", event: "e-3", cause: "harness-exit", scenario_ms: 0 };
+                return [
+                    { kind: "ItemState", state: "failed(interrupted)", ...marker },
+                    { kind: "Event", outcome: "failed(interrupted)", ...marker },
+                ];
+            }
+            return [e];
+        });
+        const rated = entries.map((e) =>
+            e.kind === "UserSimRates" && e.arm === "host"
+                ? {
+                      kind: "UserSimRates",
+                      arm: "host",
+                      scenario_ms: 0,
+                      ...realisedRates(
+                          deliveredTurns(entries, "host").map((t) => ({
+                              session: String(t.session),
+                              label: t.label as Label,
+                          })),
+                          prereg,
+                      ),
+                  }
+                : e,
+        );
+        writeFileSync(join(dir, "journal.jsonl"), journalText(rated));
+        const grades = read("grades.jsonl").filter((g) => !(g.arm === "host" && g.item === "p-2"));
+        writeFileSync(join(dir, "grades.jsonl"), grades.map(line).join(""));
+        const [r] = aaReport(dir) as unknown as Array<Record<string, unknown>>;
+        expect(r?.interrupted_turns).toEqual({
+            host: [{ event: "e-3", cause: "harness-exit" }],
+            "host~aa": [],
+        });
+        expect(r?.interrupted_items).toEqual(["p-2"]);
+        // The item leaves the pair on both arms rather than standing unpaired or missing.
+        expect(r?.unpaired_items).toEqual(before?.unpaired_items);
+        expect(r?.missing).toEqual(before?.missing);
+        const p6 = (r?.metrics as { metric: string; n: number }[]).find(
+            (m) => m.metric === "P6.reread_files",
+        );
+        expect(p6?.n).toBe(5);
+        // A recovered UserTurn the journal does not mark interrupted is still refused.
+        const unmarked = rated.filter((e) => !(cut(e) && e.kind === "ItemState"));
+        writeFileSync(join(dir, "journal.jsonl"), journalText(unmarked));
+        expect(() => aaReport(dir)).toThrow(/host e-3 has 1 journaled UserTurn/);
     });
 
     test("a pair whose delivery states differ at a turn is refused", () => {

@@ -117,7 +117,11 @@ divergence index. `scripts/pairing-check.ts <run>` reports those
 mismatches, the divergences, each arm's reply sources and fallbacks, probe
 or paste text that differs from the script, non-filler turns left unsent,
 and each arm's rates; it exits 1 on any of them or on a rate outside its
-band.
+band. A turn a stop cut, journaled `failed(interrupted)` by its
+`ItemState` marker, is listed under `interrupted_turns` and exempt from
+the delivery checks (`undelivered_turns`, `non_filler_unsent`,
+`missing_turns`): the missingness policy excludes it from the paired
+measures and counts it, so it does not fail the check.
 
 ## Journal
 
@@ -162,7 +166,9 @@ count inside the scenario and the journal complete for the manifest order
 and the scheduled events with no corrupt terminated line (`requireComplete`,
 as `grade-run.ts` does), requires a pre-registered seed and the run arms
 in the seed's relative order, requires each paired turn to match one
-journaled, unrecovered `UserTurn` of the same delivery and label (a reactive
+journaled, unrecovered `UserTurn` of the same delivery and label (a turn
+the journal marks `failed(interrupted)` may carry the `UserTurn` its
+resume recovered from the pairing log, or none) (a reactive
 label from the tape or a live call, a scripted one from the script), checks each
 pairing record's shape and arm (`readPairing`, which
 `pairing-check.ts` shares, refusing a corrupt terminated line), binds each
@@ -194,7 +200,11 @@ used. Each entry carries `sim-claim-boundary/v1`
 (docs/claim-boundary.md). It reports, per arm and leaving P7 aside, the excluded grades and
 the probes the run reached (through their turn, or for P14 through the
 session that ended in the prefix) that the arm has no grade for, and the items
-graded on one side only, which pair nothing. A grading run cut short converges on its rerun: the rerun grades
+graded on one side only, which pair nothing. Per the missingness policy,
+it lists each arm's interrupted turns with their cause
+(`interrupted_turns`) and the reached items whose turn either arm's stop
+cut (`interrupted_items`); such an item leaves the pair on both arms and
+counts as neither missing nor unpaired. A grading run cut short converges on its rerun: the rerun grades
 every item again and the report pairs each side's latest grade. For each metric,
 verdicts as `<type>.pass` and each numeric grade metric, it reports the
 mean difference with a percentile bootstrap interval that resamples the

@@ -323,14 +323,56 @@ test("the pairing check fails a run whose log lacks a scheduled turn for an arm"
     expect(r.exit).toBe(1);
 });
 
-test("a delivered record whose turn the journal marks interrupted fails the check", () => {
+/** Marks `arm`'s turn `event` cut by a stop, as a resume journals it, with the arm's rates recomputed. */
+function interrupt(f: Fixture, arm: string, event: string): void {
+    const user = find(
+        f.journal,
+        (r) => r.kind === "UserTurn" && r.arm === arm && r.event === event,
+    );
+    user.recovered = true;
+    const at = f.journal.findIndex((r) => r.kind === "Event" && r.arm === arm && r.event === event);
+    f.journal.splice(
+        at,
+        1,
+        {
+            kind: "ItemState",
+            arm,
+            event,
+            state: "failed(interrupted)",
+            cause: "harness-exit",
+        },
+        { kind: "Event", arm, event, outcome: "failed(interrupted)", cause: "harness-exit" },
+    );
+    const turns = f.journal
+        .filter((r) => r.kind === "UserTurn" && r.arm === arm)
+        .filter((r) => r.delivered === true && r.recovered !== true)
+        .map((r) => ({ session: String(r.session), label: r.label as Label }));
+    Object.assign(
+        find(f.journal, (r) => r.kind === "UserSimRates" && r.arm === arm),
+        realisedRates(turns, prereg),
+    );
+}
+
+test("a turn a stop cut is reported as interrupted without failing the check", () => {
+    const f = fixture();
+    interrupt(f, "eidnara", "e-0-0");
+    const r = run(f);
+    expect(r.report.interrupted_turns).toEqual(["eidnara e-0-0"]);
+    expect(r.report.undelivered_turns).toEqual([]);
+    expect(r.report.journal_pairing_mismatch).toEqual([]);
+    expect(r.report.rates_mismatch).toEqual([]);
+    expect(r.exit).toBe(0);
+});
+
+test("a delivered filler the journal neither delivered nor interrupted still fails the check", () => {
     const f = fixture();
     find(
         f.journal,
-        (r) => r.kind === "Event" && r.arm === "eidnara" && r.event === "e-0-0",
-    ).outcome = "failed(interrupted)";
+        (r) => r.kind === "UserTurn" && r.arm === "eidnara" && r.event === "e-0-0",
+    ).recovered = true;
     const r = run(f);
-    expect(r.report.interrupted_turns).toEqual(["eidnara e-0-0"]);
+    expect(r.report.undelivered_turns).toEqual(["eidnara e-0-0"]);
+    expect(r.report.interrupted_turns).toEqual([]);
     expect(r.exit).toBe(1);
 });
 
