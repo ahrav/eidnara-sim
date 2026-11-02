@@ -117,11 +117,15 @@ divergence index. `scripts/pairing-check.ts <run>` reports those
 mismatches, the divergences, each arm's reply sources and fallbacks, probe
 or paste text that differs from the script, non-filler turns left unsent,
 and each arm's rates; it exits 1 on any of them or on a rate outside its
-band. A turn a stop cut, journaled `failed(interrupted)` by its
-`ItemState` marker, is listed under `interrupted_turns` and exempt from
-the delivery checks (`undelivered_turns`, `non_filler_unsent`,
-`missing_turns`): the missingness policy excludes it from the paired
-measures and counts it, so it does not fail the check.
+band. A turn a stop cut, journaled `failed(interrupted)` by an
+`ItemState` marker that closes a turn its arm began and never ended, is
+listed under `interrupted_turns` and exempt from the delivery checks
+(`undelivered_turns`, `non_filler_unsent`, `missing_turns`, and the
+`journal_pairing_mismatch` count and interrupt-flag checks): the
+missingness policy excludes it from the paired measures and counts it, so
+it does not fail the check. A marker that closes no such turn is listed
+under `invalid_interruptions` and fails it, as does a recovered
+`UserTurn` with no marker.
 
 ## Journal
 
@@ -166,10 +170,12 @@ count inside the scenario and the journal complete for the manifest order
 and the scheduled events with no corrupt terminated line (`requireComplete`,
 as `grade-run.ts` does), requires a pre-registered seed and the run arms
 in the seed's relative order, requires each paired turn to match one
-journaled, unrecovered `UserTurn` of the same delivery and label (a turn
-the journal marks `failed(interrupted)` may carry the `UserTurn` its
-resume recovered from the pairing log, or none) (a reactive
-label from the tape or a live call, a scripted one from the script), checks each
+journaled, unrecovered `UserTurn` of the same delivery and label. A turn
+the journal marks `failed(interrupted)`, by a marker that closes a turn its
+arm began and never ended, may instead carry the `UserTurn` its resume
+recovered from the pairing log, or none; it needs no pairing row when it
+has no `UserTurn`. A reactive label's text comes from the tape or a live
+call, a scripted one's from the script. The report checks each
 pairing record's shape and arm (`readPairing`, which
 `pairing-check.ts` shares, refusing a corrupt terminated line), binds each
 record to its scheduled turn's session and index, admits one turn per arm

@@ -175,16 +175,20 @@ const journalDelivered = new Set(
 );
 // A turn a stop cut is journaled `failed(interrupted)`; the missingness policy excludes it from
 // the paired measures and counts it, so it is reported beside the checks rather than as a break.
-const interruptedTurns = new Set(
-    journal
-        .filter(
-            (e) =>
-                e.kind === "ItemState" &&
-                e.state === "failed(interrupted)" &&
-                typeof e.event === "string",
-        )
-        .map((e) => `${e.arm} ${e.event}`),
-);
+// A marker counts only when it closes a turn its arm began and never ended.
+const turnKeys = (kind: string) =>
+    new Set(journal.filter((e) => e.kind === kind).map((e) => `${e.arm} ${e.event}`));
+const [begunTurns, endedTurns] = [turnKeys("BeginTurn"), turnKeys("EndTurn")];
+const interruptedTurns = new Set<string>();
+const invalidInterruptions: string[] = [];
+for (const e of journal) {
+    if (e.kind !== "ItemState" || e.state !== "failed(interrupted)") continue;
+    if (typeof e.event !== "string") continue;
+    const key = `${e.arm} ${e.event}`;
+    const open = begunTurns.has(key) && !endedTurns.has(key) && !interruptedTurns.has(key);
+    if (open) interruptedTurns.add(key);
+    else invalidInterruptions.push(key);
+}
 const unsent = turns
     .filter((r) => script.get(r.event)?.role !== "filler")
     .filter((r) => !interruptedTurns.has(`${r.arm} ${r.event}`))
@@ -279,7 +283,12 @@ const journalPairingMismatch = (manifest.order as string[]).flatMap((arm) => {
     for (const u of users) counts.set(String(u.event), (counts.get(String(u.event)) ?? 0) + 1);
     const paired = new Map(turns.filter((r) => r.arm === arm).map((r) => [r.event, r]));
     const off = new Set<string>();
-    for (const event of paired.keys()) if (counts.get(event) !== 1) off.add(event);
+    // A turn a stop cut before its UserTurn was journaled has none.
+    const cut = (event: string) => interruptedTurns.has(`${arm} ${event}`);
+    for (const event of paired.keys()) {
+        const n = counts.get(event) ?? 0;
+        if (n !== 1 && !(cut(event) && n === 0)) off.add(event);
+    }
     for (const event of counts.keys()) if (!paired.has(event)) off.add(event);
     // The journal row names the pairing row's session and label; a scheduled interrupt the
     // host finished first is journaled `task` with `scheduled: "interrupt"`.
@@ -294,7 +303,10 @@ const journalPairingMismatch = (manifest.order as string[]).flatMap((arm) => {
         if (u.session !== row.session || (u.label !== row.label && !relabel))
             off.add(String(u.event));
         if (u.delivered === true && !row.delivered) off.add(String(u.event));
-        if (u.label === "interrupt" && u.interrupted !== true) off.add(String(u.event));
+        // A recovered UserTurn stands only for a turn a stop cut, whose interrupt never ran.
+        if (u.recovered === true && !cut(String(u.event))) off.add(String(u.event));
+        if (u.label === "interrupt" && u.interrupted !== true && !cut(String(u.event)))
+            off.add(String(u.event));
     }
     return [...off].sort().map((event) => `${arm} ${event}`);
 });
@@ -547,6 +559,7 @@ const report = {
         ...(journal.some((e) => e.kind === "EndRun") ? [] : ["EndRun"]),
         ...incompleteRun,
     ],
+    invalid_interruptions: invalidInterruptions,
     interrupted_turns: [...interruptedTurns].filter((key) => prefix.has(key.split(" ")[1] ?? "")),
 };
 console.log(JSON.stringify(report, null, 2));
@@ -574,5 +587,6 @@ const failed =
     report.missing_events.length +
     report.journal_pairing_mismatch.length +
     report.invalid_divergences.length +
-    report.incomplete.length;
+    report.incomplete.length +
+    invalidInterruptions.length;
 process.exit(failed > 0 ? 1 : 0);

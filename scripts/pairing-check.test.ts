@@ -324,12 +324,16 @@ test("the pairing check fails a run whose log lacks a scheduled turn for an arm"
 });
 
 /** Marks `arm`'s turn `event` cut by a stop, as a resume journals it, with the arm's rates recomputed. */
-function interrupt(f: Fixture, arm: string, event: string): void {
-    const user = find(
-        f.journal,
+function interrupt(f: Fixture, arm: string, event: string, journaled = true): void {
+    const at0 = f.journal.findIndex(
         (r) => r.kind === "UserTurn" && r.arm === arm && r.event === event,
     );
+    const user = f.journal[at0] as Row;
+    // The resume recovers the UserTurn from the pairing log, without the interrupt it never ran.
     user.recovered = true;
+    delete user.interrupted;
+    if (!journaled) f.journal.splice(at0, 1);
+    f.journal.splice(at0, 0, { kind: "BeginTurn", arm, event });
     const at = f.journal.findIndex((r) => r.kind === "Event" && r.arm === arm && r.event === event);
     f.journal.splice(
         at,
@@ -362,6 +366,33 @@ test("a turn a stop cut is reported as interrupted without failing the check", (
     expect(r.report.journal_pairing_mismatch).toEqual([]);
     expect(r.report.rates_mismatch).toEqual([]);
     expect(r.exit).toBe(0);
+});
+
+test("an interrupt turn a stop cut, and one cut before its UserTurn, pass as interrupted", () => {
+    const f = fixture();
+    const [interruptTurn] = [...planOf(f.events).labels]
+        .filter(([, l]) => l === "interrupt")
+        .map(([id]) => id);
+    expect(interruptTurn).toBeDefined();
+    interrupt(f, "eidnara", interruptTurn as string);
+    interrupt(f, "host", "e-0-0", false);
+    const r = run(f);
+    expect(r.report.interrupted_turns).toEqual(["host e-0-0", `eidnara ${interruptTurn}`]);
+    expect(r.report.journal_pairing_mismatch).toEqual([]);
+    expect(r.exit).toBe(0);
+});
+
+test("an interruption marker that closes no begun turn fails the check", () => {
+    const f = fixture();
+    interrupt(f, "eidnara", "e-0-0");
+    f.journal.splice(
+        f.journal.findIndex((r) => r.kind === "BeginTurn"),
+        1,
+    );
+    const r = run(f);
+    expect(r.report.invalid_interruptions).toEqual(["eidnara e-0-0"]);
+    expect(r.report.interrupted_turns).toEqual([]);
+    expect(r.exit).toBe(1);
 });
 
 test("a delivered filler the journal neither delivered nor interrupted still fails the check", () => {

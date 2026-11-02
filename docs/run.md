@@ -303,8 +303,8 @@ driver's owed store checks run at the next event or at the arm's finish, and
 the arm's boots are checked against its profile in `capabilities.json`.
 Progress and report counts of failed turns take only events with a
 `BeginTurn`. A `session_end` that owes work only the driver's `session_end`
-runs (the arm's first, which checks the transcript store; the first after a
-host upgrade; one whose session holds a `store_full` or
+runs (the arm's first completed one, which checks the transcript store; the
+first after a host upgrade the driver performed; one whose session holds a `store_full` or
 `two_hosts_one_daemon` fault) is delivered again, and the resumed driver,
 which holds no session, refuses it. The interrupted items are excluded from recall and counted
 in dependability; `grade-run` reports them per arm (`interruptions`: the

@@ -377,7 +377,10 @@ describe("aa-report", () => {
         // pairing log, the interruption marker, and no EndTurn, snapshot, or grade.
         const cut = (e: Record<string, unknown>) => e.arm === "host" && e.event === "e-3";
         const entries = read("journal.jsonl").flatMap((e) => {
-            if (cut(e) && e.kind === "UserTurn") return [{ ...e, recovered: true }];
+            if (cut(e) && e.kind === "UserTurn") {
+                const begin = { kind: "BeginTurn", arm: "host", event: "e-3", scenario_ms: 0 };
+                return [begin, { ...e, recovered: true }];
+            }
             if (cut(e) && e.kind === "EndTurn") return [];
             if (e.kind === "SnapshotArtefacts" && e.arm === "host" && e.item === "p-2") return [];
             if (cut(e) && e.kind === "Event") {
@@ -421,6 +424,10 @@ describe("aa-report", () => {
             (m) => m.metric === "P6.reread_files",
         );
         expect(p6?.n).toBe(5);
+        // A marker that closes no begun turn is refused.
+        const unbegun = rated.filter((e) => !(cut(e) && e.kind === "BeginTurn"));
+        writeFileSync(join(dir, "journal.jsonl"), journalText(unbegun));
+        expect(() => aaReport(dir)).toThrow(/interruption of host\/e-3 closes no open turn/);
         // A recovered UserTurn the journal does not mark interrupted is still refused.
         const unmarked = rated.filter((e) => !(cut(e) && e.kind === "ItemState"));
         writeFileSync(join(dir, "journal.jsonl"), journalText(unmarked));

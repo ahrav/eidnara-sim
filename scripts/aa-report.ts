@@ -349,16 +349,20 @@ function report(dir: string) {
     // A turn a stop cut is journaled `failed(interrupted)`: the missingness policy keeps it out of
     // the paired measures, and the report counts it per arm with its cause. A resume recovers its
     // UserTurn from the pairing log, or journals none when the log had no row yet.
-    const interrupted = new Map(
-        entries
-            .filter(
-                (e) =>
-                    e.kind === "ItemState" &&
-                    e.state === "failed(interrupted)" &&
-                    typeof e.event === "string",
-            )
-            .map((e) => [`${e.arm}/${e.event}`, String(e.cause ?? "unrecorded")] as const),
-    );
+    // Each marker closes a turn its arm began and never ended.
+    const turnKeys = (kind: string) =>
+        new Set(entries.filter((e) => e.kind === kind).map((e) => `${e.arm}/${e.event}`));
+    const [begun, endedTurns] = [turnKeys("BeginTurn"), turnKeys("EndTurn")];
+    const interrupted = new Map<string, string>();
+    for (const e of entries) {
+        if (e.kind !== "ItemState" || e.state !== "failed(interrupted)") continue;
+        if (typeof e.event !== "string") continue;
+        const key = `${e.arm}/${e.event}`;
+        if (!begun.has(key) || endedTurns.has(key) || interrupted.has(key)) {
+            throw new Error(`${dir}/journal.jsonl: interruption of ${key} closes no open turn`);
+        }
+        interrupted.set(key, String(e.cause ?? "unrecorded"));
+    }
     const controls = order.filter((a) => a !== armBase(a));
     if (controls.length === 0) throw new Error(`${dir}: manifest order names no A/A control`);
     const report = controls.map((control) => {
@@ -370,6 +374,11 @@ function report(dir: string) {
                 if (r.kind !== "turn" || r.arm !== a) continue;
                 const mine = users.filter((e) => String(e.event) === r.event);
                 const cut = interrupted.has(`${a}/${r.event}`);
+                if (r.delivered && REACTIVE.has(r.label) === (r.source === "script")) {
+                    throw new Error(
+                        `${dir}: ${a} ${r.event} label ${r.label} disagrees with source ${r.source}`,
+                    );
+                }
                 if (cut && mine.length === 0) continue;
                 if (
                     mine.length !== 1 ||
@@ -394,17 +403,14 @@ function report(dir: string) {
                         `${dir}: ${a} ${r.event} pairing label ${r.label} differs from the journaled label`,
                     );
                 }
-                if (r.delivered && REACTIVE.has(r.label) === (r.source === "script")) {
-                    throw new Error(
-                        `${dir}: ${a} ${r.event} label ${r.label} disagrees with source ${r.source}`,
-                    );
-                }
             }
             const delivered = new Set(
                 pairing.filter((r) => r.kind === "turn" && r.arm === a).map((r) => r.event),
             );
+            // A turn cut before its pairing row was written has no UserTurn either.
+            const journaled = new Set(users.map((e) => String(e.event)));
             const lost = userTurns.filter(
-                (e) => !delivered.has(e) && !interrupted.has(`${a}/${e}`),
+                (e) => !delivered.has(e) && (!interrupted.has(`${a}/${e}`) || journaled.has(e)),
             );
             if (lost.length > 0) {
                 throw new Error(`${dir}: ${a} has no pairing record for ${lost.join(", ")}`);
@@ -471,7 +477,8 @@ function report(dir: string) {
                 );
             }
         }
-        const metrics = [...pairedDiffs(grades, arm, control)].map(([m, d]) =>
+        const pairable = grades.filter((g) => !cutItems.has(g.item));
+        const metrics = [...pairedDiffs(pairable, arm, control)].map(([m, d]) =>
             bootstrapMean(m, d, clusterOf(m), prereg.bootstrap.replicates, prereg.bootstrap.seed),
         );
         for (const m of metrics) {
@@ -495,7 +502,7 @@ function report(dir: string) {
             method: "cluster percentile bootstrap, 95%",
             every_interval_covers_zero:
                 informative.length === 0 ? null : informative.every((m) => m.covers_zero),
-            graded_items: grades.filter((g) => g.arm === arm || g.arm === control).length,
+            graded_items: pairable.filter((g) => g.arm === arm || g.arm === control).length,
             intervals_missing_zero: informative.filter((m) => !m.covers_zero).map((m) => m.metric),
             expected_by_chance: 0.05 * informative.length,
             uninformative: metrics.filter((m) => m.clusters < MIN_CLUSTERS).map((m) => m.metric),
@@ -504,7 +511,7 @@ function report(dir: string) {
             unpaired_items,
             interrupted_turns: { [arm]: cutTurns(arm), [control]: cutTurns(control) },
             interrupted_items,
-            disagreement_rate: disagreementRate(grades, arm, control),
+            disagreement_rate: disagreementRate(pairable, arm, control),
             sessions: sessions.size,
             sessions_diverged: diverged.length,
             divergence_indices: diverged.map((r) => r.index),

@@ -1396,11 +1396,21 @@ export class Scheduler {
      */
     private endable(end: ScenarioEvent, mine: Entry[]): boolean {
         const kindOf = (id: unknown) => this.o.events.find((x) => x.id === id)?.kind;
-        const ends = mine.filter((e) => e.kind === "Event" && kindOf(e.event) === "session_end");
+        const ends = mine.filter(
+            (e) => e.kind === "Event" && e.outcome === "ok" && kindOf(e.event) === "session_end",
+        );
         if (ends.length === 0) return false;
+        // An upgrade the driver skipped (no upgraded host configured) leaves no check owed.
+        const skipped = (fault: unknown) =>
+            mine.some(
+                (e) =>
+                    e.kind === "FaultObserved" &&
+                    e.fault === fault &&
+                    (e.evidence as { skipped?: unknown } | undefined)?.skipped !== undefined,
+            );
         const upgrade = [...mine]
             .reverse()
-            .find((e) => e.kind === "FaultFired" && e.type === "host_upgrade");
+            .find((e) => e.kind === "FaultFired" && e.type === "host_upgrade" && !skipped(e.fault));
         if (upgrade && !ends.some((e) => e.seq > upgrade.seq)) return false;
         return !this.o.faults.some(
             (f) =>
