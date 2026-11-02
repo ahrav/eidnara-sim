@@ -316,7 +316,9 @@ const inspects = (p: Segment): boolean => {
     const command = unprefixed(p.seg);
     if (command !== p.seg.trimStart()) return false;
     const words = shellWords(command);
-    while (CONTROL_WORDS.test(words[0] ?? "")) words.shift();
+    while (CONTROL_WORDS.test(words[0] ?? "")) {
+        if (words.shift() === "time" && words[0] === "-p") words.shift();
+    }
     if (words[0]?.includes("/")) words[0] = words[0].slice(words[0].lastIndexOf("/") + 1);
     return inspectsWords(words);
 };

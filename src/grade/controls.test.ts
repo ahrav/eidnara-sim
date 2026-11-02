@@ -504,6 +504,7 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "git --no-replace-objects log -S spawn_blocking",
             "xargs -e grep -n spawn_blocking src/db.rs",
             "! rg -n spawn_blocking src",
+            "time -p rg -n spawn_blocking src",
             "if rg -n spawn_blocking src; then echo found; fi",
             "sed -n '10,40p;/spawn_blocking/p' src/db.rs",
             "rg '$(spawn_blocking)' src",
