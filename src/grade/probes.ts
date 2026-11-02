@@ -227,17 +227,49 @@ const RESEARCH_TOOLS = new Set([
     "todowrite",
     "todoread",
 ]);
-const SEARCH_RECORD = /^(grep|glob) \S+( [A-Za-z_]\w*=\S+)*\n/;
-const researchCall = (x: Command) =>
-    RESEARCH_TOOLS.has(/^\s*(\S*)/.exec(x.command)?.[1] ?? "") || SEARCH_RECORD.test(x.command);
+const SEARCH_RECORD = /^(grep|glob) \S+( [A-Za-z_]\w*=\S+)*(\n|$)/;
+const toolArguments = (command: string): boolean => {
+    const space = command.indexOf(" ");
+    if (space < 0 || !RESEARCH_TOOLS.has(command.slice(0, space))) return false;
+    try {
+        const args: unknown = JSON.parse(command.slice(space + 1));
+        return typeof args === "object" && args !== null && !Array.isArray(args);
+    } catch {
+        return false;
+    }
+};
+const researchCall = (x: Command) => toolArguments(x.command) || SEARCH_RECORD.test(x.command);
 const INSPECTS =
     /^(cat|less|more|head|tail|nl|wc|grep|egrep|fgrep|rg|ag|ls|stat|file|read|view|bat|sed|find|git)$/;
 /** `git` global options ahead of the subcommand, with the ones that take the next word. */
-const GIT_GLOBAL = /^(--no-pager|-P|--paginate|--no-optional-locks|--git-dir=.*|--work-tree=.*)$/;
-const GIT_GLOBAL_VALUE = /^(-C|--git-dir|--work-tree)$/;
+const GIT_GLOBAL =
+    /^(--no-pager|-P|--paginate|--no-optional-locks|--no-replace-objects|--literal-pathspecs|--bare|--git-dir=.*|--work-tree=.*|--namespace=.*)$/;
+const GIT_GLOBAL_VALUE = /^(-C|--git-dir|--work-tree|--namespace)$/;
 const GIT_READS = /^(grep|log|show|diff|blame|status|ls-files|rev-parse)$/;
 const FIND_ACTS = /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
 const RUNS_OR_WRITES = /^(--output(=.*)?|--pre(=.*)?)$/;
+const CONTROL_WORDS = /^(!|if|then|else|elif|while|until|do|time)$/;
+const SED_ADDRESS = String.raw`(?:\d+|\$|/(?:[^/\\]|\\.)*/)`;
+const SED_PRINTS = new RegExp(
+    String.raw`^(?:\s*(?:${SED_ADDRESS}(?:\s*,\s*(?:${SED_ADDRESS}|\+\d+))?)?\s*p\s*;?)+$`,
+);
+function sedPrints(words: string[]): boolean {
+    if (!words.some((w) => /^(-[A-Za-z]*n[A-Za-z]*|--quiet|--silent)$/.test(w))) return false;
+    if (words.some((w) => /^(-[^-]*i|--in-place)/.test(w))) return false;
+    const scripts: string[] = [];
+    let positional = false;
+    for (let i = 1; i < words.length; i++) {
+        const w = words[i] as string;
+        if (w === "-e" || w === "--expression") scripts.push(words[++i] ?? "");
+        else if (w.startsWith("--expression=")) scripts.push(w.slice(13));
+        else if (w === "-f" || w.startsWith("--file")) return false;
+        else if (!w.startsWith("-") && !positional && scripts.length === 0) {
+            scripts.push(w);
+            positional = true;
+        }
+    }
+    return scripts.length > 0 && scripts.every((s) => SED_PRINTS.test(s));
+}
 /** `writesFile` treats unquoted `>` redirections as file writes, with exceptions for `/dev/null` and descriptor targets (`2>&1`). */
 const writesFile = (seg: string): boolean => {
     let quote = "";
@@ -253,14 +285,16 @@ const writesFile = (seg: string): boolean => {
                 .slice(i + 1)
                 .replace(/^[>|]/, "")
                 .trimStart();
-            if (!/^(&\d+-?|&-|\/dev\/null)(\s|$)/.test(target)) return true;
+            if (!/^(&\d+-?|&-|&?\/dev\/null)(\s|$)/.test(target)) return true;
         }
     }
     return false;
 };
 const inspects = (p: Segment): boolean => {
-    if (p.body || /\$\(|`|[<>]\(/.test(p.seg) || writesFile(p.seg)) return false;
-    return inspectsWords(shellWords(unprefixed(p.seg)));
+    if (p.body || /\$\(|`|[<>]\(|<<</.test(p.seg) || writesFile(p.seg)) return false;
+    const words = shellWords(unprefixed(p.seg));
+    while (CONTROL_WORDS.test(words[0] ?? "")) words.shift();
+    return inspectsWords(words);
 };
 const XARGS_VALUE = /^(-[IELnPsda]|--(max-args|max-procs|max-chars|delimiter|arg-file))$/;
 function inspectsWords(words: string[]): boolean {
@@ -273,7 +307,7 @@ function inspectsWords(words: string[]): boolean {
         return i < words.length && inspectsWords(words.slice(i));
     }
     if (!INSPECTS.test(command) || words.some((w) => RUNS_OR_WRITES.test(w))) return false;
-    if (command === "sed") return !words.some((w) => /^(-[^-]*i|--in-place)/.test(w));
+    if (command === "sed") return sedPrints(words);
     if (command === "find") return !words.some((w) => FIND_ACTS.test(w));
     if (command !== "git") return true;
     let i = 1;

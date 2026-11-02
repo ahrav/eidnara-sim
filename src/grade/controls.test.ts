@@ -499,6 +499,13 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "cat src/cmd/mod.rs | grep -n spawn_blocking",
             "find src -name '*.rs' -newer Cargo.toml | xargs grep -l spawn_blocking",
             "{ grep -n spawn_blocking src/db.rs; grep -c spawn_blocking src/server.rs; }",
+            "grep spawn_blocking",
+            "grep -rn spawn_blocking src >&/dev/null",
+            "git --no-replace-objects log -S spawn_blocking",
+            "xargs -e grep -n spawn_blocking src/db.rs",
+            "! rg -n spawn_blocking src",
+            "if rg -n spawn_blocking src; then echo found; fi",
+            "sed -n '10,40p;/spawn_blocking/p' src/db.rs",
         ];
         for (const command of looked) {
             const g = grade(blocking, { files: [digest], commands: [command] });
@@ -517,6 +524,13 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "X=$(sed -i 's/block_on/spawn_blocking/' src/db.rs) cat src/db.rs",
             "grep spawn_blocking src/db.rs >& /tmp/out",
             "git -c diff.external=./x diff spawn_blocking",
+            "sed 's/hash/spawn_blocking/w notes/blocking.txt' src/db.rs",
+            "sed -n 's/hash/spawn_blocking/p' src/db.rs",
+            "rg --pre ./x spawn_blocking src",
+            "cat <<< spawn_blocking",
+            "cat <(sed -i 's/hash/spawn_blocking/' src/db.rs)",
+            "grep -n spawn_blocking src/db.rs | tee notes/blocking.txt",
+            'eidnara_search {"query":"x"}; echo spawn_blocking >> notes/blocking.txt',
         ]) {
             const g = grade(blocking, { files: [digest], commands: [applied] });
             expect([applied, g.verdict, g.reason]).toEqual([
