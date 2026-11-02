@@ -105,13 +105,15 @@ export class DeadlineOverrun extends HarnessFailure {}
 /**
  * Why a fatal `ItemState` stopped the run: a job held the clock past its deadline, a harness
  * call to the model gateway failed in transport, the host's process tree outlived the SIGKILL
- * that tore it down, the daemon exited outside an outage window, a scheduler fault's mechanism
- * failed, or an event's delivery failed otherwise.
+ * that tore it down, a host turn kept running after the harness aborted it, the daemon exited
+ * outside an outage window, a scheduler fault's mechanism failed, or an event's delivery failed
+ * otherwise.
  */
 export type FatalCause =
     | "job-deadline"
     | "harness-transport"
     | "host-teardown"
+    | "host-abort"
     | "daemon-exit"
     | "fault-error"
     | "event-error";
@@ -122,14 +124,18 @@ export type FatalCause =
  * missingness policy excludes from recall and counts in dependability, and the arm continues at
  * its next event with a fresh host session. A host teardown fails in the harness's own process
  * control after the host was told to stop; the resume reaps the recorded tree, and an event
- * without an open turn (a `session_end`) is delivered again with no host session open. A fault
- * mechanism that failed, or a delivery that failed for any other reason, names a harness or
- * driver defect whose effect on the arm is unknown, so such a run stays refused.
+ * without an open turn (a `session_end`) is delivered again with no host session open. A host
+ * abort fails in the host process after the harness already ended the turn at its deadline or
+ * at the user's abort; the stop's teardown stops that host, and the resume marks the turn
+ * interrupted and opens a fresh host session. A fault mechanism that failed, or a delivery that
+ * failed for any other reason, names a harness or driver defect whose effect on the arm is
+ * unknown, so such a run stays refused.
  */
 export const RECOVERABLE_CAUSES: ReadonlySet<FatalCause> = new Set<FatalCause>([
     "job-deadline",
     "harness-transport",
     "host-teardown",
+    "host-abort",
     "daemon-exit",
 ]);
 
@@ -144,6 +150,15 @@ const HOST_TEARDOWN = /^host tree (\d+) survived SIGKILL$/;
 export const isHostTeardown = (error: string): boolean => HOST_TEARDOWN.test(error);
 
 /**
+ * The whole error a host driver raises when a turn it aborted does not drain (`src/hosts/arms.ts`):
+ * Pi's turn outlived the drain wait after the deadline's abort (with the waiter's reason) or the
+ * user's abort, or OpenCode's turn outlived the wait after a landed abort. Text that only wraps
+ * it stays `event-error`.
+ */
+const HOST_ABORT =
+    /^(?:Pi turn still running \d+ ms after (?:abort \([^\n]*\)|the user's abort)|OpenCode turn still running 30 s after abort)$/;
+
+/**
  * The transport errors an event's fatal record written before records carried `cause` names:
  * the message starts with the user-sim's own timeout or 429/5xx refusal, or with the error
  * `fetch` raises for a closed socket or a reset or refused connection. A host or driver error
@@ -153,13 +168,14 @@ const RECORDED_TRANSPORT =
     /^(?:user-sim call timed out|user-sim call failed: (?:429|5\d\d)|The socket connection was closed unexpectedly|Unable to connect|fetch failed|(?:TypeError: )?(?:read |connect )?ECONN(?:RESET|REFUSED)\b)/;
 
 /**
- * The causes an event's fatal record may carry: a delivery cut by transport, a job overrun, or
- * a host teardown.
+ * The causes an event's fatal record may carry: a delivery cut by transport, a job overrun, a
+ * host teardown, or a host abort.
  */
 const EVENT_CAUSES: ReadonlySet<FatalCause> = new Set<FatalCause>([
     "harness-transport",
     "job-deadline",
     "host-teardown",
+    "host-abort",
     "event-error",
 ]);
 
@@ -170,9 +186,10 @@ const RECORDED_OVERRUN =
 /**
  * The cause of a fatal `ItemState`. A daemon exit, a fault, and a job name their cause by
  * shape; an event's record names its cause in `cause`, and one from before that field is
- * classified by its error text. A host teardown is classified by its error text alone: a
- * record written before `host-teardown` existed, which carries `event-error`, takes it too, and
- * a stored `host-teardown` on other text is a cause its shape contradicts.
+ * classified by its error text. A host teardown and a host abort are classified by their error
+ * text alone: a record written before its cause existed, which carries `event-error`, takes it
+ * too, and a stored `host-teardown` or `host-abort` on other text is a cause its shape
+ * contradicts.
  */
 export function fatalCause(e: Entry): FatalCause {
     if (e.daemon_exit !== undefined) return "daemon-exit";
@@ -180,8 +197,11 @@ export function fatalCause(e: Entry): FatalCause {
     if (e.job !== undefined) return "job-deadline";
     const error = String(e.error ?? "");
     if (HOST_TEARDOWN.test(error)) return "host-teardown";
+    if (HOST_ABORT.test(error)) return "host-abort";
     const stored = e.cause as FatalCause;
-    if (EVENT_CAUSES.has(stored) && stored !== "host-teardown") return stored;
+    if (EVENT_CAUSES.has(stored) && stored !== "host-teardown" && stored !== "host-abort") {
+        return stored;
+    }
     if (RECORDED_OVERRUN.test(error)) return "job-deadline";
     return RECORDED_TRANSPORT.test(error) ? "harness-transport" : "event-error";
 }
@@ -189,10 +209,12 @@ export function fatalCause(e: Entry): FatalCause {
 /**
  * Whether the `cause` a fatal record stores agrees with `fatalCause`. A host teardown stores
  * `host-teardown` with the `host_pid` its error names, or, recorded before that cause existed,
- * `event-error` with no `host_pid`.
+ * `event-error` with no `host_pid`. A host abort stores `host-abort`, or `event-error` when
+ * recorded before that cause existed.
  */
 function storedCauseAgrees(e: Entry): boolean {
     const cause = fatalCause(e);
+    if (cause === "host-abort") return e.cause === "host-abort" || e.cause === "event-error";
     if (cause !== "host-teardown") return e.cause === cause;
     const pid = Number(HOST_TEARDOWN.exec(String(e.error))?.[1]);
     return e.cause === "host-teardown"
@@ -1796,7 +1818,9 @@ export class Scheduler {
                           ? "job-deadline"
                           : teardown
                             ? "host-teardown"
-                            : "event-error";
+                            : HOST_ABORT.test(error)
+                              ? "host-abort"
+                              : "event-error";
                 const host = teardown ? { host_pid: Number(teardown[1]) } : {};
                 this.recordFatal(
                     {

@@ -7460,6 +7460,92 @@ describe("resume after harness interruptions", () => {
         }).run();
     });
 
+    test("a Pi turn that outlives its abort stops the run; the resume marks the turn host-abort and goes on with a fresh session", async () => {
+        const error =
+            "Pi turn still running 30000 ms after abort (Error: Timed out after 30000ms waiting for Pi RPC event (agent_end))";
+        const events = fixtureEvents(3);
+        const options = { events, faults: [], settleMs: 0, order: ["a"] };
+        // `legacy` rewrites the fatal record as a harness without `host-abort` wrote it.
+        for (const legacy of [false, true]) {
+            const path = join(dir(), "j.jsonl");
+            const failing = fakeDriver([], 0, (e) => {
+                if (e.id === "e-000002") throw new Error(error);
+            });
+            await expect(
+                new Scheduler({
+                    ...options,
+                    journal: new Journal(path),
+                    drivers: { a: failing },
+                }).run(),
+            ).rejects.toThrow(error);
+            const fatal = readJournal(path).find((e) => e.kind === "ItemState" && e.fatal === true);
+            expect(fatal).toMatchObject({ event: "e-000002", error, cause: "host-abort" });
+            if (legacy) {
+                const lines = readFileSync(path, "utf8").split("\n");
+                const at = lines.findIndex((l) => l.includes('"fatal":true'));
+                lines[at] = JSON.stringify({
+                    ...JSON.parse(lines[at] as string),
+                    cause: "event-error",
+                });
+                writeFileSync(path, lines.join("\n"));
+            }
+            const second: string[] = [];
+            const opened: (string | null)[] = [];
+            const resumed = new Journal(path);
+            const n = resumed.entries.length;
+            await new Scheduler({
+                ...options,
+                journal: resumed,
+                drivers: {
+                    a: {
+                        ...fakeDriver(second),
+                        resume: async (open) => void opened.push(open?.id ?? null),
+                    },
+                },
+            }).run();
+            const added = resumed.entries.slice(n);
+            expect(added.slice(0, 4).map((e) => e.kind)).toEqual([
+                "ResumeRun",
+                "Recovered",
+                "ItemState",
+                "Event",
+            ]);
+            expect(added[1]).toMatchObject({
+                recovers: fatal?.seq,
+                cause: "host-abort",
+                event: "e-000002",
+            });
+            expect(added[2]).toMatchObject({
+                event: "e-000002",
+                state: "failed(interrupted)",
+                cause: "host-abort",
+            });
+            expect(added[3]).toMatchObject({
+                event: "e-000002",
+                outcome: "failed(interrupted)",
+                cause: "host-abort",
+            });
+            // The host restarts its session, and the run continues at the next event.
+            expect(opened).toEqual(["e-000000"]);
+            expect(second).toEqual(["user_turn:e-000003", "session_end:e-999999"]);
+            expect(resumed.entries.at(-1)?.kind).toBe("EndRun");
+            expect(interruptions(resumed.entries).a).toMatchObject({
+                interrupted_turns: 1,
+                turns_by_cause: { "host-abort": 1 },
+                stops_by_cause: { "host-abort": 1 },
+                unresolved: [],
+            });
+            invariants(resumed.entries);
+            resumed.close();
+            // The sealed journal replays clean, its recovered fatal record included.
+            await new Scheduler({
+                ...options,
+                journal: new Journal(path),
+                drivers: { a: fakeDriver([]) },
+            }).run();
+        }
+    });
+
     test("a job release that lands after its arm stopped is dropped, and never reaches the next arm", async () => {
         const path = join(dir(), "j.jsonl");
         let release: (() => void) | null = null;
@@ -7608,6 +7694,59 @@ describe("fatal causes on resume", () => {
             );
         }
         await run(journalWith({ ...event, error, cause: "host-teardown", host_pid: 1450848 }));
+    });
+
+    test("a host abort is classified by its whole error text; other event errors stay refused", async () => {
+        const aborts = [
+            "Pi turn still running 30000 ms after abort (Error: Timed out after 30000ms waiting for Pi RPC event (agent_end))",
+            "Pi turn still running 30000 ms after the user's abort",
+            "OpenCode turn still running 30 s after abort",
+        ];
+        const at = (fields: Record<string, unknown>) =>
+            ({
+                kind: "ItemState",
+                arm: "a",
+                scenario_ms: 0,
+                wall_ms: 0,
+                seq: 0,
+                fatal: true,
+                ...fields,
+            }) as Entry;
+        for (const error of aborts) {
+            for (const cause of ["host-abort", "event-error", undefined]) {
+                expect(fatalCause(at({ ...event, error, cause }))).toBe("host-abort");
+            }
+            const log: string[] = [];
+            await run(journalWith({ ...event, error, cause: "event-error" }), log);
+            expect(log).toContain("user_turn:e-000002");
+            await run(journalWith({ ...event, error, cause: "host-abort" }));
+            // A stored cause other than the two its text allows contradicts its shape.
+            await expect(
+                run(journalWith({ ...event, error, cause: "harness-transport" })),
+            ).rejects.toThrow(/cause its shape contradicts/);
+        }
+        // Wrapped or altered drain text, a fault's, and a stored host-abort on other text are
+        // refused.
+        const refused = [
+            `Pi get_state refused: ${aborts[2]}`,
+            "Pi turn still running 30000 ms after abort",
+            "OpenCode turn not aborted after its deadline",
+            "OpenCode abort still pending 10000 ms after the deadline",
+            `${aborts[0]}\nsecond line`,
+            `${aborts[2]}\n`,
+        ];
+        for (const error of refused) {
+            expect(fatalCause(at({ ...event, error, cause: "event-error" }))).toBe("event-error");
+            await expect(
+                run(journalWith({ ...event, error, cause: "event-error" })),
+            ).rejects.toThrow("run failed: event e-000001 failed");
+        }
+        expect(fatalCause(at({ fault: "f", state: "failed", error: aborts[0] }))).toBe(
+            "fault-error",
+        );
+        await expect(
+            run(journalWith({ ...event, error: "driver outcome is null", cause: "host-abort" })),
+        ).rejects.toThrow("run failed: event e-000001 failed");
     });
 
     test("a fatal record whose cause contradicts its shape, or of unknown shape, is refused", async () => {
