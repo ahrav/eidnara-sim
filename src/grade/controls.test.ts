@@ -506,6 +506,9 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "! rg -n spawn_blocking src",
             "if rg -n spawn_blocking src; then echo found; fi",
             "sed -n '10,40p;/spawn_blocking/p' src/db.rs",
+            "rg '$(spawn_blocking)' src",
+            "grep spawn_blocking src >& /dev/null",
+            "/usr/bin/rg -n spawn_blocking src",
         ];
         for (const command of looked) {
             const g = grade(blocking, { files: [digest], commands: [command] });
@@ -531,6 +534,9 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "cat <(sed -i 's/hash/spawn_blocking/' src/db.rs)",
             "grep -n spawn_blocking src/db.rs | tee notes/blocking.txt",
             'eidnara_search {"query":"x"}; echo spawn_blocking >> notes/blocking.txt',
+            "git diff --ext-diff spawn_blocking",
+            "GIT_EXTERNAL_DIFF=./x git diff spawn_blocking",
+            'grep "$(echo spawn_blocking)" src',
         ]) {
             const g = grade(blocking, { files: [digest], commands: [applied] });
             expect([applied, g.verdict, g.reason]).toEqual([

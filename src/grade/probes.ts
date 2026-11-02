@@ -247,7 +247,7 @@ const GIT_GLOBAL =
 const GIT_GLOBAL_VALUE = /^(-C|--git-dir|--work-tree|--namespace)$/;
 const GIT_READS = /^(grep|log|show|diff|blame|status|ls-files|rev-parse)$/;
 const FIND_ACTS = /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
-const RUNS_OR_WRITES = /^(--output(=.*)?|--pre(=.*)?)$/;
+const RUNS_OR_WRITES = /^(--output(=.*)?|--pre(=.*)?|--ext-diff|--textconv)$/;
 const CONTROL_WORDS = /^(!|if|then|else|elif|while|until|do|time)$/;
 const SED_ADDRESS = String.raw`(?:\d+|\$|/(?:[^/\\]|\\.)*/)`;
 const SED_PRINTS = new RegExp(
@@ -285,15 +285,38 @@ const writesFile = (seg: string): boolean => {
                 .slice(i + 1)
                 .replace(/^[>|]/, "")
                 .trimStart();
-            if (!/^(&\d+-?|&-|&?\/dev\/null)(\s|$)/.test(target)) return true;
+            if (!/^(&\d+-?|&-|&?\s*\/dev\/null)(\s|$)/.test(target)) return true;
         }
     }
     return false;
 };
+/** `$( )` and backticks expand outside single quotes; `<( )`, `>( )`, and `<<<` act outside any quotes. */
+const substitutes = (seg: string): boolean => {
+    let quote = "";
+    for (let i = 0; i < seg.length; i++) {
+        const ch = seg[i] as string;
+        const next = seg[i + 1] ?? "";
+        if (quote === "'") {
+            if (ch === "'") quote = "";
+            continue;
+        }
+        if (ch === "\\") i++;
+        else if ((ch === "$" && next === "(") || ch === "`") return true;
+        else if (quote === '"') {
+            if (ch === '"') quote = "";
+        } else if (ch === "'" || ch === '"') quote = ch;
+        else if ((ch === "<" || ch === ">") && next === "(") return true;
+        else if (seg.startsWith("<<<", i)) return true;
+    }
+    return false;
+};
 const inspects = (p: Segment): boolean => {
-    if (p.body || /\$\(|`|[<>]\(|<<</.test(p.seg) || writesFile(p.seg)) return false;
-    const words = shellWords(unprefixed(p.seg));
+    if (p.body || substitutes(p.seg) || writesFile(p.seg)) return false;
+    const command = unprefixed(p.seg);
+    if (command !== p.seg.trimStart()) return false;
+    const words = shellWords(command);
     while (CONTROL_WORDS.test(words[0] ?? "")) words.shift();
+    if (words[0]?.includes("/")) words[0] = words[0].slice(words[0].lastIndexOf("/") + 1);
     return inspectsWords(words);
 };
 const XARGS_VALUE = /^(-[IELnPsda]|--(max-args|max-procs|max-chars|delimiter|arg-file))$/;
