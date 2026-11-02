@@ -24,6 +24,7 @@ import { Rng } from "../rng";
 import type { FaultEpisode } from "../scenario/faults";
 import { SEAMS } from "../scenario/faults";
 import { Clock } from "./clock";
+import { interruptions } from "./interruptions";
 import {
     bootId,
     directoryIdentity,
@@ -42,6 +43,7 @@ import { CallIndex, callsOf } from "./run";
 import {
     type ArmDriver,
     type ArmHandle,
+    fatalCause,
     HarnessFailure,
     type ScenarioEvent,
     Scheduler,
@@ -7213,6 +7215,89 @@ describe("user turns at their scheduled time", () => {
 });
 
 describe("resume after harness interruptions", () => {
+    test("a host tree that outlives SIGKILL at a session_end stops the run; the resume delivers the session_end again and finishes the arm", async () => {
+        const events = fixtureEvents(2);
+        const options = { events, faults: [], settleMs: 0, order: ["a"] };
+        // `legacy` rewrites the fatal record as a harness without `host-teardown` wrote it.
+        for (const legacy of [false, true]) {
+            const path = join(dir(), "j.jsonl");
+            const failing = fakeDriver([], 0, (e) => {
+                if (e.kind === "session_end") throw new Error("host tree 4242 survived SIGKILL");
+            });
+            await expect(
+                new Scheduler({
+                    ...options,
+                    journal: new Journal(path),
+                    drivers: { a: failing },
+                }).run(),
+            ).rejects.toThrow("host tree 4242 survived SIGKILL");
+            const fatal = readJournal(path).find((e) => e.kind === "ItemState" && e.fatal === true);
+            expect(fatal).toMatchObject({
+                event: "e-999999",
+                state: "failed",
+                error: "host tree 4242 survived SIGKILL",
+                cause: "host-teardown",
+                host_pid: 4242,
+            });
+            if (legacy) {
+                const lines = readFileSync(path, "utf8").split("\n");
+                const at = lines.findIndex((l) => l.includes('"fatal":true'));
+                const old = JSON.parse(lines[at] as string);
+                old.cause = "event-error";
+                delete old.host_pid;
+                lines[at] = JSON.stringify(old);
+                writeFileSync(path, lines.join("\n"));
+            }
+            const second: string[] = [];
+            const opened: (string | null)[] = [];
+            let finished = 0;
+            const resumed = new Journal(path);
+            const n = resumed.entries.length;
+            await new Scheduler({
+                ...options,
+                journal: resumed,
+                drivers: {
+                    a: {
+                        ...fakeDriver(second),
+                        resume: async (open) => void opened.push(open?.id ?? null),
+                        finish: async () => {
+                            finished++;
+                            return {};
+                        },
+                    },
+                },
+            }).run();
+            const added = resumed.entries.slice(n);
+            expect(added.map((e) => e.kind)).toEqual([
+                "ResumeRun",
+                "Recovered",
+                "Event",
+                "EndArm",
+                "EndRun",
+            ]);
+            expect(added[1]).toMatchObject({
+                recovers: fatal?.seq,
+                cause: "host-teardown",
+                event: "e-999999",
+            });
+            // The resume reopens no session, delivers the session_end again, then finishes.
+            expect(opened).toEqual([null]);
+            expect(second).toEqual(["session_end:e-999999"]);
+            expect(added[2]).toMatchObject({ event: "e-999999", outcome: "ok" });
+            expect(finished).toBe(1);
+            expect(interruptions(resumed.entries).a?.stops_by_cause).toEqual({
+                "host-teardown": 1,
+            });
+            resumed.close();
+            // The sealed journal replays clean, its recovered fatal record included.
+            await new Scheduler({
+                ...options,
+                journal: new Journal(path),
+                drivers: { a: fakeDriver([]) },
+            }).run();
+        }
+    });
+
     test("a user-sim call that exhausted its retries stops the run; the resume marks the turn and goes on with a fresh session", async () => {
         const path = join(dir(), "j.jsonl");
         const events = fixtureEvents(3);
@@ -7382,6 +7467,57 @@ describe("fatal causes on resume", () => {
                 "run failed: event e-000001 failed",
             );
         }
+    });
+
+    test("a host teardown is classified by its whole error text, in a new or an old record", () => {
+        const error = "host tree 1450848 survived SIGKILL";
+        const at = (fields: Record<string, unknown>) =>
+            ({
+                kind: "ItemState",
+                arm: "a",
+                scenario_ms: 0,
+                wall_ms: 0,
+                seq: 0,
+                fatal: true,
+                ...fields,
+            }) as Entry;
+        expect(fatalCause(at({ ...event, error, cause: "host-teardown", host_pid: 1450848 }))).toBe(
+            "host-teardown",
+        );
+        expect(fatalCause(at({ ...event, error, cause: "event-error" }))).toBe("host-teardown");
+        expect(fatalCause(at({ ...event, error }))).toBe("host-teardown");
+        // Wrapped teardown text, and a fault mechanism's teardown, stay refused causes.
+        const wrapped = `Pi get_state refused: ${error}`;
+        expect(fatalCause(at({ ...event, error: wrapped, cause: "event-error" }))).toBe(
+            "event-error",
+        );
+        expect(fatalCause(at({ fault: "f", state: "failed", error }))).toBe("fault-error");
+    });
+
+    test("an old event-error record of a host teardown resumes; other event errors stay refused", async () => {
+        const error = "host tree 1450848 survived SIGKILL";
+        const log: string[] = [];
+        await run(journalWith({ ...event, error, cause: "event-error" }), log);
+        expect(log).toContain("user_turn:e-000002");
+        await expect(
+            run(journalWith({ ...event, error: `${error} (pid reused)`, cause: "event-error" })),
+        ).rejects.toThrow("run failed: event e-000001 failed");
+        await expect(
+            run(journalWith({ ...event, error: "driver outcome is null", cause: "host-teardown" })),
+        ).rejects.toThrow("run failed: event e-000001 failed");
+        // A new record names the pid its error names; an old one carries none.
+        const mismatched: Record<string, unknown>[] = [
+            { cause: "host-teardown" },
+            { cause: "host-teardown", host_pid: 7 },
+            { cause: "host-teardown", host_pid: "1450848" },
+            { cause: "event-error", host_pid: 1450848 },
+        ];
+        for (const fields of mismatched) {
+            await expect(run(journalWith({ ...event, error, ...fields }))).rejects.toThrow(
+                /cause its shape contradicts/,
+            );
+        }
+        await run(journalWith({ ...event, error, cause: "host-teardown", host_pid: 1450848 }));
     });
 
     test("a fatal record whose cause contradicts its shape, or of unknown shape, is refused", async () => {
