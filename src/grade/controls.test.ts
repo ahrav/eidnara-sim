@@ -550,6 +550,9 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "sed -n -i '/spawn_blocking/p' src/db.rs",
             "sed -n --in-pla=.bak '/spawn_blocking/p' src/db.rs",
             'bat --paging=always --pager="sh -c x" spawn_blocking.rs',
+            "rg --hostname-bin=./x spawn_blocking src",
+            "xargs -a /tmp/args sed -n -e '/spawn_blocking/p' src/db.rs",
+            "/tmp/rg spawn_blocking src",
         ]) {
             const g = grade(blocking, { files: [digest], commands: [applied] });
             expect([applied, g.verdict, g.reason]).toEqual([
