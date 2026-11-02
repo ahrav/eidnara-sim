@@ -220,11 +220,76 @@ function binary(type: string, pass: boolean, extra: Outcome["metrics"] = {}, rea
     return outcome;
 }
 
-/** The reachable shell segments of the turn's commands with the heredoc bodies they consume, one per line. */
-const commandText = (r: ArtefactReader) =>
+/**
+ * The Eidnara plugins' memory and search tools. A call's arguments are the subject the agent
+ * looked up, recorded, or dismissed, so P5 reads the call as research about an approach. The
+ * rule matches the tool name that `toolCommand` in `src/hosts/arms.ts` records as a command's
+ * first word.
+ */
+const MEMORY_TOOLS = new Set(["eidnara_search", "eidnara_memory", "eidnara_note"]);
+const memoryToolCall = (x: Command) => MEMORY_TOOLS.has(/^\s*(\S*)/.exec(x.command)?.[1] ?? "");
+const INSPECTS =
+    /^(cat|less|more|head|tail|nl|wc|grep|egrep|fgrep|rg|ag|ls|tree|stat|file|read|view|bat|sed|find|git)$/;
+/** `git` global options ahead of the subcommand, with the ones that take the next word. */
+const GIT_GLOBAL = /^(--no-pager|-P|--paginate|--no-optional-locks|--git-dir=.*|--work-tree=.*)$/;
+const GIT_GLOBAL_VALUE = /^(-C|-c|--git-dir|--work-tree)$/;
+const GIT_READS = /^(grep|log|show|diff|blame|status|ls-files|rev-parse)$/;
+const FIND_ACTS = /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
+/** `writesFile` treats unquoted `>` redirections as file writes, with exceptions for `/dev/null` and descriptor targets (`2>&1`). */
+const writesFile = (seg: string): boolean => {
+    let quote = "";
+    for (let i = 0; i < seg.length; i++) {
+        const ch = seg[i] as string;
+        if (quote) {
+            if (ch === quote) quote = "";
+            else if (ch === "\\" && quote === '"') i++;
+        } else if (ch === "\\") i++;
+        else if (ch === "'" || ch === '"') quote = ch;
+        else if (ch === ">") {
+            const target = seg
+                .slice(i + 1)
+                .replace(/^[>|]/, "")
+                .trimStart();
+            if (!/^(&\d*-?|\/dev\/null)(\s|$)/.test(target)) return true;
+        }
+    }
+    return false;
+};
+const inspects = (p: Segment): boolean => {
+    const seg = unprefixed(p.seg);
+    if (p.body || /\$\(|`/.test(seg) || writesFile(seg)) return false;
+    return inspectsWords(shellWords(seg));
+};
+const XARGS_VALUE =
+    /^(-[IiEeLlnPsda]|--(replace|eof|max-lines|max-args|max-procs|max-chars|delimiter|arg-file))$/;
+function inspectsWords(words: string[]): boolean {
+    const command = words[0] ?? "";
+    if (command === "xargs") {
+        let i = 1;
+        while (i < words.length && (words[i] as string).startsWith("-")) {
+            i += XARGS_VALUE.test(words[i] as string) ? 2 : 1;
+        }
+        return i < words.length && words[i] !== "xargs" && inspectsWords(words.slice(i));
+    }
+    if (!INSPECTS.test(command)) return false;
+    if (command === "sed") return !words.some((w) => /^(-[^-]*i|--in-place)/.test(w));
+    if (command === "find") return !words.some((w) => FIND_ACTS.test(w));
+    if (command !== "git") return true;
+    let i = 1;
+    while (i < words.length) {
+        const w = words[i] as string;
+        if (GIT_GLOBAL_VALUE.test(w)) i += 2;
+        else if (GIT_GLOBAL.test(w)) i++;
+        else break;
+    }
+    return GIT_READS.test(words[i] ?? "");
+}
+const appliedCommandText = (r: ArtefactReader) =>
     r
         .commands()
+        .filter((x) => !memoryToolCall(x))
         .flatMap(executedParts)
+        .filter((p) => !inspects(p))
         .map((p) => (p.body ? `${p.seg}\n${p.body.replace(/\n$/, "")}` : p.seg))
         .join("\n");
 /** Changed paths join the added lines so a check pattern can match a file name. */
@@ -1087,7 +1152,7 @@ const GRADERS: Record<string, Grader> = {
     },
     P4: p4,
     P5: (r, c) => {
-        const reused = broken(workFor(r, c, r.commands(), commandText), c);
+        const reused = broken(workFor(r, c, r.commands(), appliedCommandText), c);
         if (!reused && !codeChanged(r)) return binary("P5", false, {}, NO_CHANGE);
         return binary("P5", !reused, {}, "reused the rejected approach");
     },
