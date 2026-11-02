@@ -247,7 +247,7 @@ const GIT_GLOBAL_VALUE = /^(-C|--git-dir|--work-tree|--namespace)$/;
 const GIT_READS = /^(grep|log|show|diff|blame|status|ls-files|rev-parse)$/;
 const FIND_ACTS = /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
 const RUNS_OR_WRITES =
-    /^(--output(=.*)?|--pre(=.*)?|--ext-diff|--textconv|-O.*|--open-files-in-pager(=.*)?)$/;
+    /^(--output(=.*)?|--pre(=.*)?|--hostname-bin(=.*)?|--ext-diff|--textconv|-O.*|--open-files-in-pager(=.*)?)$/;
 const CONTROL_WORDS = /^(!|if|then|else|elif|while|until|do|time)$/;
 const SED_ADDRESS = String.raw`(?:\d+|\$|/(?:[^/\\]|\\.)*/)`;
 const SED_PRINTS = new RegExp(
@@ -331,7 +331,9 @@ const inspects = (p: Segment): boolean => {
     while (CONTROL_WORDS.test(words[0] ?? "")) {
         if (words.shift() === "time" && words[0] === "-p") words.shift();
     }
-    if (words[0]?.includes("/")) words[0] = words[0].slice(words[0].lastIndexOf("/") + 1);
+    if (/^\/(usr\/(local\/)?)?bin\/[^/]+$/.test(words[0] ?? "")) {
+        words[0] = (words[0] as string).slice((words[0] as string).lastIndexOf("/") + 1);
+    }
     return inspectsWords(words);
 };
 const XARGS_VALUE = /^(-[IELnPsda]|--(max-args|max-procs|max-chars|delimiter|arg-file))$/;
@@ -340,6 +342,7 @@ function inspectsWords(words: string[]): boolean {
     if (command === "xargs") {
         let i = 1;
         while (i < words.length && (words[i] as string).startsWith("-")) {
+            if (/^(-a|--arg-file)/.test(words[i] as string)) return false;
             i += XARGS_VALUE.test(words[i] as string) ? 2 : 1;
         }
         return i < words.length && inspectsWords(words.slice(i));
