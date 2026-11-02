@@ -2554,6 +2554,10 @@ async function runArms(
                     if (open) markSession(arm, armRoot);
                     await driver.resume(open, interrupted);
                     sampler.start();
+                    // The resume starts a replacement daemon, which works through its store
+                    // before it settles; the hold samples that work, so the busy daemon holds the
+                    // clock and the arm's next event or finish waits for it, as after a reset.
+                    holdForCpu(sampler, arm);
                 }),
             event: (e) =>
                 tracked(async () => {

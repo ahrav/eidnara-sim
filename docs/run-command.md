@@ -361,8 +361,10 @@ timers are owned by the run: teardown cancels any still pending and ends
 their holds before the journal closes. Both hold the
 clock (SIM-P13, OQ-2). Job ids continue from the journal's count, so a
 resumed run issues new ones. Once an arm's `StartArm` is journaled (or its
-processes reaped on resume) the same two-second hold runs, so daemon work
-that follows startup is measured before the first event. A job that holds the clock longer than the
+processes reaped on resume) the same two-second hold runs, and a resume runs
+it again once the driver's `resume` has started the replacement daemon, so
+daemon work that follows startup is measured before the first event or the
+arm's finish. A job that holds the clock longer than the
 pre-registered `job_deadline_ms` (20 minutes at S) after its own
 `RegisterJob`, measured on the monotonic clock, stops the run with the held
 ids (SIM-L02). The sampler drops an unterminated final sample when it
