@@ -386,3 +386,17 @@ test("a signal to the supervisor kills its finalize steps and their helpers befo
     })();
     expect(alive).toBe(false);
 });
+
+test("runProgress counts an interrupted turn as failed and an interrupted session_end as no turn", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
+    writeFileSync(join(dir, "manifest.json"), JSON.stringify({ events: 3, order: ["a"] }));
+    const j = new Journal(join(dir, "journal.jsonl"));
+    j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+    j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+    j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-1" });
+    const cut = { outcome: "failed(interrupted)", cause: "host-teardown" };
+    j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-1", ...cut });
+    j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-2", ...cut });
+    j.close();
+    expect(runProgress(dir).failed_turns).toBe(1);
+});

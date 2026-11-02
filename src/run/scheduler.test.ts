@@ -7215,15 +7215,37 @@ describe("user turns at their scheduled time", () => {
 });
 
 describe("resume after harness interruptions", () => {
+    // Two sessions, so the second `session_end` follows one the arm already ended.
+    const twoSessions = (): ScenarioEvent[] => [
+        ...fixtureEvents(1),
+        { id: "e-100000", kind: "session_start", scenario_ms: 120_000, session: "s-0001" },
+        {
+            id: "e-100001",
+            kind: "user_turn",
+            scenario_ms: 180_000,
+            session: "s-0001",
+            index: 0,
+            text: "turn 0",
+        },
+        { id: "e-199999", kind: "session_end", scenario_ms: 240_000, session: "s-0001" },
+    ];
+    const teardownAt = (id: string) =>
+        fakeDriver([], 0, (e) => {
+            if (e.id === id) throw new Error("host tree 4242 survived SIGKILL");
+        });
+    // A resumed driver holds no session, so it cannot end one.
+    const resumedDriver = (log: string[]) =>
+        fakeDriver(log, 0, (e) => {
+            if (e.kind === "session_end") throw new Error("names no project");
+        });
+
     test("a host tree that outlives SIGKILL at a session_end stops the run; the resume ends the session interrupted and finishes the arm", async () => {
-        const events = fixtureEvents(2);
+        const events = twoSessions();
         const options = { events, faults: [], settleMs: 0, order: ["a"] };
         // `legacy` rewrites the fatal record as a harness without `host-teardown` wrote it.
         for (const legacy of [false, true]) {
             const path = join(dir(), "j.jsonl");
-            const failing = fakeDriver([], 0, (e) => {
-                if (e.kind === "session_end") throw new Error("host tree 4242 survived SIGKILL");
-            });
+            const failing = teardownAt("e-199999");
             await expect(
                 new Scheduler({
                     ...options,
@@ -7233,7 +7255,7 @@ describe("resume after harness interruptions", () => {
             ).rejects.toThrow("host tree 4242 survived SIGKILL");
             const fatal = readJournal(path).find((e) => e.kind === "ItemState" && e.fatal === true);
             expect(fatal).toMatchObject({
-                event: "e-999999",
+                event: "e-199999",
                 state: "failed",
                 error: "host tree 4242 survived SIGKILL",
                 cause: "host-teardown",
@@ -7258,10 +7280,7 @@ describe("resume after harness interruptions", () => {
                 journal: resumed,
                 drivers: {
                     a: {
-                        // A resumed driver holds no session, so it cannot end one.
-                        ...fakeDriver(second, 0, (e) => {
-                            if (e.kind === "session_end") throw new Error("names no project");
-                        }),
+                        ...resumedDriver(second),
                         resume: async (open) => void opened.push(open?.id ?? null),
                         finish: async () => {
                             finished++;
@@ -7281,13 +7300,13 @@ describe("resume after harness interruptions", () => {
             expect(added[1]).toMatchObject({
                 recovers: fatal?.seq,
                 cause: "host-teardown",
-                event: "e-999999",
+                event: "e-199999",
             });
             // The resume reopens no session, ends the cut one interrupted, then finishes.
             expect(opened).toEqual([null]);
             expect(second).toEqual([]);
             expect(added[2]).toMatchObject({
-                event: "e-999999",
+                event: "e-199999",
                 outcome: "failed(interrupted)",
                 cause: "host-teardown",
             });
@@ -7303,6 +7322,70 @@ describe("resume after harness interruptions", () => {
                 drivers: { a: fakeDriver([]) },
             }).run();
         }
+    });
+
+    test("a daemon exit found at a session_end ends that session interrupted on resume", async () => {
+        const options = { events: twoSessions(), faults: [], settleMs: 0, order: ["a"] };
+        const path = join(dir(), "j.jsonl");
+        const failing: FakeDriver = fakeDriver([], 0, (e) => {
+            if (e.id === "e-199999") failing.arm().daemonExited({ after: e.id });
+        });
+        await expect(
+            new Scheduler({
+                ...options,
+                journal: new Journal(path),
+                drivers: { a: failing },
+            }).run(),
+        ).rejects.toThrow();
+        const resumed = new Journal(path);
+        const n = resumed.entries.length;
+        await new Scheduler({
+            ...options,
+            journal: resumed,
+            drivers: { a: { ...resumedDriver([]), resume: async () => {} } },
+        }).run();
+        const added = resumed.entries.slice(n);
+        expect(added.map((e) => e.kind)).toEqual([
+            "ResumeRun",
+            "Recovered",
+            "Event",
+            "EndArm",
+            "EndRun",
+        ]);
+        expect(added[1]).toMatchObject({
+            cause: "daemon-exit",
+            daemon_exit: { after: "e-199999" },
+        });
+        expect(added[2]).toMatchObject({
+            event: "e-199999",
+            outcome: "failed(interrupted)",
+            cause: "daemon-exit",
+        });
+    });
+
+    test("a teardown at the arm's first session_end, which owes the transcript check, is delivered again", async () => {
+        const options = { events: twoSessions(), faults: [], settleMs: 0, order: ["a"] };
+        const path = join(dir(), "j.jsonl");
+        await expect(
+            new Scheduler({
+                ...options,
+                journal: new Journal(path),
+                drivers: { a: teardownAt("e-999999") },
+            }).run(),
+        ).rejects.toThrow("host tree 4242 survived SIGKILL");
+        const replayed: string[] = [];
+        const resumed = new Journal(path);
+        await expect(
+            new Scheduler({
+                ...options,
+                journal: resumed,
+                drivers: { a: { ...resumedDriver(replayed), resume: async () => {} } },
+            }).run(),
+        ).rejects.toThrow("names no project");
+        expect(replayed).toEqual(["session_end:e-999999"]);
+        expect(resumed.entries.some((e) => e.kind === "Event" && e.event === "e-999999")).toBe(
+            false,
+        );
     });
 
     test("a user-sim call that exhausted its retries stops the run; the resume marks the turn and goes on with a fresh session", async () => {

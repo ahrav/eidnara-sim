@@ -295,11 +295,18 @@ usual recovery entries, each interruption marker carrying the cause (a stop
 with no fatal record, such as a kill or a reboot, is `harness-exit`), and the
 arm continues at its next event with the host session restarted through the
 driver's `resume`. A `session_end` a recoverable stop cut, such as one whose
-host close failed in teardown, has no turn to mark: the resume reaps the
-recorded tree, journals the `session_end`'s `Event` as `failed(interrupted)`
-with the cause, records its session's unfired summarizer faults as `missed`,
-and reopens no session. The driver's owed store checks run at the next event
-or at the arm's finish. The interrupted items are excluded from recall and counted
+host close failed in teardown or one after which a daemon exit was found, has
+no turn to mark: the resume reaps the recorded tree, journals the
+`session_end`'s `Event` as `failed(interrupted)` with the cause, records its
+session's unfired summarizer faults as `missed`, and reopens no session. The
+driver's owed store checks run at the next event or at the arm's finish, and
+the arm's boots are checked against its profile in `capabilities.json`.
+Progress and report counts of failed turns take only events with a
+`BeginTurn`. A `session_end` that owes work only the driver's `session_end`
+runs (the arm's first, which checks the transcript store; the first after a
+host upgrade; one whose session holds a `store_full` or
+`two_hosts_one_daemon` fault) is delivered again, and the resumed driver,
+which holds no session, refuses it. The interrupted items are excluded from recall and counted
 in dependability; `grade-run` reports them per arm (`interruptions`: the
 interrupted turns by cause, the recovered stops by cause, the unexpected
 daemon exits, which stay an Eidnara reliability finding, and any unresolved

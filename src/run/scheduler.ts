@@ -1361,14 +1361,20 @@ export class Scheduler {
         // A `session_end` a recoverable stop cut, recovered now or by a resume killed before it
         // went on, has no turn to mark and no host left to close: the stop's cleanup or the
         // resume's reap stopped the host, and the driver's owed store checks run at the next
-        // event or the finish. The session ends here, interrupted, as `step` ends it.
+        // event or the finish. A stop names the event it cut, or, for a daemon exit, the event
+        // the exit was found after. The session ends here, interrupted, as `step` ends it,
+        // unless it owes a check or cleanup only the driver's `session_end` runs.
+        const cut = (r: Entry) =>
+            typeof r.event === "string"
+                ? r.event
+                : (r.daemon_exit as { after?: unknown } | undefined)?.after;
         const stops = [
-            ...kinds("Recovered").map((r) => ({ event: r.event, cause: String(r.cause) })),
-            ...fatals.map((f) => ({ event: f.event, cause: fatalCause(f) })),
+            ...kinds("Recovered").map((r) => ({ event: cut(r), cause: String(r.cause) })),
+            ...fatals.map((f) => ({ event: cut(f), cause: fatalCause(f) })),
         ];
         for (const stop of stops) {
             const end = this.o.events.find((x) => x.id === stop.event && x.kind === "session_end");
-            if (!end || done.has(end.id)) continue;
+            if (!end || done.has(end.id) || !this.endable(end, mine)) continue;
             for (const p of this.o.faults) {
                 if (p.trigger.session === end.session && p.seam.layer === PROXY_LAYER)
                     this.o.proxy?.disarm(p.id, this.arm as string);
@@ -1380,6 +1386,27 @@ export class Scheduler {
             this.session = null;
         }
         return answered;
+    }
+
+    /**
+     * Whether a resume can end the cut `session_end` `end` without the driver. The driver's
+     * `session_end` alone runs the transcript check, at the arm's first session end and at the
+     * first one after a host upgrade, and ends a session's store fill and second client; such a
+     * session end is delivered again, which the resumed driver refuses.
+     */
+    private endable(end: ScenarioEvent, mine: Entry[]): boolean {
+        const kindOf = (id: unknown) => this.o.events.find((x) => x.id === id)?.kind;
+        const ends = mine.filter((e) => e.kind === "Event" && kindOf(e.event) === "session_end");
+        if (ends.length === 0) return false;
+        const upgrade = [...mine]
+            .reverse()
+            .find((e) => e.kind === "FaultFired" && e.type === "host_upgrade");
+        if (upgrade && !ends.some((e) => e.seq > upgrade.seq)) return false;
+        return !this.o.faults.some(
+            (f) =>
+                f.trigger.session === end.session &&
+                (f.type === "store_full" || f.type === "two_hosts_one_daemon"),
+        );
     }
 
     /** Journals each summarizer-call fault of `session` that never fired as `missed`. */

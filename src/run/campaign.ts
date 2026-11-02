@@ -155,14 +155,20 @@ export function runProgress(dir: string, now = Date.now()): RunProgress {
         total = null;
     }
     const events = entries.filter((e) => e.kind === "Event");
+    // An interrupted `session_end` also carries `failed(interrupted)`; only a turn has a
+    // `BeginTurn`.
+    const key = (e: Entry) => `${e.arm}/${e.event}`;
+    const turns = new Set(entries.filter((e) => e.kind === "BeginTurn").map(key));
     const failed = new Set(
         entries
             .filter(
                 (e) =>
                     (e.kind === "EndTurn" && e.outcome !== "ok") ||
-                    (e.kind === "Event" && e.outcome === "failed(interrupted)"),
+                    (e.kind === "Event" &&
+                        e.outcome === "failed(interrupted)" &&
+                        turns.has(key(e))),
             )
-            .map((e) => `${e.arm}/${e.event}`),
+            .map(key),
     );
     const arms = Object.values(interruptions(entries));
     const recent = events.filter((e) => e.wall_ms >= now - RATE_WINDOW_MS);
