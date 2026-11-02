@@ -25,6 +25,7 @@ import {
 import {
     agentReplyOf,
     checkTapeSources,
+    factMatcher,
     type Llm,
     normaliser,
     Pairing,
@@ -1010,6 +1011,124 @@ describe("tape and pairing", () => {
         expect(d.text).toStartWith("I'm not convinced by that.");
         const last = pairing.records.at(-1) as { fallback?: string[] };
         expect(last.fallback).toEqual(["fact"]);
+    });
+
+    test("a live pushback that names a ledger fact's identity falls back, and the prompt holds conveyed facts settled", async () => {
+        const withdrawal =
+            "I'd like to see the evidence behind that rejected-approach memory before it stays in the project record. Can you point me to the commit, issue, or benchmark where the blocking pool starvation was actually observed? Without that, I'd rather not have a memory entry that steers future work away from `spawn_blocking` on hearsay.";
+        const replies: [string, boolean][] = [
+            [withdrawal, true],
+            ["Why did the test skip the empty-frame case?", false],
+            ["Just move it onto SPAWN_BLOCKING.", true],
+            ["Did you check ticket 55174 first?", true],
+            ["Name it SABLE_URCHIN_MAX_KEYS?", true],
+            ["Is the SABLE_URCHIN prefix right here?", true],
+            ["Rerun it with RUST_BACKTRACE=1 and check key_len.", false],
+            ["Why does pewter_gecko_roundtrip still fail?", true],
+            ["Is that a TawnyEgretError again?", true],
+            ["Drop the quiet_hare tag from the errors.", true],
+            ["Rename ping_echo_quiet_vole first.", true],
+            ["Is tawny-egret-14 the right alias?", true],
+            ["Does respawn_blocking_ok still pass?", false],
+            ["The quiet hare test is flaky; check 155174 bytes.", false],
+        ];
+        const queue = replies.map(([text]) => ({ text, stop: "end_turn" }));
+        const prompts: Prompt[] = [];
+        const llm: Llm = async (p) => {
+            prompts.push(p);
+            return queue.shift() ?? { text: "Fine.", stop: "end_turn" };
+        };
+        const pushback = (n: number): ScriptTurn => ({
+            ...(script[1] as ScriptTurn),
+            id: `e-p${n}`,
+            index: n,
+        });
+        const root = dir();
+        const pairing = new Pairing(join(root, "pairing.jsonl"), () => "a");
+        const turns = replies.map((_r, i) => i + 1);
+        const labels = new Map(turns.map((n) => [`e-p${n}`, "pushback" as Label]));
+        const statements = [
+            "moving command execution onto spawn_blocking was tried and reverted because it starved the runtime's blocking pool",
+            "the internal ticket for the cache rewrite is 55174",
+            "every new public constant under src/cmd carries the SABLE_URCHIN_ prefix, for example SABLE_URCHIN_MAX_ARGS",
+            "error strings returned from src/cmd start with the tag [quiet_hare]",
+            "test functions you add end their names with _quiet_vole",
+        ];
+        const paste =
+            "CI went red:\n```\ntest pewter_gecko_roundtrip ... FAILED\nTawnyEgretError { key_len: 57585 }\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n```";
+        const user = new UserSim({
+            seed: 101,
+            plan: { ...plan, labels },
+            tape: new Tape(join(root, "tape.jsonl")),
+            pairing,
+            llm,
+            normalise: normaliser(prereg.divergence_policy.normalisation),
+            keys: ["f-0032"],
+            facts: [...statements, paste],
+            statements,
+        });
+        const agent =
+            "I saved that as a rejected approach in project memory. I'm relying on what you've told me here.";
+        const seen: [string, boolean][] = [];
+        for (const n of turns) {
+            const d = await user.deliver("a", pushback(n), `${agent} (${n})`);
+            const record = pairing.records.at(-1) as { fallback?: string[] };
+            const [text] = replies[n - 1] as [string, boolean];
+            const fell = record.fallback !== undefined;
+            expect(record.fallback ?? ["fact-token"]).toEqual(["fact-token"]);
+            expect(d.text.startsWith(fell ? "I'm not convinced by that." : text)).toBe(true);
+            seen.push([text, fell]);
+        }
+        expect(seen).toEqual(replies);
+        const system = prompts[0]?.system ?? "";
+        expect(system).toContain("says it saved to memory or notes, is true and settled");
+        expect(system).toContain("never ask for its source or evidence");
+        expect(system).toContain("change, archive, forget, or delete it");
+    });
+
+    test("a replay source's fact-token causes must match the run's identity check", async () => {
+        const first = dir();
+        const statements = ["the internal ticket for the cache rewrite is 55174"];
+        const user = new UserSim({
+            seed: 101,
+            plan,
+            tape: new Tape(join(first, "tape.jsonl")),
+            pairing: new Pairing(join(first, "pairing.jsonl"), () => "a"),
+            llm: async () => ({ text: "Check ticket 55174 first.", stop: "end_turn" }),
+            normalise: normaliser(prereg.divergence_policy.normalisation),
+            keys: ["f-0000", "q-0001"],
+            facts: statements,
+            statements,
+        });
+        await play(user, "a", outputs);
+        writeFileSync(
+            join(first, "manifest.json"),
+            JSON.stringify({ seed: 101, scenario_hash: "abc", order: ["a"], events: 5 }),
+        );
+        writeFileSync(
+            join(first, "journal.jsonl"),
+            '{"seq":0,"wall_ms":0,"kind":"EndRun","arm":null,"scenario_ms":0}\n',
+        );
+        const run = {
+            seed: 101,
+            scenario_hash: "abc",
+            order: ["a"],
+            events: 5,
+            turns: script.map((t) => t.id),
+            scripted: new Map(script.map((t) => [t.id, t.text])),
+        };
+        const tape = [join(first, "tape.jsonl")];
+        const same = { ...run, namesFact: factMatcher(statements, statements) };
+        expect(() => checkTapeSources(tape, same)).not.toThrow();
+        expect(() => checkTapeSources(tape, run)).not.toThrow();
+        expect(() => checkTapeSources(tape, { ...run, namesFact: () => false })).toThrow("a e-2");
+        const plain = dir();
+        await play(sim(plain, counting()).user, "a", outputs);
+        writeFileSync(join(plain, "manifest.json"), readFileSync(join(first, "manifest.json")));
+        writeFileSync(join(plain, "journal.jsonl"), readFileSync(join(first, "journal.jsonl")));
+        const older = [join(plain, "tape.jsonl")];
+        expect(() => checkTapeSources(older, run)).not.toThrow();
+        expect(() => checkTapeSources(older, { ...run, namesFact: () => true })).toThrow("a e-2");
     });
 
     test("a replay source's taped reply must be the one its pairing row delivered", async () => {

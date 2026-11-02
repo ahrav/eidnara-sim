@@ -720,7 +720,10 @@ Confidence: low -
 M6 (#1031) delivers conveyance, update, and reversal turns with their compiled
 text; verified in `src/usersim/usersim.test.ts`.
 Existing check: `scripts/pairing-check.ts` fails a run that leaves a non-filler
-turn unsent
+turn unsent; `UserSim.reply` in `src/usersim/usersim.ts` replaces a generated
+reply that repeats a ledger statement or cue (`fact`) or names a fact
+identity (`fact-token`, `factIdentities`) with the label's fixed line,
+checked in `src/usersim/usersim.test.ts` (status `unaudited`)
 Impact: Recall is measured on facts conveyed a different number of times than
 planned.
 Open questions: None.

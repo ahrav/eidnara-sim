@@ -65,6 +65,7 @@ import {
     type AgentReply,
     agentReplyOf,
     checkTapeSources,
+    factMatcher,
     normaliser,
     Pairing,
     proxyUserSim,
@@ -1533,6 +1534,10 @@ export async function loadManifest(
                     .filter((e) => e.kind === "user_turn")
                     .map((e) => [String(e.id), String((e as { text?: unknown }).text ?? "")]),
             ),
+            namesFact: factMatcher(
+                (scenario.facts ?? []).map((f) => f.statement),
+                (scenario.facts ?? []).flatMap((f) => [f.statement, ...f.cues]),
+            ),
         });
     if (existsSync(path)) {
         const manifest = readJsonFile<Manifest>(path);
@@ -2352,6 +2357,7 @@ async function runArms(
             ...scenario.probes.map((p) => p.id),
         ],
         facts: scenario.facts.flatMap((f) => [f.statement, ...f.cues]),
+        statements: scenario.facts.map((f) => f.statement),
     });
     const scriptedById = new Map(scripted.map((t) => [t.id, t]));
     const eventOrder = new Map(allEvents.map((e, i) => [e.id, i]));

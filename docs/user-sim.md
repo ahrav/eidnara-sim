@@ -19,11 +19,19 @@ reply and the script text that follows the reply go in the user message as
 quoted data, with any `>>>` in them spaced so the quote cannot close
 itself. A conveyance, update, or reversal turn
 carries a ledger fact, so its prompt leaves the script text out, and a
-probe turn gets no reply at all. The prompt also forbids the reply to deny,
-withdraw, or restate anything the agent attributes to the user, or to ask
-the agent to forget anything, so a reply never undoes a conveyed fact; the
-`usersim-1` smoke run showed a pushback disowning a rule the user had
-conveyed before this instruction existed.
+probe turn gets no reply at all. The prompt also holds every rule,
+preference, decision, rejected approach, or other fact the agent attributes
+to the user, or says it saved to memory or notes, as true and settled: the
+reply never denies, withdraws, doubts, or restates it, never asks for its
+source or evidence, and never asks the agent to change, archive, forget, or
+delete it. The `usersim-1` smoke run showed a pushback disowning a rule the
+user had conveyed before the first form of this instruction existed, and
+the c7 S seed 101 eidnara run showed one under that first form, which
+named only facts the agent says the user gave it: at calls seq 2680 a
+pushback called the conveyed rejected approach `spawn_blocking` hearsay,
+asked for its evidence, and the agent archived the memory. The prompt
+carries no ledger fact, so the reply check below enforces the rule
+mechanically for every fact's generated identities.
 
 ## Behaviour plan
 
@@ -101,11 +109,48 @@ their recorded turns gets a `divergedAt` record with `against: "recorded"`,
 ahead of the comparison with its reference arm; a skipped turn is compared
 too. A reply that is empty, that stopped for any reason other than `end_turn`
 or `stop_sequence` (`max_tokens`, a guardrail or content filter, a context
-window overflow), or that carries a probe-announcement marker or a ledger
-key is replaced by a fixed line for its label, and the record lists the
-cause in `fallback`.
-The whole delivered text is checked against the markers again before it is
-sent, and a hit stops the run.
+window overflow), that carries a probe-announcement marker or a ledger
+key, that repeats a rendered ledger statement or cue (`fact`), or that
+names a fact identity (`fact-token`, `factIdentities` in
+`src/usersim/usersim.ts`) is replaced by a fixed line for its label, and the
+record lists the cause in `fallback`. The whole delivered text is checked
+against the markers again before it is sent, and a hit stops the run.
+
+A fact identity is one of three things. The first is an identifier with an
+underscore or a five-digit number in a rendered ledger statement, such as
+`spawn_blocking`, `SABLE_URCHIN` from the prefix `SABLE_URCHIN_`,
+`quiet_vole` from the suffix `_quiet_vole`, or `55174`; a reply matches it
+case-insensitively with no letter or digit on either side, so
+`SABLE_URCHIN_MAX_KEYS` names `SABLE_URCHIN`. The second is a five-digit
+number in a cue. The third is an adjective-noun pair from the scenario
+generator's word lists (`Tokens` in `src/scenario/tokens.ts`) that a
+statement or cue carries in any joined form; a reply word names it when the
+word's letters, lowercased, contain the pair, so `[ember_magpie]`,
+`tawny-hare-93`, `TawnyEgretError`, and `pewter_gecko_roundtrip` all count,
+and two separate words such as `quiet hare` do not. A cue also carries the
+pasted tool output and surrounding wording of its conveyance, so its other
+identifiers, such as `RUST_BACKTRACE` and `key_len` in a pasted failure,
+stay ordinary words. The identity check covers every ledger fact of the
+scenario, conveyed or not: a reply that names a conveyed fact can question,
+restate, or withdraw it, and one that names a fact before its conveyance turn
+conveys it outside its compiled manner. Over the c7 S runs (seeds 101 to 103,
+every arm, 5,945 user-sim call responses) the check matches 255 replies,
+4.3%. A fact whose wording carries no
+such identity, such as `a single global Mutex around the whole store`, is
+held by the prompt alone.
+
+The user-sim lies under `MEASUREMENT_PATHS` (`src/run/run.ts`), so a run
+keeps the user-sim of the eidnara-sim revision it started under: a resume
+from another revision is refused, and `--sim-upgrade` refuses a revision
+range that changes `src/usersim/` (`docs/run-command.md`). The settled-fact
+prompt and the `fact-token` check apply to runs started from a revision that
+carries them. A run that replays tapes (`--tapes`) refuses a source whose
+recorded `fact-token` causes disagree with its own identity check
+(`checkTapeSources` with `factMatcher`), so a tape recorded under an earlier
+user-sim whose replies name a fact identity is refused as a source rather
+than replayed with different text. `scripts/pairing-check.ts` checks a
+run's own tape without the identity check, so a run recorded before this
+check still passes it.
 
 The prefix hash chains each record's prefix and delivered-text hashes with
 the hash of the next agent reply (the session's last agent call that

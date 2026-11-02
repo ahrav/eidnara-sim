@@ -459,7 +459,7 @@ describe("P4: each side keeps its own rule, and a rule may not leak across the s
 describe("P5: the rejected approach stays out of the code and the commands", () => {
     const p5 = probeOf("P5", "rs-no-global-mutex");
 
-    test("a per-store lock passes; a global lock, a no-op, and a search for it fail", () => {
+    test("a per-store lock passes; a global lock and a no-op fail", () => {
         const sharded = {
             files: [{ path: "src/db.rs", lines: ["shards: Vec<Arc<Mutex<State>>>,"] }],
         };
@@ -476,8 +476,103 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
         };
         expect(outcome(p5, global)).toEqual(["fail", "reused the rejected approach"]);
         expect(outcome(p5, NOOP)).toEqual(["fail", "no code change"]);
-        const searched = { commands: ["grep -rn 'static STORE: Mutex<State>' src"] };
-        expect(grade(p5, searched).verdict).toBe("fail");
+    });
+
+    test("searching, reading, or recording the approach is no use of it; a command applying it is", () => {
+        const blocking = probeOf("P5", "rs-no-spawn-blocking");
+        const digest = {
+            path: "src/cmd/digest.rs",
+            lines: ["let sum = crc32fast::hash(&value);"],
+        };
+        const looked = [
+            'eidnara_search {"query":"DIGEST checksum hash command spawn_blocking"}',
+            'eidnara_memory {"action":"create","content":"spawn_blocking starved the pool"}',
+            'eidnara_note {"action":"write","content":"avoid spawn_blocking"}',
+            'todowrite {"todos":[{"content":"keep hashing off spawn_blocking"}]}',
+            "grep src\nspawn_blocking\n*.rs",
+            "glob src\n**/*spawn_blocking*",
+            "grep -rn spawn_blocking src 2>/dev/null | head -20",
+            "cd repo && rg -n 'spawn_blocking' src/",
+            "git log --oneline -S spawn_blocking",
+            "git -C repo grep -n spawn_blocking",
+            "sed -n '/spawn_blocking/p' src/db.rs",
+            "cat src/cmd/mod.rs | grep -n spawn_blocking",
+            "find src -name '*.rs' -newer Cargo.toml | xargs grep -l spawn_blocking",
+            "{ grep -n spawn_blocking src/db.rs; grep -c spawn_blocking src/server.rs; }",
+            "grep spawn_blocking",
+            "grep -rn spawn_blocking src >&/dev/null",
+            "git --no-replace-objects log -S spawn_blocking",
+            "xargs -e grep -n spawn_blocking src/db.rs",
+            "! rg -n spawn_blocking src",
+            "time -p rg -n spawn_blocking src",
+            "if rg -n spawn_blocking src; then echo found; fi",
+            "sed -n '10,40p;/spawn_blocking/p' src/db.rs",
+            "rg '$(spawn_blocking)' src",
+            "grep spawn_blocking src >& /dev/null",
+            "/usr/bin/rg -n spawn_blocking src",
+            "sed -n -e'/spawn_blocking/p' src/db.rs",
+            "sed -ne'/spawn_blocking/p' src/db.rs",
+            "sed -nE '/spawn_blocking/p' src/db.rs",
+            "find src -executable -name '*spawn_blocking*'",
+            "grep -n spawn_blocking src >\"/dev/null\" 2>'/dev/null'",
+        ];
+        for (const command of looked) {
+            const g = grade(blocking, { files: [digest], commands: [command] });
+            expect([command, g.verdict]).toEqual([command, "pass"]);
+        }
+        for (const applied of [
+            "sed -i 's/hash(&value)/spawn_blocking(move || hash(\\&value))/' src/cmd/digest.rs",
+            "cat > src/cmd/digest.rs <<'EOF'\nlet sum = tokio::task::spawn_blocking(move || hash(value)).await?;\nEOF",
+            "grep -n spawn_blocking src/db.rs > notes/blocking.txt",
+            "find src -name '*.rs' -exec sed -i 's/block_on/spawn_blocking/' {} +",
+            "echo 'tokio::task::spawn_blocking(f);' >> src/cmd/digest.rs",
+            "cat $(echo spawn_blocking)",
+            "write src/cmd/digest.rs\nlet sum = tokio::task::spawn_blocking(move || hash(value)).await?;",
+            "sed 's/block_on/spawn_blocking/' src/db.rs | tee /tmp/db.rs",
+            "{ sed 's/block_on/spawn_blocking/' src/db.rs; } > /tmp/db.rs",
+            "X=$(sed -i 's/block_on/spawn_blocking/' src/db.rs) cat src/db.rs",
+            "grep spawn_blocking src/db.rs >& /tmp/out",
+            "git -c diff.external=./x diff spawn_blocking",
+            "sed 's/hash/spawn_blocking/w notes/blocking.txt' src/db.rs",
+            "sed -n 's/hash/spawn_blocking/p' src/db.rs",
+            "rg --pre ./x spawn_blocking src",
+            "cat <<< spawn_blocking",
+            "cat <(sed -i 's/hash/spawn_blocking/' src/db.rs)",
+            "grep -n spawn_blocking src/db.rs | tee notes/blocking.txt",
+            'eidnara_search {"query":"x"}; echo spawn_blocking >> notes/blocking.txt',
+            "git diff --ext-diff spawn_blocking",
+            "GIT_EXTERNAL_DIFF=./x git diff spawn_blocking",
+            'grep "$(echo spawn_blocking)" src',
+            "grep -n spawn_blocking src > '/tmp/out'",
+            "git grep -O'sh -c x' spawn_blocking",
+            "git grep --open-files-in-pager=vi spawn_blocking",
+            "{ cat > src/cmd/digest.rs; } <<'EOF'\nspawn_blocking(move || hash(value))\nEOF",
+            "sed -n -i '/spawn_blocking/p' src/db.rs",
+            "sed -n --in-pla=.bak '/spawn_blocking/p' src/db.rs",
+            'bat --paging=always --pager="sh -c x" spawn_blocking.rs',
+            "rg --hostname-bin=./x spawn_blocking src",
+            "xargs -a /tmp/args sed -n -e '/spawn_blocking/p' src/db.rs",
+            "/tmp/rg spawn_blocking src",
+            "{ cat; } <<< 'spawn_blocking(f)'",
+        ]) {
+            const g = grade(blocking, { files: [digest], commands: [applied] });
+            expect([applied, g.verdict, g.reason]).toEqual([
+                applied,
+                "fail",
+                "reused the rejected approach",
+            ]);
+        }
+        const inDiff = {
+            files: [
+                {
+                    path: "src/cmd/digest.rs",
+                    lines: ["let sum = tokio::task::spawn_blocking(move || hash(value)).await?;"],
+                },
+            ],
+            commands: looked,
+        };
+        expect(outcome(blocking, inDiff)).toEqual(["fail", "reused the rejected approach"]);
+        expect(outcome(blocking, { commands: looked })).toEqual(["fail", "no code change"]);
     });
 
     test("a timer the app or a function owns passes; a module-level setInterval fails", () => {
