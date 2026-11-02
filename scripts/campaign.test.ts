@@ -142,6 +142,60 @@ test("the supervisor resumes a stopped run, finalizes it at EndRun, and gives up
     expect(added.exitCode).toBe(1);
 });
 
+test("a campaign's sim_upgrade rides on resumes only, keeps restored records, and needs this checkout at it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
+    const fake = join(dir, "fake-run.ts");
+    const marker = "mkdirSync(out, { recursive: true });";
+    writeFileSync(
+        fake,
+        FAKE_RUN.replace(
+            marker,
+            `${marker}\nappendFileSync(join(out, "argv.jsonl"), JSON.stringify(process.argv.slice(2)) + "\\n");`,
+        ),
+    );
+    const head = Bun.spawnSync(["git", "-C", ROOT, "rev-parse", "HEAD"]).stdout.toString().trim();
+    const out = join(dir, "runs");
+    const spec = {
+        schema: "sim-campaign/v1",
+        out,
+        poll_ms: 50,
+        relaunch_backoff_ms: 20,
+        inode_paths: [],
+        run_command: ["bun", fake],
+        finalize_commands: [["bun", "-e", "process.exit(0)"]],
+        runs: [{ name: "good", args: ["--mode", "ok"] }],
+    };
+    const supervise = (over: Record<string, unknown>) => {
+        writeFileSync(join(dir, "campaign.json"), JSON.stringify({ ...spec, ...over }));
+        return Bun.spawnSync(
+            [process.execPath, "scripts/campaign.ts", join(dir, "campaign.json")],
+            {
+                cwd: ROOT,
+                timeout: 60_000,
+            },
+        );
+    };
+    const other = "0".repeat(40);
+    const refused = supervise({ sim_upgrade: other });
+    expect(refused.exitCode).toBe(2);
+    expect(refused.stderr.toString()).toContain(`sim_upgrade names ${other}; this checkout runs`);
+    expect(existsSync(out)).toBe(false);
+    expect(supervise({ sim_upgrade: head }).exitCode).toBe(0);
+    const argvs = readFileSync(join(out, "good", "argv.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l));
+    const base = ["--mode", "ok", "--out", join(out, "good")];
+    expect(argvs).toEqual([base, [...base, "--sim-upgrade", head]]);
+    const status = JSON.parse(readFileSync(join(out, "campaign-status.json"), "utf8"));
+    expect(status.runs[0]).toMatchObject({ state: "finalized", argv: ["bun", fake, ...base] });
+    // Dropping the field leaves the started run's record standing.
+    expect(supervise({}).exitCode).toBe(0);
+    expect(() => parseCampaign({ ...spec, sim_upgrade: "abc123" })).toThrow(
+        "sim_upgrade is not a full commit hash",
+    );
+});
+
 const record = (over: Partial<RunRecord> = {}): RunRecord => ({
     name: "r",
     argv: [],

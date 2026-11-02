@@ -25,6 +25,11 @@ export interface CampaignSpec {
     finalize_commands: string[][];
     finalize_timeout_ms: number;
     relaunch_backoff_ms: number;
+    /**
+     * The eidnara-sim commit every resume runs under (`--sim-upgrade`, `docs/run-command.md`),
+     * or null; the supervisor's own checkout must be at it.
+     */
+    sim_upgrade: string | null;
 }
 
 export const DEFAULT_RUN = ["bun", "scripts/run-tier.ts"];
@@ -93,6 +98,10 @@ export function parseCampaign(raw: unknown): CampaignSpec {
     if (o?.finalize_timeout_ms !== undefined && !((o.finalize_timeout_ms as number) > 0)) {
         problems.push("finalize_timeout_ms is not positive");
     }
+    const upgrade = o?.sim_upgrade;
+    if (upgrade != null && !(typeof upgrade === "string" && /^[0-9a-f]{40}$/.test(upgrade))) {
+        problems.push("sim_upgrade is not a full commit hash");
+    }
     if (problems.length > 0) throw new Error(`campaign: ${problems.join("; ")}`);
     const spec = o as CampaignSpec;
     return {
@@ -108,13 +117,30 @@ export function parseCampaign(raw: unknown): CampaignSpec {
         finalize_commands: spec.finalize_commands ?? DEFAULT_FINALIZE,
         finalize_timeout_ms: spec.finalize_timeout_ms ?? 6 * 3600_000,
         relaunch_backoff_ms: spec.relaunch_backoff_ms ?? 60_000,
+        sim_upgrade: spec.sim_upgrade ?? null,
     };
 }
 
 export const runDir = (spec: CampaignSpec, name: string) => join(spec.out, name);
 
-export function launchArgv(spec: CampaignSpec, run: CampaignSpec["runs"][number]): string[] {
-    return [...spec.run_command, ...spec.args, ...run.args, "--out", runDir(spec, run.name)];
+/**
+ * A run's command line. A resume adds `--sim-upgrade <sim_upgrade>` when the campaign names one;
+ * a record's `argv` is the command without it, so naming one keeps every record.
+ */
+export function launchArgv(
+    spec: CampaignSpec,
+    run: CampaignSpec["runs"][number],
+    resume = false,
+): string[] {
+    const upgrade = resume && spec.sim_upgrade !== null ? ["--sim-upgrade", spec.sim_upgrade] : [];
+    return [
+        ...spec.run_command,
+        ...spec.args,
+        ...run.args,
+        "--out",
+        runDir(spec, run.name),
+        ...upgrade,
+    ];
 }
 
 export function finalizeArgv(spec: CampaignSpec, name: string): string[][] {

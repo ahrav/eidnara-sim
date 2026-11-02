@@ -48,6 +48,14 @@ if (config.upgrade?.pi_install) {
     requireOutsideCheckout(spec.out, config.upgrade.pi_install, "the upgrade Pi install");
 }
 requireOutsideIdentity(spec.out);
+// Every resume names `sim_upgrade`, which run-tier accepts only from a checkout at that commit.
+if (spec.sim_upgrade !== null) {
+    const head = Bun.spawnSync(["git", "-C", ROOT, "rev-parse", "HEAD"]).stdout.toString().trim();
+    if (head !== spec.sim_upgrade) {
+        console.error(`sim_upgrade names ${spec.sim_upgrade}; this checkout runs ${head}`);
+        process.exit(2);
+    }
+}
 mkdirSync(spec.out, { recursive: true });
 // One supervisor per campaign: a second one, an overlapping cron pass included, stops here.
 let lease: ReturnType<typeof takeLease>;
@@ -245,7 +253,7 @@ function launch(run: CampaignSpec["runs"][number], record: RunRecord, progress: 
     const log = logOf(run.name);
     if (existsSync(log)) renameSync(log, join(logs, `${run.name}.attempt${record.launches}.log`));
     const fd = openLog(log, true);
-    const command = argv(launchArgv(spec, run));
+    const command = argv(launchArgv(spec, run, progress.started));
     // A launch that cannot even start counts as an attempt that measured nothing.
     record.launches++;
     record.progress_at_launch = progress.measured_events;
