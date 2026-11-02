@@ -510,6 +510,10 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "rg '$(spawn_blocking)' src",
             "grep spawn_blocking src >& /dev/null",
             "/usr/bin/rg -n spawn_blocking src",
+            "sed -n -e'/spawn_blocking/p' src/db.rs",
+            "sed -ne'/spawn_blocking/p' src/db.rs",
+            "sed -nE '/spawn_blocking/p' src/db.rs",
+            "find src -executable -name '*spawn_blocking*'",
             "grep -n spawn_blocking src >\"/dev/null\" 2>'/dev/null'",
         ];
         for (const command of looked) {
@@ -540,6 +544,10 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "GIT_EXTERNAL_DIFF=./x git diff spawn_blocking",
             'grep "$(echo spawn_blocking)" src',
             "grep -n spawn_blocking src > '/tmp/out'",
+            "git grep -O'sh -c x' spawn_blocking",
+            "git grep --open-files-in-pager=vi spawn_blocking",
+            "{ cat > src/cmd/digest.rs; } <<'EOF'\nspawn_blocking(move || hash(value))\nEOF",
+            "sed -n -i '/spawn_blocking/p' src/db.rs",
         ]) {
             const g = grade(blocking, { files: [digest], commands: [applied] });
             expect([applied, g.verdict, g.reason]).toEqual([

@@ -247,28 +247,39 @@ const GIT_GLOBAL =
 const GIT_GLOBAL_VALUE = /^(-C|--git-dir|--work-tree|--namespace)$/;
 const GIT_READS = /^(grep|log|show|diff|blame|status|ls-files|rev-parse)$/;
 const FIND_ACTS = /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
-const RUNS_OR_WRITES = /^(--output(=.*)?|--pre(=.*)?|--ext-diff|--textconv)$/;
+const RUNS_OR_WRITES =
+    /^(--output(=.*)?|--pre(=.*)?|--ext-diff|--textconv|-O.*|--open-files-in-pager(=.*)?)$/;
 const CONTROL_WORDS = /^(!|if|then|else|elif|while|until|do|time)$/;
 const SED_ADDRESS = String.raw`(?:\d+|\$|/(?:[^/\\]|\\.)*/)`;
 const SED_PRINTS = new RegExp(
     String.raw`^(?:\s*(?:${SED_ADDRESS}(?:\s*,\s*(?:${SED_ADDRESS}|\+\d+))?)?\s*p\s*;?)+$`,
 );
 function sedPrints(words: string[]): boolean {
-    if (!words.some((w) => /^(-[A-Za-z]*n[A-Za-z]*|--quiet|--silent)$/.test(w))) return false;
-    if (words.some((w) => /^(-[^-]*i|--in-place)/.test(w))) return false;
     const scripts: string[] = [];
+    let quiet = false;
     let positional = false;
     for (let i = 1; i < words.length; i++) {
         const w = words[i] as string;
-        if (w === "-e" || w === "--expression") scripts.push(words[++i] ?? "");
+        if (w === "--quiet" || w === "--silent") quiet = true;
+        else if (w === "--expression") scripts.push(words[++i] ?? "");
         else if (w.startsWith("--expression=")) scripts.push(w.slice(13));
-        else if (w === "-f" || w.startsWith("--file")) return false;
-        else if (!w.startsWith("-") && !positional && scripts.length === 0) {
+        else if (/^--(in-place|file)/.test(w)) return false;
+        else if (w.startsWith("--")) continue;
+        else if (w.startsWith("-") && w.length > 1) {
+            for (let j = 1; j < w.length; j++) {
+                const flag = w[j] as string;
+                if (flag === "n") quiet = true;
+                else if (flag === "e") {
+                    scripts.push(j + 1 < w.length ? w.slice(j + 1) : (words[++i] ?? ""));
+                    break;
+                } else if (!/[Ersuz]/.test(flag)) return false;
+            }
+        } else if (!positional && scripts.length === 0) {
             scripts.push(w);
             positional = true;
         }
     }
-    return scripts.length > 0 && scripts.every((s) => SED_PRINTS.test(s));
+    return quiet && scripts.length > 0 && scripts.every((s) => SED_PRINTS.test(s));
 }
 /** `writesFile` treats unquoted `>` redirections as file writes, with exceptions for `/dev/null` and descriptor targets (`2>&1`). */
 const writesFile = (seg: string): boolean => {
@@ -356,7 +367,7 @@ function appliedParts(parts: Segment[], forced: boolean): Segment[] {
         const scanned = forced || !line.every((p) => !groupBody(p.seg) && inspects(p));
         return line.flatMap((p) => {
             const group = groupBody(p.seg);
-            if (!group) return scanned ? [p] : [];
+            if (!group || p.body) return scanned || p.body ? [p] : [];
             const inner = reachableParts(group.body, undefined);
             return appliedParts(inner, forced || line.length > 1 || writesFile(p.seg));
         });
