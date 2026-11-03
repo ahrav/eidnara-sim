@@ -270,7 +270,7 @@ A fatal `ItemState` stops the run and carries one `cause`:
 | `host-abort` | a user turn's delivery failed with exactly a drain error of `src/hosts/arms.ts`: `Pi turn still running <n> ms after abort (<reason>)`, `Pi turn still running <n> ms after the user's abort`, or `OpenCode turn still running 30 s after abort`. The harness had already ended the turn at its deadline or the user's abort, and the host process kept it running | recovered |
 | `daemon-exit` | the daemon exited outside an outage window | recovered |
 | `fault-error` | a scheduler fault's mechanism failed | refused |
-| `event-error` | an event's delivery failed for any other reason | refused |
+| `event-error` | an event's delivery failed for any other reason | refused, except the driver's refusal of a stranded `session_end` (below) |
 
 A daemon exit, a fault, and a job take their cause from the record's shape; an
 event's record carries `harness-transport`, `job-deadline`, `host-teardown`,
@@ -309,7 +309,21 @@ Progress and report counts of failed turns take only events with a
 runs (the arm's first completed one, which checks the transcript store; the
 first after a host upgrade the driver performed; one whose session holds a `store_full` or
 `two_hosts_one_daemon` fault) is delivered again, and the resumed driver,
-which holds no session, refuses it. The interrupted items are excluded from recall and counted
+which holds no session, refuses it. A stop that interrupts a session's last
+user turn strands the `session_end` after it: the stop took the turn's host
+session, and the resume opens no session for a pending `session_end`. The
+scheduler ends a stranded `session_end` at its turn in the event walk as
+`failed(interrupted)` with the interrupted turn's cause, under the same
+missed-summarizer and proxy steps as a delivered one. When it owes work only
+the driver's `session_end` runs (the cases above), the resume reopens the
+session with a fresh host through the driver's `resume`, as after any
+interrupted turn, and the `session_end` is delivered. A journal from before
+this recovery holds the driver's refusal of a stranded `session_end`: a fatal
+`event-error` whose whole text is `event <id> names no project` at a
+`session_end` whose preceding event, its session's last user turn, has an
+`Event` `failed(interrupted)`. A resume takes that record up with a
+`Recovered` entry carrying `event-error` and then ends or delivers the
+`session_end` by the same rules; any other `event-error` stays refused. The interrupted items are excluded from recall and counted
 in dependability; `grade-run` reports them per arm (`interruptions`: the
 interrupted turns by cause, the recovered stops by cause, the unexpected
 daemon exits, which stay an Eidnara reliability finding, and any unresolved

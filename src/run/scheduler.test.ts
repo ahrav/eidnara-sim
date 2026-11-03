@@ -7867,3 +7867,270 @@ describe("fatal causes on resume", () => {
         expect(readJournal(path).at(-1)?.kind).toBe("EndRun");
     });
 });
+
+describe("resume of a session_end its last turn's stop stranded", () => {
+    // Two sessions, so the second `session_end` follows one the arm already ended and owes the
+    // driver nothing; the first `session_end` owes the transcript check.
+    const twoSessions = (): ScenarioEvent[] => [
+        ...fixtureEvents(1),
+        { id: "e-100000", kind: "session_start", scenario_ms: 120_000, session: "s-0001" },
+        {
+            id: "e-100001",
+            kind: "user_turn",
+            scenario_ms: 180_000,
+            session: "s-0001",
+            index: 0,
+            text: "turn 0",
+        },
+        { id: "e-199999", kind: "session_end", scenario_ms: 240_000, session: "s-0001" },
+    ];
+    // A driver that, as the host driver does, ends only a session it holds open, and holds the
+    // session a resume reopens.
+    const sessionDriver = (log: string[]): ArmDriver => {
+        let open: string | null = null;
+        return {
+            ...fakeDriver(log, 0, (e) => {
+                if (e.kind === "session_start") open = e.session;
+                if (e.kind !== "session_end") return;
+                if (open === null) throw new Error(`event ${e.id} names no project`);
+                open = null;
+            }),
+            resume: async (start) => {
+                log.push(`resume:${start?.id ?? null}`);
+                open = start?.session ?? null;
+            },
+        };
+    };
+    const options = (events: ScenarioEvent[]) => ({
+        events,
+        faults: [],
+        settleMs: 0,
+        order: ["a"],
+    });
+
+    // Runs `events` until a stop raised during `turn`, as a kill or a reboot leaves the arm.
+    const stopAt = async (events: ScenarioEvent[], turn: string): Promise<string> => {
+        const path = join(dir(), "j.jsonl");
+        let reason: string | null = null;
+        const driver = fakeDriver([], 0, (e) => {
+            if (e.id !== turn) return;
+            reason = "SIGTERM";
+            throw new HarnessFailure("run stopping: SIGTERM");
+        });
+        await expect(
+            new Scheduler({
+                ...options(events),
+                journal: new Journal(path),
+                drivers: { a: driver },
+                stopped: () => reason,
+            }).run(),
+        ).rejects.toThrow("run stopping: SIGTERM");
+        return path;
+    };
+
+    const resume = async (events: ScenarioEvent[], path: string, log: string[]) => {
+        const journal = new Journal(path);
+        const n = journal.entries.length;
+        await new Scheduler({
+            ...options(events),
+            journal,
+            drivers: { a: sessionDriver(log) },
+        }).run();
+        journal.close();
+        return readJournal(path).slice(n);
+    };
+
+    test("a stop on a session's last turn ends its session_end interrupted with the turn's cause, and the arm goes on", async () => {
+        const events = [
+            ...twoSessions(),
+            { id: "e-200000", kind: "session_start", scenario_ms: 300_000, session: "s-0002" },
+            {
+                id: "e-200001",
+                kind: "user_turn",
+                scenario_ms: 360_000,
+                session: "s-0002",
+                index: 0,
+                text: "turn 0",
+            },
+            { id: "e-299999", kind: "session_end", scenario_ms: 420_000, session: "s-0002" },
+        ] as ScenarioEvent[];
+        const path = await stopAt(events, "e-100001");
+        const log: string[] = [];
+        const added = await resume(events, path, log);
+        const ends = added.filter((e) => e.kind === "Event");
+        expect(ends.map((e) => [e.event, e.outcome, e.cause])).toEqual([
+            ["e-100001", "failed(interrupted)", "harness-exit"],
+            ["e-199999", "failed(interrupted)", "harness-exit"],
+            ["e-200000", "ok", undefined],
+            ["e-200001", "ok", undefined],
+            ["e-299999", "ok", undefined],
+        ]);
+        // The resume opens no host for the stranded end and reaches the next session.
+        expect(log).toEqual([
+            "resume:null",
+            "session_start:e-200000",
+            "user_turn:e-200001",
+            "session_end:e-299999",
+        ]);
+        expect(added.some((e) => e.kind === "ItemState" && e.fatal === true)).toBe(false);
+        expect(added.at(-1)?.kind).toBe("EndRun");
+        // The sealed journal replays clean.
+        await new Scheduler({
+            ...options(events),
+            journal: new Journal(path),
+            drivers: { a: fakeDriver([]) },
+        }).run();
+    });
+
+    test("a stranded session_end that owes the transcript check reopens its session and is delivered", async () => {
+        const events = fixtureEvents(2);
+        const path = await stopAt(events, "e-000002");
+        const log: string[] = [];
+        const added = await resume(events, path, log);
+        expect(log).toEqual(["resume:e-000000", "session_end:e-999999"]);
+        const ends = added.filter((e) => e.kind === "Event");
+        expect(ends.map((e) => [e.event, e.outcome])).toEqual([
+            ["e-000002", "failed(interrupted)"],
+            ["e-999999", "ok"],
+        ]);
+        expect(added.at(-1)?.kind).toBe("EndRun");
+    });
+
+    // The journal a resume from before this recovery leaves: the stranded end delivered to a
+    // driver with no session open, refused as `event-error`.
+    const refusedJournal = (events: ScenarioEvent[], turn: string, error?: string): string => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const at = events.findIndex((e) => e.id === turn);
+        const tid = events[at] as ScenarioEvent;
+        const end = events[at + 1] as ScenarioEvent;
+        const start = { order: ["a"], scenario: scenarioId(events, []) };
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        journalDone(j, events.slice(0, at));
+        const prior = events[at - 1]?.scenario_ms ?? 0;
+        if (tid.scenario_ms > prior) {
+            j.append({
+                kind: "AdvanceClock",
+                arm: "a",
+                scenario_ms: tid.scenario_ms,
+                from_ms: prior,
+                next_event: tid.id,
+                busy: [],
+            });
+        }
+        const ms = tid.scenario_ms;
+        j.append({ kind: "BeginTurn", arm: "a", scenario_ms: ms, event: tid.id, probe: null });
+        j.append({ kind: "ResumeRun", arm: null, scenario_ms: 0, ...start });
+        const cut = { event: tid.id, cause: "harness-exit" };
+        j.append({
+            kind: "ItemState",
+            arm: "a",
+            scenario_ms: ms,
+            ...cut,
+            state: "failed(interrupted)",
+        });
+        j.append({
+            kind: "Event",
+            arm: "a",
+            scenario_ms: ms,
+            ...cut,
+            outcome: "failed(interrupted)",
+        });
+        if (end.scenario_ms > ms) {
+            j.append({
+                kind: "AdvanceClock",
+                arm: "a",
+                scenario_ms: end.scenario_ms,
+                from_ms: ms,
+                next_event: end.id,
+                busy: [],
+            });
+        }
+        j.append({
+            kind: "ItemState",
+            arm: "a",
+            scenario_ms: end.scenario_ms,
+            event: end.id,
+            state: "failed",
+            error: error ?? `event ${end.id} names no project`,
+            fatal: true,
+            cause: "event-error",
+        });
+        j.close();
+        return path;
+    };
+
+    test("a recorded refusal of a stranded session_end resumes; the end closes interrupted or is delivered again", async () => {
+        const events = twoSessions();
+        const path = refusedJournal(events, "e-100001");
+        const fatal = readJournal(path).find((e) => e.kind === "ItemState" && e.fatal === true);
+        const log: string[] = [];
+        const added = await resume(events, path, log);
+        expect(added.map((e) => e.kind)).toEqual([
+            "ResumeRun",
+            "Recovered",
+            "Event",
+            "EndArm",
+            "EndRun",
+        ]);
+        expect(added[1]).toMatchObject({
+            recovers: fatal?.seq,
+            cause: "event-error",
+            event: "e-199999",
+        });
+        expect(added[2]).toMatchObject({
+            event: "e-199999",
+            outcome: "failed(interrupted)",
+            cause: "harness-exit",
+        });
+        expect(log).toEqual(["resume:null"]);
+        await new Scheduler({
+            ...options(events),
+            journal: new Journal(path),
+            drivers: { a: fakeDriver([]) },
+        }).run();
+        // The arm's first session_end owes the transcript check, so its session reopens.
+        const one = fixtureEvents(2);
+        const owed: string[] = [];
+        const again = await resume(one, refusedJournal(one, "e-000002"), owed);
+        expect(owed).toEqual(["resume:e-000000", "session_end:e-999999"]);
+        expect(again.filter((e) => e.kind === "Event").map((e) => e.outcome)).toEqual(["ok"]);
+    });
+
+    test("other refusals at a session_end stay refused", async () => {
+        const events = twoSessions();
+        // Text that only wraps the refusal.
+        const wrapped = refusedJournal(events, "e-100001", "event e-199999 names no project (x)");
+        await expect(resume(events, wrapped, [])).rejects.toThrow(
+            "run failed: event e-199999 failed",
+        );
+        // The same refusal after a last turn that completed.
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const start = { order: ["a"], scenario: scenarioId(events, []) };
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        journalDone(j, events.slice(0, -1));
+        j.append({
+            kind: "AdvanceClock",
+            arm: "a",
+            scenario_ms: 240_000,
+            from_ms: 180_000,
+            next_event: "e-199999",
+            busy: [],
+        });
+        j.append({
+            kind: "ItemState",
+            arm: "a",
+            scenario_ms: 240_000,
+            event: "e-199999",
+            state: "failed",
+            error: "event e-199999 names no project",
+            fatal: true,
+            cause: "event-error",
+        });
+        j.close();
+        await expect(resume(events, path, [])).rejects.toThrow("run failed: event e-199999 failed");
+    });
+});

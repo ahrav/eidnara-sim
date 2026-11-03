@@ -149,6 +149,8 @@ const HOST_TEARDOWN = /^host tree (\d+) survived SIGKILL$/;
 /** Whether `error` is a host teardown's whole error text. */
 export const isHostTeardown = (error: string): boolean => HOST_TEARDOWN.test(error);
 
+const refusedEnd = (event: string): string => `event ${event} names no project`;
+
 /**
  * The whole error a host driver raises when a turn it aborted does not drain (`src/hosts/arms.ts`):
  * Pi's turn outlived the drain wait after the deadline's abort (with the waiter's reason) or the
@@ -336,6 +338,11 @@ export class Scheduler {
     private faultCall: Promise<unknown> | null = null;
     /** Faults the journal fired and never observed on the arm being resumed. */
     private interrupted: string[] = [];
+    /**
+     * The resumed arm's stranded `session_end` that the scheduler ends without the driver, with
+     * the cause of the interrupted turn that stranded it (`strandedCause`).
+     */
+    private stranded: { event: string; cause: string } | null = null;
     /** The running arm's handle; the public job, observe, and exit calls route through it. */
     private current: ArmHandle | null = null;
     /** Counts every job start and end, so a job that begins and ends between two polls still resets the quiet window. */
@@ -471,7 +478,11 @@ export class Scheduler {
         const fatal =
             entries.at(-1)?.kind === "EndRun"
                 ? pending[0]
-                : pending.find((e) => !RECOVERABLE_CAUSES.has(fatalCause(e)));
+                : pending.find(
+                      (e) =>
+                          !RECOVERABLE_CAUSES.has(fatalCause(e)) &&
+                          !this.strandedRefusal(e, entries),
+                  );
         if (fatal) {
             const cause = fatal.fault
                 ? `fault ${fatal.fault} failed`
@@ -575,9 +586,26 @@ export class Scheduler {
                             .map((e) => e.event as string),
                     );
                     const next = this.o.events.find((e) => !delivered.has(e.id));
+                    // A `session_end` whose session's last turn a stop interrupted has no host
+                    // session left to close. It ends interrupted at its turn in `step`, unless it
+                    // owes work only the driver's `session_end` runs; then the resume reopens the
+                    // session with a fresh host, as after any interrupted turn, and delivers it.
+                    const strand =
+                        next?.kind === "session_end"
+                            ? this.strandedCause(
+                                  next,
+                                  this.o.journal.entries.filter((e) => e.arm === arm),
+                              )
+                            : null;
+                    const reopen =
+                        next !== undefined && strand !== null && !this.endable(next, mine);
+                    this.stranded =
+                        next !== undefined && strand !== null && !reopen
+                            ? { event: next.id, cause: strand }
+                            : null;
                     if (started && driver.resume) {
                         const open =
-                            !next || next.kind === "session_end"
+                            !next || (next.kind === "session_end" && !reopen)
                                 ? null
                                 : this.openStart(this.session);
                         await this.untilFatal(driver.resume(open, this.interrupted));
@@ -652,6 +680,7 @@ export class Scheduler {
                 this.pendingKill = null;
                 this.outage = null;
                 this.session = null;
+                this.stranded = null;
                 this.arm = null;
                 this.clock = null;
                 if (!ended) {
@@ -1090,7 +1119,9 @@ export class Scheduler {
                         throw fail(`Recovered names no pending fatal record (${e.recovers})`, e);
                     }
                     const cause = fatalCause(f);
-                    if (e.cause !== cause || !RECOVERABLE_CAUSES.has(cause)) {
+                    const recoverable =
+                        RECOVERABLE_CAUSES.has(cause) || this.strandedRefusal(f, entries);
+                    if (e.cause !== cause || !recoverable) {
                         throw fail(`Recovered for fatal record ${f.seq} misreports its cause`, e);
                     }
                     const item = fatalItem(f);
@@ -1396,7 +1427,8 @@ export class Scheduler {
         ];
         for (const stop of stops) {
             const end = this.o.events.find((x) => x.id === stop.event && x.kind === "session_end");
-            if (!end || done.has(end.id) || !this.endable(end, mine)) continue;
+            if (!end || done.has(end.id) || this.strandedCause(end, mine) !== null) continue;
+            if (!this.endable(end, mine)) continue;
             for (const p of this.o.faults) {
                 if (p.trigger.session === end.session && p.seam.layer === PROXY_LAYER)
                     this.o.proxy?.disarm(p.id, this.arm as string);
@@ -1408,6 +1440,49 @@ export class Scheduler {
             this.session = null;
         }
         return answered;
+    }
+
+    /**
+     * The cause that stranded `end`, a `session_end`: the event just before it is its session's
+     * last user turn, and that turn's `Event` in `mine` (the arm's entries) is
+     * `failed(interrupted)`. The stop that interrupted the turn took the turn's host session with
+     * it, so no session is open for `end` to close until a resume reopens one. The result is the
+     * turn's interruption cause. It is null when that turn
+     * completed, or when a fatal record other than the driver's refusal of the stranded end
+     * names `end`: such a record means the session was open again and its delivery was cut,
+     * which the stop rules for a cut `session_end` take up.
+     */
+    private strandedCause(end: ScenarioEvent, mine: readonly Entry[]): string | null {
+        const i = this.o.events.indexOf(end);
+        const last = this.o.events[i - 1];
+        if (end.kind !== "session_end" || last?.kind !== "user_turn") return null;
+        if (last.session !== end.session) return null;
+        const turn = mine.find((e) => e.kind === "Event" && e.event === last.id);
+        if (turn?.outcome !== "failed(interrupted)") return null;
+        const cut = mine.some(
+            (e) =>
+                isFatal(e) &&
+                (e.event === end.id ||
+                    (e.daemon_exit as { after?: unknown } | undefined)?.after === end.id) &&
+                !(fatalCause(e) === "event-error" && e.error === refusedEnd(end.id)),
+        );
+        return cut ? null : String(turn.cause ?? "harness-exit");
+    }
+
+    /**
+     * Whether fatal record `f` is the driver's refusal of a stranded `session_end`: an
+     * `event-error` whose whole text is `event <id> names no project` (the driver's
+     * `session_end` with no session open), at a `session_end` that `strandedCause` finds
+     * stranded by the arm's entries before `f`. The refusal comes from the scheduler delivering
+     * an end the stop left nothing open for, so the measurement up to the stop is intact and a
+     * resume takes it up; every other `event-error` stays refused.
+     */
+    private strandedRefusal(f: Entry, entries: readonly Entry[]): boolean {
+        const end = this.o.events.find((x) => x.id === f.event && x.kind === "session_end");
+        if (!end || !isFatal(f) || fatalCause(f) !== "event-error") return false;
+        if (f.error !== refusedEnd(end.id)) return false;
+        const before = entries.filter((e) => e.arm === f.arm && e.seq < f.seq);
+        return this.strandedCause(end, before) !== null;
     }
 
     /**
@@ -1881,7 +1956,8 @@ export class Scheduler {
             this.snapshotTurn(end);
             await this.untilFatal(Bun.sleep(this.o.settleMs ?? 1_000));
         } else {
-            outcome = await deliver();
+            const stranded = this.stranded?.event === e.id ? this.stranded : null;
+            outcome = stranded ? { failed: "failed(interrupted)" } : await deliver();
             this.logStores(outcome.stores, e.id);
         }
         if (e.kind === "session_end") {
@@ -1895,10 +1971,12 @@ export class Scheduler {
         }
         await this.pendingKill;
         if (this.fatal) throw this.fatal;
+        const cause = this.stranded?.event === e.id ? { cause: this.stranded.cause } : {};
         this.record(
-            { kind: "Event", event: e.id, outcome: outcome.failed ?? "ok" },
+            { kind: "Event", event: e.id, outcome: outcome.failed ?? "ok", ...cause },
             `event ${e.id}`,
         );
+        if (this.stranded?.event === e.id) this.stranded = null;
     }
 
     private handle(generation: number, driver: ArmDriver): ArmHandle {
