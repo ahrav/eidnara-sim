@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { closeSync, constants, openSync, readSync } from "node:fs";
 import type { CallRecord } from "../proxy/records";
 import { isRequestRef, type RequestRef } from "../proxy/requests";
@@ -16,17 +17,18 @@ export function heldCall(record: CallRecord): HeldCall {
 /** Part ids a `CallLog` keeps between reads, summed over the cached records. */
 const PART_IDS_CACHED = 1 << 21;
 
+const sha256Of = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+
 /**
  * `CallLog` keeps each record's fields with its request's digest and length, and the byte range
- * of its line, so `request` loads the part ids on demand and refuses a line that no longer
- * matches the record kept. The cache evicts least-recently-used lists until it holds at most
- * `PART_IDS_CACHED` part ids or only the requested list remains. `CallLog` opens the log with
- * `O_NOFOLLOW` and holds the descriptor until `close`; the saved byte ranges require the log's
- * existing contents to stay unchanged.
+ * and SHA-256 of its line, so `request` loads the part ids on demand and refuses a line whose
+ * bytes differ from the line read at construction. The cache evicts least-recently-used lists
+ * until it holds at most `cacheIds` part ids or only the requested list remains. `CallLog` opens
+ * the log with `O_NOFOLLOW` and holds the descriptor until `close`.
  */
 export class CallLog {
     readonly calls: HeldCall[] = [];
-    private readonly ranges: Array<{ offset: number; length: number }> = [];
+    private readonly ranges: Array<{ offset: number; length: number; sha256: string }> = [];
     private readonly cache = new Map<number, string[]>();
     private cachedIds = 0;
     private fd: number | null = null;
@@ -41,10 +43,10 @@ export class CallLog {
         check: (record: CallRecord, position: number) => void = () => {},
         private readonly cacheIds = PART_IDS_CACHED,
     ) {
-        eachJsonl<CallRecord>(path, (record, position, offset, length) => {
+        eachJsonl<CallRecord>(path, (record, position, offset, length, line) => {
             check(record, position);
             this.calls.push(heldCall(record));
-            this.ranges.push({ offset, length });
+            this.ranges.push({ offset, length, sha256: sha256Of(line) });
         });
         if (this.calls.length > 0) {
             this.fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -70,21 +72,9 @@ export class CallLog {
                 got += n;
             }
             const changed = new Error(`${this.path}: call ${position} changed since it was read`);
-            let record: Partial<CallRecord> | null;
-            try {
-                record = JSON.parse(buf.toString("utf8")) as Partial<CallRecord> | null;
-            } catch {
-                throw changed;
-            }
-            const ref = record?.request;
-            if (
-                record?.seq !== held.seq ||
-                !isRequestRef(ref) ||
-                ref.sha256 !== sha256 ||
-                ref.bytes !== bytes
-            ) {
-                throw changed;
-            }
+            if (sha256Of(buf) !== range.sha256) throw changed;
+            const ref = (JSON.parse(buf.toString("utf8")) as CallRecord).request;
+            if (!isRequestRef(ref)) throw changed;
             parts = ref.parts;
             this.cachedIds += parts.length;
         }

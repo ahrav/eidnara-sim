@@ -190,6 +190,10 @@ describe("CallLog", () => {
         expect(() => log.request(0)).toThrow("call 0 changed since it was read");
         writeFileSync(path, line(5).replace(ids[0] as string, "bad".padEnd(32, "-")));
         expect(() => log.request(0)).toThrow("call 0 changed since it was read");
+        writeFileSync(path, line(5).replace(ids[0] as string, "2".repeat(32)));
+        expect(() => log.request(0)).toThrow("call 0 changed since it was read");
+        writeFileSync(path, line(5));
+        expect(log.request(0)?.parts).toEqual(ids);
         log.close();
         expect(() => log.request(0)).toThrow("call log read after close");
     });

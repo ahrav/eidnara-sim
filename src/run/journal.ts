@@ -584,15 +584,15 @@ export function eachLine(
 
 /**
  * Visits each record of a JSONL log the harness appends to, in order, with its 0-based index,
- * byte offset, and byte length (newline excluded), one line in memory at a time. Every line but
- * the last must parse, and a cut last line, which a kill mid-write leaves, is dropped: an
- * unterminated tail is never parsed, and a terminated line that does not parse is refused with
- * its line number once another terminated line follows it. The path must be a regular file or
- * absent; an absent file has no records.
+ * byte offset, byte length (newline excluded), and line bytes, one line in memory at a time.
+ * Every line but the last must parse, and a cut last line, which a kill mid-write leaves, is
+ * dropped: `eachJsonl` discards an unterminated tail, and refuses a terminated line that does
+ * not parse, by its line number, once another terminated line follows it. The path must be a
+ * regular file or absent; `eachJsonl` treats an absent file as an empty log.
  */
 export function eachJsonl<T>(
     path: string,
-    visit: (row: T, index: number, offset: number, length: number) => void,
+    visit: (row: T, index: number, offset: number, length: number, line: Buffer) => void,
     chunkBytes = TAIL_CHUNK,
 ): void {
     requireAppendable(path);
@@ -609,7 +609,7 @@ export function eachJsonl<T>(
                 corrupt = i;
                 return;
             }
-            visit(row, i, offset, line.length);
+            visit(row, i, offset, line.length, line);
         },
         chunkBytes,
     );
