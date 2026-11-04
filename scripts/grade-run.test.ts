@@ -681,6 +681,10 @@ describe("grade-run", () => {
         renameSync(join(dir, "calls.jsonl"), real);
         symlinkSync(real, join(dir, "calls.jsonl"));
         await expect(gradeRun(dir, null)).rejects.toThrow("not a regular file");
+        const dangling = run({ probes: [p5.probe], order: ["eidnara"] });
+        snapshot(dangling, "eidnara", snap);
+        symlinkSync(join(dangling, "absent.jsonl"), join(dangling, "calls.jsonl"));
+        await expect(gradeRun(dangling, null)).rejects.toThrow("not a regular file");
     });
 
     test("a turn that ended ok, or named a snapshot, without a journaled snapshot makes the journal invalid", async () => {

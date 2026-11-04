@@ -42,7 +42,7 @@ import {
     verdictCounts,
 } from "../src/grade/probes";
 import { armBase, requireSeedOrder } from "../src/hosts/arms";
-import { canonicalJson } from "../src/prereg/canonical";
+import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
 import { qualificationSeed } from "../src/prereg/qualification";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
@@ -174,14 +174,23 @@ async function* jsonlRecords(path: string): AsyncGenerator<Placed> {
     }
 }
 
+interface RecordedCall {
+    seq: number;
+    component: string;
+    turn: string | null;
+    turn_index?: number;
+    digest: string;
+}
+
 async function sessionCalls(
     path: string,
     wanted: ReadonlySet<string>,
     turnIndex: Map<string, number>,
     models: readonly string[],
-): Promise<Map<string, CallView[]>> {
-    const views = new Map<string, CallView[]>();
-    const project = new Map<string, (r: CallRecord) => CallView>();
+): Promise<Map<string, RecordedCall[]>> {
+    requireAppendable(path);
+    const recorded = new Map<string, RecordedCall[]>();
+    const projectors = new Map<string, (r: CallRecord) => CallView>();
     const agentModels = new Set<string>();
     let next = 0;
     let line = 0;
@@ -197,14 +206,24 @@ async function sessionCalls(
         line++;
         const key = `${r.arm}/${r.session}`;
         if (blank !== null || !placed.ended || !wanted.has(key)) continue;
-        let view = project.get(key);
-        if (!view) {
-            view = sessionViews(turnIndex);
-            project.set(key, view);
+        let project = projectors.get(key);
+        if (!project) {
+            project = sessionViews(turnIndex);
+            projectors.set(key, project);
         }
-        const list = views.get(key);
-        if (list) list.push(view(r));
-        else views.set(key, [view(r)]);
+        // A user-sim record moves the session's running turn index; the prefix check skips it.
+        const view = project(r);
+        if (view.component === "user-sim") continue;
+        const call: RecordedCall = {
+            seq: view.seq,
+            component: view.component,
+            turn: view.turn,
+            ...(view.turn_index === undefined ? {} : { turn_index: view.turn_index }),
+            digest: sha256Hex(canonicalJson(view)),
+        };
+        const list = recorded.get(key);
+        if (list) list.push(call);
+        else recorded.set(key, [call]);
     }
     if (existsSync(path) && statSync(path).size !== next) blank ??= line;
     const unrecorded = [...agentModels].filter((m) => !models.includes(m));
@@ -216,7 +235,7 @@ async function sessionCalls(
     if (blank !== null) {
         throw new HarnessFailure(`${path} line ${blank + 1} is corrupt: not JSON`);
     }
-    return views;
+    return recorded;
 }
 
 /** Reads one placed record back from its file. */
@@ -524,8 +543,9 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
      * A snapshot's calls are the session's call records so far, in log order, each with the turn
      * index capture derived from the scenario. One pass over `calls.jsonl` projects the records
      * of every journaled snapshot's session, so a session's records are parsed once whatever
-     * number of snapshots it holds. Each journaled snapshot is read back on its own and checked
-     * as a prefix of its session's projected calls.
+     * number of snapshots it holds, and keeps per call the fields the turn boundary reads and
+     * the SHA-256 of its canonical view. Each journaled snapshot is read back on its own and
+     * checked as a prefix of its session's recorded calls.
      */
     const turnIndex = new Map(
         scenario.events
@@ -561,9 +581,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
                 );
             }
         }
-        const recorded = (sessions.get(sessionKey(meta)) ?? []).filter(
-            (c) => c.component !== "user-sim",
-        );
+        const recorded = sessions.get(sessionKey(meta)) ?? [];
         const proxied = calls.calls.filter((c) => c.component !== "user-sim");
         const probeTurn = turnIndex.get(meta.turn);
         // The snapshot holds the session's calls recorded by the probe turn's end. A background
@@ -571,12 +589,13 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
         // snapshot's last call, and that names another turn or none as its own, ran after the
         // snapshot was taken.
         const lastHeld = proxied.at(-1)?.seq ?? Number.NEGATIVE_INFINITY;
-        const later = (c: CallView) =>
+        const later = (c: RecordedCall) =>
             c.seq > lastHeld && c.turn !== meta.turn && c.component !== "agent";
         let boundary = recorded.length - 1;
         while (
             boundary >= 0 &&
-            (recorded[boundary]?.turn_index !== probeTurn || later(recorded[boundary] as CallView))
+            (recorded[boundary]?.turn_index !== probeTurn ||
+                later(recorded[boundary] as RecordedCall))
         )
             boundary--;
         if (boundary >= proxied.length) {
@@ -591,7 +610,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
                     `snapshot ${meta.id} holds call ${held.seq}, which calls.jsonl does not record for arm ${meta.arm}`,
                 );
             }
-            if (canonicalJson(held) !== canonicalJson(record)) {
+            if (sha256Hex(canonicalJson(held)) !== record.digest) {
                 throw new Error(
                     `snapshot ${meta.id} holds call ${held.seq} where calls.jsonl records call ${record.seq} with content that differs from calls.jsonl`,
                 );
