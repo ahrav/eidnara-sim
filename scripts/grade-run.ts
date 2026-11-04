@@ -6,6 +6,7 @@ import {
     readFileSync,
     readSync,
     rmSync,
+    statSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig, type SimConfig } from "../src/config/config";
@@ -53,6 +54,7 @@ import { writeAtomic } from "../src/run/atomic";
 import { type ArmInterruptions, interruptions } from "../src/run/interruptions";
 import {
     type Entry,
+    HarnessFailure,
     keepCompleteLines,
     readJsonl,
     releaseLease,
@@ -60,7 +62,7 @@ import {
     requireComplete,
     takeLease,
 } from "../src/run/journal";
-import { CallIndex, callsOf, simIdentity } from "../src/run/run";
+import { sessionViews, simIdentity } from "../src/run/run";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { admittedArms, loadPrereg, loadQualification } from "../src/scenario/inputs";
 
@@ -123,6 +125,8 @@ interface Placed {
     text: string;
     offset: number;
     length: number;
+    /** Whether a newline ends the record; only a file's last record can lack one. */
+    ended: boolean;
 }
 
 /**
@@ -142,7 +146,12 @@ async function* jsonlRecords(path: string): AsyncGenerator<Placed> {
             pending.length = 0;
             const end = offset + at + 1;
             if (line.length > 0) {
-                yield { text: line.toString("utf8"), offset: lineStart, length: end - lineStart };
+                yield {
+                    text: line.toString("utf8"),
+                    offset: lineStart,
+                    length: end - lineStart,
+                    ended: true,
+                };
             }
             lineStart = end;
             offset = end;
@@ -156,12 +165,58 @@ async function* jsonlRecords(path: string): AsyncGenerator<Placed> {
     }
     const rest = Buffer.concat(pending);
     if (rest.length > 0) {
-        yield { text: rest.toString("utf8"), offset: lineStart, length: offset - lineStart };
+        yield {
+            text: rest.toString("utf8"),
+            offset: lineStart,
+            length: offset - lineStart,
+            ended: false,
+        };
     }
 }
 
-async function* jsonlLines(path: string): AsyncGenerator<string> {
-    for await (const record of jsonlRecords(path)) yield record.text;
+async function sessionCalls(
+    path: string,
+    wanted: ReadonlySet<string>,
+    turnIndex: Map<string, number>,
+    models: readonly string[],
+): Promise<Map<string, CallView[]>> {
+    const views = new Map<string, CallView[]>();
+    const project = new Map<string, (r: CallRecord) => CallView>();
+    const agentModels = new Set<string>();
+    let next = 0;
+    let line = 0;
+    let blank: number | null = null;
+    for await (const placed of existsSync(path) ? jsonlRecords(path) : []) {
+        const r = JSON.parse(placed.text) as CallRecord;
+        if (typeof r.model !== "string" || typeof r.seq !== "number") {
+            throw new Error(`calls.jsonl record ${String(r.seq)} names no model`);
+        }
+        if (r.component === "agent") agentModels.add(r.model);
+        if (placed.offset !== next) blank ??= line;
+        next = placed.offset + placed.length;
+        line++;
+        const key = `${r.arm}/${r.session}`;
+        if (blank !== null || !placed.ended || !wanted.has(key)) continue;
+        let view = project.get(key);
+        if (!view) {
+            view = sessionViews(turnIndex);
+            project.set(key, view);
+        }
+        const list = views.get(key);
+        if (list) list.push(view(r));
+        else views.set(key, [view(r)]);
+    }
+    if (existsSync(path) && statSync(path).size !== next) blank ??= line;
+    const unrecorded = [...agentModels].filter((m) => !models.includes(m));
+    if (unrecorded.length > 0) {
+        throw new Error(
+            `agent calls used models the manifest does not record: ${unrecorded.join(", ")}`,
+        );
+    }
+    if (blank !== null) {
+        throw new HarnessFailure(`${path} line ${blank + 1} is corrupt: not JSON`);
+    }
+    return views;
 }
 
 /** Reads one placed record back from its file. */
@@ -467,31 +522,23 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     }
     /**
      * A snapshot's calls are the session's call records so far, in log order, each with the turn
-     * index capture derived from the scenario. Each journaled snapshot is read back on its own
-     * and checked as a prefix of its session's records (read through the call index, one
-     * session at a time), so memory holds one snapshot and one session's records at most.
+     * index capture derived from the scenario. One pass over `calls.jsonl` projects the records
+     * of every journaled snapshot's session, so a session's records are parsed once whatever
+     * number of snapshots it holds. Each journaled snapshot is read back on its own and checked
+     * as a prefix of its session's projected calls.
      */
     const turnIndex = new Map(
         scenario.events
             .filter((e) => e.index !== undefined)
             .map((e) => [e.id, e.index as number] as const),
     );
-    const agentModels = new Set<string>();
-    const callsPath = join(dir, "calls.jsonl");
-    for await (const line of existsSync(callsPath) ? jsonlLines(callsPath) : []) {
-        const r = JSON.parse(line) as CallRecord;
-        if (typeof r.model !== "string" || typeof r.seq !== "number") {
-            throw new Error(`calls.jsonl record ${String(r.seq)} names no model`);
-        }
-        if (r.component === "agent") agentModels.add(r.model);
-    }
-    const unrecorded = [...agentModels].filter((m) => !models.includes(m));
-    if (unrecorded.length > 0) {
-        throw new Error(
-            `agent calls used models the manifest does not record: ${unrecorded.join(", ")}`,
-        );
-    }
-    const callIndex = new CallIndex(callsPath);
+    const sessionKey = (meta: RowMeta) => `${meta.arm}/${String(meta.session)}`;
+    const sessions = await sessionCalls(
+        join(dir, "calls.jsonl"),
+        new Set([...metas.values()].map(sessionKey)),
+        turnIndex,
+        models,
+    );
     for (const meta of metas.values()) {
         const row = readRow(meta);
         const calls = row.artefacts.find((a) => a.class === "proxy-call");
@@ -514,7 +561,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
                 );
             }
         }
-        const recorded = callsOf(callIndex, meta.arm, String(meta.session), turnIndex).filter(
+        const recorded = (sessions.get(sessionKey(meta)) ?? []).filter(
             (c) => c.component !== "user-sim",
         );
         const proxied = calls.calls.filter((c) => c.component !== "user-sim");
