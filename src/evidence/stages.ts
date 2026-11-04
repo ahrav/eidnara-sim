@@ -1,7 +1,7 @@
 import { type GradeRecord, RECORDED_TYPES, runsScript, type SourceEvent } from "../grade/probes";
 import type { ConverseBody } from "../proxy/classify";
-import type { CallRecord } from "../proxy/records";
 import { type RequestPart, rebuildRequest } from "../proxy/requests";
+import type { HeldCall } from "../run/calllog";
 import type { Entry } from "../run/journal";
 import { holds } from "../scenario/compile";
 import type { SessionHealth } from "./health";
@@ -10,6 +10,7 @@ import {
     type EvidenceScenario,
     type RunData,
     requestOf,
+    requestRef,
     type SourceDescriptor,
     type StoreObject,
 } from "./load";
@@ -197,7 +198,7 @@ function rankOf(text: string, alts: string[]): number | null {
     return i < 0 ? null : i + 1;
 }
 
-const callPointer = (c: CallRecord): Pointer => ({ path: "calls.jsonl", at: `seq ${c.seq}` });
+const callPointer = (c: HeldCall): Pointer => ({ path: "calls.jsonl", at: `seq ${c.seq}` });
 const journalPointer = (e: Entry): Pointer => ({ path: "journal.jsonl", at: `seq ${e.seq}` });
 
 interface Context {
@@ -248,7 +249,7 @@ interface RunCache {
     useIds: Map<number, string[]>;
     order: Map<string, number>;
     journal: (arm: string) => Entry[];
-    calls: (arm: string) => CallRecord[];
+    calls: (arm: string) => HeldCall[];
 }
 
 const caches = new WeakMap<RunData, RunCache>();
@@ -258,11 +259,11 @@ function cacheOf(run: RunData): RunCache {
     const known = caches.get(run);
     if (known) return known;
     const journals = new Map<string, Entry[]>();
-    const calls = new Map<string, CallRecord[]>();
+    const calls = new Map<string, HeldCall[]>();
     // An injected fault answered the host locally, so its request reached no model; a slow
     // stream forwarded the request and counts.
     const faultType = new Map(run.faults.map((f) => [f.id, f.type]));
-    const reachedModel = (c: CallRecord) =>
+    const reachedModel = (c: HeldCall) =>
         c.fault_ref === null || faultType.get(c.fault_ref) === "slow_stream";
     const cache: RunCache = {
         intact: new Map(),
@@ -287,7 +288,7 @@ function cacheOf(run: RunData): RunCache {
     return cache;
 }
 
-function body(ctx: Context, c: CallRecord): ConverseBody | null {
+function body(ctx: Context, c: HeldCall): ConverseBody | null {
     if (!ctx.bodies.has(c.seq)) ctx.bodies.set(c.seq, requestOf(ctx.run, c));
     return ctx.bodies.get(c.seq) ?? null;
 }
@@ -299,9 +300,9 @@ function body(ctx: Context, c: CallRecord): ConverseBody | null {
  * span two parts, so no whole-body text is held. An alternative with a newline is searched in the
  * rebuilt body's text.
  */
-function carries(ctx: Context, c: CallRecord, group: string[]): boolean {
+function carries(ctx: Context, c: HeldCall, group: string[]): boolean {
     const { parts } = ctx.run;
-    const ref = c.request;
+    const ref = parts && c.request ? requestRef(ctx.run, c) : null;
     if (!parts || !ref) return false;
     let intact = ctx.intact.get(c.seq);
     if (intact === undefined) {
@@ -333,7 +334,7 @@ function daemonMs(journal: Entry[], wall: number): number {
     return wall + offset * 1000;
 }
 
-const turnOf = (c: CallRecord) => c.origin_turn ?? c.turn;
+const turnOf = (c: HeldCall) => c.origin_turn ?? c.turn;
 
 /** Each project's daemon scope keys, from the capture jobs' sessions. */
 function projectScopes(run: RunData, arm: ArmData): Map<string, Set<string>> {
@@ -479,7 +480,7 @@ export function probeEvidence(
                   stage: name,
                   status: "ok",
                   pointers: contextHits.map((h) => ({
-                      ...callPointer(h?.c as CallRecord),
+                      ...callPointer(h?.c as HeldCall),
                       at: `seq ${h?.c.seq} carries ${h?.alt}`,
                   })),
                   detail: {
@@ -618,7 +619,7 @@ export function probeEvidence(
                 ? first
                 : Math.min(...carrying.map((s) => order.get(s.id) ?? Infinity));
         };
-        const inWindow = (c: CallRecord, from: number) => {
+        const inWindow = (c: HeldCall, from: number) => {
             const t = turnOf(c);
             const at = t ? (order.get(t) ?? -1) : -1;
             return (

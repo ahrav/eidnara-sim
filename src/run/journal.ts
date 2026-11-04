@@ -525,24 +525,104 @@ export function leaseHeld(runDir: string): boolean {
 }
 
 /**
- * Reads a JSONL log the harness appends to: every line but the last must parse, and a cut
- * last line, which a kill mid-write leaves, is dropped. The path must be a regular file or
- * absent; an absent file reads as empty. Journals read through `readJournal`, which also
- * checks their sequence and entry shape.
+ * What `eachLine` read: the byte length of the file's newline-terminated prefix, and the length
+ * of the unterminated tail after it, which a kill mid-write leaves.
+ */
+export interface LineScan {
+    complete: number;
+    tail: number;
+}
+
+/**
+ * Visits each newline-terminated line of a file in order with its 0-based index and byte offset;
+ * the line's bytes exclude the newline and are valid only during the visit. The file is opened
+ * without following a link and read `chunkBytes` at a time, so memory holds one chunk and the
+ * line being assembled, never the whole file.
+ */
+export function eachLine(
+    path: string,
+    visit: (line: Buffer, index: number, offset: number) => void,
+    chunkBytes = TAIL_CHUNK,
+): LineScan {
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+        const chunk = Buffer.alloc(chunkBytes);
+        // Copies of the current line's bytes from earlier chunks, which the next read overwrites.
+        const pending: Buffer[] = [];
+        let pendingBytes = 0;
+        let index = 0;
+        let lineStart = 0;
+        let position = 0;
+        for (;;) {
+            const n = readSync(fd, chunk, 0, chunk.length, position);
+            if (n === 0) break;
+            let from = 0;
+            for (let nl = chunk.indexOf(0x0a, 0); nl !== -1 && nl < n; ) {
+                const piece = chunk.subarray(from, nl);
+                const line =
+                    pending.length === 0
+                        ? piece
+                        : Buffer.concat([...pending, piece], pendingBytes + piece.length);
+                pending.length = 0;
+                pendingBytes = 0;
+                visit(line, index++, lineStart);
+                lineStart = position + nl + 1;
+                from = nl + 1;
+                nl = chunk.indexOf(0x0a, from);
+            }
+            if (from < n) {
+                pending.push(Buffer.from(chunk.subarray(from, n)));
+                pendingBytes += n - from;
+            }
+            position += n;
+        }
+        return { complete: lineStart, tail: position - lineStart };
+    } finally {
+        closeSync(fd);
+    }
+}
+
+/**
+ * Visits each record of a JSONL log the harness appends to, in order, with its 0-based index,
+ * byte offset, byte length (newline excluded), and line bytes, one line in memory at a time.
+ * Every line but the last must parse, and a cut last line, which a kill mid-write leaves, is
+ * dropped: `eachJsonl` discards an unterminated tail, and refuses a terminated line that does
+ * not parse, by its line number, once another terminated line follows it. The path must be a
+ * regular file or absent; `eachJsonl` treats an absent file as an empty log.
+ */
+export function eachJsonl<T>(
+    path: string,
+    visit: (row: T, index: number, offset: number, length: number, line: Buffer) => void,
+    chunkBytes = TAIL_CHUNK,
+): void {
+    requireAppendable(path);
+    if (!existsSync(path)) return;
+    let corrupt: number | null = null;
+    eachLine(
+        path,
+        (line, i, offset) => {
+            if (corrupt !== null) throw new Error(`${path}: line ${corrupt + 1} is corrupt`);
+            let row: T;
+            try {
+                row = JSON.parse(line.toString("utf8")) as T;
+            } catch {
+                corrupt = i;
+                return;
+            }
+            visit(row, i, offset, line.length, line);
+        },
+        chunkBytes,
+    );
+}
+
+/**
+ * Reads a JSONL log the harness appends to into memory, by `eachJsonl`'s rules: every line but
+ * the last must parse, and a cut last line is dropped. Journals read through `readJournal`, which
+ * also checks their sequence and entry shape.
  */
 export function readJsonl<T>(path: string): T[] {
-    requireAppendable(path);
-    if (!existsSync(path)) return [];
     const rows: T[] = [];
-    const lines = readFileSync(path, "utf8").split("\n");
-    lines.forEach((line, i) => {
-        if (i === lines.length - 1) return;
-        try {
-            rows.push(JSON.parse(line) as T);
-        } catch {
-            if (i < lines.length - 2) throw new Error(`${path}: line ${i + 1} is corrupt`);
-        }
-    });
+    eachJsonl<T>(path, (row) => rows.push(row));
     return rows;
 }
 

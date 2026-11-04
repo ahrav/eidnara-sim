@@ -43,6 +43,7 @@ export function evidenceRun(dirs: string[], out: string | null, checkout: string
         } finally {
             // The report reads the stages and sessions, so the log closes once its run is analysed.
             if (run.parts instanceof RequestPartLog) run.parts.close();
+            run.callLog?.close();
         }
     }
     for (const [i, r] of runs.entries()) {

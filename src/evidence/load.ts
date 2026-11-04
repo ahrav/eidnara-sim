@@ -6,8 +6,14 @@ import { GradeLog, type GradeRecord } from "../grade/probes";
 import { armBase, CONTROL_LABEL, requireOrder } from "../hosts/arms";
 import { ARMS, TIERS, type Tier } from "../prereg/schema";
 import type { ConverseBody } from "../proxy/classify";
-import { type CallRecord, recordProblems } from "../proxy/records";
-import { type PartLookup, RequestPartLog, rebuildRequest } from "../proxy/requests";
+import { recordProblems } from "../proxy/records";
+import {
+    type PartLookup,
+    RequestPartLog,
+    type RequestRef,
+    rebuildRequest,
+} from "../proxy/requests";
+import { CallLog, type HeldCall } from "../run/calllog";
 import { type Entry, readJournal, readJsonl } from "../run/journal";
 import { scenarioHash } from "../scenario/compile";
 import { admittedArms, loadPrereg } from "../scenario/inputs";
@@ -119,7 +125,12 @@ export interface RunData {
     contextLimit: number;
     scenario: EvidenceScenario;
     journal: Entry[];
-    calls: CallRecord[];
+    calls: HeldCall[];
+    /**
+     * The call log the records came from, which reads a request's part ids back on demand;
+     * absent when every record keeps its ids in memory.
+     */
+    callLog?: CallLog;
     /** The fault schedule the run used: the manifest's override, else the scenario's. */
     faults: Array<{ id: string; type: string }>;
     /**
@@ -511,17 +522,27 @@ export function loadRun(dir: string): RunData {
             ...readStore(join(root, "final-store")),
         });
     }
+    const journal = readJournal(join(dir, "journal.jsonl"));
+    const callLog = readCalls(join(dir, "calls.jsonl"));
+    let parts: RequestPartLog | null;
+    try {
+        parts = lstatSync(requestsPath, { throwIfNoEntry: false })?.isFile()
+            ? new RequestPartLog(requestsPath)
+            : null;
+    } catch (caught) {
+        callLog.close();
+        throw caught;
+    }
     return {
         dir,
         host: manifest.host ?? "pi",
         contextLimit: manifest.context_limit ?? 200_000,
         scenario,
         faults: manifest.fault_override ?? scenario.faults ?? [],
-        journal: readJournal(join(dir, "journal.jsonl")),
-        calls: readCalls(join(dir, "calls.jsonl")),
-        parts: lstatSync(requestsPath, { throwIfNoEntry: false })?.isFile()
-            ? new RequestPartLog(requestsPath)
-            : null,
+        journal,
+        calls: callLog.calls,
+        callLog,
+        parts,
         grades,
         arms,
     };
@@ -552,20 +573,29 @@ export function readTools(path: string): ToolRun[] {
 }
 
 /** The call log, each record checked for its fields and its position. */
-export function readCalls(path: string): CallRecord[] {
-    const calls = readJsonl<CallRecord>(path);
-    calls.forEach((c, i) => {
+export function readCalls(path: string): CallLog {
+    return new CallLog(path, (c, i) => {
         const problems = recordProblems(c);
         if (problems.length > 0) {
             throw new Error(`${path} line ${i + 1}: ${problems.join(", ")}`);
         }
         if (c.seq !== i) throw new Error(`${path} line ${i + 1}: seq ${c.seq} at position ${i}`);
     });
-    return calls;
+}
+
+/** The call's request reference with its part ids, from the record or read back from the log. */
+export function requestRef(run: RunData, call: HeldCall): RequestRef | null {
+    const held = call.request;
+    if (!held) return null;
+    if (held.parts) return { sha256: held.sha256, bytes: held.bytes, parts: held.parts };
+    if (!run.callLog)
+        throw new Error(`call ${call.seq} keeps no part ids and the run has no call log`);
+    return run.callLog.request(call.seq);
 }
 
 /** A recorded request body, or null when the run kept none for that call. */
-export function requestOf(run: RunData, call: CallRecord): ConverseBody | null {
+export function requestOf(run: RunData, call: HeldCall): ConverseBody | null {
     if (!run.parts || !call.request) return null;
-    return rebuildRequest(call.request, run.parts);
+    const ref = requestRef(run, call);
+    return ref && rebuildRequest(ref, run.parts);
 }

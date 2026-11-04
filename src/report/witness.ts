@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
 import { canonicalJson } from "../prereg/canonical";
 import { TARGET } from "../proxy/inject";
-import { type Entry, readJsonl } from "../run/journal";
+import { type Entry, eachJsonl, readJsonl } from "../run/journal";
 import { checkJournal } from "../run/journal-check";
 import { referenceArm } from "../run/run";
 import type { FaultEpisode } from "../scenario/faults";
@@ -58,6 +58,15 @@ const outcome = (instances: number, bad: string[], what: string) =>
           : { status: "witnessed" as const, detail: `${instances} ${what}` };
 
 const jsonl = <T>(path: string): T[] => readJsonl<T>(path);
+
+/** `rawCalls` extracts `seq` and `arm` from every complete call-log record across all arms. */
+function rawCalls(path: string): { seq: unknown; arm: unknown }[] {
+    const out: { seq: unknown; arm: unknown }[] = [];
+    eachJsonl<{ seq?: unknown; arm?: unknown } | null>(path, (row) =>
+        out.push({ seq: row?.seq, arm: row?.arm }),
+    );
+    return out;
+}
 
 /** The count measures paired pass-to-fail outcomes for probes of `type` with verified deletions. */
 function counterfactualFlips(
@@ -124,7 +133,7 @@ function context(g: GradedRun): Ctx {
         manifest: read,
         recorded,
         changedSources,
-        rawCalls: jsonl<{ seq: unknown; arm: unknown }>(join(g.run.dir, "calls.jsonl")),
+        rawCalls: rawCalls(join(g.run.dir, "calls.jsonl")),
         snapshots: new Set(
             g.run.arms.flatMap((a) =>
                 jsonl<{ id: string }>(join(g.run.dir, a.arm, "snapshots.jsonl")).map(

@@ -18,7 +18,7 @@ import type { GradeRecord } from "../grade/probes";
 import { qualificationHash } from "../prereg/qualification";
 import type { ConverseBody } from "../proxy/classify";
 import type { CallRecord, Component } from "../proxy/records";
-import { partId, type RequestPart, requestParts } from "../proxy/requests";
+import { partId, type RequestPart, RequestPartLog, requestParts } from "../proxy/requests";
 import type { Entry } from "../run/journal";
 import { holds, scenarioHash } from "../scenario/compile";
 import { loadQualification } from "../scenario/inputs";
@@ -29,6 +29,7 @@ import {
     loadRun,
     type RunData,
     readStore,
+    requestRef,
     type StoreObject,
 } from "./load";
 import { armComparison } from "./report";
@@ -1078,6 +1079,16 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     expect(existsSync(join(out, "run", "evidence-sessions.jsonl"))).toBe(true);
     expect(readFileSync(join(out, "evidence.md"), "utf8")).toBe(report);
     expect(report).toContain("| run | eidnara | q-1 | P1 | fail |");
+    // The loaded records hold each request's digest and length; the log supplies the part ids.
+    const loaded = loadRun(dir);
+    expect(loaded.calls.map((c) => c.request && Object.keys(c.request))).toEqual(
+        r.calls.map((c) => c.request && ["sha256", "bytes"]),
+    );
+    expect(loaded.calls.map((c) => requestRef(loaded, c) as unknown)).toEqual(
+        r.calls.map((c) => c.request ?? null),
+    );
+    loaded.callLog?.close();
+    if (loaded.parts instanceof RequestPartLog) loaded.parts.close();
     expect(loadRun(dir).arms.get("eidnara")?.objects?.length).toBe(2);
     const k = new Database(join(dir, "eidnara", "final-store", "kernel.sqlite"));
     k.run("insert into decisions values ('decision:8', 'x', 'project:KEY_A')");
