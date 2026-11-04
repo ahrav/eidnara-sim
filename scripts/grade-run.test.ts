@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
     appendFileSync,
     existsSync,
@@ -681,6 +681,10 @@ describe("grade-run", () => {
         renameSync(join(dir, "calls.jsonl"), real);
         symlinkSync(real, join(dir, "calls.jsonl"));
         await expect(gradeRun(dir, null)).rejects.toThrow("not a regular file");
+        const dangling = run({ probes: [p5.probe], order: ["eidnara"] });
+        snapshot(dangling, "eidnara", snap);
+        symlinkSync(join(dangling, "absent.jsonl"), join(dangling, "calls.jsonl"));
+        await expect(gradeRun(dangling, null)).rejects.toThrow("not a regular file");
     });
 
     test("a turn that ended ok, or named a snapshot, without a journaled snapshot makes the journal invalid", async () => {
@@ -1149,6 +1153,81 @@ describe("grade-run", () => {
         await expect(gradeRun(earlier, null)).rejects.toThrow(
             "with content that differs from calls.jsonl",
         );
+    });
+
+    test("a session holding many journaled snapshots has its call records parsed once", async () => {
+        // Every journaled snapshot of the one session is checked as a prefix of its records.
+        const p8 = fixture("P8-pass");
+        const base = p8.snapshots[0] as Snapshot;
+        const items = ["P8-a", "P8-b", "P8-c", "P8-d", "P8-e"];
+        const dir = run({
+            probes: items.map((id) => ({ ...p8.probe, id })),
+            order: ["eidnara"],
+        });
+        items.forEach((item, i) => {
+            const turn = `e-${i + 1}`;
+            const held = base.artefacts.map((a) =>
+                a.class === "proxy-call"
+                    ? {
+                          ...a,
+                          calls: items.slice(0, i + 1).flatMap((_, k) =>
+                              a.calls.map((c) => ({
+                                  ...c,
+                                  seq: c.seq + k,
+                                  turn: `e-${k + 1}`,
+                              })),
+                          ),
+                      }
+                    : a,
+            );
+            snapshot(dir, "eidnara", { ...base, item, turn, artefacts: held } as Snapshot);
+        });
+        const marker = "a-request-body-to-count-parses";
+        const bulky = {
+            seq: 99,
+            wall_ms: 0,
+            scenario_ms: 0,
+            arm: "eidnara",
+            session: "s-1",
+            turn: "e-1",
+            component: "user-sim",
+            model: "global.anthropic.claude-opus-5-5",
+            status: 200,
+            error: null,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            request: { body: `${marker}${"x".repeat(1 << 16)}` },
+        };
+        appendFileSync(join(dir, "calls.jsonl"), `${JSON.stringify(bulky)}\n`);
+        const parse = spyOn(JSON, "parse");
+        try {
+            const summary = await gradeRun(dir, null);
+            expect(summary.verdicts).toEqual({ "eidnara/P8": { pass: items.length } });
+            const parses = parse.mock.calls.filter(
+                ([text]) => typeof text === "string" && text.includes(marker),
+            );
+            expect(parses).toHaveLength(1);
+        } finally {
+            parse.mockRestore();
+        }
+    });
+
+    test("a blank line in calls.jsonl is refused wherever it falls", async () => {
+        const p8 = fixture("P8-pass");
+        for (const [shape, line] of [
+            [(t: string) => `\n${t}`, 1],
+            [(t: string) => `${t}\n`, 2],
+        ] as const) {
+            const dir = run({ probes: [p8.probe], order: ["eidnara"] });
+            snapshot(dir, "eidnara", p8.snapshots[0] as Snapshot);
+            const path = join(dir, "calls.jsonl");
+            writeFileSync(path, shape(readFileSync(path, "utf8")));
+            await expect(gradeRun(dir, null)).rejects.toThrow(
+                `calls.jsonl line ${line} is corrupt: not JSON`,
+            );
+        }
     });
 
     test("agent calls whose model the manifest does not record are refused before judging", async () => {

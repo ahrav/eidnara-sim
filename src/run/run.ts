@@ -1910,14 +1910,13 @@ export function withUserTurns(
     return [...calls, ...views].sort((a, b) => a.seq - b.seq);
 }
 
-export function callsOf(
-    index: CallIndex,
-    arm: string,
-    session: string,
-    turnIndex: Map<string, number>,
-): CallView[] {
+/**
+ * The returned projector takes one session's records in log order. Each call takes the turn
+ * index of the turn it names, else the running index of the session's preceding calls.
+ */
+export function sessionViews(turnIndex: Map<string, number>): (r: CallRecord) => CallView {
     let turn: number | undefined;
-    return index.records(arm, session).map((r) => {
+    return (r) => {
         const own = r.origin_turn ?? r.turn;
         const at = own ? turnIndex.get(own) : undefined;
         // A background call credited to an earlier turn takes that turn's index without moving
@@ -1929,7 +1928,17 @@ export function callsOf(
         turn = at ?? turn;
         const view = projectCall(r);
         return turn === undefined ? view : { ...view, turn_index: turn };
-    });
+    };
+}
+
+export function callsOf(
+    index: CallIndex,
+    arm: string,
+    session: string,
+    turnIndex: Map<string, number>,
+): CallView[] {
+    const view = sessionViews(turnIndex);
+    return index.records(arm, session).map((r) => view(r));
 }
 
 async function runArms(
