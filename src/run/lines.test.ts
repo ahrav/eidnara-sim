@@ -186,7 +186,33 @@ describe("CallLog", () => {
         const log = new CallLog(path);
         writeFileSync(path, line(6));
         expect(() => log.request(0)).toThrow("call 0 changed since it was read");
+        writeFileSync(path, `${"x".repeat(line(5).length - 1)}\n`);
+        expect(() => log.request(0)).toThrow("call 0 changed since it was read");
+        writeFileSync(path, line(5).replace(ids[0] as string, "bad".padEnd(32, "-")));
+        expect(() => log.request(0)).toThrow("call 0 changed since it was read");
         log.close();
         expect(() => log.request(0)).toThrow("call log read after close");
+    });
+
+    test("evicts the part lists read least recently once the cache passes its budget", () => {
+        const path = file(
+            [0, 1, 2]
+                .map(
+                    (seq) =>
+                        `${JSON.stringify(record(seq, { sha256: sha, bytes: seq, parts: ids }))}\n`,
+                )
+                .join(""),
+        );
+        const log = new CallLog(path, undefined, 4);
+        log.request(0);
+        log.request(1);
+        log.request(0);
+        log.request(2);
+        // Positions 0 and 2 fill the four-id budget, so position 1 is read again from the file.
+        writeFileSync(path, "");
+        expect(log.request(0)?.parts).toEqual(ids);
+        expect(log.request(2)?.parts).toEqual(ids);
+        expect(() => log.request(1)).toThrow("call 1 ends past the log's end");
+        log.close();
     });
 });

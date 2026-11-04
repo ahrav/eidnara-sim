@@ -18,7 +18,7 @@ import type { GradeRecord } from "../grade/probes";
 import { qualificationHash } from "../prereg/qualification";
 import type { ConverseBody } from "../proxy/classify";
 import type { CallRecord, Component } from "../proxy/records";
-import { partId, type RequestPart, requestParts } from "../proxy/requests";
+import { partId, type RequestPart, RequestPartLog, requestParts } from "../proxy/requests";
 import type { Entry } from "../run/journal";
 import { holds, scenarioHash } from "../scenario/compile";
 import { loadQualification } from "../scenario/inputs";
@@ -1088,6 +1088,7 @@ test("evidence-run reads a run directory and writes only under --out", () => {
         r.calls.map((c) => c.request ?? null),
     );
     loaded.callLog?.close();
+    if (loaded.parts instanceof RequestPartLog) loaded.parts.close();
     expect(loadRun(dir).arms.get("eidnara")?.objects?.length).toBe(2);
     const k = new Database(join(dir, "eidnara", "final-store", "kernel.sqlite"));
     k.run("insert into decisions values ('decision:8', 'x', 'project:KEY_A')");
