@@ -2452,9 +2452,14 @@ async function runArms(
                 : [];
             const parts = new RequestPartLog(join(o.out, "requests.jsonl"));
             try {
-                const armCalls: CallRecord[] = [];
+                const armCalls: Pick<
+                    CallRecord,
+                    "seq" | "component" | "session" | "turn" | "request"
+                >[] = [];
                 eachJsonl<CallRecord>(callsPath, (c) => {
-                    if (c.arm === arm) armCalls.push(c);
+                    if (c.arm !== arm || c.component !== "agent" || !c.request) return;
+                    const { seq, component, session, turn, request } = c;
+                    armCalls.push({ seq, component, session, turn, request });
                 });
                 observed.delivery = observeDelivery(armCalls, parts, notes, eventOrder);
             } finally {
