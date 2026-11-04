@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Command } from "../grade/artefacts";
 import { armBase, requireOrder } from "../hosts/arms";
@@ -6,7 +6,8 @@ import { runsEidnara } from "../hosts/profiles";
 import { parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
 import { ARMS, type Preregistration, type Tier } from "../prereg/schema";
 import { type CallRecord, recordProblems } from "../proxy/records";
-import { type Entry, requireAppendable, requireComplete } from "../run/journal";
+import { type HeldCall, heldCall } from "../run/calllog";
+import { type Entry, eachLine, requireAppendable, requireComplete } from "../run/journal";
 import type { PriceTable } from "../run/price";
 import type { Sample as ResourceSample } from "../run/sampler";
 import { type Scenario, scenarioHash } from "../scenario/compile";
@@ -17,7 +18,7 @@ export type Sample = Pick<ResourceSample, "scenario_ms" | "rss"> & Partial<Resou
 
 export interface ArmLogs {
     arm: string;
-    calls: CallRecord[];
+    calls: HeldCall[];
     journal: Entry[];
     pluginLog: string[];
     /** Set when `<arm>/r/eidnara.log` is absent, so an empty log reads as missing evidence. */
@@ -55,43 +56,23 @@ export interface RunLogs {
 
 /**
  * Evidence files are read strictly: every newline-terminated line must parse, and a completed
- * run's writers leave no cut tail. The file is read in 1 MiB chunks and each line parsed as it
- * completes, so a large `calls.jsonl` costs its parsed records, never a whole-file string.
+ * run's writers leave no cut tail. `eachLine` hands over one line at a time and `keep` maps each
+ * parsed row to what the caller holds, so memory scales with the kept rows.
  */
-function jsonl<T>(path: string): T[] {
+function jsonl<T, U = T>(path: string, keep: (row: T) => U = (row) => row as unknown as U): U[] {
     requireAppendable(path);
     if (!existsSync(path)) return [];
-    const out: T[] = [];
-    const fd = openSync(path, "r");
-    const chunk = new Uint8Array(1 << 20);
-    const decoder = new TextDecoder();
-    let rest = "";
-    let lineNo = 0;
-    const take = (text: string) => {
-        lineNo += 1;
+    const out: U[] = [];
+    const { tail } = eachLine(path, (line, i) => {
+        let row: T;
         try {
-            out.push(JSON.parse(text) as T);
+            row = JSON.parse(line.toString("utf8")) as T;
         } catch {
-            throw new Error(`${path}: line ${lineNo} is corrupt`);
+            throw new Error(`${path}: line ${i + 1} is corrupt`);
         }
-    };
-    try {
-        for (;;) {
-            const n = readSync(fd, chunk, 0, chunk.length, null);
-            if (n === 0) break;
-            rest += decoder.decode(chunk.subarray(0, n), { stream: true });
-            let cut = rest.indexOf("\n");
-            while (cut !== -1) {
-                take(rest.slice(0, cut));
-                rest = rest.slice(cut + 1);
-                cut = rest.indexOf("\n");
-            }
-        }
-        rest += decoder.decode();
-        if (rest !== "") throw new Error(`${path}: line ${lineNo + 1} is cut`);
-    } finally {
-        closeSync(fd);
-    }
+        out.push(keep(row));
+    });
+    if (tail > 0) throw new Error(`${path}: line ${out.length + 1} is cut`);
     return out;
 }
 
@@ -322,7 +303,7 @@ function turnBounds(journal: Entry[]): Bounds {
  * its `BeginTurn` and its `EndTurn`.
  */
 function requireCallsInTurns(
-    calls: CallRecord[],
+    calls: HeldCall[],
     bounds: Bounds,
     armEnds: Map<string, number>,
 ): void {
@@ -406,11 +387,14 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     const planned = scenario.events.slice(0, count);
     const turns = new Set(planned.filter((e) => e.kind === "user_turn").map((e) => String(e.id)));
     if (!existsSync(join(dir, "calls.jsonl"))) throw new Error("run has no calls.jsonl");
-    const calls = jsonl<CallRecord>(join(dir, "calls.jsonl"));
-    const seen = new Set<number>();
-    calls.forEach((c, i) => {
+    // `recordProblems` validates the complete record before `heldCall` discards the request's part ids.
+    const calls = jsonl(join(dir, "calls.jsonl"), (c: CallRecord) => {
         const problems = recordProblems({ ...c });
         if (problems.length > 0) throw new Error(`call ${c.seq}: ${problems.join(", ")}`);
+        return heldCall(c);
+    });
+    const seen = new Set<number>();
+    calls.forEach((c, i) => {
         if (!order.includes(c.arm))
             throw new Error(`call ${c.seq}: arm ${c.arm} is not in the manifest`);
         if (seen.has(c.seq)) throw new Error(`call ${c.seq}: sequence number repeated`);

@@ -1,6 +1,6 @@
 import { armBase } from "../hosts/arms";
 import { armProfile } from "../hosts/profiles";
-import type { CallRecord } from "../proxy/records";
+import type { HeldCall } from "../run/calllog";
 import type { ArmLogs, RunLogs, Sample } from "./logs";
 
 export const ORACLES = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9"] as const;
@@ -53,14 +53,14 @@ export const INTERNAL_TEXT = [
 /** A proxy record lands after the host's own tool event can, so a tool start this close counts. */
 const CLOCK_SLACK_MS = 1_000;
 const STAMP = /\d{4}-\d\d-\d\dT[\d:.]+Z/;
-const TOKENS = (c: CallRecord) =>
+const TOKENS = (c: HeldCall) =>
     c.input_tokens + c.output_tokens + c.cache_read_tokens + c.cache_write_tokens;
 
-const errorOf = (c: CallRecord) => `${c.status} ${c.error ?? ""}`;
-const at = (c: CallRecord) => c.turn ?? `call ${c.seq}`;
+const errorOf = (c: HeldCall) => `${c.status} ${c.error ?? ""}`;
+const at = (c: HeldCall) => c.turn ?? `call ${c.seq}`;
 
 /** F1 and F2 classify request refusals: HTTP 4xx. A 5xx carrying the same text is an infrastructure failure. */
-function failedCalls(arm: ArmLogs, pattern: (text: string) => boolean): CallRecord[] {
+function failedCalls(arm: ArmLogs, pattern: (text: string) => boolean): HeldCall[] {
     return arm.calls.filter((c) => c.status >= 400 && c.status < 500 && pattern(errorOf(c)));
 }
 

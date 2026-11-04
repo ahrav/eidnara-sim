@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
 import type { NormalisationRule } from "../prereg/schema";
 import { COMPONENT_HEADER } from "../proxy/classify";
-import { readJournal, requireAppendable } from "../run/journal";
+import { eachLine, readJournal, requireAppendable } from "../run/journal";
 import { HarnessFailure } from "../run/scheduler";
 import { markerHits } from "../scenario/compile";
 import { ADJ, NOUN } from "../scenario/tokens";
@@ -121,20 +121,19 @@ function jsonl<T>(path: string, role: "own" | "source", check: RowCheck): T[] {
         if (!existsSync(path)) writeFileSync(path, "");
     }
     if (!existsSync(path)) return [];
-    const buf = readFileSync(path);
     // A kill mid-append leaves an unterminated tail, which is dropped; a terminated line that
     // does not parse is corruption, which no truncation may paper over.
-    const bytes = buf.lastIndexOf(0x0a) + 1;
     const read: unknown[] = [];
-    const lines = buf.subarray(0, bytes).toString("utf8").split("\n").slice(0, -1);
-    lines.forEach((line, i) => {
+    let corrupt: number | null = null;
+    const { complete: bytes } = eachLine(path, (line, i) => {
+        if (corrupt !== null) throw new HarnessFailure(`${path}: line ${corrupt + 1} is corrupt`);
         try {
-            read.push(JSON.parse(line));
+            read.push(JSON.parse(line.toString("utf8")));
         } catch {
-            const where = i === lines.length - 1 ? "last line" : `line ${i + 1}`;
-            throw new HarnessFailure(`${path}: ${where} is corrupt`);
+            corrupt = i;
         }
     });
+    if (corrupt !== null) throw new HarnessFailure(`${path}: last line is corrupt`);
     read.forEach((row, i) => {
         const problems = check(row as unknown as Record<string, unknown>);
         if (problems.length > 0) {

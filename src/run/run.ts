@@ -86,8 +86,8 @@ import {
 } from "./capabilities";
 import {
     type Entry,
+    eachJsonl,
     Journal,
-    readJsonl,
     releaseLease,
     requireAppendable,
     takeLease,
@@ -2452,12 +2452,11 @@ async function runArms(
                 : [];
             const parts = new RequestPartLog(join(o.out, "requests.jsonl"));
             try {
-                observed.delivery = observeDelivery(
-                    readJsonl<CallRecord>(callsPath).filter((c) => c.arm === arm),
-                    parts,
-                    notes,
-                    eventOrder,
-                );
+                const armCalls: CallRecord[] = [];
+                eachJsonl<CallRecord>(callsPath, (c) => {
+                    if (c.arm === arm) armCalls.push(c);
+                });
+                observed.delivery = observeDelivery(armCalls, parts, notes, eventOrder);
             } finally {
                 parts.close();
             }

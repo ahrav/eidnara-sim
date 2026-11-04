@@ -1,4 +1,4 @@
-import type { CallRecord } from "../proxy/records";
+import type { HeldCall } from "../run/calllog";
 import type { RunData } from "./load";
 
 /** A refused or empty compaction, or a prompt over the window, with the call that showed it. */
@@ -37,10 +37,10 @@ const COMPACTION = new Set(["native_compaction", "history_summarizer"]);
 const TOO_LONG =
     /prompt is too long|input is too long|too many (?:input )?tokens|context (?:length|window)/i;
 
-export const promptTokens = (c: CallRecord) =>
+export const promptTokens = (c: HeldCall) =>
     c.input_tokens + c.cache_read_tokens + c.cache_write_tokens;
 
-export const refusedCompaction = (c: CallRecord) =>
+export const refusedCompaction = (c: HeldCall) =>
     COMPACTION.has(c.component) &&
     c.status === 200 &&
     c.error === null &&
@@ -68,7 +68,7 @@ function nextTurn(run: RunData, arm: string, session: string, wall: number): str
 export function sessionHealth(run: RunData): SessionHealth[] {
     const projectOf = new Map(run.scenario.sessions.map((s) => [s.id, s.project]));
     const p90 = new Map(run.scenario.sessions.map((s) => [s.id, s.forced_p90 === true]));
-    const bySession = new Map<string, CallRecord[]>();
+    const bySession = new Map<string, HeldCall[]>();
     const sessionOf = new Map(run.scenario.events.map((e) => [e.id, e.session]));
     for (const e of run.journal) {
         if (e.kind !== "Event" || typeof e.arm !== "string") continue;
@@ -90,7 +90,7 @@ export function sessionHealth(run: RunData): SessionHealth[] {
         // A mark between turns covers the session's next turn, the first one it can affect.
         // A compaction mark covers the first turn whose agent request left after the
         // compaction finished; an agent call's own mark covers its turn.
-        const mark = (c: CallRecord, why: string): HealthMark => ({
+        const mark = (c: HeldCall, why: string): HealthMark => ({
             seq: c.seq,
             turn:
                 (c.component === "agent" ? c.turn : null) ??
@@ -113,8 +113,8 @@ export function sessionHealth(run: RunData): SessionHealth[] {
         let over = 0;
         let tooLong = 0;
         let native = false;
-        const refusals: CallRecord[] = [];
-        let overflowCall: CallRecord | null = null;
+        const refusals: HeldCall[] = [];
+        let overflowCall: HeldCall | null = null;
         for (const c of sorted) {
             if (COMPACTION.has(c.component)) {
                 attempts++;
