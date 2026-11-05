@@ -2153,14 +2153,22 @@ async function runArms(
         events.filter((e) => e.kind === "user_turn" && e.probe).map((e) => String(e.session)),
     );
     const sessionCalls = new SessionCalls(turnIndex, (s) => probeSessions.has(s));
-    // A session whose `session_end` the journal records as delivered takes no later capture.
+    // A session whose `session_end` the journal records as delivered takes no later capture,
+    // whether the driver delivered it or the scheduler ended it without the driver.
     const sessionEnds = new Map(
         events.filter((e) => e.kind === "session_end").map((e) => [e.id, String(e.session)]),
     );
-    for (const e of journal.entries) {
-        const session = e.kind === "Event" ? sessionEnds.get(String(e.event)) : undefined;
-        if (session !== undefined && typeof e.arm === "string") sessionCalls.close(e.arm, session);
-    }
+    let endsRead = 0;
+    const closeEnded = () => {
+        for (; endsRead < journal.entries.length; endsRead++) {
+            const e = journal.entries[endsRead] as Entry;
+            const session = e.kind === "Event" ? sessionEnds.get(String(e.event)) : undefined;
+            if (session !== undefined && typeof e.arm === "string") {
+                sessionCalls.close(e.arm, session);
+            }
+        }
+    };
+    closeEnded();
     readCallLog(
         callsPath,
         (r) => {
@@ -2506,6 +2514,7 @@ async function runArms(
             sampleDaemon: () => sampler.observe(),
             callsFor: (session) => {
                 handlersFailed();
+                closeEnded();
                 const calls = sessionCalls
                     .calls(arm, session)
                     .filter((c) => c.component !== "user-sim");
