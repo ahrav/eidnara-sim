@@ -33,7 +33,7 @@ interface FileEdit {
 }
 interface Turn {
     files?: FileEdit[];
-    commands?: string[];
+    commands?: (string | { command: string; exit: number | null; scenario_ms?: number })[];
     answer?: string;
     source?: (string | { command: string; exit: number | null })[];
     calls?: Partial<CallView>[];
@@ -76,10 +76,10 @@ function snapshotOf(p: ProbeItem, t: Turn): Snapshot {
         error: null,
         ...c,
     })) as CallView[];
-    const run = (c: string | { command: string; exit: number | null }) =>
+    const run = (c: string | { command: string; exit: number | null; scenario_ms?: number }) =>
         typeof c === "string"
             ? { command: c, exit: 0, scenario_ms: 1_000 }
-            : { ...c, scenario_ms: 1_000 };
+            : { scenario_ms: 1_000, ...c };
     const log = (role: "turn" | "session" | "source", commands: Turn["source"] & {}): Artefact => ({
         id: `${id}:${role}`,
         class: "command-log",
@@ -964,6 +964,85 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
         expect(outcome(pasted, { files: [entry] })).toEqual(["pass"]);
         const untied = readme([`${idOf(pasted)} is a known error.`]);
         expect(outcome(pasted, { files: [untied] })[0]).toBe("fail");
+    });
+});
+
+describe("P13: the commit tag reads from the message wherever the command sets it", () => {
+    const p13 = probeOf("P13", "session-commit-tag");
+    const tag = literal(p13);
+    const [lo] = (p13.check as { turns: [number, number] }).turns;
+    const fold: Partial<CallView> = {
+        component: "history_summarizer",
+        turn: null,
+        turn_index: lo,
+        scenario_ms: 500,
+        input_tokens: 10_000,
+        output_tokens: 1_000,
+    };
+    const commits = (...commands: (string | { command: string; exit: number | null })[]) =>
+        outcome(p13, { calls: [fold], commands });
+
+    test("a commit in a non-final && list of a command that exited 0 is credited", () => {
+        const listed = `cd repo; git add f && git commit -m "[${tag}] add f"; git status`;
+        expect(commits(listed)).toEqual(["pass"]);
+        expect(commits(`cd repo\ngit add f && git commit -q -m "[${tag}] add f"\nls`)).toEqual([
+            "pass",
+        ]);
+        expect(commits({ command: listed, exit: 1 })[0]).toBe("fail");
+        expect(commits(`cd repo; false && git commit -m "[${tag}] f"; git status`)[0]).toBe("fail");
+        expect(commits(`git add f && git commit -m "[${tag}] f" || true; ls`)[0]).toBe("fail");
+    });
+
+    test("a heredoc, a written file, an expanded variable, or a multi-line -m carries the tag", () => {
+        const forms = [
+            `git add -A && git commit -q -F - <<'EOF'\n[${tag}] subject\n\nbody\nEOF\ngit log -1`,
+            `git commit -q -F - <<'EOF' ; echo "exit=$?"\n[${tag}] subject\nEOF`,
+            `cat > /tmp/msg <<'EOF'\n[${tag}] subject\nEOF\ngit commit -q -F /tmp/msg`,
+            `P="[${tag}]"\ngit add f && git commit -q -m "$P subject" -m "body"`,
+            `export P="[${tag}]"; git commit -m "\${P} subject"`,
+            `git commit -m "[${tag}] subject\n\nbody line"`,
+            `git -c user.name=u commit --file=- <<< "[${tag}] subject"`,
+        ];
+        for (const form of forms) expect(commits(form)).toEqual(["pass"]);
+    });
+
+    test("an untagged message fails both command channels, whatever its source", () => {
+        const tagged = `git commit -m "[${tag}] first"`;
+        const untagged = [
+            `git commit -q -F - <<'EOF'\nsubject [${tag}]\nEOF`,
+            `cat > /tmp/msg <<'EOF'\nsubject\nEOF\ngit commit -F /tmp/msg`,
+            `P="[${tag}]"; git commit -m '$P subject'`,
+            `git commit -m "subject" -m "[${tag}] body"`,
+        ];
+        for (const form of untagged) {
+            expect(commits(form)[0]).toBe("fail");
+            expect(commits(tagged, form)[0]).toBe("fail");
+        }
+        expect(commits("git commit -F /tmp/unwritten")[0]).toBe("fail");
+        expect(commits(`git commit --dry-run -F - <<'EOF'\n[${tag}] s\nEOF`)[0]).toBe("fail");
+    });
+
+    test("a memory or note read repeated after the fold is no repeated action", () => {
+        const tagged = `git commit -m "[${tag}] after"`;
+        const repeated = (command: string) => {
+            const g = grade(p13, {
+                calls: [fold],
+                commands: [
+                    { command, exit: 0, scenario_ms: 100 },
+                    { command, exit: 0, scenario_ms: 1_000 },
+                    tagged,
+                ],
+            });
+            return g.metrics["P13.repeated_action"];
+        };
+        expect(repeated('eidnara_note {"action":"read"}')).toBe(false);
+        expect(repeated("eidnara_note {}")).toBe(false);
+        expect(repeated('eidnara_memory {"action":"get","objectId":"m1"}')).toBe(false);
+        expect(repeated('eidnara_memory {"action":"candidates","objectId":"m1"}')).toBe(false);
+        expect(repeated('eidnara_memory {"action":"revise","objectId":"m1"}')).toBe(true);
+        expect(repeated('eidnara_note {"action":"write","content":"x"}')).toBe(true);
+        expect(repeated('eidnara_note {"content":"x"}')).toBe(true);
+        expect(repeated("cat notes/plan.md")).toBe(true);
     });
 });
 
