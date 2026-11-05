@@ -554,6 +554,7 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "xargs -a /tmp/args sed -n -e '/spawn_blocking/p' src/db.rs",
             "/tmp/rg spawn_blocking src",
             "{ cat; } <<< 'spawn_blocking(f)'",
+            "cd repo; cp src/db.rs /tmp/db.rs && sed -i 's/block_on/spawn_blocking/' /tmp/db.rs; ls",
         ]) {
             const g = grade(blocking, { files: [digest], commands: [applied] });
             expect([applied, g.verdict, g.reason]).toEqual([
@@ -985,25 +986,51 @@ describe("P13: the commit tag reads from the message wherever the command sets i
     test("a commit in a non-final && list of a command that exited 0 is credited", () => {
         const listed = `cd repo; git add f && git commit -m "[${tag}] add f"; git status`;
         expect(commits(listed)).toEqual(["pass"]);
-        expect(commits(`cd repo\ngit add f && git commit -q -m "[${tag}] add f"\nls`)).toEqual([
-            "pass",
-        ]);
+        for (const credited of [
+            `cd repo\ngit add f && git commit -q -m "[${tag}] add f"\nls`,
+            `cd a || true; git add f && git commit -m "[${tag}] f"`,
+            `false && echo no; git add f && git commit -m "[${tag}] f"; ls`,
+            `git add f && git commit -m "[${tag}] f"; git push || echo offline`,
+            `( cd repo && git add f && git commit -m "[${tag}] f" )`,
+        ]) {
+            expect([credited, ...commits(credited)]).toEqual([credited, "pass"]);
+        }
+        for (const uncredited of [
+            `cd repo; false && git commit -m "[${tag}] f"; git status`,
+            `git add f && git commit -m "[${tag}] f" || true; ls`,
+            `git add f && git commit -m "[${tag}] f" & wait`,
+            `( cd repo && git commit -m "[${tag}] f" ); ls`,
+        ]) {
+            expect([uncredited, commits(uncredited)[0]]).toEqual([uncredited, "fail"]);
+        }
         expect(commits({ command: listed, exit: 1 })[0]).toBe("fail");
-        expect(commits(`cd repo; false && git commit -m "[${tag}] f"; git status`)[0]).toBe("fail");
-        expect(commits(`git add f && git commit -m "[${tag}] f" || true; ls`)[0]).toBe("fail");
     });
 
-    test("a heredoc, a written file, an expanded variable, or a multi-line -m carries the tag", () => {
+    test("the tag reads from any message source the command text carries", () => {
         const forms = [
             `git add -A && git commit -q -F - <<'EOF'\n[${tag}] subject\n\nbody\nEOF\ngit log -1`,
             `git commit -q -F - <<'EOF' ; echo "exit=$?"\n[${tag}] subject\nEOF`,
+            `git commit -F - <<-EOF\n\t[${tag}] subject\n\tEOF`,
             `cat > /tmp/msg <<'EOF'\n[${tag}] subject\nEOF\ngit commit -q -F /tmp/msg`,
+            `cat > m <<'EOF'\n[${tag}] subject\nEOF\ncat >> m <<'EOF'\nbody\nEOF\ngit commit --file m`,
+            `tee /tmp/msg << EOF >/dev/null\n[${tag}] subject\nEOF\ngit commit -qF/tmp/msg`,
+            `printf '[${tag}] subject\\n' > /tmp/msg; git commit -F - < /tmp/msg`,
+            `echo "[${tag}] subject" | git commit -F -`,
+            `printf '%s\\n' "[${tag}] subject" | git commit -F-`,
+            `cat <<'EOF' | git commit -F -\n[${tag}] subject\nEOF`,
             `P="[${tag}]"\ngit add f && git commit -q -m "$P subject" -m "body"`,
+            `TAG="[${tag}]" SUBJ=x\ngit commit -m "$TAG $SUBJ"`,
             `export P="[${tag}]"; git commit -m "\${P} subject"`,
+            `{ P="[${tag}]"; }; git commit --message="$P subject"`,
             `git commit -m "[${tag}] subject\n\nbody line"`,
+            `git commit -m "$(cat <<'EOF'\n[${tag}] subject\n\nbody\nEOF\n)"`,
             `git -c user.name=u commit --file=- <<< "[${tag}] subject"`,
+            `git commit -qam "[${tag}] subject"`,
+            `git commit -qm"[${tag}] don't stop"`,
+            `git commit -m "[${tag}] <b>"`,
+            `P="[${tag}]"; git commit -q -m "$P Tidy \\"Run\\" notes" -m "b"`,
         ];
-        for (const form of forms) expect(commits(form)).toEqual(["pass"]);
+        for (const form of forms) expect([form, ...commits(form)]).toEqual([form, "pass"]);
     });
 
     test("an untagged message fails both command channels, whatever its source", () => {
@@ -1011,15 +1038,43 @@ describe("P13: the commit tag reads from the message wherever the command sets i
         const untagged = [
             `git commit -q -F - <<'EOF'\nsubject [${tag}]\nEOF`,
             `cat > /tmp/msg <<'EOF'\nsubject\nEOF\ngit commit -F /tmp/msg`,
+            `cat > m <<'EOF'\nsubject\nEOF\ncat >> m <<'EOF'\n[${tag}] body\nEOF\ngit commit -F m`,
+            `cat >> /tmp/new <<'EOF'\n[${tag}] body\nEOF\ngit commit -F /tmp/new`,
             `P="[${tag}]"; git commit -m '$P subject'`,
+            `( P="[${tag}]" ); git commit -m "$P subject"`,
+            `P="[${tag}]" | true; git commit -m "$P subject"`,
+            `Q='"'; git commit -m "$Q[${tag}] subject"`,
             `git commit -m "subject" -m "[${tag}] body"`,
+            `git commit -m "'[${tag}] subject"`,
+            `git commit -m "\\[${tag}] subject"`,
+            `git commit -m "<b>" -m "[${tag}] body"`,
+            `git commit -am"untagged" -m "[${tag}] body"`,
+            `git commit -F - <<A <<B\n[${tag}] x\nA\nuntagged\nB`,
+            `git commit -F - <<< "[${tag}] x" <<< untagged`,
+            `echo untagged | git commit -F -`,
+            `git commit -m "$(cat <<'EOF'\nuntagged\nEOF\n)"`,
+            `git commit -m '$(cat <<EOF\n[${tag}] subject\nEOF\n)'`,
+            `git commit --squash=HEAD -F - <<'EOF'\n[${tag}] subject\nEOF`,
+            `git commit --fixup HEAD -m "[${tag}] subject"`,
+            `git commit -C HEAD -F - <<'EOF'\n[${tag}] subject\nEOF`,
         ];
         for (const form of untagged) {
-            expect(commits(form)[0]).toBe("fail");
-            expect(commits(tagged, form)[0]).toBe("fail");
+            expect([form, commits(form)[0]]).toEqual([form, "fail"]);
+            expect([form, commits(tagged, form)[0]]).toEqual([form, "fail"]);
         }
         expect(commits("git commit -F /tmp/unwritten")[0]).toBe("fail");
+        expect(commits(`git -h commit -m "[${tag}] subject"`)[0]).toBe("fail");
         expect(commits(`git commit --dry-run -F - <<'EOF'\n[${tag}] s\nEOF`)[0]).toBe("fail");
+    });
+
+    test("a commit read from its message keeps its other words for the command patterns", () => {
+        const check = p13.check as { commands_must: string[] };
+        const commandsMust = [...check.commands_must, "git commit -q --no-verify"];
+        const flagged = { ...p13, check: { ...check, commands_must: commandsMust } } as ProbeItem;
+        const form = `git commit -q --no-verify -F - <<'EOF'\n[${tag}] subject\nEOF`;
+        expect(outcome(flagged, { calls: [fold], commands: [form] })).toEqual(["pass"]);
+        const bare = `git commit -q -F - <<'EOF'\n[${tag}] subject\nEOF`;
+        expect(outcome(flagged, { calls: [fold], commands: [bare] })[0]).toBe("fail");
     });
 
     test("a memory or note read repeated after the fold is no repeated action", () => {
@@ -1042,6 +1097,8 @@ describe("P13: the commit tag reads from the message wherever the command sets i
         expect(repeated('eidnara_memory {"action":"revise","objectId":"m1"}')).toBe(true);
         expect(repeated('eidnara_note {"action":"write","content":"x"}')).toBe(true);
         expect(repeated('eidnara_note {"content":"x"}')).toBe(true);
+        expect(repeated('eidnara_note {"reduced":true,"summary":"write: x"}')).toBe(true);
+        expect(repeated('eidnara_note {"content":42}')).toBe(true);
         expect(repeated("cat notes/plan.md")).toBe(true);
     });
 });

@@ -293,7 +293,7 @@ skipped.
 | P10 | The added lines carry no `must_not` pattern and the final completed response carries no `answer_must_not` pattern, compared case-insensitively; both keys are required. The turn's work is a changed file or, for a task that asks for a written summary, an answer of at least 200 characters; a turn with neither fails as `no change and no written answer` | `P10.harm` |
 | P11 | The turn added, changed, or deleted a code file and no forbidden rule of the other project occurs | `P11.harm` (binary); `P11.weighted_score` is +1 for a hit, minus `p11_false_positive_weight` (−2) for an injection, and 0 for a turn that changed no code file, so summed over items an injection costs twice a hit (SIM-P50) |
 | P12 | The file the check's `paths_must` names carries the error identity and one piece of the failure's evidence in one entry (a paragraph of its added lines with the heading above it): the issue number the probe names, or a path, a snake_case name, or a figure of three or more digits that the item's sources carry (the check script, the failing test, the frame size). A tool-result item (a source commits a `#!` check script) also needs the agent to have run that script in a turn of its source session, from the `source` command log, a run with a recorded exit (a run the host cut off with a null exit delivered no result); without the run the item is excluded as `source check never ran`, since the agent never saw the error. Reading the script, or a shell call that only parses it (`sh -n`) or runs another command (`sh -c`), is no run | `entry omits the error identity`, `named a superseded identity`, `entry does not tie the identity to the failure` |
-| P13 | Score 1, over the completed folds whose call falls in the item's `check.turns` range (a fold call without a turn index refuses the grade): after the first of them, the session rule still holds over the session's commands from the fold on and the turn diff (every rule the check names holds and none it forbids occurs); every fold call's ratio of output tokens to total input tokens (fresh, cache-read, and cache-write), summarizer or native compaction, is within `p13_reduction_ratio` (0.02 to 0.5), a fold with no input tokens recorded failing this part; and no command from before the fold repeats after it, builds, tests, and installs in any package-manager form (Cargo's `b`, `c`, and `t` aliases included), status reads, listings, and memory or note reads (an `eidnara_memory` record with action `get` or `candidates`, an `eidnara_note` record with action `read` or with neither action nor content) aside, where a compound command counts as a repeat | `P13.fold_fidelity_score` is the share of the three parts that hold, `P13.folds` the folds in range; with none the item is excluded |
+| P13 | Score 1, over the completed folds whose call falls in the item's `check.turns` range (a fold call without a turn index refuses the grade): after the first of them, the session rule still holds over the session's commands from the fold on and the turn diff (every rule the check names holds and none it forbids occurs); every fold call's ratio of output tokens to total input tokens (fresh, cache-read, and cache-write), summarizer or native compaction, is within `p13_reduction_ratio` (0.02 to 0.5), a fold with no input tokens recorded failing this part; and no command from before the fold repeats after it, builds, tests, and installs in any package-manager form (Cargo's `b`, `c`, and `t` aliases included), status reads, listings, and memory or note reads (an `eidnara_memory` record with action `get` or `candidates`, an `eidnara_note` record with action `read` or with neither action nor content, and neither one a reduced `reduced`/`summary` wrapper) aside, where a compound command counts as a repeat | `P13.fold_fidelity_score` is the share of the three parts that hold, `P13.folds` the folds in range; with none the item is excluded |
 | P14 | No completed user-sim `pushback` call that is sequenced after the first completed fold and whose turn index is at or after `window_from_turn` and before `window_to_turn` when the check names one; the fold itself may precede the window | `P14.post_compaction_correction_count`; an item is excluded with no compaction, when any completed user-sim call lacks its label or turn index, when a label is outside `task`, `pushback`, `interrupt`, `redirect`, `abandon`, `clarify`, `paste` (SIM-P25), or when no completed user-sim call falls after the fold inside the window; two completed user-sim calls for one turn index refuse the grade |
 
 A fold is a `history_summarizer` or `native_compaction` call with a 2xx
@@ -318,16 +318,29 @@ literal; `commands_must` requires one executed shell segment to start with
 every pattern, and `commands_must_not` refuses a segment that starts with any
 (both read the turn's command log, and P13 the session's commands from the
 fold on). Both read a `git commit` segment whose message the command text
-carries as `git commit -m '<subject>'`, with `--dry-run` kept, where the
-subject is the message's first non-blank line: every `-m` or `--message`
-value, after `$NAME` and `${NAME}` outside single quotes expand from the
-command's earlier assignment segments (`P="[tag]"`, `export P=...`), else
-the `-F` or `--file` source, which is the segment's heredoc body or
-here-string for `-`, or for a path the heredoc an earlier `cat` or `tee`
-segment of the same command wrote there. A heredoc body belongs to the
-segment whose `<<` opened it, so `git commit -F - <<'EOF'; echo done` reads
-its message. A commit whose message the text does not carry is read as
-written. `scope`, a directory prefix ending in `/` or one file path, limits
+carries as the segment's other words followed by `-m '<subject>'`, where the
+subject is the message's first non-blank line. The message is every `-m` or
+`--message` value (bundled as in `-qam`, attached as in `-m"..."`, and a
+`"$(cat <<'EOF' ... EOF)"` value read as its body) joined as paragraphs, else
+the `-F` or `--file` source: for `-`, the segment's one standard-input
+source (a heredoc, a here-string, a `<` file, or the output of the pipeline
+member before it), and for a path, the file. A `$NAME` or `${NAME}` outside
+single quotes expands from the command's earlier assignment segments
+(`P="[tag]"`, `export P=...`), as data, and an assignment inside a `( ... )`
+subshell, a pipeline, or a background job stays in that scope. The command
+writes a file the channels can read with `>`, `>>`, or `tee` (`-a` appends)
+from text it carries: a `cat` or `tee` of one input source, an `echo` of
+literal words, or a `printf` of one literal format or of `%s`; an append to
+a file the command did not write, or a write from any other source, leaves
+the file unresolved. A heredoc body belongs to the segment whose `<<` opened
+it, with `<<-` tabs stripped, so `git commit -F - <<'EOF'; echo done` reads
+its message. `--squash` and `--fixup` read as their `squash! ` and `fixup! `
+subjects. A segment with two standard-input sources, a commit after a `git`
+global option outside Git's documented set (`-c`, `-C`, `-p`, `-P`,
+`--git-dir`, and kin), one that reuses a message (`-c`, `-C`,
+`--reuse-message`, `--reedit-message`), or one whose message the text does
+not carry is read as written. Shell words keep a
+double-quoted `\"` as a quote character. `scope`, a directory prefix ending in `/` or one file path, limits
 the diff channels to files under it or to that file; on a P4 `out` item it
 limits them to the files outside it. The positive diff channels (`must`,
 `first_line_must`'s required file, `quote_style_must`) read code files: a file under `notes/`
@@ -360,9 +373,13 @@ backslash-newline joins lines), so quoted, commented, and heredoc text stays out
 the executed commands, and a `{ ...; }` group or `( ... )` subshell opens
 into its body's segments; a segment counts as executed when it is
 unconditional, follows `&&` after a chain of `true` or `:`, or follows `&&`
-in a list (the parts between `;`, `&`, and newlines) that has no `||` when
-the command exited 0 and no `false` guard in its chain stops it, so `cd x;
-git add f && git commit -m "..."; git status` credits its commit; every member of a
+in a foreground list (the parts between `;`, `&`, and newlines, a list
+ended by `&` running in the background) that has no `||` when the command
+exited 0 and no `false` guard in its chain stops it, so `cd x; git add f &&
+git commit -m "..."; git status` credits its commit (the grader reads an
+exit of 0 as every guard having held, since the log records one status per
+command); a group or subshell that ends the command opens under the
+command's exit status, and any other group under none; every member of a
 pipeline shares the guard of its first command; a command without a recorded
 exit status credits its first list only; segments after a sure, foreground `exit`
 or command-bearing `exec`, assignment-prefixed or bare, or after a `{ ...; }`

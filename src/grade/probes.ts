@@ -228,16 +228,20 @@ const RESEARCH_TOOLS = new Set([
     "todoread",
 ]);
 const SEARCH_RECORD = /^(grep|glob) \S+( [A-Za-z_]\w*=\S+)*(\n|$)/;
-const toolArguments = (command: string): boolean => {
+/** A research tool record's tool name and argument object, or null for any other command. */
+const toolCall = (command: string): { tool: string; args: Record<string, unknown> } | null => {
     const space = command.indexOf(" ");
-    if (space < 0 || !RESEARCH_TOOLS.has(command.slice(0, space))) return false;
+    const tool = command.slice(0, space);
+    if (space < 0 || !RESEARCH_TOOLS.has(tool)) return null;
     try {
         const args: unknown = JSON.parse(command.slice(space + 1));
-        return typeof args === "object" && args !== null && !Array.isArray(args);
+        if (typeof args !== "object" || args === null || Array.isArray(args)) return null;
+        return { tool, args: args as Record<string, unknown> };
     } catch {
-        return false;
+        return null;
     }
 };
+const toolArguments = (command: string): boolean => toolCall(command) !== null;
 const researchCall = (x: Command) => toolArguments(x.command) || SEARCH_RECORD.test(x.command);
 const INSPECTS = /^(cat|head|tail|nl|wc|grep|egrep|fgrep|rg|ag|ls|stat|file|read|sed|find|git)$/;
 /** `git` global options ahead of the subcommand, with the ones that take the next word. */
@@ -467,119 +471,6 @@ const invokes = (patterns: string[]) => (x: Command) =>
 const invokesAny = (patterns: string[]) => (x: Command) => patterns.some((p) => invokes([p])(x));
 
 /**
- * The executed segments of a command as the command channels read them: a `git commit` whose
- * message the command text carries reads as `git commit -m '<subject>'` (with its `--dry-run`),
- * so a check sees the message wherever it came from: `-m` and `--message` values with `$NAME`
- * and `${NAME}` expanded from the command's earlier assignments, a `-F -` heredoc or here-string,
- * or a `-F <path>` file an earlier `cat` or `tee` segment of the command wrote from a heredoc.
- */
-const checkedSegments = (x: Command): string[] => {
-    const vars = new Map<string, string>();
-    const files = new Map<string, string>();
-    return executedParts(x).map((p) => {
-        const seg = unprefixed(p.seg);
-        const words = shellWords(expanded(seg, vars));
-        const declared = /^(export|readonly|declare|local)$/.test(words[0] ?? "")
-            ? words.slice(1)
-            : words;
-        if (declared.length > 0 && declared.every((w) => /^[A-Za-z_]\w*=/.test(w))) {
-            for (const w of declared)
-                vars.set(w.slice(0, w.indexOf("=")), w.slice(w.indexOf("=") + 1));
-        }
-        for (const path of heredocTargets(words, p.body)) files.set(path, p.body);
-        const commit = commitMessage(words, p.body, files);
-        if (!commit) return seg;
-        const subject = commit.message.split("\n").find((l) => l.trim().length > 0) ?? "";
-        const dry = commit.dry ? " --dry-run" : "";
-        return `git commit${dry} -m '${subject.replace(/['\\]/g, "")}'`;
-    });
-};
-/** `$NAME` and `${NAME}` outside single quotes replaced by the value `vars` holds for NAME. */
-const expanded = (seg: string, vars: Map<string, string>): string => {
-    let out = "";
-    let quote = "";
-    for (let i = 0; i < seg.length; i++) {
-        const ch = seg[i] as string;
-        if (quote === "'") {
-            if (ch === "'") quote = "";
-        } else if (ch === "\\") {
-            out += ch + (seg[i + 1] ?? "");
-            i++;
-            continue;
-        } else if (ch === "'" && !quote) quote = "'";
-        else if (ch === '"') quote = quote ? "" : '"';
-        else if (ch === "$") {
-            const m = /^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/.exec(seg.slice(i));
-            const value = vars.get(m?.[1] ?? m?.[2] ?? "");
-            if (m && value !== undefined) {
-                out += value;
-                i += m[0].length - 1;
-                continue;
-            }
-        }
-        out += ch;
-    }
-    return out;
-};
-/** The files a `cat` or `tee` segment writes from its heredoc body: its `>`/`>>` targets and tee's operands. */
-const heredocTargets = (words: string[], body: string): string[] => {
-    if (!body || !/^(cat|tee)$/.test(words[0] ?? "")) return [];
-    const split = splitRedirections(words);
-    const targets: string[] = [];
-    for (let i = 1; i < split.length; i++) {
-        const w = split[i] as string;
-        if (/^>>?$/.test(w)) targets.push(split[++i] ?? "");
-        else if (/^>>?./.test(w)) targets.push(w.replace(/^>>?/, ""));
-        else if (words[0] === "tee" && !w.startsWith("-") && !/^\d*[<>]/.test(w)) targets.push(w);
-    }
-    return targets.filter((t) => t.length > 0);
-};
-/**
- * The message of a `git [global options] commit` segment's words, or null when the segment is no
- * commit or the command text does not carry its message: every `-m`/`--message` value as one
- * paragraph, else the `-F`/`--file` source (`-` reads the heredoc `body` or a here-string).
- */
-const commitMessage = (
-    words: string[],
-    body: string,
-    files: Map<string, string>,
-): { message: string; dry: boolean } | null => {
-    if (words[0] !== "git") return null;
-    let i = 1;
-    while (i < words.length && (words[i] as string).startsWith("-")) {
-        const w = words[i] as string;
-        i += /^(-c|-C|--git-dir|--work-tree|--namespace|--exec-path|--config-env)$/.test(w) ? 2 : 1;
-    }
-    if (words[i] !== "commit") return null;
-    const messages: string[] = [];
-    let file: string | undefined;
-    let dry = false;
-    for (let j = i + 1; j < words.length; j++) {
-        const w = words[j] as string;
-        if (w === "--") break;
-        if (w === "--dry-run") dry = true;
-        else if (/^(-[A-Za-z]*m|--message)$/.test(w)) messages.push(words[++j] ?? "");
-        else if (w.startsWith("--message=")) messages.push(w.slice("--message=".length));
-        else if (/^-m./.test(w)) messages.push(w.slice(2));
-        else if (/^(-[A-Za-z]*F|--file)$/.test(w)) file = words[++j];
-        else if (w.startsWith("--file=")) file = w.slice("--file=".length);
-        else if (/^-F./.test(w)) file = w.slice(2);
-    }
-    if (messages.length > 0) return { message: messages.join("\n\n"), dry };
-    if (file === undefined) return null;
-    if (file !== "-") {
-        const written = files.get(file);
-        return written === undefined ? null : { message: written, dry };
-    }
-    const at = words.findIndex((w) => w.startsWith("<<<"));
-    if (at >= 0) {
-        const w = words[at] as string;
-        return { message: w === "<<<" ? (words[at + 1] ?? "") : w.slice(3), dry };
-    }
-    return body ? { message: body, dry } : null;
-};
-
-/**
  * The statements an `applies` pattern finds in the files' added lines: each match extended to the
  * end of its line, and over following lines while a bracket it opened stays open (ten lines at most).
  * Patterns and brackets read the code mask, so a comment or a string literal starts no unit and
@@ -736,7 +627,7 @@ function splitShell(command: string): Segment[] {
             const line = head.stripTabs ? raw.replace(/^\t+/, "") : raw;
             const owner = out[head.owner];
             if (line === head.delim) pending.shift();
-            else if (owner) owner.body += `${raw}\n`;
+            else if (owner) owner.body += `${line}\n`;
             i = end < 0 ? command.length : end + 1;
         }
         return i;
@@ -840,83 +731,370 @@ const terminates = (segment: string): boolean => {
     const sure = sureParts(inner);
     return inner.some((_p, i) => terminalAt(inner, i, sure[i] as boolean));
 };
+/** A reachable part, with the exit status its group body runs under when it is a group. */
+interface Reached extends Segment {
+    status?: number | null;
+}
 /**
  * The reachable parts of one command list given its exit status: a number, null for a command
  * cut off before it finished, or undefined for a completed group whose own status is unrecorded.
- * The grader credits an `&&` continuation of a command that exited 0 in every `;`-, `&`-, or
+ * The grader credits an `&&` continuation of a command that exited 0 in every foreground `;`- or
  * newline-separated list that holds no `||`, unless a `false` guard in its chain stops it; a list
- * with `||` keeps its sure parts only.
+ * with `||` or one run in the background with `&` keeps its sure parts only. A group that ends
+ * the command runs under the command's exit status.
  */
-const reachableParts = (command: string, exit: number | null | undefined): Segment[] => {
+const reachableParts = (command: string, exit: number | null | undefined): Reached[] => {
     const parts = splitShell(command);
+    const sure = sureParts(parts);
     let guard = ";";
     let list = -1;
     let stopped = false;
-    const lists: number[] = [];
-    const dead: boolean[] = [];
+    const background = new Set<number>();
     const guarded = parts.map((p, i) => {
         guard = p.op === "|" ? guard : p.op;
         if (/^[;&\n]$/.test(p.op) || list < 0) {
+            if (p.op === "&" && list >= 0) background.add(list);
             list++;
             stopped = false;
         } else if (p.op === "&&") {
             stopped = stopped || /^false$/.test(unprefixed(parts[i - 1]?.seg ?? ""));
         }
-        lists.push(list);
-        dead.push(stopped);
-        return { ...p, op: guard, piped: p.op === "|" };
+        const status = i === parts.length - 1 ? exit : undefined;
+        return { ...p, op: guard, piped: p.op === "|", list, stopped, sure: sure[i], status };
     });
-    const sure = sureParts(parts);
-    const mixed = new Set(lists.filter((_n, i) => guarded[i]?.op === "||"));
+    const mixed = new Set(guarded.filter((p) => p.op === "||").map((p) => p.list));
     const firstListEnd = guarded.findIndex((p, i) => i > 0 && /^[;&\n]$/.test(p.op));
-    const exitAt = guarded.findIndex((_p, i) => terminalAt(parts, i, sure[i] as boolean));
+    const exitAt = guarded.findIndex((p, i) => terminalAt(parts, i, p.sure as boolean));
     const afterExit = exitAt < 0 ? guarded.length : exitAt + 1;
     const unfinished = exit === null && firstListEnd >= 0 ? firstListEnd : guarded.length;
     const reached = Math.min(afterExit, unfinished);
+    const credited = (p: (typeof guarded)[number]) =>
+        p.op === "&&" && exit === 0 && !p.stopped && !mixed.has(p.list) && !background.has(p.list);
     return guarded
         .slice(0, reached)
-        .filter(
-            (p, i) =>
-                (sure[i] as boolean) ||
-                (p.op === "&&" && exit === 0 && !mixed.has(lists[i] as number) && !dead[i]),
-        );
+        .filter((p) => p.sure || credited(p))
+        .map(({ op, seg, body, piped, status }) => ({ op, seg, body, piped, status }));
 };
-/** A group or subshell part opens into its body's reachable parts; the body's own status is unknown. */
-const flattened = (p: Segment): Segment[] => {
+/** A group or subshell part opens into its body's reachable parts, under the part's status. */
+const flattened = (p: Reached): Segment[] => {
     const group = groupBody(p.seg);
     if (!group) return [p];
-    return reachableParts(group.body, undefined).flatMap(flattened);
+    return reachableParts(group.body, p.status).flatMap(flattened);
 };
 const executedParts = (x: Command): Segment[] =>
     reachableParts(x.command, x.exit).flatMap(flattened);
 const executed = (x: Command): string[] => executedParts(x).map((p) => unprefixed(p.seg));
-/** Shell words of a segment, with quotes grouping and removed. */
-const shellWords = (segment: string): string[] => {
-    const words: string[] = [];
+const VARIABLE = /^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/;
+/** A shell word, and whether it starts with unquoted, unescaped text, as a redirection operator must. */
+interface Token {
+    text: string;
+    bare: boolean;
+    /** The word starts inside single quotes or with an escape, so a leading `$(` is literal text. */
+    literal: boolean;
+}
+/**
+ * Shell words of a segment, with quotes grouping and removed; inside double quotes a backslash
+ * escapes only a double quote, a backslash, `$`, a backtick, and a newline. With `vars`, a `$NAME` or `${NAME}`
+ * outside single quotes whose name `vars` holds expands as data: whole inside double quotes, and
+ * split on whitespace outside quotes.
+ */
+const shellTokens = (segment: string, vars?: ReadonlyMap<string, string>): Token[] => {
+    const tokens: Token[] = [];
     let word = "";
+    let bare: boolean | null = null;
+    let literal: boolean | null = null;
     let quote = "";
     let open = false;
     let escaped = false;
-    for (const ch of segment) {
+    const end = () => {
+        if (word.length > 0 || open)
+            tokens.push({ text: word, bare: bare === true, literal: literal === true });
+        word = "";
+        bare = null;
+        literal = null;
+        open = false;
+    };
+    for (let i = 0; i < segment.length; i++) {
+        const ch = segment[i] as string;
+        const expands = vars !== undefined && ch === "$" && !escaped && quote !== "'";
+        const variable = expands ? VARIABLE.exec(segment.slice(i)) : null;
+        const value = variable ? vars?.get(variable[1] ?? variable[2] ?? "") : undefined;
         if (escaped) {
             word += ch;
             escaped = false;
+        } else if (variable && value !== undefined) {
+            i += variable[0].length - 1;
+            bare ??= false;
+            literal ??= false;
+            if (quote) word += value;
+            else {
+                const [first, ...rest] = value.split(/\s+/);
+                word += first ?? "";
+                for (const piece of rest) {
+                    end();
+                    word = piece;
+                    bare = false;
+                    literal = false;
+                }
+            }
+        } else if (quote === '"' && ch === "\\" && /^[\n"\\$`]$/.test(segment[i + 1] ?? "")) {
+            i++;
+            if (segment[i] !== "\n") word += segment[i];
         } else if (quote) {
             if (ch === quote) quote = "";
             else word += ch;
         } else if (ch === "\\") {
             escaped = true;
+            bare ??= false;
+            literal ??= true;
         } else if (ch === "'" || ch === '"') {
             quote = ch;
             open = true;
-        } else if (/\s/.test(ch)) {
-            if (word.length > 0 || open) words.push(word);
-            word = "";
-            open = false;
-        } else word += ch;
+            bare ??= false;
+            literal ??= ch === "'";
+        } else if (/\s/.test(ch)) end();
+        else {
+            bare ??= true;
+            literal ??= false;
+            word += ch;
+        }
     }
-    if (word.length > 0 || open) words.push(word);
-    return words;
+    end();
+    return tokens;
+};
+const shellWords = (segment: string, vars?: ReadonlyMap<string, string>): string[] =>
+    shellTokens(segment, vars).map((t) => t.text);
+/** A segment's words split into arguments, its standard-input sources in order, and its standard-output files. */
+interface Redirected {
+    args: string[];
+    /** Per argument, whether it starts as literal text (`Token.literal`). */
+    literal: boolean[];
+    stdin: { kind: "heredoc" | "string" | "file"; value: string }[];
+    out: { path: string; append: boolean }[];
+    heredocs: number;
+}
+const REDIRECTION = /^(\d*)(<<<|<<-|<<|<>|<&|<|>>|>&|>\||>|&>>|&>)(.*)$/s;
+const redirected = (tokens: Token[]): Redirected => {
+    const r: Redirected = { args: [], literal: [], stdin: [], out: [], heredocs: 0 };
+    for (let i = 0; i < tokens.length; i++) {
+        const token = tokens[i] as Token;
+        const m = token.bare ? REDIRECTION.exec(token.text) : null;
+        if (!m) {
+            r.args.push(token.text);
+            r.literal.push(token.literal);
+            continue;
+        }
+        const [, fd, op, attached] = m as unknown as [string, string, string, string];
+        const operand = attached.length > 0 ? attached : (tokens[++i]?.text ?? "");
+        const input = fd === "" || fd === "0";
+        if (op.startsWith("<<") && op !== "<<<") r.heredocs++;
+        if (op === "<<<" && input) r.stdin.push({ kind: "string", value: `${operand}\n` });
+        else if (op.startsWith("<<") && op !== "<<<" && input)
+            r.stdin.push({ kind: "heredoc", value: "" });
+        else if ((op === "<" || op === "<>" || op === "<&") && input)
+            r.stdin.push({ kind: "file", value: operand });
+        else if (
+            /^(>|>>|>\||&>|&>>)$/.test(op) &&
+            (fd === "" || fd === "1" || op.startsWith("&"))
+        ) {
+            r.out.push({ path: operand, append: op.endsWith(">>") });
+        }
+    }
+    return r;
+};
+/**
+ * The text a part sends to standard output when the command text carries it: an `echo` of literal
+ * words, a `printf` of one literal format or of `%s` with its arguments, or a `cat` or `tee` of a
+ * single standard-input source (a heredoc, a here-string, a file the command wrote, or the
+ * output piped in).
+ */
+const outputOf = (
+    r: Redirected,
+    body: string,
+    files: ReadonlyMap<string, string>,
+    piped: string | null,
+): string | null => {
+    const [command, ...rest] = r.args;
+    if (command === "echo") {
+        const flags = /^-[neE]+$/.test(rest[0] ?? "") ? (rest[0] as string) : "";
+        const words = flags ? rest.slice(1) : rest;
+        return `${words.join(" ")}${flags.includes("n") ? "" : "\n"}`;
+    }
+    if (command === "printf") {
+        const [format, ...values] = rest;
+        if (format === undefined) return null;
+        const escapes = (t: string) => t.replace(/\\n/g, "\n").replace(/\\t/g, "\t");
+        if (/^%s(\\n)?$/.test(format))
+            return values.map((v) => escapes(format.replace("%s", v))).join("");
+        return format.includes("%") ? null : escapes(format);
+    }
+    if (command !== "cat" && command !== "tee") return null;
+    if (command === "cat" && rest.some((w) => !w.startsWith("-"))) return null;
+    return stdinOf(r, body, files, piped);
+};
+/** The single standard-input source of a part, or null when it has none the text carries or more than one. */
+const stdinOf = (
+    r: Redirected,
+    body: string,
+    files: ReadonlyMap<string, string>,
+    piped: string | null,
+): string | null => {
+    if (r.stdin.length === 0) return piped;
+    if (r.stdin.length > 1) return null;
+    const only = r.stdin[0] as Redirected["stdin"][number];
+    if (only.kind === "string") return only.value;
+    if (only.kind === "heredoc") return r.heredocs === 1 ? body : null;
+    return files.get(only.value) ?? null;
+};
+/** `git` global options that take the next word as their value, and those that stand alone. */
+const GIT_VALUE_GLOBALS = /^(-c|-C|--git-dir|--work-tree|--namespace|--config-env|--attr-source)$/;
+const GIT_FLAG_GLOBALS =
+    /^(-p|-P|--paginate|--no-pager|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--no-optional-locks|--no-lazy-fetch|--bare|--(git-dir|work-tree|namespace|config-env|attr-source|exec-path)=.*)$/;
+/** `git commit` short options that take a value, and those whose value can only be attached. */
+const COMMIT_VALUE_SHORT = "mFt";
+const COMMIT_ATTACHED_SHORT = "Su";
+/** Options with which Git builds the subject itself: `squash! ...`, `fixup! ...`, or a reused message. */
+const GENERATED_SUBJECT = /^--(squash|fixup|reuse-message|reedit-message)(=|$)/;
+/** `-m "$(cat <<'EOF' ... EOF)"`: the heredoc body a command substitution of `cat` prints. */
+const CAT_SUBSTITUTION =
+    /^\$\(\s*cat\s*<<-?\s*(['"]?)([A-Za-z_]\w*)\1[ \t]*\n([\s\S]*?\n)[ \t]*\2[ \t]*\n\s*\)$/;
+/**
+ * A `git [global options] commit` part rewritten with its message as `-m '<subject>'` after its
+ * other words, or null when the part is no commit, reuses another commit's message, or the command
+ * text does not carry the message; `--squash` and `--fixup` read as their `squash! ` and `fixup! `
+ * subjects. The message is every `-m`/`--message` value as one paragraph
+ * (an unquoted or double-quoted `$(cat <<EOF ...)` value reads as its body), else the
+ * `-F`/`--file` source: the part's standard input for `-`, or a file the command wrote. The
+ * subject is the message's first non-blank line.
+ */
+const commitRead = (
+    r: Redirected,
+    body: string,
+    files: ReadonlyMap<string, string>,
+    piped: string | null,
+): string | null => {
+    const words = r.args;
+    if (words[0] !== "git") return null;
+    let i = 1;
+    while (i < words.length && (words[i] as string).startsWith("-")) {
+        const w = words[i] as string;
+        if (GIT_VALUE_GLOBALS.test(w)) i += 2;
+        else if (GIT_FLAG_GLOBALS.test(w)) i++;
+        else return null;
+    }
+    if (words[i] !== "commit") return null;
+    const kept = words.slice(0, i + 1);
+    const messages: string[] = [];
+    let file: string | undefined;
+    const message = (j: number, value: string) =>
+        messages.push(r.literal[j] ? value : (CAT_SUBSTITUTION.exec(value)?.[3] ?? value));
+    for (let j = i + 1; j < words.length; j++) {
+        const w = words[j] as string;
+        if (w === "--") {
+            kept.push(...words.slice(j));
+            break;
+        }
+        const generated = GENERATED_SUBJECT.exec(w)?.[1];
+        if (generated === "squash" || generated === "fixup") {
+            return [...words.slice(0, i + 1), "-m", `${generated}! `].map(shellQuoted).join(" ");
+        }
+        if (generated) return null;
+        if (w === "--message") {
+            j++;
+            message(j, words[j] ?? "");
+        } else if (w === "--file") file = words[++j] ?? "";
+        else if (w.startsWith("--message=")) messages.push(w.slice("--message=".length));
+        else if (w.startsWith("--file=")) file = w.slice("--file=".length);
+        else if (/^-[^-]/.test(w)) {
+            let flags = "-";
+            for (let k = 1; k < w.length; k++) {
+                const ch = w[k] as string;
+                if (ch === "c" || ch === "C") return null;
+                if (COMMIT_ATTACHED_SHORT.includes(ch)) {
+                    flags += w.slice(k);
+                    break;
+                }
+                if (!COMMIT_VALUE_SHORT.includes(ch)) {
+                    flags += ch;
+                    continue;
+                }
+                const attached = k + 1 < w.length;
+                const value = attached ? w.slice(k + 1) : (words[++j] ?? "");
+                if (ch === "m") {
+                    if (attached) messages.push(value);
+                    else message(j, value);
+                } else if (ch === "F") file = value;
+                else kept.push(`-${ch}`, value);
+                break;
+            }
+            if (flags.length > 1) kept.push(flags);
+        } else kept.push(w);
+    }
+    let text: string | null;
+    if (messages.length > 0) text = messages.join("\n\n");
+    else if (file === undefined) return null;
+    else text = file === "-" ? stdinOf(r, body, files, piped) : (files.get(file) ?? null);
+    if (text === null) return null;
+    const subject = text.split("\n").find((l) => l.trim().length > 0) ?? "";
+    return [...kept, "-m", subject].map(shellQuoted).join(" ");
+};
+const shellQuoted = (w: string) =>
+    /^[\w@%+=:,./-]+$/.test(w) ? w : `'${w.replace(/'/g, "'\\''")}'`;
+/**
+ * The executed segments of a command as the command channels read them. A `git commit` whose
+ * message the command text carries reads as `commitRead` rewrites it, so a check sees the message
+ * wherever it came from: `-m` values with `$NAME` expanded from the command's earlier assignments,
+ * a heredoc, a here-string, or piped output for `-F -`, or for `-F <path>` a file an earlier part
+ * of the command wrote from text it carries. Assignments made in a `( ... )` subshell, a pipeline,
+ * or a background job stay in that scope; a `>>` append extends a file the command wrote and
+ * leaves one it did not unresolved.
+ */
+const checkedSegments = (x: Command): string[] => {
+    const files = new Map<string, string>();
+    const walk = (parts: Reached[], vars: Map<string, string>): string[] => {
+        let piped: string | null = null;
+        return parts.flatMap((p, i) => {
+            const inPipe = p.piped || parts[i + 1]?.piped === true;
+            const isolated = inPipe || parts[i + 1]?.op === "&";
+            const from = p.piped ? piped : null;
+            piped = null;
+            const group = groupBody(p.seg);
+            if (group) {
+                const scope = group.brace && !isolated ? vars : new Map(vars);
+                return walk(reachableParts(group.body, p.status), scope);
+            }
+            const all = shellWords(p.seg, vars);
+            const named = /^(export|readonly|declare)$/.test(all[0] ?? "") ? all.slice(1) : all;
+            if (named.length > 0 && named.every((w) => /^[A-Za-z_]\w*=/.test(w))) {
+                if (!isolated)
+                    for (const w of named)
+                        vars.set(w.slice(0, w.indexOf("=")), w.slice(w.indexOf("=") + 1));
+                return [unprefixed(p.seg)];
+            }
+            const r = redirected(shellTokens(unprefixed(p.seg), vars));
+            const output = outputOf(r, p.body, files, from);
+            const targets = [
+                ...r.out,
+                ...(r.args[0] === "tee"
+                    ? r.args
+                          .slice(1)
+                          .filter((w) => !w.startsWith("-"))
+                          .map((path) => ({
+                              path,
+                              append: r.args.some((w) => /^(-a|--append)$/.test(w)),
+                          }))
+                    : []),
+            ];
+            for (const t of targets) {
+                const before = files.get(t.path);
+                if (output === null || (t.append && before === undefined)) files.delete(t.path);
+                else files.set(t.path, t.append ? `${before}${output}` : output);
+            }
+            if (inPipe && r.out.length === 0) piped = output;
+            return [commitRead(r, p.body, files, from) ?? unprefixed(p.seg)];
+        });
+    };
+    return walk(reachableParts(x.command, x.exit), new Map());
 };
 /** Options whose value is the next word, so that word is neither pattern nor file, per command. */
 const VALUE_OPTIONS: Record<string, RegExp> = {
@@ -1146,15 +1324,18 @@ function p6(r: ArtefactReader, c: Check, probe: ProbeItem): Outcome {
     );
 }
 
+/**
+ * An `eidnara_memory` get or candidates call, or an `eidnara_note` read (its default without
+ * content). A reduced wrapper (`reduced`, `summary`) hides its real action, so it reads as work.
+ */
 const memoryRead = (x: Command): boolean => {
-    if (!toolArguments(x.command)) return false;
-    const space = x.command.indexOf(" ");
-    const tool = x.command.slice(0, space);
-    const args = JSON.parse(x.command.slice(space + 1)) as { action?: unknown; content?: unknown };
-    if (tool === "eidnara_memory") return args.action === "get" || args.action === "candidates";
-    if (tool !== "eidnara_note") return false;
-    const empty = typeof args.content !== "string" || args.content.trim().length === 0;
-    return args.action === "read" || (args.action === undefined && empty);
+    const call = toolCall(x.command);
+    if (!call || "reduced" in call.args || "summary" in call.args) return false;
+    const { action, content } = call.args;
+    if (call.tool === "eidnara_memory") return action === "get" || action === "candidates";
+    if (call.tool !== "eidnara_note") return false;
+    const empty = content === undefined || (typeof content === "string" && content.trim() === "");
+    return action === "read" || (action === undefined && empty);
 };
 
 function p13(r: ArtefactReader, c: Check, rules: Rules): Outcome {
