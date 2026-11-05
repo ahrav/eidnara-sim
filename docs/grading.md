@@ -274,9 +274,40 @@ It removes any `grade-summary.json` in the run directory when it starts,
 under the run's lease, and writes the same summary there atomically when it
 finishes, so the cost panel prices only a finished pass over the journal as
 it stands; it exits 1 when a judge call failed. The scenario plants no canary
-strings, so it passes the judge none; blinding still refuses arm names. P14 items have no probe turn of their
-own and wait on the user simulator's labels (M6), so it lists them as
-skipped.
+strings, so it passes the judge none; blinding still refuses arm names.
+
+A P14 item has no probe turn of its own. Once the arm delivered the item's
+`event` (its session's last user turn), grade-run grades it from a session
+view it builds: one `proxy-call` artefact, id `<arm>:<item>:<session>:calls`,
+in a snapshot `<arm>:<item>:<session>` that no capture wrote. The view holds
+the session's `calls.jsonl` records, every component but the user
+simulator's, projected as a capture projects them, with the arm's delivered
+`UserTurn` rows of the session placed among them at their `BeginTurn` time
+(`sessionTurns`, the placement a capture uses). A P14 item whose last turn
+the arm has not delivered is skipped as `P14 session unfinished`. The
+user simulator's `pushback` labels come from the seeded behaviour plan
+(`docs/user-sim.md`), so both arms of one seed receive pushback on the same
+turns: in c7 S-101 and M-201 the host and Eidnara arms carry 815 and 1,193
+pushback turns on identical events. A P14 count therefore moves with the
+presence and turn of the session's first fold and the plan, and two arms
+differ on it only through when they fold.
+
+A run whose arms exclude `host` skips each P7 item of a memory arm as
+`P7 host arm in another run`. `scripts/p7-pair.ts <host run> <memory run>
+<out dir>` grades those items: it opens each run with grade-run's checks
+(`openRun`: manifest inputs, seed order, a complete journal, arm
+capabilities, and every journaled snapshot against its journal entries and
+its session's recorded calls), requires the two manifests to agree on tier,
+seed, scenario hash, pre-registration digest, event count, host, models,
+context limit, fault schedule, user-sim model, corpus, and qualification,
+requires the host run to hold `host` and the memory run memory arms and no
+`host`, and pairs and judges each item as grade-run does in one run
+(`p7Pairs`, `judgeP7`). Neither run is written. The out directory holds
+`pair.json` (both runs' paths, manifest and journal SHA-256, and arms),
+`judge-calls.jsonl`, `judgments.jsonl`, `grades.jsonl`, and
+`p7-summary.json`; a later pass refuses an out directory whose `pair.json`
+names other manifest or journal digests, and skips a pair this grader
+already graded.
 
 ## Graders
 

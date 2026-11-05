@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { GradeRecord } from "../grade/probes";
+import { type GradeRecord, P7_HOST_ELSEWHERE } from "../grade/probes";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
 import { HARNESS } from "../oracle/oracles";
 import type { CallRecord } from "../proxy/records";
@@ -111,10 +111,12 @@ function gradingComplete(run: RunLogs): boolean {
 }
 
 /**
- * The grader's skip reasons that leave no useful item ungraded: P14 items have no probe turn, and
- * an item graded by an earlier pass of the same grader keeps that grade in the summary.
+ * The grader's skip reasons that leave no useful item ungraded: an item graded by an earlier pass
+ * of the same grader keeps that grade in the summary, a P7 item of a run without the host arm is
+ * graded by the pairing step, and a summary from a grader before session-level P14 grading lists
+ * its P14 items as having no probe turn.
  */
-const COVERED_SKIPS = new Set(["P14 has no probe turn", "already graded"]);
+const COVERED_SKIPS = new Set(["P14 has no probe turn", "already graded", P7_HOST_ELSEWHERE]);
 
 /**
  * The arm's cost at the price table its run recorded; `null` for a run that recorded none, and

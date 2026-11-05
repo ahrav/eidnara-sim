@@ -87,7 +87,9 @@ P7 against each memory arm, each grade naming that arm in `against`) passes when
 latest grade in every pair passes; `passes` and `usd_per_pass` are `null` until
 `grade-summary.json`, which `bun scripts/grade-run.ts` removes when it
 starts and writes when it finishes, shows `judge_errors: 0`, a `journal_seq` equal to the run journal's last
-`seq`, and no skipped item in any arm other than P14's (which has no probe turn), so
+`seq`, and no skipped item in any arm other than an already graded one, a P7
+item of a run without the host arm (graded by `scripts/p7-pair.ts`), or, in a
+summary from a grader before session-level P14 grading, a P14 item, so
 a grading pass cut short, a rerun cut short, an ungraded run, a run
 resumed after grading, or an item the grader skipped (no journaled
 snapshot, a P7 pair without two completed snapshots) reports no total.

@@ -36,7 +36,9 @@ import {
     gradeItem,
     graderDigest,
     needsSourceCommands,
+    P7_HOST_ELSEWHERE,
     RECORDED_TYPES,
+    type Rules,
     requireEvidence,
     type SourceEvent,
     verdictCounts,
@@ -45,7 +47,7 @@ import { armBase, requireSeedOrder } from "../src/hosts/arms";
 import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
 import { qualificationSeed } from "../src/prereg/qualification";
 import { preregistrationHash } from "../src/prereg/validate";
-import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
+import { bedrockUpstream, Gateway, type Upstream } from "../src/proxy/gateway";
 import { FaultInjector } from "../src/proxy/inject";
 import type { CallRecord } from "../src/proxy/records";
 import { RecordWriter } from "../src/proxy/records";
@@ -62,9 +64,10 @@ import {
     requireComplete,
     takeLease,
 } from "../src/run/journal";
-import { sessionViews, simIdentity } from "../src/run/run";
+import { sessionViews, simIdentity, withUserTurns } from "../src/run/run";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { admittedArms, loadPrereg, loadQualification } from "../src/scenario/inputs";
+import { sessionTurns } from "../src/usersim/plan";
 
 export interface Summary {
     /** Verdict counts over the run's current grades, the ones kept from earlier passes included. */
@@ -182,14 +185,21 @@ interface RecordedCall {
     digest: string;
 }
 
+/**
+ * `recorded` holds each `wanted` session's calls as digests; `views` holds each `whole`
+ * session's call views, every component but the user simulator's, as a capture at the session's
+ * end would hold them.
+ */
 async function sessionCalls(
     path: string,
     wanted: ReadonlySet<string>,
     turnIndex: Map<string, number>,
     models: readonly string[],
-): Promise<Map<string, RecordedCall[]>> {
+    whole: ReadonlySet<string> = new Set(),
+): Promise<{ recorded: Map<string, RecordedCall[]>; views: Map<string, CallView[]> }> {
     requireAppendable(path);
     const recorded = new Map<string, RecordedCall[]>();
+    const views = new Map<string, CallView[]>();
     const projectors = new Map<string, (r: CallRecord) => CallView>();
     const agentModels = new Set<string>();
     let next = 0;
@@ -205,7 +215,7 @@ async function sessionCalls(
         next = placed.offset + placed.length;
         line++;
         const key = `${r.arm}/${r.session}`;
-        if (blank !== null || !placed.ended || !wanted.has(key)) continue;
+        if (blank !== null || !placed.ended || !(wanted.has(key) || whole.has(key))) continue;
         let project = projectors.get(key);
         if (!project) {
             project = sessionViews(turnIndex);
@@ -214,6 +224,12 @@ async function sessionCalls(
         // A user-sim record moves the session's running turn index; the prefix check skips it.
         const view = project(r);
         if (view.component === "user-sim") continue;
+        if (whole.has(key)) {
+            const list = views.get(key);
+            if (list) list.push(view);
+            else views.set(key, [view]);
+        }
+        if (!wanted.has(key)) continue;
         const call: RecordedCall = {
             seq: view.seq,
             component: view.component,
@@ -235,7 +251,7 @@ async function sessionCalls(
     if (blank !== null) {
         throw new HarnessFailure(`${path} line ${blank + 1} is corrupt: not JSON`);
     }
-    return recorded;
+    return { recorded, views };
 }
 
 /** Reads one placed record back from its file. */
@@ -326,7 +342,190 @@ function requireGradableTypes(scenario: Scenario): void {
     }
 }
 
-async function grade(dir: string, config: SimConfig | null, regrade: boolean): Promise<Summary> {
+/** A P7 item's memory-arm snapshots paired with the host arm's, for one memory arm. */
+export interface P7Pair {
+    probe: Scenario["probes"][number];
+    arm: string;
+    a: Snapshot;
+    b: Snapshot;
+    rows: { a: Snapshot[]; b: Snapshot[] };
+}
+
+/** The attempts and journal reading one run gives a P7 side. */
+type P7Side = Pick<OpenRun, "attempts" | "unjournaled" | "ran">;
+
+/**
+ * Pairs each P7 item's memory-arm snapshot with the host arm's. `memory` and `host` are the same
+ * run when one run holds both arms, and two finished runs of one scenario otherwise.
+ */
+export function p7Pairs(o: {
+    probes: Scenario["probes"];
+    memoryArms: readonly string[];
+    memory: P7Side;
+    host: P7Side;
+    outside: string;
+    skip: (arm: string, why: string) => void;
+    gradedBefore: (item: string, arm: string, against: string, snapshot: string) => boolean;
+}): P7Pair[] {
+    const { memory, host, skip } = o;
+    return o.probes.flatMap((probe) =>
+        o.memoryArms.flatMap((arm) => {
+            if (!memory.ran.has(probe.id) || !host.ran.has(probe.id)) {
+                for (const side of [arm, "host"]) skip(side, o.outside);
+                return [];
+            }
+            const runs: Record<string, P7Side> = { [arm]: memory, host };
+            const sides = {
+                [arm]: memory.attempts(arm, probe.id),
+                host: host.attempts("host", probe.id),
+            };
+            const lost = new Set<string>();
+            for (const [side, rows] of Object.entries(sides)) {
+                if (!rows)
+                    skip(side, (runs[side] as P7Side).unjournaled(side, probe.id, probe.event));
+                else if (rows[0]?.turn_outcome !== "ok") skip(side, "P7 probe turn failed");
+                else continue;
+                lost.add(side);
+            }
+            for (const side of Object.keys(sides)) {
+                if (lost.size > 0 && !lost.has(side)) skip(side, "P7 pairing lost");
+            }
+            const [mine, theirs] = [sides[arm], sides.host];
+            if (lost.size > 0 || !mine?.[0] || !theirs?.[0]) return [];
+            // The pair's two grades land in one write, host side first, so the memory arm's grade
+            // means its pair stands.
+            if (o.gradedBefore(probe.id, arm, "host", mine[0].id)) {
+                for (const side of [arm, "host"]) skip(side, "already graded");
+                return [];
+            }
+            for (const side of [mine[0], theirs[0]]) requireEvidence(probe, side);
+            return [{ probe, arm, a: mine[0], b: theirs[0], rows: { a: mine, b: theirs } }];
+        }),
+    );
+}
+
+/** The judge behind the firewall, which refuses a judge model of any run model's family. */
+export function judgeFirewall(url: string, rules: Rules, models: readonly string[]) {
+    const judges = models.map((m) => proxyJudge(url, rules.judge.model, m));
+    if (!judges[0]) throw new Error("the manifest records no run model");
+    return judges[0];
+}
+
+/**
+ * Judges each pair through a gateway it starts, logging the judge's calls to `judge-calls.jsonl`
+ * and one row per judged pair to `judgments.jsonl` in `dir`. The returned grades put each pair's
+ * host grade before its memory arm's; none is returned when a judge-log write failed.
+ */
+export async function judgeP7(o: {
+    pairs: readonly P7Pair[];
+    dir: string;
+    upstream: Upstream;
+    seed: number;
+    rules: Rules;
+    models: readonly string[];
+    skip: (arm: string, why: string) => void;
+}): Promise<{ grades: GradeRecord[]; judgeErrors: number }> {
+    const { pairs, dir, upstream, seed, rules, models, skip } = o;
+    const grades: GradeRecord[] = [];
+    let judgeErrors = 0;
+    for (const name of ["judge-calls.jsonl", "judgments.jsonl"]) requireAppendable(join(dir, name));
+    const records = new RecordWriter(join(dir, "judge-calls.jsonl"), { resume: true });
+    const gateway = new Gateway({
+        upstream,
+        records,
+        injector: new FaultInjector([], new Rng(1), 1_000),
+        rng: new Rng(seed),
+        clock: { scenarioMs: () => 0 },
+        scope: () => ({ arm: "judge", session: null, turn: null }),
+    });
+    await gateway.start();
+    const judged: { arm: string; grades: GradeRecord[] }[] = [];
+    const judgments: Record<string, unknown>[] = [];
+    try {
+        const judge = judgeFirewall(gateway.urls[0] as string, rules, models);
+        for (const { probe, arm, a, b, rows } of pairs) {
+            const reference = String((probe.check as { judge?: string }).judge ?? "");
+            const both = (why: string) => {
+                for (const side of [arm, "host"]) skip(side, why);
+            };
+            const refuse = (caught: unknown) => {
+                both("P7 refused");
+                console.error(`${probe.id} (${arm}): ${String(caught)}`);
+            };
+            const fail = (caught: unknown) => {
+                judgeErrors++;
+                both("P7 judge call failed");
+                console.error(`${probe.id} (${arm}): ${String(caught)}`);
+            };
+            let built: P7Inputs | null;
+            try {
+                built = p7Pair(probe.id, a, b);
+            } catch (caught) {
+                if (!(caught instanceof AnswerRefused)) throw caught;
+                refuse(caught);
+                continue;
+            }
+            if (!built) {
+                both("P7 probe turn failed");
+                continue;
+            }
+            let judgment: Judgment;
+            const firstCall = records.records.length;
+            try {
+                judgment = await judgePair(judge, built.pair, reference, []);
+            } catch (caught) {
+                if (caught instanceof BlindingRefused) refuse(caught);
+                else fail(caught);
+                continue;
+            }
+            const calls = records.records.slice(firstCall).map((r) => r.seq);
+            const context = {
+                probe,
+                snapshots: rows,
+                calibration: null,
+                permutation: null,
+                cross_judge: null,
+            };
+            let grades: GradeRecord[];
+            try {
+                grades = gradeP7(judgment, context, rules);
+            } catch (caught) {
+                if (caught instanceof GradeRefused) throw caught;
+                fail(caught);
+                continue;
+            }
+            judged.push({ arm, grades });
+            judgments.push({ item: probe.id, arm, against: "host", calls, judgment });
+        }
+    } finally {
+        await gateway.stop();
+    }
+    if (gateway.failures.length > 0) {
+        judgeErrors += gateway.failures.length;
+        for (const f of gateway.failures) console.error(`judge-calls.jsonl: ${String(f)}`);
+        for (const { arm } of judged)
+            for (const side of [arm, "host"]) skip(side, "P7 judge call failed");
+    } else {
+        const rows = judgments.map((j) => `${JSON.stringify(j)}\n`).join("");
+        const log = join(dir, "judgments.jsonl");
+        keepCompleteLines(log);
+        appendFileSync(log, rows);
+        // Host side first: a write cut after the host grade leaves the memory arm ungraded,
+        // which grades the pair again on the next pass.
+        for (const pair of judged) {
+            grades.push(...pair.grades.filter((g) => g.arm === "host"));
+            grades.push(...pair.grades.filter((g) => g.arm !== "host"));
+        }
+    }
+    return { grades, judgeErrors };
+}
+
+/**
+ * Reads a finished run and checks it the way grading needs: its manifest's inputs, seed order,
+ * journal, arm capabilities, and every journaled snapshot against its journal entries and its
+ * session's recorded calls. Nothing in the run is written.
+ */
+export async function openRun(dir: string) {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
     const digests = {
@@ -385,7 +584,6 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     const scheduled = scenario.events.slice(0, manifest.events).map((e) => String(e.id));
     requireComplete(entries, arms, scheduled);
     requireCapabilities(dir, manifest, arms, entries);
-    const log = new GradeLog(join(dir, "grades.jsonl"));
 
     const named = new Map<string, { arm: string; item: string }>();
     const firstOf = new Set<string>();
@@ -553,12 +751,45 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
             .map((e) => [e.id, e.index as number] as const),
     );
     const sessionKey = (meta: RowMeta) => `${meta.arm}/${String(meta.session)}`;
-    const sessions = await sessionCalls(
+    // A P14 item reads its session's calls whole once the session's last turn was delivered.
+    const p14Delivered = (arm: string, probe: Scenario["probes"][number]) =>
+        eventOutcomes.has(`${arm}/${String(probe.event)}`);
+    const p14Sessions = new Set(
+        scenario.probes
+            .filter((p) => p.type === "P14")
+            .flatMap((p) =>
+                arms.filter((arm) => p14Delivered(arm, p)).map((arm) => `${arm}/${p.session}`),
+            ),
+    );
+    const { recorded: sessions, views: sessionViewsOf } = await sessionCalls(
         join(dir, "calls.jsonl"),
         new Set([...metas.values()].map(sessionKey)),
         turnIndex,
         models,
+        p14Sessions,
     );
+    /**
+     * A P14 item has no probe turn: its evidence is the session's calls with the arm's delivered
+     * user turns placed among them, as a capture at the session's last turn would hold them.
+     */
+    const sessionSnapshot = (arm: string, probe: Scenario["probes"][number]): Snapshot => {
+        const id = `${arm}:${probe.id}:${probe.session}`;
+        const calls = withUserTurns(
+            sessionViewsOf.get(`${arm}/${probe.session}`) ?? [],
+            sessionTurns(entries, arm, probe.session, turnIndex),
+            arm,
+            probe.session,
+        );
+        return {
+            id,
+            item: probe.id,
+            arm,
+            session: probe.session,
+            turn: String(probe.event),
+            turn_outcome: "ok",
+            artefacts: [{ id: `${id}:calls`, class: "proxy-call", calls }],
+        };
+    };
     for (const meta of metas.values()) {
         const row = readRow(meta);
         const calls = row.artefacts.find((a) => a.class === "proxy-call");
@@ -633,6 +864,29 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
             .filter(Boolean),
     );
 
+    return {
+        dir,
+        manifest,
+        scenario,
+        rules,
+        arms,
+        models: models as string[],
+        entries,
+        attempts,
+        ran,
+        unjournaled,
+        p14Delivered,
+        sessionSnapshot,
+    };
+}
+
+export type OpenRun = Awaited<ReturnType<typeof openRun>>;
+
+async function grade(dir: string, config: SimConfig | null, regrade: boolean): Promise<Summary> {
+    const run = await openRun(dir);
+    const { manifest, scenario, rules, arms, models, entries, attempts, ran, unjournaled } = run;
+    const { p14Delivered, sessionSnapshot } = run;
+    const log = new GradeLog(join(dir, "grades.jsonl"));
     const graded: GradeRecord[] = [];
     const skipped: Summary["skipped"] = {};
     const skip = (arm: string, why: string) => {
@@ -693,42 +947,26 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     let judgeErrors = 0;
     const p7 = scenario.probes.filter((p) => p.type === "P7");
     const memoryArms = arms.filter((a) => armBase(a) !== "host");
-    const pairs = p7.flatMap((probe) =>
-        memoryArms.flatMap((arm) => {
-            if (!ran.has(probe.id)) {
-                for (const side of [arm, "host"]) skip(side, outside);
-                return [];
-            }
-            const sides = { [arm]: attempts(arm, probe.id), host: attempts("host", probe.id) };
-            const lost = new Set<string>();
-            for (const [side, rows] of Object.entries(sides)) {
-                if (!rows) skip(side, unjournaled(side, probe.id, probe.event));
-                else if (rows[0]?.turn_outcome !== "ok") skip(side, "P7 probe turn failed");
-                else continue;
-                lost.add(side);
-            }
-            for (const side of Object.keys(sides)) {
-                if (lost.size > 0 && !lost.has(side)) skip(side, "P7 pairing lost");
-            }
-            const [mine, host] = [sides[arm], sides.host];
-            if (lost.size > 0 || !mine?.[0] || !host?.[0]) return [];
-            // The pair's two grades land in one write, host side first, so the memory arm's grade
-            // means its pair stands.
-            if (gradedBefore(probe.id, arm, "host", mine[0].id)) {
-                for (const side of [arm, "host"]) skip(side, "already graded");
-                return [];
-            }
-            for (const side of [mine[0], host[0]]) requireEvidence(probe, side);
-            return [{ probe, arm, a: mine[0], b: host[0], rows: { a: mine, b: host } }];
-        }),
-    );
-    const firewall = (url: string) => {
-        const judges = models.map((m) => proxyJudge(url, rules.judge.model, m));
-        if (!judges[0]) throw new Error("the manifest records no run model");
-        return judges[0];
-    };
+    const pairs = arms.includes("host")
+        ? p7Pairs({
+              probes: p7,
+              memoryArms,
+              memory: run,
+              host: run,
+              outside,
+              skip,
+              gradedBefore,
+          })
+        : [];
+    // A run without the host arm pairs its P7 items with a host run by `scripts/p7-pair.ts`.
+    if (!arms.includes("host")) {
+        for (const probe of p7) {
+            for (const arm of memoryArms)
+                skip(arm, ran.has(probe.id) ? P7_HOST_ELSEWHERE : outside);
+        }
+    }
     if (pairs.length > 0) {
-        firewall("http://judge.invalid");
+        judgeFirewall("http://judge.invalid", rules, models);
         if (!config) throw new Error("P7 judging needs the sim config");
     }
 
@@ -804,18 +1042,28 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     for (const probe of scenario.probes.filter((p) => p.type !== "P7")) {
         const sources = sourcesOf(probe);
         for (const arm of arms) {
+            let mine: Snapshot[] | undefined;
             if (probe.type === "P14") {
-                skip(arm, "P14 has no probe turn");
-                continue;
-            }
-            if (!ran.has(probe.id)) {
-                skip(arm, outside);
-                continue;
-            }
-            const mine = attempts(arm, probe.id);
-            if (!mine) {
-                skip(arm, unjournaled(arm, probe.id, probe.event));
-                continue;
+                const at = eventOrder.get(String(probe.event));
+                if (at === undefined || at >= manifest.events) {
+                    skip(arm, outside);
+                    continue;
+                }
+                if (!p14Delivered(arm, probe)) {
+                    skip(arm, "P14 session unfinished");
+                    continue;
+                }
+                mine = [sessionSnapshot(arm, probe)];
+            } else {
+                if (!ran.has(probe.id)) {
+                    skip(arm, outside);
+                    continue;
+                }
+                mine = attempts(arm, probe.id);
+                if (!mine) {
+                    skip(arm, unjournaled(arm, probe.id, probe.event));
+                    continue;
+                }
             }
             if (gradedBefore(probe.id, arm, undefined, (mine[0] as Snapshot).id)) {
                 skip(arm, "already graded");
@@ -845,96 +1093,17 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     }
 
     if (pairs.length > 0 && config) {
-        for (const name of ["judge-calls.jsonl", "judgments.jsonl"])
-            requireAppendable(join(dir, name));
-        const records = new RecordWriter(join(dir, "judge-calls.jsonl"), { resume: true });
-        const gateway = new Gateway({
+        const judged = await judgeP7({
+            pairs,
+            dir,
             upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
-            records,
-            injector: new FaultInjector([], new Rng(1), 1_000),
-            rng: new Rng(manifest.seed),
-            clock: { scenarioMs: () => 0 },
-            scope: () => ({ arm: "judge", session: null, turn: null }),
+            seed: manifest.seed,
+            rules,
+            models,
+            skip,
         });
-        await gateway.start();
-        const judged: { arm: string; grades: GradeRecord[] }[] = [];
-        const judgments: Record<string, unknown>[] = [];
-        try {
-            const judge = firewall(gateway.urls[0] as string);
-            for (const { probe, arm, a, b, rows } of pairs) {
-                const reference = String((probe.check as { judge?: string }).judge ?? "");
-                const both = (why: string) => {
-                    for (const side of [arm, "host"]) skip(side, why);
-                };
-                const refuse = (caught: unknown) => {
-                    both("P7 refused");
-                    console.error(`${probe.id} (${arm}): ${String(caught)}`);
-                };
-                const fail = (caught: unknown) => {
-                    judgeErrors++;
-                    both("P7 judge call failed");
-                    console.error(`${probe.id} (${arm}): ${String(caught)}`);
-                };
-                let built: P7Inputs | null;
-                try {
-                    built = p7Pair(probe.id, a, b);
-                } catch (caught) {
-                    if (!(caught instanceof AnswerRefused)) throw caught;
-                    refuse(caught);
-                    continue;
-                }
-                if (!built) {
-                    both("P7 probe turn failed");
-                    continue;
-                }
-                let judgment: Judgment;
-                const firstCall = records.records.length;
-                try {
-                    judgment = await judgePair(judge, built.pair, reference, []);
-                } catch (caught) {
-                    if (caught instanceof BlindingRefused) refuse(caught);
-                    else fail(caught);
-                    continue;
-                }
-                const calls = records.records.slice(firstCall).map((r) => r.seq);
-                const context = {
-                    probe,
-                    snapshots: rows,
-                    calibration: null,
-                    permutation: null,
-                    cross_judge: null,
-                };
-                let grades: GradeRecord[];
-                try {
-                    grades = gradeP7(judgment, context, rules);
-                } catch (caught) {
-                    if (caught instanceof GradeRefused) throw caught;
-                    fail(caught);
-                    continue;
-                }
-                judged.push({ arm, grades });
-                judgments.push({ item: probe.id, arm, against: "host", calls, judgment });
-            }
-        } finally {
-            await gateway.stop();
-        }
-        if (gateway.failures.length > 0) {
-            judgeErrors += gateway.failures.length;
-            for (const f of gateway.failures) console.error(`judge-calls.jsonl: ${String(f)}`);
-            for (const { arm } of judged)
-                for (const side of [arm, "host"]) skip(side, "P7 judge call failed");
-        } else {
-            const rows = judgments.map((j) => `${JSON.stringify(j)}\n`).join("");
-            const log = join(dir, "judgments.jsonl");
-            keepCompleteLines(log);
-            appendFileSync(log, rows);
-            // Host side first: a write cut after the host grade leaves the memory arm ungraded,
-            // which grades the pair again on the next pass.
-            for (const { grades } of judged) {
-                staged.push(...grades.filter((g) => g.arm === "host"));
-                staged.push(...grades.filter((g) => g.arm !== "host"));
-            }
-        }
+        judgeErrors += judged.judgeErrors;
+        staged.push(...judged.grades);
     }
     commit();
 

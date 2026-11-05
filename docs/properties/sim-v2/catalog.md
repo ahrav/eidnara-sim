@@ -780,8 +780,9 @@ Type: safety
 Reachability: default-production
 Status: active
 Exercised: partial - M6 (#1031) journals a labelled `UserTurn` per turn and
-lists labels in probe snapshots; compiled P14 items are still skipped by the
-grader; no full-tier run yet
+lists labels in probe snapshots; `scripts/grade-run.ts` grades compiled P14
+items from a session view holding those labels; c7 S and M runs graded P14
+on copies; no tier report reads it yet
 Guarantee: SIM-P25: Every user-sim turn carries a label in task, pushback,
 interrupt, redirect, abandon, clarify, or paste, and P14 derives from labels
 only.
@@ -791,10 +792,11 @@ Fault/timing angle: none.
 Required faults and enabling state: a run with user-sim turns.
 Confidence: low - [evidence](evidence/sim-p25-pushback-label-per-turn.md). M6
 (#1031) journals one labelled `UserTurn` per turn ahead of its `EndTurn`;
-verified in `src/run/scheduler.test.ts`. P14 grading of compiled items is a gap
-(see the evidence).
+verified in `src/run/scheduler.test.ts`. Compiled P14 items grade from the
+session view (see the evidence).
 Existing check: `src/run/scheduler.test.ts` checks the label and the order;
-`scripts/grade-run.ts` still skips compiled P14 items
+`scripts/grade-run.test.ts` grades a P14 item from journaled labels after a
+fold
 Impact: P14 reads transcript text and grades by self-report.
 Open questions: None.
 

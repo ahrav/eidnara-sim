@@ -51,12 +51,12 @@ import {
 } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
 import {
-    beganAt,
     behaviourPlan,
     deliveredTurns,
     type Label,
     pinnedTurns,
     realisedRates,
+    sessionTurns,
 } from "../usersim/plan";
 import {
     type AgentReply,
@@ -2518,18 +2518,7 @@ async function runArms(
                 const calls = sessionCalls
                     .calls(arm, session)
                     .filter((c) => c.component !== "user-sim");
-                const began = beganAt(journal.entries, arm);
-                const turns = userTurns(arm, session).map((e) => {
-                    const index = turnIndex.get(String(e.event));
-                    return {
-                        event: String(e.event),
-                        // The user's text reached the agent when the turn began; the journal
-                        // row that carries the label is appended after the turn ends.
-                        scenario_ms: began.get(String(e.event)) ?? e.scenario_ms,
-                        label: String(e.label),
-                        ...(index === undefined ? {} : { turn_index: index }),
-                    };
-                });
+                const turns = sessionTurns(journal.entries, arm, session, turnIndex);
                 return withUserTurns(calls, turns, arm, session);
             },
             settle: () => scheduler.quiesceJobs(),

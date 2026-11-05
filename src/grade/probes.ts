@@ -115,6 +115,9 @@ export interface GradeRecord extends Outcome {
 
 export type GradeKey = Pick<GradeRecord, "item" | "arm" | "against">;
 
+/** The skip reason of a P7 item in a run without the host arm, which a pairing step grades. */
+export const P7_HOST_ELSEWHERE = "P7 host arm in another run";
+
 const keyOf = (g: GradeKey) => `${g.item}/${g.arm}${g.against ? ` vs ${g.against}` : ""}`;
 
 /** Verdict counts by arm and probe type, with a pairwise grade's opponent in its row name. */
@@ -1661,6 +1664,7 @@ export const graderDigest = (): string =>
             "probes.ts",
             "text.ts",
             "../../scripts/grade-run.ts",
+            "../../scripts/p7-pair.ts",
             "../proxy/records.ts",
             "../proxy/classify.ts",
             "../prereg/canonical.ts",
