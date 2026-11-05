@@ -39,7 +39,7 @@ import {
     releaseLease,
     takeLease,
 } from "./journal";
-import { CallIndex, SessionCalls } from "./run";
+import { readCallLog, SessionCalls } from "./run";
 import {
     type ArmDriver,
     type ArmHandle,
@@ -6855,10 +6855,10 @@ test("a session's call views hold the records read from disk and those the write
     writeFileSync(path, rows.map((r) => `${JSON.stringify(r)}\n`).join(""));
     const link = join(dir(), "calls.jsonl");
     symlinkSync(path, link);
-    expect(() => new CallIndex(link)).toThrow("regular file");
+    expect(() => readCallLog(link, () => {})).toThrow("regular file");
     const turns = new Map([["e-1", 0]]);
     const live = new SessionCalls(turns);
-    new CallIndex(path, (r) => live.note(r));
+    readCallLog(path, (r) => live.note(r));
     class Noting extends RecordWriter {
         protected override placed(record: CallRecord): void {
             live.noteWritten(record);
@@ -6882,7 +6882,7 @@ test("a session's call views hold the records read from disk and those the write
     expect(live.calls("host", "s-9")).toEqual([]);
     // A reader opening the log afterwards projects the same bytes.
     const reopened = new SessionCalls(turns);
-    new CallIndex(path, (r) => reopened.note(r));
+    readCallLog(path, (r) => reopened.note(r));
     for (const [arm, session] of [
         ["host", "s-1"],
         ["eidnara", "s-1"],
@@ -6928,7 +6928,7 @@ test("a background call credited to the preceding turn takes that turn's index",
         ["e-2", 1],
     ]);
     const views = new SessionCalls(turns);
-    new CallIndex(path, (r) => views.note(r));
+    readCallLog(path, (r) => views.note(r));
     const calls = views.calls("eidnara", "s-1");
     expect(calls.map((c) => c.turn_index)).toEqual([0, 0, 1, 1]);
 });

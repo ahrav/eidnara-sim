@@ -1748,96 +1748,66 @@ export async function runTier(o: RunOptions): Promise<void> {
     if (failure !== null) throw failure;
 }
 
-export class CallIndex {
-    private readonly places = new Map<string, Array<[number, number]>>();
-
-    /**
-     * `onRecord` receives each complete record already in the log, in log order. `strict` also
-     * refuses a record with missing fields or a seq other than its line position.
-     */
-    constructor(
-        private readonly path: string,
-        onRecord?: (record: CallRecord) => void,
-        strict = false,
-    ) {
-        requireAppendable(path);
-        if (!existsSync(path)) return;
-        let position = 0;
-        const parse = (line: Buffer): CallRecord => {
-            const corrupt = (why: string) =>
-                new HarnessFailure(`${path} line ${position + 1} is corrupt: ${why}`);
-            let value: unknown;
-            try {
-                value = JSON.parse(line.toString("utf8"));
-            } catch {
-                throw corrupt("not JSON");
-            }
-            if (typeof value !== "object" || value === null || Array.isArray(value)) {
-                throw corrupt("not an object");
-            }
-            const record = value as CallRecord;
-            if (strict) {
-                const problems = recordProblems(record);
-                if (problems.length > 0) throw corrupt(problems.join(", "));
-                if (record.seq !== position) {
-                    throw corrupt(`seq ${record.seq} at position ${position}`);
-                }
-            }
-            position++;
-            return record;
-        };
-        const fd = openSync(path, "r");
+/**
+ * Streams every complete record of a call log to `onRecord`, in log order; an unterminated last
+ * line, which a kill mid-append leaves, is skipped. Every newline-terminated line must be a JSON
+ * object, and `strict` also refuses a record with missing fields or a seq other than its line
+ * position. Memory holds one 1 MiB chunk and one line.
+ */
+export function readCallLog(
+    path: string,
+    onRecord: (record: CallRecord) => void,
+    strict = false,
+): void {
+    requireAppendable(path);
+    if (!existsSync(path)) return;
+    let position = 0;
+    const parse = (line: Buffer): CallRecord => {
+        const corrupt = (why: string) =>
+            new HarnessFailure(`${path} line ${position + 1} is corrupt: ${why}`);
+        let value: unknown;
         try {
-            const size = fstatSync(fd).size;
-            const chunk = Buffer.alloc(1 << 20);
-            let offset = 0;
-            let lineStart = 0;
-            let carry = Buffer.alloc(0);
-            while (offset < size) {
-                const read = readSync(fd, chunk, 0, chunk.length, offset);
-                let buf =
-                    carry.length > 0
-                        ? Buffer.concat([carry, chunk.subarray(0, read)])
-                        : chunk.subarray(0, read);
-                let base = lineStart;
-                let at = buf.indexOf(0x0a);
-                while (at !== -1) {
-                    const record = parse(buf.subarray(0, at));
-                    this.remember(record, base, at + 1);
-                    onRecord?.(record);
-                    base += at + 1;
-                    buf = buf.subarray(at + 1);
-                    at = buf.indexOf(0x0a);
-                }
-                carry = Buffer.from(buf);
-                lineStart = base;
-                offset += read;
+            value = JSON.parse(line.toString("utf8"));
+        } catch {
+            throw corrupt("not JSON");
+        }
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            throw corrupt("not an object");
+        }
+        const record = value as CallRecord;
+        if (strict) {
+            const problems = recordProblems(record);
+            if (problems.length > 0) throw corrupt(problems.join(", "));
+            if (record.seq !== position) {
+                throw corrupt(`seq ${record.seq} at position ${position}`);
             }
-        } finally {
-            closeSync(fd);
         }
-    }
-
-    private remember(record: CallRecord, offset: number, length: number): void {
-        const key = `${record.arm}/${record.session}`;
-        const list = this.places.get(key);
-        if (list) list.push([offset, length]);
-        else this.places.set(key, [[offset, length]]);
-    }
-
-    records(arm: string, session: string): CallRecord[] {
-        const places = this.places.get(`${arm}/${session}`) ?? [];
-        if (places.length === 0) return [];
-        const fd = openSync(this.path, "r");
-        try {
-            return places.map(([offset, length]) => {
-                const buf = Buffer.alloc(length);
-                readSync(fd, buf, 0, length, offset);
-                return JSON.parse(buf.toString("utf8").trimEnd()) as CallRecord;
-            });
-        } finally {
-            closeSync(fd);
+        position++;
+        return record;
+    };
+    const fd = openSync(path, "r");
+    try {
+        const size = fstatSync(fd).size;
+        const chunk = Buffer.alloc(1 << 20);
+        let offset = 0;
+        let carry = Buffer.alloc(0);
+        while (offset < size) {
+            const read = readSync(fd, chunk, 0, chunk.length, offset);
+            let buf =
+                carry.length > 0
+                    ? Buffer.concat([carry, chunk.subarray(0, read)])
+                    : chunk.subarray(0, read);
+            let at = buf.indexOf(0x0a);
+            while (at !== -1) {
+                onRecord(parse(buf.subarray(0, at)));
+                buf = buf.subarray(at + 1);
+                at = buf.indexOf(0x0a);
+            }
+            carry = Buffer.from(buf);
+            offset += read;
         }
+    } finally {
+        closeSync(fd);
     }
 }
 
@@ -2193,7 +2163,7 @@ async function runArms(
         events.filter((e) => e.index !== undefined).map((e) => [e.id, e.index as number]),
     );
     const sessionCalls = new SessionCalls(turnIndex);
-    new CallIndex(
+    readCallLog(
         callsPath,
         (r) => {
             noteAgent(r);
@@ -2507,7 +2477,7 @@ async function runArms(
             throw new HarnessFailure(`arm ${arm} capability mismatch: ${mismatches.join("; ")}`);
         }
     };
-    // The call index replays every record through `noteAgent` when it opens, so a resume holds
+    // `readCallLog` replays every record through `noteAgent` at start, so a resume holds
     // each session's last agent reply.
     const lastAgent = (arm: string, session: string): AgentReply =>
         agentText.get(`${arm}/${session}`) ?? { text: "" };

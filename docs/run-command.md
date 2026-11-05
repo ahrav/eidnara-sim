@@ -300,7 +300,7 @@ toolchain wrappers are created exclusively after removing any planted name.
    cut last line is dropped; a complete line that is not a record in
    sequence refuses the run. The writer advances its sequence only after an
    append succeeded, so a failed append leaves the file recoverable. The run's
-   call index reads the existing records once, checking each line's fields and
+   call-log reader (`readCallLog`) reads the existing records once, checking each line's fields and
    its `seq`, and projects each session's call views (the `proxy-call` fields
    of `docs/grading.md`, without request bodies) as it reads them and as the
    run appends each later record, so a snapshot capture copies its session's

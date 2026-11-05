@@ -22,13 +22,13 @@ import type { Entry } from "./journal";
 import type { Preflight } from "./preflight";
 import {
     armOrder,
-    CallIndex,
     corpusIdentity,
     faultOverride,
     loadManifest,
     loadScenario,
     manifestIdentity,
     type RunOptions,
+    readCallLog,
     requireDeclaredProjects,
     requireFreshArmRoots,
     requireJournalShape,
@@ -1027,17 +1027,15 @@ describe("run inputs", () => {
         });
         const line = (r: unknown) => `${JSON.stringify(r)}\n`;
         writeFileSync(path, line(record(0)) + line(record(1)));
-        expect(() => new CallIndex(path, undefined, true)).not.toThrow();
+        expect(() => readCallLog(path, () => {}, true)).not.toThrow();
         writeFileSync(path, line(record(0)) + line(record(1)) + line({}));
-        expect(() => new CallIndex(path, undefined, true)).toThrow(
-            /line 3 is corrupt: seq missing/,
-        );
+        expect(() => readCallLog(path, () => {}, true)).toThrow(/line 3 is corrupt: seq missing/);
         writeFileSync(path, line(record(1)) + line(record(0)));
-        expect(() => new CallIndex(path, undefined, true)).toThrow(
+        expect(() => readCallLog(path, () => {}, true)).toThrow(
             /line 1 is corrupt: seq 1 at position 0/,
         );
         writeFileSync(path, `${line(record(0))}{"seq":1,\n`);
-        expect(() => new CallIndex(path)).toThrow(/line 2 is corrupt: not JSON/);
+        expect(() => readCallLog(path, () => {})).toThrow(/line 2 is corrupt: not JSON/);
     });
 });
 

@@ -6,7 +6,7 @@ import { sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { cutTurns } from "../src/run/interruptions";
 import { readJournal, requireComplete } from "../src/run/journal";
-import { CallIndex, referenceArm, requireAdmittedOrder } from "../src/run/run";
+import { readCallLog, referenceArm, requireAdmittedOrder } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
 import { scenarioHash } from "../src/scenario/compile";
 import { admittedArms, corpusInputsSha256, loadPrereg } from "../src/scenario/inputs";
@@ -434,27 +434,35 @@ const planLabelMismatch = turns
     })
     .map((r) => `${r.arm} ${r.event}`);
 // A clarify row stands where the agent's preceding reply ended with a question; the proxy
-// record of that reply (its tail when cut) is the witness.
-const callIndex = existsSync(join(dir, "calls.jsonl"))
-    ? new CallIndex(join(dir, "calls.jsonl"))
-    : null;
+// record of that reply (its tail when cut) is the witness. One pass over the call log keeps,
+// for each delivered clarify row, the text of the last agent reply recorded before its turn.
 const began = new Map(
     journal
         .filter((e) => e.kind === "BeginTurn")
         .map((e) => [`${e.arm}/${e.event}`, Number(e.scenario_ms)]),
 );
-const unwitnessedClarify = turns
+const clarifyRows = turns
     .filter((r) => r.label === "clarify" && r.delivered)
-    .filter((r) => {
-        const at = began.get(`${r.arm}/${r.event}`);
-        const before = (callIndex?.records(r.arm, r.session) ?? [])
-            .filter((c) => c.component === "agent" && typeof c.response_text === "string")
-            .filter((c) => at === undefined || c.scenario_ms < at);
-        const last = before.at(-1);
-        if (!last) return true;
-        return !asksQuestion(last.response_tail ?? last.response_text ?? "");
-    })
-    .map((r) => `${r.arm} ${r.event}`);
+    .map((row): { row: TurnRecord; at?: number; reply?: string } => {
+        const at = began.get(`${row.arm}/${row.event}`);
+        return at === undefined ? { row } : { row, at };
+    });
+const clarifyBySession = new Map<string, typeof clarifyRows>();
+for (const w of clarifyRows) {
+    const key = `${w.row.arm}/${w.row.session}`;
+    clarifyBySession.set(key, [...(clarifyBySession.get(key) ?? []), w]);
+}
+readCallLog(join(dir, "calls.jsonl"), (c) => {
+    const waiting = clarifyBySession.get(`${c.arm}/${c.session}`);
+    if (!waiting || c.component !== "agent" || typeof c.response_text !== "string") return;
+    for (const w of waiting) {
+        if (w.at === undefined || c.scenario_ms < w.at)
+            w.reply = c.response_tail ?? c.response_text;
+    }
+});
+const unwitnessedClarify = clarifyRows
+    .filter((w) => w.reply === undefined || !asksQuestion(w.reply))
+    .map((w) => `${w.row.arm} ${w.row.event}`);
 const prefix = new Set(allScheduled.map((e) => e.id));
 const outOfPrefix = [
     ...new Set([
