@@ -443,10 +443,10 @@ const began = new Map(
 );
 const clarifyRows = turns
     .filter((r) => r.label === "clarify" && r.delivered)
-    .map((row): { row: TurnRecord; at?: number; reply?: string } => {
-        const at = began.get(`${row.arm}/${row.event}`);
-        return at === undefined ? { row } : { row, at };
-    });
+    .map((row): { row: TurnRecord; at?: number; reply?: string } => ({
+        row,
+        at: began.get(`${row.arm}/${row.event}`),
+    }));
 const clarifyBySession = new Map<string, typeof clarifyRows>();
 for (const w of clarifyRows) {
     const key = `${w.row.arm}/${w.row.session}`;

@@ -1,17 +1,14 @@
 import { createHash } from "node:crypto";
 import {
     appendFileSync,
-    closeSync,
     existsSync,
     constants as fsConstants,
-    fstatSync,
     lstatSync,
     mkdirSync,
     openSync,
     readdirSync,
     readFileSync,
     readlinkSync,
-    readSync,
     realpathSync,
     rmSync,
     statSync,
@@ -87,6 +84,7 @@ import {
 import {
     type Entry,
     eachJsonl,
+    eachLine,
     Journal,
     releaseLease,
     requireAppendable,
@@ -1752,7 +1750,7 @@ export async function runTier(o: RunOptions): Promise<void> {
  * Streams every complete record of a call log to `onRecord`, in log order; an unterminated last
  * line, which a kill mid-append leaves, is skipped. Every newline-terminated line must be a JSON
  * object, and `strict` also refuses a record with missing fields or a seq other than its line
- * position. Memory holds one 1 MiB chunk and one line.
+ * position. `eachLine` holds one chunk and one line in memory.
  */
 export function readCallLog(
     path: string,
@@ -1761,8 +1759,7 @@ export function readCallLog(
 ): void {
     requireAppendable(path);
     if (!existsSync(path)) return;
-    let position = 0;
-    const parse = (line: Buffer): CallRecord => {
+    eachLine(path, (line, position) => {
         const corrupt = (why: string) =>
             new HarnessFailure(`${path} line ${position + 1} is corrupt: ${why}`);
         let value: unknown;
@@ -1782,33 +1779,8 @@ export function readCallLog(
                 throw corrupt(`seq ${record.seq} at position ${position}`);
             }
         }
-        position++;
-        return record;
-    };
-    const fd = openSync(path, "r");
-    try {
-        const size = fstatSync(fd).size;
-        const chunk = Buffer.alloc(1 << 20);
-        let offset = 0;
-        let carry = Buffer.alloc(0);
-        while (offset < size) {
-            const read = readSync(fd, chunk, 0, chunk.length, offset);
-            let buf =
-                carry.length > 0
-                    ? Buffer.concat([carry, chunk.subarray(0, read)])
-                    : chunk.subarray(0, read);
-            let at = buf.indexOf(0x0a);
-            while (at !== -1) {
-                onRecord(parse(buf.subarray(0, at)));
-                buf = buf.subarray(at + 1);
-                at = buf.indexOf(0x0a);
-            }
-            carry = Buffer.from(buf);
-            offset += read;
-        }
-    } finally {
-        closeSync(fd);
-    }
+        onRecord(record);
+    });
 }
 
 export function projectCall(r: CallRecord): Omit<CallView, "turn_index"> {
@@ -1929,8 +1901,9 @@ export class SessionCalls {
         this.note(JSON.parse(JSON.stringify(fields)) as CallRecord);
     }
 
+    /** Copies of the session's views, so a caller's edit leaves them as recorded. */
     calls(arm: string, session: string): CallView[] {
-        return [...(this.sessions.get(`${arm}/${session}`)?.calls ?? [])];
+        return (this.sessions.get(`${arm}/${session}`)?.calls ?? []).map((c) => ({ ...c }));
     }
 }
 
@@ -2255,11 +2228,8 @@ async function runArms(
         override write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
             const record = super.write(partial);
             noteAgent(record);
-            return record;
-        }
-
-        protected override placed(record: CallRecord): void {
             sessionCalls.noteWritten(record);
+            return record;
         }
     }
     // The diagnostics file is opened once without following symlinks, like a child's log.

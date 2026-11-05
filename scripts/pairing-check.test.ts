@@ -941,50 +941,70 @@ test("a clarify row needs the agent's preceding reply to end with a question", (
     expect(r.exit).toBe(1);
 });
 
+/** Turns `arm`'s delivered `id` into a clarify turn that began at `at` on the arm's clock. */
+function clarifyAt(f: Fixture, arm: string, id: string, at: number): void {
+    const [s, i] = id.slice(2).split("-");
+    const row = find(f.pairing, (r) => r.arm === arm && r.event === id);
+    row.label = "clarify";
+    row.source = "tape";
+    row.text_sha256 = sha256Hex(`reply to ${id}\n\nGo ${s} ${i}.`);
+    const user = f.journal.findIndex(
+        (r) => r.kind === "UserTurn" && r.arm === arm && r.event === id,
+    );
+    (f.journal[user] as Row).label = "clarify";
+    f.journal.splice(user, 0, { kind: "BeginTurn", arm, event: id });
+    for (const r of f.journal.slice(user)) if (r.arm === arm) r.scenario_ms = at;
+    if (!f.tape.some((t) => t.event === id)) {
+        f.tape.push({
+            key: tapeKey(101, id, "clarify", "c", `Go ${s} ${i}.`),
+            event: id,
+            label: "clarify",
+            digest: "d",
+            text: `reply to ${id}`,
+            stop: "end_turn",
+        });
+    }
+}
+
+const agentCall = (arm: string, session: string, scenario_ms: number, text: string) => ({
+    arm,
+    session,
+    component: "agent",
+    scenario_ms,
+    response_text: text,
+});
+
 test("a clarify row's witness is the last agent reply its session recorded before the turn began", () => {
     const f = fixture();
-    const id = "e-0-2";
-    for (const arm of ["host", "eidnara"]) {
-        const row = find(f.pairing, (r) => r.arm === arm && r.event === id);
-        row.label = "clarify";
-        row.source = "tape";
-        row.text_sha256 = sha256Hex(`reply to ${id}\n\nGo 0 2.`);
-        const user = f.journal.findIndex(
-            (r) => r.kind === "UserTurn" && r.arm === arm && r.event === id,
-        );
-        (f.journal[user] as Row).label = "clarify";
-        f.journal.splice(user, 0, { kind: "BeginTurn", arm, event: id });
-        // The arm's clock stands at 1000 from the turn on.
-        for (const r of f.journal.slice(user)) if (r.arm === arm) r.scenario_ms = 1000;
-    }
-    f.tape.push({
-        key: tapeKey(101, id, "clarify", "c", "Go 0 2."),
-        event: id,
-        label: "clarify",
-        digest: "d",
-        text: `reply to ${id}`,
-        stop: "end_turn",
-    });
-    const call = (arm: string, session: string, scenario_ms: number, text: string) => ({
-        arm,
-        session,
-        component: "agent",
-        scenario_ms,
-        response_text: text,
-    });
+    clarifyAt(f, "host", "e-0-2", 1000);
+    clarifyAt(f, "eidnara", "e-0-2", 1000);
     f.calls = [
         // host: the question is the last reply before the turn; a later reply is after it began.
-        call("host", "s-0", 100, "Which file?"),
-        { ...call("host", "s-0", 200, "ignored"), component: "memory_capture" },
-        call("host", "s-0", 1000, "Done."),
+        agentCall("host", "s-0", 100, "Which file?"),
+        { ...agentCall("host", "s-0", 200, "ignored"), component: "memory_capture" },
+        agentCall("host", "s-0", 1000, "Done."),
         // eidnara: an earlier question is followed by a statement, and another session asks.
-        call("eidnara", "s-0", 100, "Which file?"),
-        call("eidnara", "s-0", 900, "Done."),
-        call("eidnara", "s-1", 950, "Which file?"),
+        agentCall("eidnara", "s-0", 100, "Which file?"),
+        agentCall("eidnara", "s-0", 900, "Done."),
+        agentCall("eidnara", "s-1", 950, "Which file?"),
     ];
     const r = run(f);
     expect(r.stderr).toBe("");
     expect(r.report.unwitnessed_clarify).toEqual(["eidnara e-0-2"]);
+});
+
+test("each clarify row in a session takes the last reply before its own turn", () => {
+    const f = fixture();
+    clarifyAt(f, "host", "e-0-2", 1000);
+    clarifyAt(f, "host", "e-0-5", 2000);
+    f.calls = [
+        agentCall("host", "s-0", 100, "Which file?"),
+        agentCall("host", "s-0", 900, "Done."),
+        agentCall("host", "s-0", 1500, "Which test?"),
+    ];
+    const r = run(f);
+    expect(r.stderr).toBe("");
+    expect(r.report.unwitnessed_clarify).toEqual(["host e-0-2"]);
 });
 
 test("the pairing check refuses a pairing row with a wrongly typed field", () => {

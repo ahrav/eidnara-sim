@@ -240,22 +240,15 @@ export class RecordWriter {
         const record = { ...partial, seq: this.seq, wall_ms };
         const problems = recordProblems(record);
         if (problems.length > 0) throw new Error(`call record refused: ${problems.join(", ")}`);
-        if (this.fd !== null) {
-            const offset = this.bytes;
-            const length = this.append(this.fd, `${JSON.stringify(record)}\n`);
-            this.placed(record, offset, length);
-        }
+        if (this.fd !== null) this.append(this.fd, `${JSON.stringify(record)}\n`);
         this.seq++;
         this.lastWall = wall_ms;
         if (this.retain) this.records.push(record);
         return record;
     }
 
-    /** Called after each record is appended, with its byte position in the log. */
-    protected placed(_record: CallRecord, _offset: number, _length: number): void {}
-
     /** On append failure, RecordWriter attempts to truncate the file to its successfully appended byte count; if truncation fails, subsequent write calls throw. */
-    private append(fd: number, line: string): number {
+    private append(fd: number, line: string): void {
         const bytes = Buffer.from(line, "utf8");
         try {
             let written = 0;
@@ -269,7 +262,6 @@ export class RecordWriter {
                 );
             }
             this.bytes += bytes.length;
-            return bytes.length;
         } catch (caught) {
             try {
                 ftruncateSync(fd, this.bytes);

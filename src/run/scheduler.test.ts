@@ -6860,8 +6860,10 @@ test("a session's call views hold the records read from disk and those the write
     const live = new SessionCalls(turns);
     readCallLog(path, (r) => live.note(r));
     class Noting extends RecordWriter {
-        protected override placed(record: CallRecord): void {
+        override write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
+            const record = super.write(partial);
             live.noteWritten(record);
+            return record;
         }
     }
     const writer = new Noting(path, { resume: true });
@@ -6893,9 +6895,14 @@ test("a session's call views hold the records read from disk and those the write
         );
     }
     expect(JSON.stringify(live.calls("host", "s-1")[1])).not.toContain("request");
-    // A caller's edit to a returned list leaves the session's views as they were.
-    live.calls("host", "s-1").pop();
-    expect(live.calls("host", "s-1")).toHaveLength(2);
+    // A caller's edit to a returned list or view leaves the session's views as they were.
+    const edited = live.calls("host", "s-1");
+    edited.pop();
+    const first = edited[0];
+    if (first) first.response_text = "edited";
+    expect(JSON.stringify(live.calls("host", "s-1"))).toBe(
+        JSON.stringify(reopened.calls("host", "s-1")),
+    );
 });
 
 test("a background call credited to the preceding turn takes that turn's index", () => {
