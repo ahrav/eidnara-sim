@@ -18,8 +18,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixtureEvents } from "../../tests/run-fixture";
+import type { CallView } from "../grade/artefacts";
 import { FaultInjector, TARGET } from "../proxy/inject";
-import type { CallRecord } from "../proxy/records";
+import { type CallRecord, RecordWriter } from "../proxy/records";
 import { Rng } from "../rng";
 import type { FaultEpisode } from "../scenario/faults";
 import { SEAMS } from "../scenario/faults";
@@ -39,7 +40,7 @@ import {
     releaseLease,
     takeLease,
 } from "./journal";
-import { CallIndex, callsOf } from "./run";
+import { readCallLog, SessionCalls } from "./run";
 import {
     type ArmDriver,
     type ArmHandle,
@@ -6825,7 +6826,7 @@ test("a second resume after an interrupted turn adds no second terminal Event", 
     expect(terminal.filter((e) => e === "e-000001")).toHaveLength(1);
 });
 
-test("the call index reads one arm and session's records by position, seeded from disk and fed by the writer", () => {
+test("a session's call views hold the records read from disk and those the writer appends", () => {
     const path = join(dir(), "calls.jsonl");
     const base = {
         wall_ms: 1,
@@ -6842,6 +6843,9 @@ test("the call index reads one arm and session's records by position, seeded fro
         proxy_retries: 0,
         first_byte_ms: 1,
         total_ms: 2,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        started_wall_ms: 1,
         fault_ref: null,
     };
     const rows = [
@@ -6852,11 +6856,70 @@ test("the call index reads one arm and session's records by position, seeded fro
     writeFileSync(path, rows.map((r) => `${JSON.stringify(r)}\n`).join(""));
     const link = join(dir(), "calls.jsonl");
     symlinkSync(path, link);
-    expect(() => new CallIndex(link)).toThrow("regular file");
-    const index = new CallIndex(path);
-    expect(callsOf(index, "host", "s-1", new Map()).map((c) => c.response_text)).toEqual(["a"]);
-    expect(callsOf(index, "eidnara", "s-1", new Map()).map((c) => c.seq)).toEqual([1]);
-    expect(callsOf(index, "host", "s-9", new Map())).toEqual([]);
+    expect(() => readCallLog(link, () => {})).toThrow("regular file");
+    const turns = new Map([["e-1", 0]]);
+    const live = new SessionCalls(turns);
+    readCallLog(path, (r) => live.note(r));
+    class Noting extends RecordWriter {
+        override write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
+            const record = super.write(partial);
+            live.noteWritten(record);
+            return record;
+        }
+    }
+    const writer = new Noting(path, { resume: true });
+    const { seq: _seq, wall_ms: _wall, ...partial } = rows[0] as typeof base & { seq: number };
+    // The writer's record carries a request and an absent optional field, and names no turn, so
+    // its view takes the session's running turn index.
+    writer.write({
+        ...partial,
+        error: null,
+        turn: null,
+        response_text: undefined,
+        request: { sha256: "0".repeat(64), bytes: 3, parts: ["1".repeat(32)] },
+    } as unknown as Omit<CallRecord, "seq" | "wall_ms">);
+    writer.close();
+    expect(live.calls("host", "s-1").map((c) => c.response_text)).toEqual(["a", undefined]);
+    expect(live.calls("host", "s-1").map((c) => c.turn_index)).toEqual([0, 0]);
+    expect(live.calls("eidnara", "s-1").map((c) => c.seq)).toEqual([1]);
+    expect(live.calls("host", "s-9")).toEqual([]);
+    // A reader opening the log afterwards projects the same bytes.
+    const reopened = new SessionCalls(turns);
+    readCallLog(path, (r) => reopened.note(r));
+    for (const [arm, session] of [
+        ["host", "s-1"],
+        ["eidnara", "s-1"],
+        ["host", "s-2"],
+    ] as const) {
+        expect(JSON.stringify(live.calls(arm, session))).toBe(
+            JSON.stringify(reopened.calls(arm, session)),
+        );
+    }
+    expect(JSON.stringify(live.calls("host", "s-1")[1])).not.toContain("request");
+    // A caller's edit to a returned list or view leaves the session's views as they were.
+    const edited = live.calls("host", "s-1");
+    edited.pop();
+    (edited[0] as CallView).response_text = "edited";
+    expect(JSON.stringify(live.calls("host", "s-1"))).toBe(
+        JSON.stringify(reopened.calls("host", "s-1")),
+    );
+});
+
+test("call views are kept for captured sessions until their session ends", () => {
+    const record = (seq: number, session: string) =>
+        ({ seq, arm: "host", session, turn: null, component: "agent" }) as unknown as CallRecord;
+    const views = new SessionCalls(new Map(), (s) => s !== "s-quiet");
+    views.note(record(0, "s-1"));
+    views.note(record(1, "s-quiet"));
+    views.note(record(2, "s-2"));
+    expect(views.calls("host", "s-quiet")).toEqual([]);
+    views.close("host", "s-1");
+    views.note(record(3, "s-1"));
+    expect(views.calls("host", "s-1")).toEqual([]);
+    expect(views.calls("host", "s-2").map((c) => c.seq)).toEqual([2]);
+    // Another arm's run of the same session keeps its own views.
+    views.note({ ...record(4, "s-1"), arm: "eidnara" });
+    expect(views.calls("eidnara", "s-1").map((c) => c.seq)).toEqual([4]);
 });
 
 test("a background call credited to the preceding turn takes that turn's index", () => {
@@ -6888,7 +6951,9 @@ test("a background call credited to the preceding turn takes that turn's index",
         ["e-1", 0],
         ["e-2", 1],
     ]);
-    const calls = callsOf(new CallIndex(path), "eidnara", "s-1", turns);
+    const views = new SessionCalls(turns);
+    readCallLog(path, (r) => views.note(r));
+    const calls = views.calls("eidnara", "s-1");
     expect(calls.map((c) => c.turn_index)).toEqual([0, 0, 1, 1]);
 });
 
