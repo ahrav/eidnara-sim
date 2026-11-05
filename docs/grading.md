@@ -211,9 +211,10 @@ the manifest records, and every journaled snapshot's calls, every
 component but the user simulator's, to be a prefix of its session's `calls.jsonl` records under the
 snapshot's arm, in log order, each with the same content and the turn index
 capture derives from the scenario, reaching at least the last record of the
-snapshot's own turn (each snapshot row is read back on its own
-from its byte position and compared with its session's records through the
-call index, so memory holds one snapshot and one session's records at most;
+snapshot's own turn (one pass over `calls.jsonl` keeps the SHA-256 of each
+journaled session's call views, each snapshot row is read back on its own
+from its byte position and compared with those digests, so memory holds one
+snapshot and one digest per recorded call;
 every log grading streams must be a regular file),
 an item with no journaled snapshot to have a turn that ended `failed` with no
 snapshot (reported as `probe turn failed`) or a terminal `Event` of

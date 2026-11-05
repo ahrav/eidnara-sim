@@ -21,6 +21,7 @@ interface Fixture {
     pairing: Row[];
     tape: Row[];
     manifest: Row;
+    calls?: Row[];
 }
 
 type Plan = ReturnType<typeof behaviourPlan>;
@@ -163,6 +164,12 @@ function run(f: Fixture): { exit: number; report: Record<string, unknown>; stder
             .join(""),
     );
     writeFileSync(join(dir, "tape.jsonl"), f.tape.map((e) => `${JSON.stringify(e)}\n`).join(""));
+    if (f.calls) {
+        writeFileSync(
+            join(dir, "calls.jsonl"),
+            f.calls.map((c) => `${JSON.stringify(c)}\n`).join(""),
+        );
+    }
     const r = Bun.spawnSync(["bun", join(ROOT, "scripts/pairing-check.ts"), dir], {
         stdout: "pipe",
         stderr: "pipe",
@@ -932,6 +939,74 @@ test("a clarify row needs the agent's preceding reply to end with a question", (
     const r = run(f);
     expect(r.report.unwitnessed_clarify).toEqual(["host e-0-2", "eidnara e-0-2"]);
     expect(r.exit).toBe(1);
+});
+
+/** Turns `arm`'s delivered `id` into a clarify turn that began at `at` on the arm's clock. */
+function clarifyAt(f: Fixture, arm: string, id: string, at: number): void {
+    const text = String(find(f.events, (e) => e.id === id).text);
+    const row = find(f.pairing, (r) => r.arm === arm && r.event === id);
+    row.label = "clarify";
+    row.source = "tape";
+    row.text_sha256 = sha256Hex(`reply to ${id}\n\n${text}`);
+    const user = f.journal.findIndex(
+        (r) => r.kind === "UserTurn" && r.arm === arm && r.event === id,
+    );
+    (f.journal[user] as Row).label = "clarify";
+    f.journal.splice(user, 0, { kind: "BeginTurn", arm, event: id });
+    for (const r of f.journal.slice(user)) if (r.arm === arm) r.scenario_ms = at;
+    if (!f.tape.some((t) => t.event === id)) {
+        f.tape.push({
+            key: tapeKey(101, id, "clarify", "c", text),
+            event: id,
+            label: "clarify",
+            digest: "d",
+            text: `reply to ${id}`,
+            stop: "end_turn",
+        });
+    }
+}
+
+const agentCall = (arm: string, session: string, scenario_ms: number, text: string) => ({
+    arm,
+    session,
+    component: "agent",
+    scenario_ms,
+    response_text: text,
+});
+
+test("a clarify row's witness is the last agent reply its session recorded before the turn began", () => {
+    const f = fixture();
+    clarifyAt(f, "host", "e-0-2", 1000);
+    clarifyAt(f, "eidnara", "e-0-2", 1000);
+    f.calls = [
+        // host: the question is the last reply before the turn; a later reply is after it began.
+        agentCall("host", "s-0", 100, "Which file?"),
+        { ...agentCall("host", "s-0", 200, "ignored"), component: "memory_capture" },
+        agentCall("host", "s-0", 1000, "Done."),
+        // eidnara: an earlier question is followed by a statement, and another session asks.
+        agentCall("eidnara", "s-0", 100, "Which file?"),
+        agentCall("eidnara", "s-0", 900, "Done."),
+        agentCall("eidnara", "s-1", 950, "Which file?"),
+    ];
+    const r = run(f);
+    expect(r.stderr).toBe("");
+    expect(r.report.unwitnessed_clarify).toEqual(["eidnara e-0-2"]);
+});
+
+test("each clarify row in a session takes the last reply before its own turn", () => {
+    // Either turn of the two can be the unwitnessed one, so neither row may stand for both.
+    for (const [replies, unwitnessed] of [
+        [["Which file?", "Done.", "Which test?"], "host e-0-2"],
+        [["Done.", "Which file?", "Done."], "host e-0-5"],
+    ] as const) {
+        const f = fixture();
+        clarifyAt(f, "host", "e-0-2", 1000);
+        clarifyAt(f, "host", "e-0-5", 2000);
+        f.calls = [100, 900, 1500].map((ms, i) => agentCall("host", "s-0", ms, replies[i] ?? ""));
+        const r = run(f);
+        expect(r.stderr).toBe("");
+        expect(r.report.unwitnessed_clarify).toEqual([unwitnessed]);
+    }
 });
 
 test("the pairing check refuses a pairing row with a wrongly typed field", () => {

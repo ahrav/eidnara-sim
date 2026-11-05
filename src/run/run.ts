@@ -1,17 +1,14 @@
 import { createHash } from "node:crypto";
 import {
     appendFileSync,
-    closeSync,
     existsSync,
     constants as fsConstants,
-    fstatSync,
     lstatSync,
     mkdirSync,
     openSync,
     readdirSync,
     readFileSync,
     readlinkSync,
-    readSync,
     realpathSync,
     rmSync,
     statSync,
@@ -87,6 +84,7 @@ import {
 import {
     type Entry,
     eachJsonl,
+    eachLine,
     Journal,
     releaseLease,
     requireAppendable,
@@ -1748,101 +1746,41 @@ export async function runTier(o: RunOptions): Promise<void> {
     if (failure !== null) throw failure;
 }
 
-export class CallIndex {
-    private readonly places = new Map<string, Array<[number, number]>>();
-
-    /**
-     * `onRecord` receives each complete record already in the log, in log order. `strict` also
-     * refuses a record with missing fields or a seq other than its line position.
-     */
-    constructor(
-        private readonly path: string,
-        onRecord?: (record: CallRecord) => void,
-        strict = false,
-    ) {
-        requireAppendable(path);
-        if (!existsSync(path)) return;
-        let position = 0;
-        const parse = (line: Buffer): CallRecord => {
-            const corrupt = (why: string) =>
-                new HarnessFailure(`${path} line ${position + 1} is corrupt: ${why}`);
-            let value: unknown;
-            try {
-                value = JSON.parse(line.toString("utf8"));
-            } catch {
-                throw corrupt("not JSON");
-            }
-            if (typeof value !== "object" || value === null || Array.isArray(value)) {
-                throw corrupt("not an object");
-            }
-            const record = value as CallRecord;
-            if (strict) {
-                const problems = recordProblems(record);
-                if (problems.length > 0) throw corrupt(problems.join(", "));
-                if (record.seq !== position) {
-                    throw corrupt(`seq ${record.seq} at position ${position}`);
-                }
-            }
-            position++;
-            return record;
-        };
-        const fd = openSync(path, "r");
+/**
+ * Streams every complete record of a call log to `onRecord`, in log order; an unterminated last
+ * line, which a kill mid-append leaves, is skipped. Every newline-terminated line must be a JSON
+ * object, and `strict` also refuses a record with missing fields or a seq other than its line
+ * position. `eachLine` holds one chunk and one line in memory.
+ */
+export function readCallLog(
+    path: string,
+    onRecord: (record: CallRecord) => void,
+    strict = false,
+): void {
+    requireAppendable(path);
+    if (!existsSync(path)) return;
+    eachLine(path, (line, position) => {
+        const corrupt = (why: string) =>
+            new HarnessFailure(`${path} line ${position + 1} is corrupt: ${why}`);
+        let value: unknown;
         try {
-            const size = fstatSync(fd).size;
-            const chunk = Buffer.alloc(1 << 20);
-            let offset = 0;
-            let lineStart = 0;
-            let carry = Buffer.alloc(0);
-            while (offset < size) {
-                const read = readSync(fd, chunk, 0, chunk.length, offset);
-                let buf =
-                    carry.length > 0
-                        ? Buffer.concat([carry, chunk.subarray(0, read)])
-                        : chunk.subarray(0, read);
-                let base = lineStart;
-                let at = buf.indexOf(0x0a);
-                while (at !== -1) {
-                    const record = parse(buf.subarray(0, at));
-                    this.remember(record, base, at + 1);
-                    onRecord?.(record);
-                    base += at + 1;
-                    buf = buf.subarray(at + 1);
-                    at = buf.indexOf(0x0a);
-                }
-                carry = Buffer.from(buf);
-                lineStart = base;
-                offset += read;
+            value = JSON.parse(line.toString("utf8"));
+        } catch {
+            throw corrupt("not JSON");
+        }
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            throw corrupt("not an object");
+        }
+        const record = value as CallRecord;
+        if (strict) {
+            const problems = recordProblems(record);
+            if (problems.length > 0) throw corrupt(problems.join(", "));
+            if (record.seq !== position) {
+                throw corrupt(`seq ${record.seq} at position ${position}`);
             }
-        } finally {
-            closeSync(fd);
         }
-    }
-
-    private remember(record: CallRecord, offset: number, length: number): void {
-        const key = `${record.arm}/${record.session}`;
-        const list = this.places.get(key);
-        if (list) list.push([offset, length]);
-        else this.places.set(key, [[offset, length]]);
-    }
-
-    add(record: CallRecord, offset: number, length: number): void {
-        this.remember(record, offset, length);
-    }
-
-    records(arm: string, session: string): CallRecord[] {
-        const places = this.places.get(`${arm}/${session}`) ?? [];
-        if (places.length === 0) return [];
-        const fd = openSync(this.path, "r");
-        try {
-            return places.map(([offset, length]) => {
-                const buf = Buffer.alloc(length);
-                readSync(fd, buf, 0, length, offset);
-                return JSON.parse(buf.toString("utf8").trimEnd()) as CallRecord;
-            });
-        } finally {
-            closeSync(fd);
-        }
-    }
+        onRecord(record);
+    });
 }
 
 export function projectCall(r: CallRecord): Omit<CallView, "turn_index"> {
@@ -1931,14 +1869,56 @@ export function sessionViews(turnIndex: Map<string, number>): (r: CallRecord) =>
     };
 }
 
-export function callsOf(
-    index: CallIndex,
-    arm: string,
-    session: string,
-    turnIndex: Map<string, number>,
-): CallView[] {
-    const view = sessionViews(turnIndex);
-    return index.records(arm, session).map((r) => view(r));
+/**
+ * Each open session's call views in log order, projected through the session's `sessionViews`
+ * projector as records arrive. Captures read the session's views from memory. `captured` names
+ * the sessions a probe turn captures; views are kept for those sessions until `close`, so
+ * memory holds the views of the probe sessions still open.
+ */
+export class SessionCalls {
+    private readonly sessions = new Map<
+        string,
+        { view: (r: CallRecord) => CallView; calls: CallView[] }
+    >();
+    private readonly closed = new Set<string>();
+
+    constructor(
+        private readonly turnIndex: Map<string, number>,
+        private readonly captured: (session: string) => boolean = () => true,
+    ) {}
+
+    /** `note` accepts records in their `calls.jsonl` representation and log order. */
+    note(record: CallRecord): void {
+        const key = `${record.arm}/${record.session}`;
+        if (this.closed.has(key) || !this.captured(String(record.session))) return;
+        let session = this.sessions.get(key);
+        if (!session) {
+            session = { view: sessionViews(this.turnIndex), calls: [] };
+            this.sessions.set(key, session);
+        }
+        session.calls.push(session.view(record));
+    }
+
+    /**
+     * `noteWritten` accepts a record the run just appended. A JSON round trip of its fields
+     * other than the request gives the values a read of the appended line gives.
+     */
+    noteWritten(record: CallRecord): void {
+        const { request: _request, ...fields } = record;
+        this.note(JSON.parse(JSON.stringify(fields)) as CallRecord);
+    }
+
+    /** Drops an ended session's views; its later records are skipped. */
+    close(arm: string, session: string): void {
+        const key = `${arm}/${session}`;
+        this.closed.add(key);
+        this.sessions.delete(key);
+    }
+
+    /** Copies of the session's views, so a caller's edit leaves them as recorded. */
+    calls(arm: string, session: string): CallView[] {
+        return (this.sessions.get(`${arm}/${session}`)?.calls ?? []).map((c) => ({ ...c }));
+    }
 }
 
 async function runArms(
@@ -2166,10 +2146,34 @@ async function runArms(
         "arm" | "component" | "fault_ref" | "proxy_retries" | "seq" | "started_wall_ms" | "arrival"
     >[] = [];
     let firstArrival = 0;
-    const callIndex = new CallIndex(
+    const turnIndex = new Map(
+        events.filter((e) => e.index !== undefined).map((e) => [e.id, e.index as number]),
+    );
+    const probeSessions = new Set(
+        events.filter((e) => e.kind === "user_turn" && e.probe).map((e) => String(e.session)),
+    );
+    const sessionCalls = new SessionCalls(turnIndex, (s) => probeSessions.has(s));
+    // A session whose `session_end` the journal records as delivered takes no later capture,
+    // whether the driver delivered it or the scheduler ended it without the driver.
+    const sessionEnds = new Map(
+        events.filter((e) => e.kind === "session_end").map((e) => [e.id, String(e.session)]),
+    );
+    let endsRead = 0;
+    const closeEnded = () => {
+        for (; endsRead < journal.entries.length; endsRead++) {
+            const e = journal.entries[endsRead] as Entry;
+            const session = e.kind === "Event" ? sessionEnds.get(String(e.event)) : undefined;
+            if (session !== undefined && typeof e.arm === "string") {
+                sessionCalls.close(e.arm, session);
+            }
+        }
+    };
+    closeEnded();
+    readCallLog(
         callsPath,
         (r) => {
             noteAgent(r);
+            sessionCalls.note(r);
             firstArrival = Math.max(firstArrival, (r.arrival ?? r.seq) + 1);
             const { arm, component, fault_ref, proxy_retries, seq, started_wall_ms, arrival } = r;
             prior.push({ arm, component, fault_ref, proxy_retries, seq, started_wall_ms, arrival });
@@ -2257,11 +2261,8 @@ async function runArms(
         override write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
             const record = super.write(partial);
             noteAgent(record);
+            sessionCalls.noteWritten(record);
             return record;
-        }
-
-        protected override placed(record: CallRecord, offset: number, length: number): void {
-            callIndex.add(record, offset, length);
         }
     }
     // The diagnostics file is opened once without following symlinks, like a child's log.
@@ -2318,9 +2319,6 @@ async function runArms(
         scenario.projects.map((p) => [p.id, join(ROOT, "corpus/repos", p.id)]),
     );
     const loopStore = scenario.faults.some((f) => f.type === "store_full");
-    const turnIndex = new Map(
-        events.filter((e) => e.index !== undefined).map((e) => [e.id, e.index as number]),
-    );
     const scripted = scenario.events.filter((e) => e.kind === "user_turn") as {
         id: string;
         session: string;
@@ -2482,7 +2480,7 @@ async function runArms(
             throw new HarnessFailure(`arm ${arm} capability mismatch: ${mismatches.join("; ")}`);
         }
     };
-    // The call index replays every record through `noteAgent` when it opens, so a resume holds
+    // `readCallLog` replays every record through `noteAgent` at start, so a resume holds
     // each session's last agent reply.
     const lastAgent = (arm: string, session: string): AgentReply =>
         agentText.get(`${arm}/${session}`) ?? { text: "" };
@@ -2516,9 +2514,10 @@ async function runArms(
             sampleDaemon: () => sampler.observe(),
             callsFor: (session) => {
                 handlersFailed();
-                const calls = callsOf(callIndex, arm, session, turnIndex).filter(
-                    (c) => c.component !== "user-sim",
-                );
+                closeEnded();
+                const calls = sessionCalls
+                    .calls(arm, session)
+                    .filter((c) => c.component !== "user-sim");
                 const began = beganAt(journal.entries, arm);
                 const turns = userTurns(arm, session).map((e) => {
                     const index = turnIndex.get(String(e.event));
@@ -2609,6 +2608,7 @@ async function runArms(
                                 throw caught;
                             }
                             requireBoots(arm, armRoot);
+                            sessionCalls.close(arm, e.session);
                             return out;
                         }
                         if (e.kind !== "user_turn") return await driver.event(e);
