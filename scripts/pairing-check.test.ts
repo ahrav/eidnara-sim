@@ -943,11 +943,11 @@ test("a clarify row needs the agent's preceding reply to end with a question", (
 
 /** Turns `arm`'s delivered `id` into a clarify turn that began at `at` on the arm's clock. */
 function clarifyAt(f: Fixture, arm: string, id: string, at: number): void {
-    const [s, i] = id.slice(2).split("-");
+    const text = String(find(f.events, (e) => e.id === id).text);
     const row = find(f.pairing, (r) => r.arm === arm && r.event === id);
     row.label = "clarify";
     row.source = "tape";
-    row.text_sha256 = sha256Hex(`reply to ${id}\n\nGo ${s} ${i}.`);
+    row.text_sha256 = sha256Hex(`reply to ${id}\n\n${text}`);
     const user = f.journal.findIndex(
         (r) => r.kind === "UserTurn" && r.arm === arm && r.event === id,
     );
@@ -956,7 +956,7 @@ function clarifyAt(f: Fixture, arm: string, id: string, at: number): void {
     for (const r of f.journal.slice(user)) if (r.arm === arm) r.scenario_ms = at;
     if (!f.tape.some((t) => t.event === id)) {
         f.tape.push({
-            key: tapeKey(101, id, "clarify", "c", `Go ${s} ${i}.`),
+            key: tapeKey(101, id, "clarify", "c", text),
             event: id,
             label: "clarify",
             digest: "d",
@@ -994,17 +994,19 @@ test("a clarify row's witness is the last agent reply its session recorded befor
 });
 
 test("each clarify row in a session takes the last reply before its own turn", () => {
-    const f = fixture();
-    clarifyAt(f, "host", "e-0-2", 1000);
-    clarifyAt(f, "host", "e-0-5", 2000);
-    f.calls = [
-        agentCall("host", "s-0", 100, "Which file?"),
-        agentCall("host", "s-0", 900, "Done."),
-        agentCall("host", "s-0", 1500, "Which test?"),
-    ];
-    const r = run(f);
-    expect(r.stderr).toBe("");
-    expect(r.report.unwitnessed_clarify).toEqual(["host e-0-2"]);
+    // Either turn of the two can be the unwitnessed one, so neither row may stand for both.
+    for (const [replies, unwitnessed] of [
+        [["Which file?", "Done.", "Which test?"], "host e-0-2"],
+        [["Done.", "Which file?", "Done."], "host e-0-5"],
+    ] as const) {
+        const f = fixture();
+        clarifyAt(f, "host", "e-0-2", 1000);
+        clarifyAt(f, "host", "e-0-5", 2000);
+        f.calls = [100, 900, 1500].map((ms, i) => agentCall("host", "s-0", ms, replies[i] ?? ""));
+        const r = run(f);
+        expect(r.stderr).toBe("");
+        expect(r.report.unwitnessed_clarify).toEqual([unwitnessed]);
+    }
 });
 
 test("the pairing check refuses a pairing row with a wrongly typed field", () => {

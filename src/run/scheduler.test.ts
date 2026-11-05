@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixtureEvents } from "../../tests/run-fixture";
+import type { CallView } from "../grade/artefacts";
 import { FaultInjector, TARGET } from "../proxy/inject";
 import { type CallRecord, RecordWriter } from "../proxy/records";
 import { Rng } from "../rng";
@@ -6898,8 +6899,7 @@ test("a session's call views hold the records read from disk and those the write
     // A caller's edit to a returned list or view leaves the session's views as they were.
     const edited = live.calls("host", "s-1");
     edited.pop();
-    const first = edited[0];
-    if (first) first.response_text = "edited";
+    (edited[0] as CallView).response_text = "edited";
     expect(JSON.stringify(live.calls("host", "s-1"))).toBe(
         JSON.stringify(reopened.calls("host", "s-1")),
     );

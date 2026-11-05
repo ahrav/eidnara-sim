@@ -1036,6 +1036,11 @@ describe("run inputs", () => {
         );
         writeFileSync(path, `${line(record(0))}{"seq":1,\n`);
         expect(() => readCallLog(path, () => {})).toThrow(/line 2 is corrupt: not JSON/);
+        // An unterminated last line, which a kill mid-append leaves, is skipped.
+        writeFileSync(path, `${line(record(0))}${line(record(1))}{"seq":2,`);
+        const seen: number[] = [];
+        readCallLog(path, (r) => seen.push(r.seq), true);
+        expect(seen).toEqual([0, 1]);
     });
 });
 
