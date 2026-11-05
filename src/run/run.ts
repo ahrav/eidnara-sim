@@ -1870,20 +1870,27 @@ export function sessionViews(turnIndex: Map<string, number>): (r: CallRecord) =>
 }
 
 /**
- * Each session's call views in log order, projected through the session's `sessionViews`
- * projector as records arrive. Captures read the session's views from memory.
+ * Each open session's call views in log order, projected through the session's `sessionViews`
+ * projector as records arrive. Captures read the session's views from memory. `captured` names
+ * the sessions a probe turn captures; views are kept for those sessions until `close`, so
+ * memory holds the views of the probe sessions still open.
  */
 export class SessionCalls {
     private readonly sessions = new Map<
         string,
         { view: (r: CallRecord) => CallView; calls: CallView[] }
     >();
+    private readonly closed = new Set<string>();
 
-    constructor(private readonly turnIndex: Map<string, number>) {}
+    constructor(
+        private readonly turnIndex: Map<string, number>,
+        private readonly captured: (session: string) => boolean = () => true,
+    ) {}
 
     /** `note` accepts records in their `calls.jsonl` representation and log order. */
     note(record: CallRecord): void {
         const key = `${record.arm}/${record.session}`;
+        if (this.closed.has(key) || !this.captured(String(record.session))) return;
         let session = this.sessions.get(key);
         if (!session) {
             session = { view: sessionViews(this.turnIndex), calls: [] };
@@ -1899,6 +1906,13 @@ export class SessionCalls {
     noteWritten(record: CallRecord): void {
         const { request: _request, ...fields } = record;
         this.note(JSON.parse(JSON.stringify(fields)) as CallRecord);
+    }
+
+    /** Drops an ended session's views; its later records are skipped. */
+    close(arm: string, session: string): void {
+        const key = `${arm}/${session}`;
+        this.closed.add(key);
+        this.sessions.delete(key);
     }
 
     /** Copies of the session's views, so a caller's edit leaves them as recorded. */
@@ -2135,7 +2149,18 @@ async function runArms(
     const turnIndex = new Map(
         events.filter((e) => e.index !== undefined).map((e) => [e.id, e.index as number]),
     );
-    const sessionCalls = new SessionCalls(turnIndex);
+    const probeSessions = new Set(
+        events.filter((e) => e.kind === "user_turn" && e.probe).map((e) => String(e.session)),
+    );
+    const sessionCalls = new SessionCalls(turnIndex, (s) => probeSessions.has(s));
+    // A session whose `session_end` the journal records as delivered takes no later capture.
+    const sessionEnds = new Map(
+        events.filter((e) => e.kind === "session_end").map((e) => [e.id, String(e.session)]),
+    );
+    for (const e of journal.entries) {
+        const session = e.kind === "Event" ? sessionEnds.get(String(e.event)) : undefined;
+        if (session !== undefined && typeof e.arm === "string") sessionCalls.close(e.arm, session);
+    }
     readCallLog(
         callsPath,
         (r) => {
@@ -2574,6 +2599,7 @@ async function runArms(
                                 throw caught;
                             }
                             requireBoots(arm, armRoot);
+                            sessionCalls.close(arm, e.session);
                             return out;
                         }
                         if (e.kind !== "user_turn") return await driver.event(e);

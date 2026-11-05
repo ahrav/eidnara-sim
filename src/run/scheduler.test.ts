@@ -6905,6 +6905,23 @@ test("a session's call views hold the records read from disk and those the write
     );
 });
 
+test("call views are kept for captured sessions until their session ends", () => {
+    const record = (seq: number, session: string) =>
+        ({ seq, arm: "host", session, turn: null, component: "agent" }) as unknown as CallRecord;
+    const views = new SessionCalls(new Map(), (s) => s !== "s-quiet");
+    views.note(record(0, "s-1"));
+    views.note(record(1, "s-quiet"));
+    views.note(record(2, "s-2"));
+    expect(views.calls("host", "s-quiet")).toEqual([]);
+    views.close("host", "s-1");
+    views.note(record(3, "s-1"));
+    expect(views.calls("host", "s-1")).toEqual([]);
+    expect(views.calls("host", "s-2").map((c) => c.seq)).toEqual([2]);
+    // Another arm's run of the same session keeps its own views.
+    views.note({ ...record(4, "s-1"), arm: "eidnara" });
+    expect(views.calls("eidnara", "s-1").map((c) => c.seq)).toEqual([4]);
+});
+
 test("a background call credited to the preceding turn takes that turn's index", () => {
     const path = join(dir(), "calls.jsonl");
     const base = {

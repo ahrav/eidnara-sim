@@ -301,10 +301,13 @@ toolchain wrappers are created exclusively after removing any planted name.
    sequence refuses the run. The writer advances its sequence only after an
    append succeeded, so a failed append leaves the file recoverable. The run's
    call-log reader (`readCallLog`) reads the existing records once, checking each line's fields and
-   its `seq`, and projects each session's call views (the `proxy-call` fields
-   of `docs/grading.md`, without request bodies) as it reads them and as the
-   run appends each later record, so a snapshot capture copies its session's
-   views from memory. The fault injector restores its witnesses from their fault
+   its `seq`, and projects the call views (the `proxy-call` fields of
+   `docs/grading.md`, without request bodies) of each session a probe turn
+   captures as it reads them and as the run appends each later record, so a
+   snapshot capture copies its session's views from memory. A session's views
+   are dropped once its `session_end` is delivered (on resume, once the
+   journal records that `Event`), so memory holds the views of the open probe
+   sessions. The fault injector restores its witnesses from their fault
    fields in arrival order, so a fault injected and observed before a hard kill keeps its
    witness in the resumed run. Witnesses are kept per arm: the scheduler arms
    each proxy fault for the arm it is running, and `faults.jsonl` lists one
