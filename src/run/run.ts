@@ -1825,10 +1825,6 @@ export class CallIndex {
         else this.places.set(key, [[offset, length]]);
     }
 
-    add(record: CallRecord, offset: number, length: number): void {
-        this.remember(record, offset, length);
-    }
-
     records(arm: string, session: string): CallRecord[] {
         const places = this.places.get(`${arm}/${session}`) ?? [];
         if (places.length === 0) return [];
@@ -1931,14 +1927,41 @@ export function sessionViews(turnIndex: Map<string, number>): (r: CallRecord) =>
     };
 }
 
-export function callsOf(
-    index: CallIndex,
-    arm: string,
-    session: string,
-    turnIndex: Map<string, number>,
-): CallView[] {
-    const view = sessionViews(turnIndex);
-    return index.records(arm, session).map((r) => view(r));
+/**
+ * Each session's call views in log order, projected through the session's `sessionViews`
+ * projector as records arrive. Captures read the session's views from memory.
+ */
+export class SessionCalls {
+    private readonly sessions = new Map<
+        string,
+        { view: (r: CallRecord) => CallView; calls: CallView[] }
+    >();
+
+    constructor(private readonly turnIndex: Map<string, number>) {}
+
+    /** `note` accepts records in their `calls.jsonl` representation and log order. */
+    note(record: CallRecord): void {
+        const key = `${record.arm}/${record.session}`;
+        let session = this.sessions.get(key);
+        if (!session) {
+            session = { view: sessionViews(this.turnIndex), calls: [] };
+            this.sessions.set(key, session);
+        }
+        session.calls.push(session.view(record));
+    }
+
+    /**
+     * `noteWritten` accepts a record the run just appended. A JSON round trip of its fields
+     * other than the request gives the values a read of the appended line gives.
+     */
+    noteWritten(record: CallRecord): void {
+        const { request: _request, ...fields } = record;
+        this.note(JSON.parse(JSON.stringify(fields)) as CallRecord);
+    }
+
+    calls(arm: string, session: string): CallView[] {
+        return [...(this.sessions.get(`${arm}/${session}`)?.calls ?? [])];
+    }
 }
 
 async function runArms(
@@ -2166,10 +2189,15 @@ async function runArms(
         "arm" | "component" | "fault_ref" | "proxy_retries" | "seq" | "started_wall_ms" | "arrival"
     >[] = [];
     let firstArrival = 0;
-    const callIndex = new CallIndex(
+    const turnIndex = new Map(
+        events.filter((e) => e.index !== undefined).map((e) => [e.id, e.index as number]),
+    );
+    const sessionCalls = new SessionCalls(turnIndex);
+    new CallIndex(
         callsPath,
         (r) => {
             noteAgent(r);
+            sessionCalls.note(r);
             firstArrival = Math.max(firstArrival, (r.arrival ?? r.seq) + 1);
             const { arm, component, fault_ref, proxy_retries, seq, started_wall_ms, arrival } = r;
             prior.push({ arm, component, fault_ref, proxy_retries, seq, started_wall_ms, arrival });
@@ -2260,8 +2288,8 @@ async function runArms(
             return record;
         }
 
-        protected override placed(record: CallRecord, offset: number, length: number): void {
-            callIndex.add(record, offset, length);
+        protected override placed(record: CallRecord): void {
+            sessionCalls.noteWritten(record);
         }
     }
     // The diagnostics file is opened once without following symlinks, like a child's log.
@@ -2318,9 +2346,6 @@ async function runArms(
         scenario.projects.map((p) => [p.id, join(ROOT, "corpus/repos", p.id)]),
     );
     const loopStore = scenario.faults.some((f) => f.type === "store_full");
-    const turnIndex = new Map(
-        events.filter((e) => e.index !== undefined).map((e) => [e.id, e.index as number]),
-    );
     const scripted = scenario.events.filter((e) => e.kind === "user_turn") as {
         id: string;
         session: string;
@@ -2516,9 +2541,9 @@ async function runArms(
             sampleDaemon: () => sampler.observe(),
             callsFor: (session) => {
                 handlersFailed();
-                const calls = callsOf(callIndex, arm, session, turnIndex).filter(
-                    (c) => c.component !== "user-sim",
-                );
+                const calls = sessionCalls
+                    .calls(arm, session)
+                    .filter((c) => c.component !== "user-sim");
                 const began = beganAt(journal.entries, arm);
                 const turns = userTurns(arm, session).map((e) => {
                     const index = turnIndex.get(String(e.event));

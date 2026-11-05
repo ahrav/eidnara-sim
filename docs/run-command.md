@@ -301,7 +301,10 @@ toolchain wrappers are created exclusively after removing any planted name.
    sequence refuses the run. The writer advances its sequence only after an
    append succeeded, so a failed append leaves the file recoverable. The run's
    call index reads the existing records once, checking each line's fields and
-   its `seq`, and the fault injector restores its witnesses from their fault
+   its `seq`, and projects each session's call views (the `proxy-call` fields
+   of `docs/grading.md`, without request bodies) as it reads them and as the
+   run appends each later record, so a snapshot capture copies its session's
+   views from memory. The fault injector restores its witnesses from their fault
    fields in arrival order, so a fault injected and observed before a hard kill keeps its
    witness in the resumed run. Witnesses are kept per arm: the scheduler arms
    each proxy fault for the arm it is running, and `faults.jsonl` lists one
