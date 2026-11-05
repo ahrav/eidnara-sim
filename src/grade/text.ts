@@ -110,9 +110,12 @@ const shapeOf = (value: string): RegExp =>
 /** A word that turns down the next value it names within the clause. */
 const NEGATOR =
     /\b(?:not|never|no longer|[a-z]+n['\u2019]t|instead of|rather than|other than|except|replac(?:e|es|ed|ing)(?!\s+(?:by|with)\b)|supersed(?:e|es|ed|ing)(?!\s+by\b)|(?:changed|moved|renamed|switched|updated|went)\s+from|avoid(?:ing)?)\b/gi;
-/** A word that marks the value right after it, at most four words on, as superseded. */
+/**
+ * A word that marks the value right after it, at most four words on, as superseded. A comma right
+ * after the word closes its phrase, so `told me earlier, it should be X` marks nothing.
+ */
 const STALE_ADJECTIVE =
-    /\b(?:old|older|earlier|previous|previously|prior|former|formerly|originally|retired|outdated|stale|deprecated|obsolete)\b(?=,?(?:\s+(?!(?:to|and|but|so)\b)[\w-]+,?){0,4}?\s+$)/i;
+    /\b(?:old|older|earlier|previous|previously|prior|former|formerly|originally|retired|outdated|stale|deprecated|obsolete)\b(?=(?:\s+(?!(?:to|and|but|so)\b)[\w-]+,?){0,4}?\s+$)/i;
 /** What follows a value to say it is wrong or superseded. */
 const AFTER = new RegExp(
     `^[^.?!;]{0,30}?(?:${[
@@ -137,6 +140,17 @@ const EQUALLY =
 const CLAUSE = /\b(?:to|and|but|so)\b/i;
 /** What follows a value to place it in the past: `Y was only for testing`, `Y was used before`. */
 const HISTORY = /^[^.?!;]{0,30}?\b(?:was|were)\s+(?:only|used|for)\b/i;
+/**
+ * A sentence that says the repository or the machine lacks a value rather than turning it down:
+ * `nothing in this repo listens on X`, `the repo doesn't mention X`, `neither X nor Y appears`.
+ */
+const ABSENCE =
+    /\b(?:nothing|nobody|none of|neither|no (?:process|file|commit|config\w*|reference|record|match\w*|mention))\b|\b(?:does|do|did|is|are|was|were)(?:n['\u2019]?t| not)\s+(?:[\w-]+\s+){0,2}?(?:mention|appear|contain|define|set|use|reference|listen|serve|answer|exist|include|record|show|open|running)\w*|\bnot (?:in|set|defined|mentioned|referenced|listening|found|open|running)\b/i;
+/** Wording that still turns a value down inside an absence or conditional sentence. */
+const REJECTS =
+    /\b(?:replac\w*|supersed\w*|retired|outdated|out of date|stale|deprecated|obsolete|wrong|invalid|incorrect|typo)\b/i;
+/** Wording that lists values together as all absent: `neither X nor Y`, `on either X or Y`. */
+const LISTED = /\b(?:neither|either|nor|both)\b/i;
 /** A sentence after the answer that switches to another value: `Actually, use Y instead`. */
 const CORRECTION =
     /\b(?:actually|instead|correction|on second thought|scratch that|I meant|rather)\b/i;
@@ -193,6 +207,16 @@ function mentions(sentence: string, value: string, stale: string[]): Mention[] {
 }
 
 /**
+ * Whether a sentence after the committed one says the repository or machine lacks the value
+ * (`ABSENCE`) or offers to revise it (`If X is no longer right, tell me`) without rejecting it.
+ * A competitor it leaves standing must be listed beside the value as absent too (`neither X nor Y`).
+ */
+const stepsAside = (sentence: string, found: Mention[]): boolean =>
+    (ABSENCE.test(sentence) || /^if\b/i.test(sentence)) &&
+    !REJECTS.test(sentence) &&
+    (LISTED.test(sentence) || found.every((m) => m.expected || m.negated));
+
+/**
  * Why an answer fails to commit to `value` (`committed-whole-word`), or null when it commits. The
  * first sentence naming a candidate value (the expected one, one of its shape, or a superseded
  * one) must assert the expected value as a whole word, not as a question and not turned down
@@ -202,7 +226,8 @@ function mentions(sentence: string, value: string, stale: string[]): Mention[] {
  * superseded stands aside. A later sentence with a correction word (`actually`, `instead`)
  * switches to a competitor it leaves standing, unless the sentence also asserts the value or
  * places the competitor in the past (`Y was only for testing`). A decisive value placed in the past
- * (`X was only for testing`) is turned down unless a later sentence asserts it.
+ * (`X was only for testing`) is turned down unless a later sentence asserts it. A later sentence
+ * that steps aside (`stepsAside`) neither turns the value down nor names a competitor.
  */
 export function uncommitted(answer: string, value: string, stale: string[] = []): string | null {
     if (!carries(answer, value)) return "answer lacks the value";
@@ -225,12 +250,15 @@ export function uncommitted(answer: string, value: string, stale: string[] = [])
     }
     if (live(decisive.found)) return "answer names a competing value beside it";
     for (const [i, { s, found }] of all.entries()) {
-        if (found.some((m) => m.expected && m.negated)) return "answer turns the value down";
+        const aside = i > first && stepsAside(s, found);
+        if (!aside && found.some((m) => m.expected && m.negated)) {
+            return "answer turns the value down";
+        }
         const current = found.filter((m) => !m.past);
         if (i > first && live(current) && CORRECTION.test(s) && !asserts(found)) {
             return "answer switches to a competing value";
         }
-        if (found.some((m) => m.expected) && live(found) && EQUALLY.test(s)) {
+        if (!aside && found.some((m) => m.expected) && live(found) && EQUALLY.test(s)) {
             return "answer names a competing value beside it";
         }
     }

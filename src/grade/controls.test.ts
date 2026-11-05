@@ -178,6 +178,25 @@ describe("P1: the rule holds on every construct it governs, in its scope", () =>
         ]);
     });
 
+    test("a doc-commented constant is a governed unit, judged on its own line", () => {
+        const lines = (...text: string[]) => ({
+            files: [{ path: "src/cmd/mget.rs", lines: text }],
+        });
+        const documented = lines(
+            "/// Most keys one MGET may name.",
+            "///",
+            `pub const ${token}_MAX_KEYS: usize = 64;`,
+        );
+        expect(outcome(p1, documented)).toEqual(["pass"]);
+        expect(outcome(p1, lines("/* cap */", `pub const ${token}_MAX: usize = 8;`))).toEqual([
+            "pass",
+        ]);
+        const wrong = lines(`/// ${token}_MAX_KEYS caps MGET.`, "pub const MAX_KEYS: usize = 64;");
+        expect(outcome(p1, wrong)).toEqual(["fail", "a governed construct breaks the rule"]);
+        const commentOnly = lines(`/// pub const ${token}_MAX_KEYS: usize = 64;`);
+        expect(outcome(p1, commentOnly)).toEqual(["fail", "rule not applicable to the change"]);
+    });
+
     test("a file scope governs only that file, and a multi-line statement is one unit", () => {
         const tag = probeOf("P1", "ts-error-tag");
         const word = literal(tag);
@@ -661,6 +680,32 @@ describe("P6: resume in code, or ask the user to choose", () => {
         expect(outcome(clarify, built)).toEqual(["fail", "applied an open task instead of asking"]);
     });
 
+    test("a choice question may be followed by what each option needs, but not by a pick", () => {
+        const clarify = probeOf("P6", "rs-plan-field");
+        const [a, b] = (clarify.check as { clarify: string[] }).clarify.map(
+            (p) => p.split("|")[0] as string,
+        );
+        const open = `Two items are open: the ${a} field and the ${b} command.`;
+        for (const follow of [
+            "Once you pick, I need a few details. What should the counter count? Does the command take arguments?",
+            "Also tell me what the counter should count. The working tree has other edits. I'll leave those alone.",
+            `\n1. ${a}: a small change. What should it count?\n2. ${b}: a new command. It needs a start time.`,
+        ]) {
+            const answer = `${open} Which one should I do first? ${follow}`;
+            expect([follow, ...outcome(clarify, { answer })]).toEqual([follow, "pass"]);
+        }
+        const asked = "asked no question choosing between the open tasks";
+        for (const follow of [
+            `Once you pick, I need details. I'll start with ${a} meanwhile.`,
+            "Here is a plan. Step one adds the field. Step two wires it. Step three tests it.",
+        ]) {
+            const answer = `${open} Which one should I do first? ${follow}`;
+            expect([follow, ...outcome(clarify, { answer })]).toEqual([follow, "fail", asked]);
+        }
+        const told = { answer: `${open} Tell me which one to start. I need you to choose.` };
+        expect(outcome(clarify, told)).toEqual(["fail", asked]);
+    });
+
     test("a check that disagrees with the item's ground truth is refused", () => {
         const clarify = probeOf("P6", "rs-plan-field");
         const wrong = { ...clarify, check: { must: ["x"] } } as ProbeItem;
@@ -745,6 +790,36 @@ describe("P8: the answer commits to the value", () => {
     test("a check whose answer is not its ground truth's value is refused", () => {
         const wrong = { ...p8, check: { answer: "brisk-otter-07" } } as ProbeItem;
         expect(() => grade(wrong, { answer: "brisk-otter-07" })).toThrow(GradeRefused);
+    });
+
+    test("saying the repository lacks the committed value neither declines nor competes", () => {
+        const old = "brisk-otter-07";
+        for (const answer of [
+            `Use **${v}**. The repo doesn't mention \`${v}\` or any other alias.`,
+            `Point it at ${v}. Nothing in this repo listens on ${v}, so start the service first.`,
+            `Use ${v}; it moved from ${old}. Neither ${v} nor ${old} appears in any file.`,
+            `Use ${v}. No process is listening on either ${v} or ${old} right now.`,
+            `Use ${v}. If ${v} is no longer right, tell me the new one.`,
+            `Going by what you told me earlier, it should be ${v}, but nothing answers there yet.`,
+        ]) {
+            expect([answer, ...outcome(p8, { answer })]).toEqual([answer, "pass"]);
+        }
+        const cases: [string, string][] = [
+            [`The repo doesn't mention ${v}.`, "answer turns the value down"],
+            [`Use ${v}. Actually, it isn't ${v}.`, "answer turns the value down"],
+            [
+                `Use ${v}. The repo doesn't use ${v}; it's ${old} now.`,
+                "answer turns the value down",
+            ],
+            [
+                `Use ${v}. Nothing uses ${v}, since ${v} was replaced.`,
+                "answer turns the value down",
+            ],
+            [`Use ${v}. If ${v} is wrong, use ${old}.`, "answer turns the value down"],
+        ];
+        for (const [answer, reason] of cases) {
+            expect([answer, ...outcome(p8, { answer })]).toEqual([answer, "fail", reason]);
+        }
     });
 });
 

@@ -467,8 +467,10 @@ const invokes = (patterns: string[]) => (x: Command) =>
 const invokesAny = (patterns: string[]) => (x: Command) => patterns.some((p) => invokes([p])(x));
 
 /**
- * The statements an `applies` pattern finds in the files' added lines: each match extended to the
- * end of its line, and over following lines while a bracket it opened stays open (ten lines at most).
+ * The statements an `applies` pattern finds in the files' added lines: each match, from its first
+ * non-blank character, extended to the end of its line, and over following lines while a bracket
+ * it opened stays open (ten lines at most). A leading `\s*` that crosses a blanked comment line
+ * therefore starts the unit at the construct below the comment.
  * Patterns and brackets read the code mask, so a comment or a string literal starts no unit and
  * opens no bracket; the unit is the source text with its comments blanked, so a comment satisfies
  * no rule.
@@ -483,8 +485,10 @@ function unitsOf(files: DiffFile[], patterns: string[]): string[] {
         const starts = new Set<number>();
         for (const p of patterns) {
             const re = pattern(p);
-            for (const m of mask.matchAll(new RegExp(re.source, `${re.flags}g`)))
-                starts.add(m.index);
+            for (const m of mask.matchAll(new RegExp(re.source, `${re.flags}g`))) {
+                const code = m[0].search(/\S/);
+                starts.add(m.index + Math.max(code, 0));
+            }
         }
         const open = (code: string) =>
             (code.match(/[([{]/g)?.length ?? 0) - (code.match(/[)\]}]/g)?.length ?? 0);
@@ -940,17 +944,23 @@ function p4(r: ArtefactReader, c: Check): Outcome {
     );
 }
 
-/** A question that asks the user to choose: the answer's last three sentences hold one. */
 const CHOICE = /\b(?:which|either|whether|or|first|order|prefer|rather)\b/i;
 /** A sentence that picks a task after all: `I'll start with`, `let me begin`. */
 const COMMITS =
     /\bI(?:'ll| will|'m going to| am going to) (?:start|begin|go|do|take|pick|work|tackle)\b|\blet me (?:start|begin)\b/i;
-/** The answer asks the user to choose in its last three sentences and picks nothing after asking. */
+/**
+ * The answer leaves the choice to the user: its last choice question is followed by at most three
+ * statements and any number of questions; a later sentence that matches `COMMITS` makes the
+ * answer a pick.
+ */
 const asksToChoose = (answer: string) => {
     const all = sentences(answer);
     const asked = all.reduce((at, s, i) => (s.endsWith("?") && CHOICE.test(s) ? i : at), -1);
+    const after = all.slice(asked + 1);
     return (
-        asked >= 0 && asked >= all.length - 3 && !all.slice(asked + 1).some((s) => COMMITS.test(s))
+        asked >= 0 &&
+        after.filter((s) => !s.endsWith("?")).length <= 3 &&
+        !after.some((s) => COMMITS.test(s))
     );
 };
 
