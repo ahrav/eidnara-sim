@@ -942,6 +942,9 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
             [`python3 -h ${script}`],
             [`python3 -V ${script}`],
             [`python3 - ${script}`],
+            [`python3 -Q ${script}`],
+            [`sh ${script}`],
+            [`bash ./${script}`],
         ]) {
             expect(outcome(tool, { files: [entry], source })).toEqual([
                 "excluded",

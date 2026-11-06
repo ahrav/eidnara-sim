@@ -1,3 +1,5 @@
+import { definesAndRaises } from "./check-script";
+
 const KINDS = [
     "constraint",
     "decision",
@@ -504,6 +506,13 @@ function toolErrorProblems(where: string, t: Json, check: Json, vars: Vars): str
     if (!("must" in check)) problems.push(`${where}: check needs must`);
     else if (!satisfies(check.must, fill(shown, vars), vars)) {
         problems.push(`${where}: the ${t.form} text does not carry the error the check names`);
+    } else if (t.form === "tool_result" && isStringList(check.must)) {
+        const missing = check.must.find((m) => !definesAndRaises(fill(shown, vars), fill(m, vars)));
+        if (missing !== undefined) {
+            problems.push(
+                `${where}: the check script must define and raise the error the check names`,
+            );
+        }
     }
     if (typeof t.revise === "string" && !satisfies(check.must, fill(t.revise, vars), vars)) {
         if (t.form === "pasted") {

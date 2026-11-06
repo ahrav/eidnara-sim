@@ -463,7 +463,8 @@ the sandbox with `Read-only file system`.
 The agent's build tools come from `config.toolchain`: its `bin` directories,
 each under a `keep` path, come first on the host's `PATH`, followed by the
 system directories `/usr/local/bin:/usr/bin:/bin`, the same `PATH` the
-toolchain probe and both hosts use, its `keep` paths (the cargo binaries, registry, and
+toolchain probe and both hosts use (the probe runs `cargo`, `rustc`,
+`rustdoc`, `bun`, and `python3`, which the P12 check scripts need), its `keep` paths (the cargo binaries, registry, and
 git cache, rustup, and the bun binary and install cache) stay visible and
 read-only inside the sandbox (a mount nested inside a read-only path is
 remounted read-only too), and its `env` sets `CARGO_HOME`, `RUSTUP_HOME`,

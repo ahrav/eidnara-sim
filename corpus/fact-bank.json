@@ -1340,7 +1340,7 @@
                     "Throw an error with a clear message when an empty route path is registered.",
                     "Throw an error with a clear message when a cookie is set with an empty name.",
                     "Give the query parser a default key name for a bare value.",
-                    "Add a helper in utils that wraps a header value in brackets for logging."
+                    "Add a helper in utils that prefixes a header value with the word header and a colon for logging."
                 ]
             }
         ],

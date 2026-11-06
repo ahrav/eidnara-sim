@@ -222,6 +222,8 @@ describe("committed corpus", () => {
         broken.any.framings = ["Next.", "Next."];
         broken.rust.plan[1].check = { paths_must: ["x"] };
         broken.typescript.tool_error[0].command = "true";
+        broken.typescript.tool_error[0].script.content =
+            'print("{Alt}Error: cookie header on request 71 holds {value} bytes")';
         broken.typescript.constraint[0].probe_variants = [broken.typescript.constraint[0].probe];
         broken.typescript.constraint[1].out_probe_variants = ["Add {nothing} here."];
         broken.typescript.scoped_update[0].variants[0].outer = "backtick";
@@ -237,7 +239,7 @@ describe("committed corpus", () => {
             "fact-bank typescript/plan: expected at least 2 templates",
             "fact-bank typescript/scoped_update[0] ts-scope-quotes out_check: check key quote_style_must is not double or single",
             "fact-bank typescript/tool_error[0] ts-check-replay: command does not run the committed script scripts/check-quiet_vole.py",
-            "fact-bank typescript/tool_error[0] ts-check-replay: the tool_result text does not carry the error the check names",
+            "fact-bank typescript/tool_error[0] ts-check-replay: the check script must define and raise the error the check names",
             "fact-bank any/framings: expected a non-empty list of distinct non-blank strings",
         ]);
     });

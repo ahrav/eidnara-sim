@@ -43,4 +43,6 @@ A compiled scenario with P1 items and the event order of every probe.
 - Findings (sim-scenario/v7): each constraint template carries one
   `probe_variants` entry and one `out_probe_variants` entry, so the M-201
   repeats ask a different task; the compile test asserts zero repeats.
+- Missing evidence: none for S and M; at L and XL a P4 or P10 line can
+  repeat past its four variants and is framed, which no test witnesses.
 - Conclusion: resolved with answer: a revised line asks a variant task.

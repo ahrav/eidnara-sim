@@ -270,7 +270,11 @@ the agent documents is therefore a type the repository defines and a failure
 the script produces. The compiler refuses a tool_result template whose
 rendered script does not both define (`class X`) and raise (`raise X`) the
 error its `must` pattern names, read from the script's code with comments
-and string literals blanked, each at the start of a statement. The c7 audit (TAXONOMY G10) found agents on
+and string literals blanked, each at the start of a statement; the corpus
+gate (`bun run corpus:check`) applies the same check to every tool_result
+template, selected or not, and a run's toolchain preflight probes `python3`.
+A variant text takes its own place among a project's task texts, so another
+fact whose task equals it is framed. The c7 audit (TAXONOMY G10) found agents on
 every arm refusing to document an echoed type the code base never defined.
 
 ## Controls
@@ -396,15 +400,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `f65f81b1` | 0.2768 | 0.4982 |
-| S | 102 | `b6677521` | 0.2672 | 0.5142 |
-| M | 201 | `8021ff39` | 0.3552 | 0.5807 |
-| M | 202 | `6ab05479` | 0.3513 | 0.5807 |
-| M | 203 | `014c693a` | 0.3225 | 0.551 |
-| L | 301 | `f6b1bdc0` | 0.3247 | 0.5807 |
-| L | 302 | `968e01b9` | 0.3261 | 0.5807 |
-| L | 303 | `748ea6a1` | 0.3254 | 0.5807 |
-| XL | 401 | `e423fd8e` | 0.3197 | 0.5807 |
+| S | 101 | `dcf26078` | 0.2768 | 0.4982 |
+| S | 102 | `76dd94f5` | 0.2672 | 0.5142 |
+| M | 201 | `c25457f3` | 0.3552 | 0.5807 |
+| M | 202 | `fab97d7f` | 0.3513 | 0.5807 |
+| M | 203 | `fd3b3cd2` | 0.3225 | 0.551 |
+| L | 301 | `e82e0a5e` | 0.3247 | 0.5807 |
+| L | 302 | `a8712495` | 0.3261 | 0.5807 |
+| L | 303 | `39853c28` | 0.3254 | 0.5807 |
+| XL | 401 | `01d2d682` | 0.3197 | 0.5807 |
 
 Under qualification Q (revision 3, `e8c1f508`), which adds its P8-twin
 controls, the seeds compile to these scenarios; 103 is its exploratory
@@ -412,9 +416,9 @@ hold-out:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| Q | 101 | `315bf066` | 0.2768 | 0.4982 |
-| Q | 102 | `41ecb151` | 0.262 | 0.5142 |
-| Q | 103 | `3a20ee40` | 0.2712 | 0.5021 |
+| Q | 101 | `9fa26790` | 0.2768 | 0.4982 |
+| Q | 102 | `f1b1d197` | 0.262 | 0.5142 |
+| Q | 103 | `02b8dea7` | 0.2712 | 0.5021 |
 
 ## Known limits
 

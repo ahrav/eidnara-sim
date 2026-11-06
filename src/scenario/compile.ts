@@ -1,4 +1,5 @@
 import { sample } from "../corpus/cdf";
+import { definesAndRaises } from "../corpus/check-script";
 import { type Distributions, table } from "../corpus/distributions";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
@@ -197,36 +198,6 @@ const pascal = (word: string) =>
  * The placeholder names of a check's positive (or negative) grading keys, one group per pattern:
  * a pattern holds when any one of its group's values occurs, so the group lists alternatives.
  */
-/** A Python source with its comments and string literals blanked to spaces, line breaks kept. */
-export function pythonCode(source: string): string {
-    const out = source.split("");
-    const wipe = (from: number, to: number) => {
-        for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
-    };
-    let i = 0;
-    while (i < source.length) {
-        const ch = source[i] as string;
-        if (ch === "#") {
-            const end = source.indexOf("\n", i);
-            const stop = end < 0 ? source.length : end;
-            wipe(i, stop);
-            i = stop;
-        } else if (ch === '"' || ch === "'") {
-            const triple = source.startsWith(ch.repeat(3), i);
-            const close = triple ? ch.repeat(3) : ch;
-            let j = i + close.length;
-            while (j < source.length && !source.startsWith(close, j)) {
-                if (!triple && source[j] === "\n") break;
-                j += source[j] === "\\" ? 2 : 1;
-            }
-            const stop = Math.min(j, source.length);
-            wipe(i, Math.min(stop + close.length, source.length));
-            i = stop + close.length;
-        } else i++;
-    }
-    return out.join("");
-}
-
 export function placeholderGroups(check: unknown, positive: boolean): string[][] {
     if (!check || typeof check !== "object") return [];
     const out: string[][] = [];
@@ -539,7 +510,9 @@ export async function compileScenario(input: CompileInput) {
         const n = users.indexOf(fact);
         if (n === 0) return text;
         const variant = variants[n - 1];
-        if (variant !== undefined) return render(variant, vars);
+        // A variant takes its own place among the project's task texts, so a later fact whose
+        // task equals it is framed rather than asked the same text twice.
+        if (variant !== undefined) return distinct(project, fact, render(variant, vars));
         const framing = framings[n - 1];
         if (framing === undefined) {
             throw new Error(
@@ -848,13 +821,10 @@ export async function compileScenario(input: CompileInput) {
             // so a reader who checks the repository finds it, and running the script produces it.
             // The definition and the raise are read from the script's code, comments and string
             // literals blanked, each at the start of a statement.
-            const code = pythonCode(script.content);
             for (const must of [tpl.check.must].flat()) {
                 if (typeof must !== "string") continue;
                 const named = render(must, vars);
-                const defined = new RegExp(`^[ \\t]*class\\s+(?:${named})\\s*[(:]`, "m").test(code);
-                const raised = new RegExp(`^[ \\t]*raise\\s+(?:${named})\\s*\\(`, "m").test(code);
-                if (!defined || !raised) {
+                if (!definesAndRaises(script.content, named)) {
                     throw new Error(
                         `${tpl.id}: the check script ${script.path} must define and raise the error ${named} names`,
                     );

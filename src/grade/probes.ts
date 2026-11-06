@@ -1541,7 +1541,9 @@ export const runsScript = (path: string) => (x: Command) =>
         const named = (w: string | undefined) =>
             w !== undefined && (w === path || w === `./${path}` || w.endsWith(`/${path}`));
         if (named(words[0])) return true;
-        if (/^(?:sh|bash|dash|zsh)$/.test(words[0] ?? "")) {
+        // A shell runs a shell script and python a Python one; the other pairing exits on a
+        // syntax error before the check reports anything.
+        if (/^(?:sh|bash|dash|zsh)$/.test(words[0] ?? "") && !path.endsWith(".py")) {
             const options = words.slice(1).filter((w) => w.startsWith("-"));
             const operand = words.slice(1).find((w) => !w.startsWith("-"));
             // `sh -n` parses the script and `sh -c` runs other text.
@@ -1550,12 +1552,13 @@ export const runsScript = (path: string) => (x: Command) =>
                 named(operand)
             );
         }
-        if (!/^python3?(?:\.\d+)?$/.test(words[0] ?? "")) return false;
+        if (!/^python3?(?:\.\d+)?$/.test(words[0] ?? "") || !path.endsWith(".py")) return false;
         return named(pythonProgram(words.slice(1)));
     });
 /**
  * The program file a `python` command runs, after its options, or undefined when it runs other
- * text (`-c`, `-m`, `-` for standard input) or exits before running anything (`-h`, `-V`).
+ * text (`-c`, `-m`, `-` for standard input), exits before running anything (`-h`, `-V`, an
+ * unknown option), or takes an unknown long option.
  */
 const pythonProgram = (words: string[]): string | undefined => {
     for (let i = 0; i < words.length; i++) {
@@ -1569,11 +1572,12 @@ const pythonProgram = (words: string[]): string | undefined => {
         if (!w.startsWith("-")) return w;
         for (let k = 1; k < w.length; k++) {
             const ch = w[k] as string;
-            if (/[cmhV?]/.test(ch)) return undefined;
             if (/[WX]/.test(ch)) {
                 if (k + 1 >= w.length) i++;
                 break;
             }
+            // Python's flags that run on: an unknown one, like -c, -m, -h, and -V, runs no file.
+            if (!/[bBdEiIOPqsSuvx]/.test(ch)) return undefined;
         }
     }
     return undefined;
