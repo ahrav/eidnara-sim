@@ -12,7 +12,11 @@ v2 harness before any harness code existed.
 ## Evidence trail
 
 `SnapshotArtefacts` appears exactly once per item and arm, at the first
-`EndTurn` of the probe task, and grades reference that snapshot id.
+`EndTurn` of the probe task, and grades reference that snapshot id. A P14
+item has no probe task; grade-run grades it from a session view of the
+session's calls and journaled user turns, and its grades cite
+`<arm>:<item>:<session>` (`p14SnapshotId` in `src/grade/probes.ts`), which
+the SIM-P41 witness in `src/report/witness.ts` checks.
 
 M5 (#1029) grades only an item's first snapshot and counts later ones in `later_attempts_logged`; a test shows the grade follows the first snapshot when the order is reversed. The arm driver captures a snapshot at each probe turn, and the scheduler journals `SnapshotArtefacts` once per item and arm after the first `EndTurn`, from the snapshot id that `EndTurn` carries, which a resume replays when a kill fell between the two entries; a test kills a run there and checks the resumed journal.
 

@@ -291,8 +291,10 @@ user simulator's, projected as a capture projects them (`src/run/callviews.ts`)
 with the response text left out, and the arm's delivered `UserTurn` rows of
 the session placed among them at their `BeginTurn` time (`sessionTurns`, the
 placement a capture uses). A P14 item whose session ends past the run's
-events is listed as outside the run. `aa-report` and the SIM-P41 witness hold
-a P14 grade to that snapshot id. The
+events is listed as outside the run, and one whose session holds a turn a
+stop cut (`cutTurns`) is graded `excluded` with reason `session interrupted`,
+since its view lacks what the cut turn would have sent. `aa-report` and the
+SIM-P41 witness hold a P14 grade to that snapshot id. The
 user simulator's `pushback` labels come from the seeded behaviour plan
 (`docs/user-sim.md`), so both arms of one seed receive pushback on the same
 turns: in c7 S-101 and M-201 the host and Eidnara arms carry 815 and 1,193

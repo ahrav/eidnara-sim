@@ -56,7 +56,7 @@ import { RecordWriter } from "../src/proxy/records";
 import { Rng } from "../src/rng";
 import { writeAtomic } from "../src/run/atomic";
 import { sessionViews, withUserTurns } from "../src/run/callviews";
-import { type ArmInterruptions, interruptions } from "../src/run/interruptions";
+import { type ArmInterruptions, cutTurns, interruptions } from "../src/run/interruptions";
 import {
     type Entry,
     HarnessFailure,
@@ -1077,6 +1077,16 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
         return { ...snap, artefacts: [...snap.artefacts, source] };
     };
 
+    const eventSession = new Map(scenario.events.map((e) => [String(e.id), String(e.session)]));
+    const interruptedSessions = new Set(
+        [...cutTurns(entries).cut.keys()].map((key) => {
+            const [arm, event] = [
+                key.slice(0, key.lastIndexOf("/")),
+                key.slice(key.lastIndexOf("/") + 1),
+            ];
+            return `${arm}/${eventSession.get(event)}`;
+        }),
+    );
     for (const probe of scenario.probes.filter((p) => p.type !== "P7")) {
         const sources = sourcesOf(probe);
         for (const arm of arms) {
@@ -1120,7 +1130,16 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
                 continue;
             }
             if (!grade) skip(arm, "probe turn failed");
-            else if (unverified(arm, probe.id)) {
+            else if (probe.type === "P14" && interruptedSessions.has(`${arm}/${probe.session}`)) {
+                // The session view lacks what a cut turn would have sent, so its count stands
+                // outside the comparison as the missingness policy keeps a failed turn's item.
+                staged.push({
+                    ...grade,
+                    verdict: "excluded",
+                    reason: "session interrupted",
+                    metrics: {},
+                });
+            } else if (unverified(arm, probe.id)) {
                 staged.push({
                     ...grade,
                     verdict: "excluded",

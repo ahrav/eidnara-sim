@@ -1694,6 +1694,29 @@ describe("P7 across runs and P14 without a probe turn", () => {
         expect(regraded[0]?.inputs).not.toEqual(pass?.inputs);
     });
 
+    test("P14 leaves a session with a cut turn out as excluded", async () => {
+        const dir = foldedSession("pushback");
+        const path = join(dir, "journal.jsonl");
+        const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
+        // The turn's Event becomes the cut a stop journals: its begin, the marker, the Event.
+        const cut = { arm: "eidnara", event: "e-1", scenario_ms: 0 };
+        const marked = lines.flatMap((l) => {
+            const e = JSON.parse(l);
+            if (e.kind !== "Event" || e.event !== "e-1") return [l];
+            return [
+                { kind: "BeginTurn", ...cut },
+                { kind: "ItemState", ...cut, state: "failed(interrupted)", cause: "harness-exit" },
+                { ...e, outcome: "failed(interrupted)" },
+            ].map((x) => JSON.stringify(x));
+        });
+        writeFileSync(path, `${marked.join("\n")}\n`);
+        await gradeRun(dir, null);
+        const [grade] = new GradeLog(join(dir, "grades.jsonl"))
+            .latest()
+            .filter((g) => g.probe_type === "P14");
+        expect(grade).toMatchObject({ verdict: "excluded", reason: "session interrupted" });
+    });
+
     test("P14 sessions need the run's call log, each record at its own position", async () => {
         const missing = foldedSession("task");
         rmSync(join(missing, "calls.jsonl"));

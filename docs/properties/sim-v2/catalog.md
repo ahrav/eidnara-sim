@@ -1189,9 +1189,12 @@ Exercised: partial - the M5 grading unit (#1029) exercises the grader on
 recorded fixtures in `src/grade/probes.test.ts`; run and report wiring lands in
 later units
 Guarantee: SIM-P41: `SnapshotArtefacts` appears exactly once per item and arm,
-at the first `EndTurn` of the probe task, and grades reference that snapshot id.
+at the first `EndTurn` of the probe task, and grades reference that snapshot id;
+a P14 item, which has no probe task, is graded from the session view
+grade-run builds and its grades reference that view's id (`p14SnapshotId`).
 Check: `always` - count `SnapshotArtefacts` per item and arm, assert exactly one
-at the first `EndTurn`, and assert grades cite it.
+at the first `EndTurn`, and assert grades cite it; assert a P14 grade cites its
+session view's id.
 Fault/timing angle: a user-sim pushback after the probe turn lets the agent
 retry.
 Required faults and enabling state: a probe turn followed by pushback.
