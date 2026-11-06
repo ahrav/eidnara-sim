@@ -189,6 +189,28 @@ export function beganAt<T extends Record<string, unknown>>(
     );
 }
 
+/**
+ * The user's text reaches the agent when the turn begins; the journal appends the `UserTurn`
+ * row carrying the label after the turn ends.
+ */
+export function sessionTurns<T extends Record<string, unknown>>(
+    entries: readonly T[],
+    arm: string,
+    session: string,
+    turnIndex: ReadonlyMap<string, number>,
+): { event: string; scenario_ms: number; label: string; turn_index?: number }[] {
+    const began = beganAt(entries, arm);
+    return deliveredTurns(entries, arm, session).map((e) => {
+        const index = turnIndex.get(String(e.event));
+        return {
+            event: String(e.event),
+            scenario_ms: began.get(String(e.event)) ?? Number(e.scenario_ms),
+            label: String(e.label),
+            ...(index === undefined ? {} : { turn_index: index }),
+        };
+    });
+}
+
 export interface RealisedRates {
     turns: number;
     sessions: number;

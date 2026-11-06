@@ -10,7 +10,7 @@ import { FaultInjector } from "../proxy/inject";
 import { type CallRecord, RecordWriter } from "../proxy/records";
 import { RequestStore } from "../proxy/requests";
 import { Rng } from "../rng";
-import { projectCall } from "../run/run";
+import { projectCall } from "../run/callviews";
 import type { ScenarioEvent } from "../run/scheduler";
 import { writeOffset } from "../run/timeinject";
 import { type Applied, TRANSFORMED, type TransformInputs, transformFor } from "./transforms";

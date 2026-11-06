@@ -8,7 +8,7 @@ import {
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { GradeLog } from "../src/grade/probes";
+import { GradeLog, p14SnapshotId } from "../src/grade/probes";
 import { armBase, requireSeedOrder } from "../src/hosts/arms";
 import { sha256Hex } from "../src/prereg/canonical";
 import { qualificationSeed } from "../src/prereg/qualification";
@@ -196,6 +196,7 @@ function report(dir: string) {
         }
     }
     const typeOf = new Map(scenario.probes.map((p) => [p.id, p.type]));
+    const sessionOf = new Map(scenario.probes.map((p) => [p.id, p.session]));
     for (const g of grades) {
         const sound =
             order.includes(g.arm) &&
@@ -227,6 +228,16 @@ function report(dir: string) {
         }
         if (!sound)
             throw new Error(`${dir}/grades.jsonl: ${g.arm}/${g.item} is not a grade of this run`);
+        // A P14 grade cites the session view grade-run builds for its item.
+        const session = sessionOf.get(g.item);
+        if (g.probe_type === "P14") {
+            if (session === undefined || g.snapshot !== p14SnapshotId(g.arm, g.item, session)) {
+                throw new Error(
+                    `${dir}/grades.jsonl: ${g.arm}/${g.item} snapshot ${g.snapshot} is not its session view`,
+                );
+            }
+            continue;
+        }
         const expected = okSnapshot.get(`${g.arm}/${g.item}`);
         if (g.probe_type !== "P7" && (expected === undefined || g.snapshot !== expected)) {
             throw new Error(
@@ -420,10 +431,17 @@ function report(dir: string) {
             userTurns
                 .filter((e) => interrupted.has(`${a}/${e}`))
                 .map((event) => ({ event, cause: interrupted.get(`${a}/${event}`) as string }));
-        // An item whose turn either arm's stop cut leaves the pair on both arms.
+        // An item whose turn either arm's stop cut leaves the pair on both arms; a P14 item grades
+        // its whole session, so a cut turn anywhere in the session cuts it.
         const cutEvents = new Set([...cutTurns(arm), ...cutTurns(control)].map((t) => t.event));
+        const eventSession = new Map(prefix.map((e) => [String(e.id), String(e.session)]));
+        const cutSessions = new Set([...cutEvents].map((e) => eventSession.get(e)));
         const interrupted_items = [...reached]
-            .filter((id) => cutEvents.has(eventOf.get(id) ?? ""))
+            .filter(
+                (id) =>
+                    cutEvents.has(eventOf.get(id) ?? "") ||
+                    (typeOf.get(id) === "P14" && cutSessions.has(sessionOf.get(id))),
+            )
             .sort();
         const cutItems = new Set(interrupted_items);
         // P7 grades come from judgments against the host arm, so they stay out of the pairing.

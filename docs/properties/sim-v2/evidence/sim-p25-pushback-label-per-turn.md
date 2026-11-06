@@ -17,10 +17,13 @@ abandon, clarify, or paste, and P14 derives from labels only.
 M6 (#1031) journals one `UserTurn` per sent or skipped turn with a label from
 task, pushback, interrupt, redirect, abandon, clarify, or paste, ahead of the
 turn's `EndTurn`, and lists the delivered turns' labels as `user-sim` entries
-in each probe snapshot's call records, which the P14 grader reads. Compiled
-P14 items have no probe turn, so `scripts/grade-run.ts` still skips them (`P14
-has no probe turn`); grading P14 from the labels needs a session-level
-artefact for those items, which this milestone does not add.
+in each probe snapshot's call records. Compiled
+P14 items have no probe turn; `scripts/grade-run.ts` grades each from a
+session view (`sessionSnapshot`) that places the arm's delivered `UserTurn`
+labels among the session's `calls.jsonl` records, the placement a capture
+uses (`sessionTurns` in `src/usersim/plan.ts`). The `pushback` labels come
+from the seeded behaviour plan, so both arms of a seed carry them on the same
+turns (c7 S-101: 815 on identical events in each arm).
 
 ## Failure scenario
 
