@@ -1717,6 +1717,33 @@ describe("P7 across runs and P14 without a probe turn", () => {
             .latest()
             .filter((g) => g.probe_type === "P14");
         expect(grade).toMatchObject({ verdict: "excluded", reason: "session interrupted" });
+        // A turn whose markers break their shape counts as interrupted too.
+        const doubled = foldedSession("pushback");
+        const twice = readFileSync(join(doubled, "journal.jsonl"), "utf8")
+            .split("\n")
+            .filter(Boolean)
+            .flatMap((l) => {
+                const e = JSON.parse(l);
+                if (e.kind !== "Event" || e.event !== "e-1") return [l];
+                const mark = {
+                    kind: "ItemState",
+                    ...cut,
+                    state: "failed(interrupted)",
+                    cause: "x",
+                };
+                return [
+                    { kind: "BeginTurn", ...cut },
+                    mark,
+                    mark,
+                    { ...e, outcome: "failed(interrupted)" },
+                ].map((x) => JSON.stringify(x));
+            });
+        writeFileSync(join(doubled, "journal.jsonl"), `${twice.join("\n")}\n`);
+        await gradeRun(doubled, null);
+        const [invalid] = new GradeLog(join(doubled, "grades.jsonl"))
+            .latest()
+            .filter((g) => g.probe_type === "P14");
+        expect(invalid).toMatchObject({ verdict: "excluded", reason: "session interrupted" });
     });
 
     test("P14 sessions need the run's call log, each record at its own position", async () => {

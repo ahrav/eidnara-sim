@@ -464,7 +464,9 @@ const CHECKS: Record<string, Check> = {
             for (const r of c.grades.length > 0 ? c.grades : c.g.grades) {
                 if (p14s.has(r.item)) {
                     const session = p14s.get(r.item);
+                    const own = r.probe_type === "P14" && c.g.run.arms.some((a) => a.arm === r.arm);
                     if (
+                        !own ||
                         session === undefined ||
                         r.snapshot !== p14SnapshotId(r.arm, r.item, session)
                     )

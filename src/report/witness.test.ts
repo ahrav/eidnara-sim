@@ -734,6 +734,11 @@ describe("property witness evidence", () => {
         expect(one("P41", made({ probes, grades: [grade("eidnara:q-14:s-1")] })).status).toBe(
             "witnessed",
         );
+        // A row naming an arm outside the run, or another probe type, is no P14 grade of it.
+        const stray = { ...grade("nobody:q-14:s-1"), arm: "nobody" };
+        expect(one("P41", made({ probes, grades: [stray] })).status).toBe("violated");
+        const retyped = { ...grade("eidnara:q-14:s-1"), probe_type: "P5" };
+        expect(one("P41", made({ probes, grades: [retyped] })).status).toBe("violated");
         expect(one("P41", made({ probes, grades: [grade("eidnara:q-14:s-2")] }))).toMatchObject({
             status: "violated",
             detail: expect.stringContaining("not its session view"),

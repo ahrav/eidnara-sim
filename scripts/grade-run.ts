@@ -805,6 +805,18 @@ export async function openRun(dir: string) {
      * response text aside, with the arm's delivered user turns placed among them as a capture
      * places them.
      */
+    // A turn a stop cut, or one whose interruption markers break their shape, leaves its session
+    // view short of what the turn would have sent.
+    const eventSession = new Map(scenario.events.map((e) => [String(e.id), String(e.session)]));
+    const { cut, invalid } = cutTurns(entries);
+    const interruptedSessions = new Set(
+        [...cut.keys(), ...invalid].map((key) => {
+            const at = key.lastIndexOf("/");
+            return `${key.slice(0, at)}/${eventSession.get(key.slice(at + 1))}`;
+        }),
+    );
+    const p14Interrupted = (arm: string, session: string) =>
+        interruptedSessions.has(`${arm}/${session}`);
     const sessionSnapshot = (arm: string, probe: Scenario["probes"][number]): Snapshot => {
         const calls = withUserTurns(
             sessionViewsOf.get(`${arm}/${probe.session}`) ?? [],
@@ -813,8 +825,10 @@ export async function openRun(dir: string) {
             probe.session,
         );
         const id = p14SnapshotId(arm, probe.id, probe.session);
-        // The artefact names the SHA-256 of its calls, so a grade records which view it read.
-        const artefact = `${id}:calls@${sha256Hex(canonicalJson(calls))}`;
+        // The artefact names the SHA-256 of its calls and interruption state, so a grade records
+        // which view it read.
+        const interrupted = p14Interrupted(arm, probe.session);
+        const artefact = `${id}:calls@${sha256Hex(canonicalJson({ calls, interrupted }))}`;
         return {
             id,
             item: probe.id,
@@ -911,6 +925,7 @@ export async function openRun(dir: string) {
         ran,
         unjournaled,
         p14Reached,
+        p14Interrupted,
         sessionSnapshot,
     };
 }
@@ -920,7 +935,7 @@ export type OpenRun = Awaited<ReturnType<typeof openRun>>;
 async function grade(dir: string, config: SimConfig | null, regrade: boolean): Promise<Summary> {
     const run = await openRun(dir);
     const { manifest, scenario, rules, arms, models, entries, attempts, ran, unjournaled } = run;
-    const { p14Reached, sessionSnapshot } = run;
+    const { p14Reached, p14Interrupted, sessionSnapshot } = run;
     const log = new GradeLog(join(dir, "grades.jsonl"));
     const graded: GradeRecord[] = [];
     const skipped: Summary["skipped"] = {};
@@ -1077,16 +1092,6 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
         return { ...snap, artefacts: [...snap.artefacts, source] };
     };
 
-    const eventSession = new Map(scenario.events.map((e) => [String(e.id), String(e.session)]));
-    const interruptedSessions = new Set(
-        [...cutTurns(entries).cut.keys()].map((key) => {
-            const [arm, event] = [
-                key.slice(0, key.lastIndexOf("/")),
-                key.slice(key.lastIndexOf("/") + 1),
-            ];
-            return `${arm}/${eventSession.get(event)}`;
-        }),
-    );
     for (const probe of scenario.probes.filter((p) => p.type !== "P7")) {
         const sources = sourcesOf(probe);
         for (const arm of arms) {
@@ -1130,7 +1135,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
                 continue;
             }
             if (!grade) skip(arm, "probe turn failed");
-            else if (probe.type === "P14" && interruptedSessions.has(`${arm}/${probe.session}`)) {
+            else if (probe.type === "P14" && p14Interrupted(arm, probe.session)) {
                 // The session view lacks what a cut turn would have sent, so its count stands
                 // outside the comparison as the missingness policy keeps a failed turn's item.
                 staged.push({

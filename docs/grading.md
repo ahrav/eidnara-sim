@@ -292,8 +292,10 @@ with the response text left out, and the arm's delivered `UserTurn` rows of
 the session placed among them at their `BeginTurn` time (`sessionTurns`, the
 placement a capture uses). A P14 item whose session ends past the run's
 events is listed as outside the run, and one whose session holds a turn a
-stop cut (`cutTurns`) is graded `excluded` with reason `session interrupted`,
-since its view lacks what the cut turn would have sent. `aa-report` and the
+stop cut, or a turn whose interruption markers break their shape
+(`cutTurns`), is graded `excluded` with reason `session interrupted`, since
+its view lacks what the turn would have sent. The input's digest covers that
+interruption state with the calls. `aa-report` and the
 SIM-P41 witness hold a P14 grade to that snapshot id. The
 user simulator's `pushback` labels come from the seeded behaviour plan
 (`docs/user-sim.md`), so both arms of one seed receive pushback on the same
