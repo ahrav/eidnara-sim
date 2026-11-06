@@ -118,6 +118,10 @@ export type GradeKey = Pick<GradeRecord, "item" | "arm" | "against">;
 /** The skip reason of a P7 item in a run without the host arm, which a pairing step grades. */
 export const P7_HOST_ELSEWHERE = "P7 host arm in another run";
 
+/** The snapshot a P14 grade cites: the session view grade-run builds, which no capture wrote. */
+export const p14SnapshotId = (arm: string, item: string, session: string) =>
+    `${arm}:${item}:${session}`;
+
 const keyOf = (g: GradeKey) => `${g.item}/${g.arm}${g.against ? ` vs ${g.against}` : ""}`;
 
 /** Verdict counts by arm and probe type, with a pairwise grade's opponent in its row name. */
@@ -1656,7 +1660,7 @@ function newest(grades: GradeRecord[]): GradeRecord[] {
  * A digest over the grader's own source files, so a grade carries the implementation that made
  * it and a rerun under another one grades again.
  */
-export const graderDigest = (): string =>
+export const graderDigest = (extra: readonly string[] = []): string =>
     sha256Hex(
         [
             "artefacts.ts",
@@ -1664,11 +1668,13 @@ export const graderDigest = (): string =>
             "probes.ts",
             "text.ts",
             "../../scripts/grade-run.ts",
-            "../../scripts/p7-pair.ts",
             "../proxy/records.ts",
             "../proxy/classify.ts",
             "../prereg/canonical.ts",
             "../run/retry.ts",
+            "../run/callviews.ts",
+            "../usersim/plan.ts",
+            ...extra,
         ]
             .map((f) => readFileSync(join(import.meta.dir, f), "utf8"))
             .join("\n"),

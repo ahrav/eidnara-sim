@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { GradeLog, type GradeRecord, graderDigest, verdictCounts } from "../src/grade/probes";
 import { armBase } from "../src/hosts/arms";
@@ -24,7 +24,17 @@ export const PAIRED_FIELDS = [
     "user_sim_model",
     "corpus",
     "qualification",
+    "turns_await_jobs",
+    "side_model",
+    "tape_sha256",
+    "binaries",
+    "toolchain",
+    "eidnara_commit",
 ] as const;
+
+/** A manifest from before `turns_await_jobs` ran every turn after its jobs. */
+const pairedValue = (manifest: Record<string, unknown>, field: (typeof PAIRED_FIELDS)[number]) =>
+    field === "turns_await_jobs" ? (manifest[field] ?? true) : (manifest[field] ?? null);
 
 interface RunIdentity {
     dir: string;
@@ -64,10 +74,27 @@ function runIdentity(run: OpenRun): RunIdentity {
     };
 }
 
+/** The out directory lies outside both runs, through any link on its path. */
+function requireOutside(out: string, runs: readonly string[]): void {
+    let existing = resolve(out);
+    const rest: string[] = [];
+    while (!existsSync(existing)) {
+        rest.unshift(basename(existing));
+        existing = dirname(existing);
+    }
+    const real = join(realpathSync(existing), ...rest);
+    for (const run of runs) {
+        if (real === run || real.startsWith(`${run}${sep}`)) {
+            throw new Error(`${out} lies inside the run ${run}, which pairing leaves unwritten`);
+        }
+    }
+}
+
 function requirePairable(host: OpenRun, memory: OpenRun): string[] {
     const differ = PAIRED_FIELDS.filter(
         (k) =>
-            canonicalJson(host.manifest[k] ?? null) !== canonicalJson(memory.manifest[k] ?? null),
+            canonicalJson(pairedValue(host.manifest, k)) !==
+            canonicalJson(pairedValue(memory.manifest, k)),
     );
     if (differ.length > 0) {
         throw new Error(`the runs differ in ${differ.join(", ")}; P7 pairs one scenario's arms`);
@@ -94,8 +121,9 @@ export async function pairRuns(
         schema: "sim-p7-pair/v1",
         host_run: runIdentity(host),
         memory_run: runIdentity(memory),
-        shared: Object.fromEntries(PAIRED_FIELDS.map((k) => [k, host.manifest[k] ?? null])),
+        shared: Object.fromEntries(PAIRED_FIELDS.map((k) => [k, pairedValue(host.manifest, k)])),
     };
+    requireOutside(out, [identity.host_run.dir, identity.memory_run.dir]);
     mkdirSync(out, { recursive: true });
     const lease = takeLease(out);
     try {
@@ -115,7 +143,7 @@ export async function pairRuns(
         }
         rmSync(summaryPath(out), { force: true });
         const log = new GradeLog(join(out, "grades.jsonl"));
-        const grader = graderDigest();
+        const grader = graderDigest(["../../scripts/p7-pair.ts"]);
         const graderSim = simIdentity();
         const skipped: PairSummary["skipped"] = {};
         const skip = (arm: string, why: string) => {
@@ -141,7 +169,7 @@ export async function pairRuns(
             gradedBefore: (item, arm, against, snapshot) =>
                 prior.has(`${item}/${arm}/${against}/${snapshot}`),
         });
-        const models = [...new Set([...host.models, ...memory.models])];
+        const models = host.models;
         let judgeErrors = 0;
         const staged: GradeRecord[] = [];
         if (pairs.length > 0) {

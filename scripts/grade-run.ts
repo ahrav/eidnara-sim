@@ -37,6 +37,7 @@ import {
     graderDigest,
     needsSourceCommands,
     P7_HOST_ELSEWHERE,
+    p14SnapshotId,
     RECORDED_TYPES,
     type Rules,
     requireEvidence,
@@ -53,6 +54,7 @@ import type { CallRecord } from "../src/proxy/records";
 import { RecordWriter } from "../src/proxy/records";
 import { Rng } from "../src/rng";
 import { writeAtomic } from "../src/run/atomic";
+import { sessionViews, withUserTurns } from "../src/run/callviews";
 import { type ArmInterruptions, interruptions } from "../src/run/interruptions";
 import {
     type Entry,
@@ -64,10 +66,10 @@ import {
     requireComplete,
     takeLease,
 } from "../src/run/journal";
-import { sessionViews, simIdentity, withUserTurns } from "../src/run/run";
+import { simIdentity } from "../src/run/run";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { admittedArms, loadPrereg, loadQualification } from "../src/scenario/inputs";
-import { sessionTurns } from "../src/usersim/plan";
+import { deliveredTurns, sessionTurns } from "../src/usersim/plan";
 
 export interface Summary {
     /** Verdict counts over the run's current grades, the ones kept from earlier passes included. */
@@ -187,8 +189,8 @@ interface RecordedCall {
 
 /**
  * `recorded` holds each `wanted` session's calls as digests; `views` holds each `whole`
- * session's call views, every component but the user simulator's, as a capture at the session's
- * end would hold them.
+ * session's call views, every component but the user simulator's, with each call's fields other
+ * than its response text.
  */
 async function sessionCalls(
     path: string,
@@ -225,9 +227,10 @@ async function sessionCalls(
         const view = project(r);
         if (view.component === "user-sim") continue;
         if (whole.has(key)) {
+            const { response_text: _text, response_text_truncated: _cut, ...lean } = view;
             const list = views.get(key);
-            if (list) list.push(view);
-            else views.set(key, [view]);
+            if (list) list.push(lean);
+            else views.set(key, [lean]);
         }
         if (!wanted.has(key)) continue;
         const call: RecordedCall = {
@@ -528,6 +531,7 @@ export async function judgeP7(o: {
 export async function openRun(dir: string) {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
+    requireGradableTypes(scenario);
     const digests = {
         prereg_sha256: preregistrationHash(loadPrereg(manifest.tier)),
         scenario_hash: scenarioHash(scenario),
@@ -753,7 +757,7 @@ export async function openRun(dir: string) {
     const sessionKey = (meta: RowMeta) => `${meta.arm}/${String(meta.session)}`;
     // A P14 item reads its session's calls whole once the session's last turn was delivered.
     const p14Delivered = (arm: string, probe: Scenario["probes"][number]) =>
-        eventOutcomes.has(`${arm}/${String(probe.event)}`);
+        deliveredTurns(entries, arm, probe.session).some((e) => e.event === probe.event);
     const p14Sessions = new Set(
         scenario.probes
             .filter((p) => p.type === "P14")
@@ -769,11 +773,12 @@ export async function openRun(dir: string) {
         p14Sessions,
     );
     /**
-     * A P14 item has no probe turn: its evidence is the session's calls with the arm's delivered
-     * user turns placed among them, as a capture at the session's last turn would hold them.
+     * A P14 item has no probe turn: its evidence is every call the log records for the session,
+     * response text aside, with the arm's delivered user turns placed among them as a capture
+     * places them.
      */
     const sessionSnapshot = (arm: string, probe: Scenario["probes"][number]): Snapshot => {
-        const id = `${arm}:${probe.id}:${probe.session}`;
+        const id = p14SnapshotId(arm, probe.id, probe.session);
         const calls = withUserTurns(
             sessionViewsOf.get(`${arm}/${probe.session}`) ?? [],
             sessionTurns(entries, arm, probe.session, turnIndex),
@@ -947,19 +952,19 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     let judgeErrors = 0;
     const p7 = scenario.probes.filter((p) => p.type === "P7");
     const memoryArms = arms.filter((a) => armBase(a) !== "host");
-    const pairs = arms.includes("host")
-        ? p7Pairs({
-              probes: p7,
-              memoryArms,
-              memory: run,
-              host: run,
-              outside,
-              skip,
-              gradedBefore,
-          })
-        : [];
-    // A run without the host arm pairs its P7 items with a host run by `scripts/p7-pair.ts`.
-    if (!arms.includes("host")) {
+    let pairs: P7Pair[] = [];
+    if (arms.includes("host")) {
+        pairs = p7Pairs({
+            probes: p7,
+            memoryArms,
+            memory: run,
+            host: run,
+            outside,
+            skip,
+            gradedBefore,
+        });
+    } else {
+        // `scripts/p7-pair.ts` pairs these items with a host run of the scenario.
         for (const probe of p7) {
             for (const arm of memoryArms)
                 skip(arm, ran.has(probe.id) ? P7_HOST_ELSEWHERE : outside);

@@ -239,7 +239,8 @@ host arm, through a gateway it starts for the judge. An item whose latest
 grade already cites its snapshot (and, for P7, its opponent) is skipped as
 `already graded` when the same grader made it: each record carries
 `grader`, a digest of the grader's source files, `scripts/grade-run.ts`, and
-the proxy record, classifier, and canonical-JSON modules they read, and a
+the proxy record, classifier, canonical-JSON, retry, call-view, and user-sim
+plan modules they read, and a
 grade from another implementation is made again. The digest covers those
 files alone; a change confined to another module they import leaves it
 unchanged. Grading a run again is therefore free of judge
@@ -276,15 +277,18 @@ finishes, so the cost panel prices only a finished pass over the journal as
 it stands; it exits 1 when a judge call failed. The scenario plants no canary
 strings, so it passes the judge none; blinding still refuses arm names.
 
-A P14 item has no probe turn of its own. Once the arm delivered the item's
-`event` (its session's last user turn), grade-run grades it from a session
-view it builds: one `proxy-call` artefact, id `<arm>:<item>:<session>:calls`,
-in a snapshot `<arm>:<item>:<session>` that no capture wrote. The view holds
-the session's `calls.jsonl` records, every component but the user
-simulator's, projected as a capture projects them, with the arm's delivered
-`UserTurn` rows of the session placed among them at their `BeginTurn` time
-(`sessionTurns`, the placement a capture uses). A P14 item whose last turn
-the arm has not delivered is skipped as `P14 session unfinished`. The
+A P14 item has no probe turn of its own. Once the journal holds a delivered,
+unrecovered `UserTurn` of the arm for the item's `event` (its session's last
+user turn), grade-run grades it from a session view it builds: one
+`proxy-call` artefact, id `<arm>:<item>:<session>:calls`, in a snapshot
+`<arm>:<item>:<session>` (`p14SnapshotId`) that no capture wrote. The view
+holds every `calls.jsonl` record of the session, every component but the
+user simulator's, projected as a capture projects them (`src/run/callviews.ts`)
+with the response text left out, and the arm's delivered `UserTurn` rows of
+the session placed among them at their `BeginTurn` time (`sessionTurns`, the
+placement a capture uses). A P14 item whose last turn the arm has not
+delivered is skipped as `P14 session unfinished`. `aa-report` and the
+SIM-P41 witness hold a P14 grade to that snapshot id. The
 user simulator's `pushback` labels come from the seeded behaviour plan
 (`docs/user-sim.md`), so both arms of one seed receive pushback on the same
 turns: in c7 S-101 and M-201 the host and Eidnara arms carry 815 and 1,193
@@ -299,15 +303,18 @@ A run whose arms exclude `host` skips each P7 item of a memory arm as
 capabilities, and every journaled snapshot against its journal entries and
 its session's recorded calls), requires the two manifests to agree on tier,
 seed, scenario hash, pre-registration digest, event count, host, models,
-context limit, fault schedule, user-sim model, corpus, and qualification,
-requires the host run to hold `host` and the memory run memory arms and no
+context limit, fault schedule, user-sim model, corpus, qualification,
+`turns_await_jobs` (absent reads as true), side model, tape digests, host
+binaries, toolchain, and Eidnara commit, refuses an out directory inside
+either run (through links on its path), requires the host run to hold `host` and the memory run memory arms and no
 `host`, and pairs and judges each item as grade-run does in one run
 (`p7Pairs`, `judgeP7`). Neither run is written. The out directory holds
 `pair.json` (both runs' paths, manifest and journal SHA-256, and arms),
 `judge-calls.jsonl`, `judgments.jsonl`, `grades.jsonl`, and
 `p7-summary.json`; a later pass refuses an out directory whose `pair.json`
 names other manifest or journal digests, and skips a pair this grader
-already graded.
+already graded. Its grades carry the grader digest with `scripts/p7-pair.ts`
+added to the files it covers.
 
 ## Graders
 

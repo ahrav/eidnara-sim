@@ -1567,6 +1567,20 @@ describe("P7 across runs and P14 without a probe turn", () => {
         await expect(pairRuns(memory, memory, out, judgeSaysBoth())).rejects.toThrow(
             "has no host arm",
         );
+        for (const inside of [memory, join(host, "pair")]) {
+            await expect(pairRuns(host, memory, inside, judgeSaysBoth())).rejects.toThrow(
+                "which pairing leaves unwritten",
+            );
+        }
+        const later = run({ probes: [p7.probe], order: ["eidnara"] });
+        const path = join(later, "manifest.json");
+        writeFileSync(
+            path,
+            JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), turns_await_jobs: false }),
+        );
+        await expect(pairRuns(host, later, out, judgeSaysBoth())).rejects.toThrow(
+            "the runs differ in turns_await_jobs",
+        );
         await pairRuns(host, memory, out, judgeSaysBoth());
         journalAppend(memory, { kind: "Note", arm: "eidnara", scenario_ms: 0 });
         await expect(pairRuns(host, memory, out, judgeSaysBoth())).rejects.toThrow(
@@ -1583,7 +1597,7 @@ describe("P7 across runs and P14 without a probe turn", () => {
         check: { window_from_turn: 0 },
     } as unknown as Fixture["probe"];
     /** Session s-1 folds its history, then delivers its one user turn with `label`. */
-    const foldedSession = (label: string) => {
+    const foldedSession = (label: string, delivered = true) => {
         const dir = run({ probes: [p14], order: ["eidnara"] });
         const record = (seq: number, turn: string, component: string, scenario_ms: number) => ({
             seq,
@@ -1616,7 +1630,7 @@ describe("P7 across runs and P14 without a probe turn", () => {
             event: "e-1",
             session: "s-1",
             label,
-            delivered: true,
+            delivered,
             scenario_ms: 1_000,
         });
         return dir;
@@ -1638,5 +1652,11 @@ describe("P7 across runs and P14 without a probe turn", () => {
             .filter((g) => g.probe_type === "P14");
         expect(pass?.verdict).toBe("pass");
         expect(pass?.metrics).toEqual({ "P14.post_compaction_correction_count": 0 });
+    });
+
+    test("P14 waits for the arm to deliver its session's last turn", async () => {
+        const open = foldedSession("pushback", false);
+        const summary = await gradeRun(open, null);
+        expect(summary.skipped).toEqual({ eidnara: { "P14 session unfinished": 1 } });
     });
 });

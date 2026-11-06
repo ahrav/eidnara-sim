@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { GradeRecord } from "../grade/probes";
+import { type GradeRecord, p14SnapshotId } from "../grade/probes";
 import { canonicalJson } from "../prereg/canonical";
 import { TARGET } from "../proxy/inject";
 import { type Entry, eachJsonl, readJsonl } from "../run/journal";
@@ -454,8 +454,21 @@ const CHECKS: Record<string, Check> = {
                         bad.push(`${a.arm}/${probe} snapshot after a later turn`);
                 }
             }
-            // Every persisted grade, earlier versions included, cites the item's one snapshot.
+            // Every persisted grade, earlier versions included, cites the item's one snapshot; a
+            // P14 grade cites the session view grade-run builds for its item.
+            const sessionOf = new Map(c.g.scenario.probes.map((p) => [p.id, p.session]));
             for (const r of c.grades.length > 0 ? c.grades : c.g.grades) {
+                if (r.probe_type === "P14") {
+                    const session = sessionOf.get(r.item);
+                    if (
+                        session === undefined ||
+                        r.snapshot !== p14SnapshotId(r.arm, r.item, session)
+                    )
+                        bad.push(
+                            `${r.arm}/${r.item} v${r.version} cites ${r.snapshot}, not its session view`,
+                        );
+                    continue;
+                }
                 const s = seen.get(`${c.g.run.dir}/${r.arm}/${r.item}`);
                 if (!s) bad.push(`${r.arm}/${r.item} graded without a journaled snapshot`);
                 else if (s.snapshot !== undefined && s.snapshot !== r.snapshot)

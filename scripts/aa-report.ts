@@ -8,7 +8,7 @@ import {
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { GradeLog } from "../src/grade/probes";
+import { GradeLog, p14SnapshotId } from "../src/grade/probes";
 import { armBase, requireSeedOrder } from "../src/hosts/arms";
 import { sha256Hex } from "../src/prereg/canonical";
 import { qualificationSeed } from "../src/prereg/qualification";
@@ -196,6 +196,7 @@ function report(dir: string) {
         }
     }
     const typeOf = new Map(scenario.probes.map((p) => [p.id, p.type]));
+    const sessionOf = new Map(scenario.probes.map((p) => [p.id, p.session]));
     for (const g of grades) {
         const sound =
             order.includes(g.arm) &&
@@ -227,6 +228,16 @@ function report(dir: string) {
         }
         if (!sound)
             throw new Error(`${dir}/grades.jsonl: ${g.arm}/${g.item} is not a grade of this run`);
+        // A P14 grade cites the session view grade-run builds for its item.
+        const session = sessionOf.get(g.item);
+        if (g.probe_type === "P14") {
+            if (session === undefined || g.snapshot !== p14SnapshotId(g.arm, g.item, session)) {
+                throw new Error(
+                    `${dir}/grades.jsonl: ${g.arm}/${g.item} snapshot ${g.snapshot} is not its session view`,
+                );
+            }
+            continue;
+        }
         const expected = okSnapshot.get(`${g.arm}/${g.item}`);
         if (g.probe_type !== "P7" && (expected === undefined || g.snapshot !== expected)) {
             throw new Error(

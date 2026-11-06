@@ -18,6 +18,7 @@ import { Rng } from "../rng";
 import { GENERATOR_VERSION, type Scenario } from "../scenario/compile";
 import { type FaultEpisode, SEAMS, scheduleFaults } from "../scenario/faults";
 import { corpusInputsSha256, loadPrereg } from "../scenario/inputs";
+import { withUserTurns } from "./callviews";
 import type { Entry } from "./journal";
 import type { Preflight } from "./preflight";
 import {
@@ -40,7 +41,6 @@ import {
     runIdentity,
     runSteps,
     treeIdentity,
-    withUserTurns,
 } from "./run";
 
 const ROOT = join(import.meta.dir, "..", "..");
