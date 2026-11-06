@@ -69,7 +69,7 @@ import {
 import { simIdentity } from "../src/run/run";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { admittedArms, loadPrereg, loadQualification } from "../src/scenario/inputs";
-import { deliveredTurns, sessionTurns } from "../src/usersim/plan";
+import { sessionTurns } from "../src/usersim/plan";
 
 export interface Summary {
     /** Verdict counts over the run's current grades, the ones kept from earlier passes included. */
@@ -755,15 +755,19 @@ export async function openRun(dir: string) {
             .map((e) => [e.id, e.index as number] as const),
     );
     const sessionKey = (meta: RowMeta) => `${meta.arm}/${String(meta.session)}`;
-    // A P14 item reads its session's calls whole once the session's last turn was delivered.
-    const p14Delivered = (arm: string, probe: Scenario["probes"][number]) =>
-        deliveredTurns(entries, arm, probe.session).some((e) => e.event === probe.event);
+    // A P14 item grades its whole session, so it is reached once the session's `session_end`
+    // lies in the run's events, as aa-report reads it; every arm ended each scheduled event.
+    const scheduledEnds = new Set(
+        scenario.events
+            .slice(0, manifest.events)
+            .filter((e) => e.kind === "session_end")
+            .map((e) => String(e.session)),
+    );
+    const p14Reached = (probe: Scenario["probes"][number]) => scheduledEnds.has(probe.session);
     const p14Sessions = new Set(
         scenario.probes
-            .filter((p) => p.type === "P14")
-            .flatMap((p) =>
-                arms.filter((arm) => p14Delivered(arm, p)).map((arm) => `${arm}/${p.session}`),
-            ),
+            .filter((p) => p.type === "P14" && p14Reached(p))
+            .flatMap((p) => arms.map((arm) => `${arm}/${p.session}`)),
     );
     const { recorded: sessions, views: sessionViewsOf } = await sessionCalls(
         join(dir, "calls.jsonl"),
@@ -880,7 +884,7 @@ export async function openRun(dir: string) {
         attempts,
         ran,
         unjournaled,
-        p14Delivered,
+        p14Reached,
         sessionSnapshot,
     };
 }
@@ -890,7 +894,7 @@ export type OpenRun = Awaited<ReturnType<typeof openRun>>;
 async function grade(dir: string, config: SimConfig | null, regrade: boolean): Promise<Summary> {
     const run = await openRun(dir);
     const { manifest, scenario, rules, arms, models, entries, attempts, ran, unjournaled } = run;
-    const { p14Delivered, sessionSnapshot } = run;
+    const { p14Reached, sessionSnapshot } = run;
     const log = new GradeLog(join(dir, "grades.jsonl"));
     const graded: GradeRecord[] = [];
     const skipped: Summary["skipped"] = {};
@@ -1049,13 +1053,8 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
         for (const arm of arms) {
             let mine: Snapshot[] | undefined;
             if (probe.type === "P14") {
-                const at = eventOrder.get(String(probe.event));
-                if (at === undefined || at >= manifest.events) {
+                if (!p14Reached(probe)) {
                     skip(arm, outside);
-                    continue;
-                }
-                if (!p14Delivered(arm, probe)) {
-                    skip(arm, "P14 session unfinished");
                     continue;
                 }
                 mine = [sessionSnapshot(arm, probe)];

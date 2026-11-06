@@ -1654,9 +1654,19 @@ describe("P7 across runs and P14 without a probe turn", () => {
         expect(pass?.metrics).toEqual({ "P14.post_compaction_correction_count": 0 });
     });
 
-    test("P14 waits for the arm to deliver its session's last turn", async () => {
-        const open = foldedSession("pushback", false);
-        const summary = await gradeRun(open, null);
-        expect(summary.skipped).toEqual({ eidnara: { "P14 session unfinished": 1 } });
+    test("P14 grades a session that ended in the run, whatever its last turn's delivery", async () => {
+        // An abandon leaves the session's trailing turns undelivered; the session still ended.
+        const abandoned = foldedSession("pushback", false);
+        await gradeRun(abandoned, null);
+        const [grade] = new GradeLog(join(abandoned, "grades.jsonl"))
+            .latest()
+            .filter((g) => g.probe_type === "P14");
+        expect(grade?.verdict).toBe("excluded");
+        expect(grade?.reason).toBe("no labelled user-sim turns");
+        const cut = run({ probes: [p14], order: ["eidnara"], events: 2 });
+        const summary = await gradeRun(cut, null);
+        expect(summary.skipped).toEqual({
+            eidnara: { "probe turn outside the run's 2 events": 1 },
+        });
     });
 });

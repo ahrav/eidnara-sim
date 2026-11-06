@@ -1660,6 +1660,7 @@ function newest(grades: GradeRecord[]): GradeRecord[] {
  * A digest over the grader's own source files, so a grade carries the implementation that made
  * it and a rerun under another one grades again.
  */
+/** `extra` names further source files by absolute path. */
 export const graderDigest = (extra: readonly string[] = []): string =>
     sha256Hex(
         [
@@ -1674,9 +1675,10 @@ export const graderDigest = (extra: readonly string[] = []): string =>
             "../run/retry.ts",
             "../run/callviews.ts",
             "../usersim/plan.ts",
-            ...extra,
         ]
-            .map((f) => readFileSync(join(import.meta.dir, f), "utf8"))
+            .map((f) => join(import.meta.dir, f))
+            .concat(extra)
+            .map((f) => readFileSync(f, "utf8"))
             .join("\n"),
     );
 

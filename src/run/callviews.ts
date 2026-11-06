@@ -30,7 +30,8 @@ export function projectCall(r: CallRecord): Omit<CallView, "turn_index"> {
 /**
  * A session's proxy calls with its delivered user turns placed among them. A user turn's message
  * opens its turn, so it sits just before the turn's first call, or after the last call recorded
- * by its scenario time when the turn made none. Its `seq` is fractional between the two proxy
+ * by its scenario time when the turn made none (at seq 0, or before the session's first call
+ * when that call is the log's seq 0, when none was recorded by then). Its `seq` is fractional between the two proxy
  * sequence numbers around it, so the list stays in one increasing order the graders compare.
  */
 export function withUserTurns(
@@ -42,7 +43,9 @@ export function withUserTurns(
     const placed = turns.map((t) => {
         const first = calls.find((c) => c.turn === t.event);
         const before = calls.filter((c) => c.scenario_ms <= t.scenario_ms).at(-1);
-        const after = first ? first.seq - 1 : (before?.seq ?? 0);
+        const after = first
+            ? first.seq - 1
+            : (before?.seq ?? Math.min(0, (calls[0]?.seq ?? 1) - 1));
         return { t, after };
     });
     const views = placed.map(({ t, after }, i) => {

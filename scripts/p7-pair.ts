@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { GradeLog, type GradeRecord, graderDigest, verdictCounts } from "../src/grade/probes";
 import { armBase } from "../src/hosts/arms";
 import { canonicalJson } from "../src/prereg/canonical";
 import { bedrockUpstream, type Upstream } from "../src/proxy/gateway";
+import { turnsAwaitJobs } from "../src/report/tier";
 import { writeAtomic } from "../src/run/atomic";
 import { releaseLease, takeLease } from "../src/run/journal";
+import { contains, realExisting } from "../src/run/paths";
 import { simIdentity } from "../src/run/run";
 import { judgeFirewall, judgeP7, type OpenRun, openRun, p7Pairs } from "./grade-run";
 
@@ -30,11 +32,18 @@ export const PAIRED_FIELDS = [
     "binaries",
     "toolchain",
     "eidnara_commit",
+    "eidnara_worktree",
+    "sim_commit",
+    "sim_worktree",
+    "bedrock",
 ] as const;
 
-/** A manifest from before `turns_await_jobs` ran every turn after its jobs. */
-const pairedValue = (manifest: Record<string, unknown>, field: (typeof PAIRED_FIELDS)[number]) =>
-    field === "turns_await_jobs" ? (manifest[field] ?? true) : (manifest[field] ?? null);
+const pairedValue = (
+    manifest: Record<string, unknown>,
+    field: (typeof PAIRED_FIELDS)[number],
+    dir: string,
+) =>
+    field === "turns_await_jobs" ? turnsAwaitJobs(manifest[field], dir) : (manifest[field] ?? null);
 
 interface RunIdentity {
     dir: string;
@@ -74,18 +83,12 @@ function runIdentity(run: OpenRun): RunIdentity {
     };
 }
 
-/** The out directory lies outside both runs, through any link on its path. */
-function requireOutside(out: string, runs: readonly string[]): void {
-    let existing = resolve(out);
-    const rest: string[] = [];
-    while (!existsSync(existing)) {
-        rest.unshift(basename(existing));
-        existing = dirname(existing);
-    }
-    const real = join(realpathSync(existing), ...rest);
-    for (const run of runs) {
-        if (real === run || real.startsWith(`${run}${sep}`)) {
-            throw new Error(`${out} lies inside the run ${run}, which pairing leaves unwritten`);
+/** The out directory lies outside every one of `roots`, through any link on its path. */
+function requireOutside(out: string, roots: readonly string[], what: string): void {
+    const real = realExisting(out);
+    for (const root of roots) {
+        if (contains(realExisting(root), real)) {
+            throw new Error(`${out} lies inside ${what} ${root}, which pairing leaves unwritten`);
         }
     }
 }
@@ -93,8 +96,8 @@ function requireOutside(out: string, runs: readonly string[]): void {
 function requirePairable(host: OpenRun, memory: OpenRun): string[] {
     const differ = PAIRED_FIELDS.filter(
         (k) =>
-            canonicalJson(pairedValue(host.manifest, k)) !==
-            canonicalJson(pairedValue(memory.manifest, k)),
+            canonicalJson(pairedValue(host.manifest, k, host.dir)) !==
+            canonicalJson(pairedValue(memory.manifest, k, memory.dir)),
     );
     if (differ.length > 0) {
         throw new Error(`the runs differ in ${differ.join(", ")}; P7 pairs one scenario's arms`);
@@ -114,16 +117,20 @@ export async function pairRuns(
     out: string,
     upstream: Upstream | null,
     regrade = false,
+    checkout: string | null = null,
 ): Promise<PairSummary> {
+    if (checkout !== null) requireOutside(out, [checkout], "the eidnara checkout");
     const [host, memory] = [await openRun(hostDir), await openRun(memoryDir)];
     const memoryArms = requirePairable(host, memory);
     const identity: PairIdentity = {
         schema: "sim-p7-pair/v1",
         host_run: runIdentity(host),
         memory_run: runIdentity(memory),
-        shared: Object.fromEntries(PAIRED_FIELDS.map((k) => [k, pairedValue(host.manifest, k)])),
+        shared: Object.fromEntries(
+            PAIRED_FIELDS.map((k) => [k, pairedValue(host.manifest, k, host.dir)]),
+        ),
     };
-    requireOutside(out, [identity.host_run.dir, identity.memory_run.dir]);
+    requireOutside(out, [hostDir, memoryDir], "the run");
     mkdirSync(out, { recursive: true });
     const lease = takeLease(out);
     try {
@@ -143,7 +150,7 @@ export async function pairRuns(
         }
         rmSync(summaryPath(out), { force: true });
         const log = new GradeLog(join(out, "grades.jsonl"));
-        const grader = graderDigest(["../../scripts/p7-pair.ts"]);
+        const grader = graderDigest([import.meta.path]);
         const graderSim = simIdentity();
         const skipped: PairSummary["skipped"] = {};
         const skip = (arm: string, why: string) => {
@@ -219,6 +226,7 @@ if (import.meta.main) {
         resolve(out),
         bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
         process.argv.includes("--regrade"),
+        config.eidnara_checkout,
     );
     console.log(JSON.stringify(summary, null, 2));
     if (summary.judge_errors > 0) process.exit(1);

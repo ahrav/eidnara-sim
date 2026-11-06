@@ -277,18 +277,18 @@ finishes, so the cost panel prices only a finished pass over the journal as
 it stands; it exits 1 when a judge call failed. The scenario plants no canary
 strings, so it passes the judge none; blinding still refuses arm names.
 
-A P14 item has no probe turn of its own. Once the journal holds a delivered,
-unrecovered `UserTurn` of the arm for the item's `event` (its session's last
-user turn), grade-run grades it from a session view it builds: one
+A P14 item has no probe turn of its own. Once its session's `session_end`
+lies in the run's events (the reach `aa-report` reads), grade-run grades it
+for each arm from a session view it builds: one
 `proxy-call` artefact, id `<arm>:<item>:<session>:calls`, in a snapshot
 `<arm>:<item>:<session>` (`p14SnapshotId`) that no capture wrote. The view
 holds every `calls.jsonl` record of the session, every component but the
 user simulator's, projected as a capture projects them (`src/run/callviews.ts`)
 with the response text left out, and the arm's delivered `UserTurn` rows of
 the session placed among them at their `BeginTurn` time (`sessionTurns`, the
-placement a capture uses). A P14 item whose last turn the arm has not
-delivered is skipped as `P14 session unfinished`. `aa-report` and the
-SIM-P41 witness hold a P14 grade to that snapshot id. The
+placement a capture uses). A P14 item whose session ends past the run's
+events is listed as outside the run. `aa-report` and the SIM-P41 witness hold
+a P14 grade to that snapshot id. The
 user simulator's `pushback` labels come from the seeded behaviour plan
 (`docs/user-sim.md`), so both arms of one seed receive pushback on the same
 turns: in c7 S-101 and M-201 the host and Eidnara arms carry 815 and 1,193

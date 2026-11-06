@@ -1083,6 +1083,16 @@ test("a delivered user turn sits just before its turn's first proxy call, in one
     expect(new Set(seqs).size).toBe(seqs.length);
     expect(merged[2]?.seq).toBeGreaterThan(4);
     expect(merged[2]?.seq).toBeLessThan(9);
+    // A turn with no call of its own, before any call by scenario time, opens the session even
+    // when its first call is the log's seq 0.
+    const opening = withUserTurns(
+        [call(0, "e-2", 20)],
+        [{ event: "e-1", scenario_ms: 5, label: "pushback", turn_index: 0 }],
+        "a",
+        "s-1",
+    );
+    expect(opening.map((c) => `${c.component}:${c.turn}`)).toEqual(["user-sim:e-1", "agent:e-2"]);
+    expect(opening[0]?.seq).toBeLessThan(0);
 });
 
 describe("scenario loading", () => {

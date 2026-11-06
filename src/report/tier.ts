@@ -50,7 +50,7 @@ export function identityVersions(preflight: {
 }
 
 /** A manifest from before `turns_await_jobs` ran every turn after its jobs; any other value is refused. */
-function turnsAwaitJobs(value: unknown, dir: string): boolean {
+export function turnsAwaitJobs(value: unknown, dir: string): boolean {
     if (value === undefined) return true;
     if (typeof value !== "boolean") {
         throw new Error(

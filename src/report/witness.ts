@@ -456,10 +456,12 @@ const CHECKS: Record<string, Check> = {
             }
             // Every persisted grade, earlier versions included, cites the item's one snapshot; a
             // P14 grade cites the session view grade-run builds for its item.
-            const sessionOf = new Map(c.g.scenario.probes.map((p) => [p.id, p.session]));
+            const p14s = new Map(
+                c.g.scenario.probes.filter((p) => p.type === "P14").map((p) => [p.id, p.session]),
+            );
             for (const r of c.grades.length > 0 ? c.grades : c.g.grades) {
-                if (r.probe_type === "P14") {
-                    const session = sessionOf.get(r.item);
+                if (p14s.has(r.item)) {
+                    const session = p14s.get(r.item);
                     if (
                         session === undefined ||
                         r.snapshot !== p14SnapshotId(r.arm, r.item, session)
