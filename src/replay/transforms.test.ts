@@ -611,25 +611,63 @@ describe("caution-off", () => {
         );
     });
 
+    test("splits after closing quotes, keeps the attribution, and reads no ground truth", () => {
+        const payload =
+            '{"anchor":"north","citation":"manual","quote":"literal config","source":"api"}';
+        const body = withListing(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                'Assistant reported: Still pending. The warning was "Don\'t deploy." The port is 31411.',
+                payload,
+                "The limit 31411 is unconfirmed.",
+                record,
+            ].join("\n"),
+        );
+        const gt = { present: [["31411"]], stale: [], absent: [] };
+        transformFor("c3").apply(body, inputs({ ground_truth: gt }));
+        expect(result(body, 1)).toBe(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: The port is 31411.",
+                payload,
+            ].join("\n"),
+        );
+    });
+
+    test("leaves bullet lines of an eidnara_note result alone", () => {
+        const body = withListing(
+            "\u00a73\u00a7 ## Notes\n\n- Ask before changing production.\n- Port 31411.",
+        );
+        const before = result(body, 1);
+        const applied = transformFor("c3").apply(body, inputs());
+        expect(result(body, 1)).toBe(before);
+        expect(applied.changed).toBe(false);
+    });
+
     test("trims a search-hint fragment and leaves a listing without caution unchanged", () => {
         const hint = hinted();
         const before = JSON.stringify(hint);
         expect(transformFor("c3").apply(hint, inputs()).changed).toBe(false);
         expect(JSON.stringify(hint)).toBe(before);
-        const body = withListing(
-            [
-                "Your memory may contain 2 related fragments:",
-                "- the port is 31411. Still pending.",
-                "- unrelated",
-            ].join("\n"),
-        );
+        const body = recorded();
+        const hintBlock = (lines: string[]) =>
+            ["<eidnara-search-hint>", ...lines, "</eidnara-search-hint>"].join("\n");
+        (messages(body)[0]?.content[0] as { text: string }).text = hintBlock([
+            "Your memory may contain 2 related fragments:",
+            "- Still pending. the port is 31411.",
+            "- unrelated",
+        ]);
         transformFor("c3").apply(body, inputs());
-        expect(result(body, 1)).toBe(
-            [
+        expect(text(body, 0)).toBe(
+            hintBlock([
                 "Your memory may contain 2 related fragments:",
                 "- the port is 31411.",
                 "- unrelated",
-            ].join("\n"),
+            ]),
         );
     });
 });
