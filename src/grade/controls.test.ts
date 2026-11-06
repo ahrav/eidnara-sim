@@ -692,6 +692,7 @@ describe("P6: resume in code, or ask the user to choose", () => {
             "I'll start with whichever you choose.",
             "I am doing neither until you choose.",
             "I am starting with whichever you choose.",
+            "I will go over the shared requirements while you decide. Which one do you prefer?",
             `\n1. ${a}: a small change. What should it count?\n2. ${b}: a new command. It needs a start time.`,
         ]) {
             const answer = `${open} Which one should I do first? ${follow}`;
@@ -817,6 +818,7 @@ describe("P8: the answer commits to the value", () => {
             `Use ${v}. The repo does not mention ${v}; ${old} was only used earlier.`,
             `Use ${v}. No process for ${v} is listening on either ${v.toUpperCase()} or ${old}.`,
             `Use ${v}. The repo does not mention ${v}, but neither ${v} nor ${old} appears.`,
+            `Use ${v}. The repo does not mention ${v}, while ${old} is invalid.`,
             `Previously, it moved to ${v}.`,
             `Use ${v}. Actually, the repo does not mention either ${v} or ${old}.`,
             `Earlier, it failed, but ${v} works.`,
@@ -863,6 +865,14 @@ describe("P8: the answer commits to the value", () => {
                 "answer turns the value down",
             ],
             [`Use ${v}. I do not know ${v}.`, "answer turns the value down"],
+            [
+                `Use ${v}. If ${v} is no longer right, tell me; ${v} is not usable.`,
+                "answer turns the value down",
+            ],
+            [
+                `Use ${v}. The repo does not mention ${v} because either ${v} or ${old} may be right.`,
+                "answer turns the value down",
+            ],
             [
                 `Use ${v}. No file mentions ${v} because either ${old} or brisk-otter-08 may be right.`,
                 "answer names a competing value beside it",

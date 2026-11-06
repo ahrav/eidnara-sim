@@ -229,7 +229,17 @@ function mentions(sentence: string, value: string, stale: string[]): Mention[] {
  */
 const stepsAside = (sentence: string, found: Mention[]): boolean => {
     if (REVISION_OFFER.test(sentence)) {
-        return !REJECTS.test(sentence) && found.every((m) => m.expected || m.negated);
+        // The offer's own condition (`is no longer right`) is no verdict; one after the request is.
+        const ask = sentence.search(/\b(?:tell me|let me know)\b/i);
+        return (
+            !REJECTS.test(sentence) &&
+            found.every(
+                (m) =>
+                    (m.expected &&
+                        (m.at < ask || !AFTER.test(sentence.slice(m.at + m.token.length)))) ||
+                    (!m.expected && m.negated),
+            )
+        );
     }
     const breaks = [...sentence.matchAll(CLAUSE_BREAK)];
     const bounds = breaks.map((m) => m.index);
@@ -256,13 +266,19 @@ const stepsAside = (sentence: string, found: Mention[]): boolean => {
     return found.every((m) => {
         const k = clauseOf(m.at);
         const clause = clauses[k] ?? "";
+        const local = m.at - (starts[k] as number);
         if (m.expected) {
-            const after = sentence.slice(m.at + m.token.length);
+            const after = clause.slice(local + m.token.length);
             return absent(k) && !REJECTS.test(clause) && !AFTER.test(after);
         }
         if (m.negated || m.past) return true;
         const list = listAt(k, m.at);
-        return absent(k) && list?.toLowerCase().includes(value) === true;
+        if (list === null || !absent(k) || !list.toLowerCase().includes(value)) return false;
+        // `either X or Y may be right` offers Y; `neither X nor Y appears` says both are absent.
+        const rest = clause.slice(clause.indexOf(list) + list.length);
+        return !/\b(?:may|might|could|can)\s+(?:be|work|apply|still)\b|\bis right\b|\bpossible\b/i.test(
+            rest,
+        );
     });
 };
 
