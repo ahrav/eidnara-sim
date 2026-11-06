@@ -947,7 +947,7 @@ function p4(r: ArtefactReader, c: Check): Outcome {
 const CHOICE = /\b(?:which|either|whether|or|first|order|prefer|rather)\b/i;
 /** A sentence that picks a task after all: `I'll start with`, `let me begin`. */
 const COMMITS =
-    /\bI(?:'ll| will|'m going to| am going to) (?:start|begin|go|do|take|pick|work|tackle)\b(?![^.?!]*\b(?:whichever|once you|when you|after you|you (?:pick|choose)))|\bI(?:'m| am) (?:starting|beginning|going with|doing|taking|picking|working on|tackling)\b|\blet me (?:start|begin)\b/i;
+    /\bI(?:'ll| will|'m going to| am going to) (?:start|begin|go|do|take|pick|work|tackle)\b(?!\s+(?:with\s+|on\s+)?whichever\b)|\bI(?:'m| am) (?:starting|beginning|going with|doing|taking|picking|working on|tackling)\b|\blet me (?:start|begin)\b/i;
 /**
  * The answer leaves the choice to the user: its last choice question is followed by at most three
  * statements and any number of questions, and a sentence after its first choice question that

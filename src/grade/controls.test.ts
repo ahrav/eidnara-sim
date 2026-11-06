@@ -700,6 +700,7 @@ describe("P6: resume in code, or ask the user to choose", () => {
             `Once you pick, I need details. I'll start with ${a} meanwhile.`,
             `Any preference? I am starting with ${a} now; any objections?`,
             `I'll start with ${a} meanwhile. Should it be u32 or u64?`,
+            `I'll start with task ${a} once you confirm the counter type.`,
             "Here is a plan. Step one adds the field. Step two wires it. Step three tests it.",
         ]) {
             const answer = `${open} Which one should I do first? ${follow}`;
@@ -831,6 +832,18 @@ describe("P8: the answer commits to the value", () => {
                 "answer names a competing value beside it",
             ],
             [`Previously, ${v} was the alias.`, "answer turns the value down"],
+            [
+                `Use ${v}. No file contains ${v}, but ${v} should not be used.`,
+                "answer turns the value down",
+            ],
+            [
+                `Use ${v}. Nothing mentions ${v}, but either ${v} or ${old} may be right.`,
+                "answer names a competing value beside it",
+            ],
+            [
+                `Use ${v}. If ${v} is no longer current, tell me which of ${v} or ${old} is right.`,
+                "answer turns the value down",
+            ],
         ];
         for (const [answer, reason] of cases) {
             expect([answer, ...outcome(p8, { answer })]).toEqual([answer, "fail", reason]);

@@ -151,12 +151,12 @@ const ABSENCE =
     /\b(?:nothing|nobody|none of|neither|no (?:process|file|commit|config\w*|reference|record|match\w*|mention))\b|\b(?:does|do|did|is|are|was|were)(?:n['\u2019]?t| not)\s+(?:[\w-]+\s+){0,2}?(?:mention|appear|contain|define|set|reference|listen|serve|answer|exist|include|record|show|open|running)\w*|\bnot (?:in|set|defined|mentioned|referenced|listening|found|open|running)\b/i;
 /** Wording that still turns a value down inside an absence clause, a prohibition included. */
 const REJECTS =
-    /\b(?:replac\w*|supersed\w*|retired|outdated|out of date|stale|deprecated|obsolete|wrong|invalid|incorrect|typo|avoid\w*)\b|\b(?:don['\u2019]?t|do not|never|shouldn['\u2019]?t|should not)\s+(?:use|pick|choose|point|rely)\b/i;
+    /\b(?:replac\w*|supersed\w*|retired|outdated|out of date|stale|deprecated|obsolete|wrong|invalid|incorrect|typo|avoid\w*)\b|\b(?:don['\u2019]?t|do not|never|shouldn['\u2019]?t|should not|must not|mustn['\u2019]?t)\s+(?:be\s+)?(?:use|pick|choose|point|rely|trust)\w*/i;
 /** Wording that lists values together as all absent: `neither X nor Y`, `on either X or Y`. */
 const LISTED = /\bneither\b[^,]*\bnor\b|\beither\b[^,]*\bor\b|\bboth\b/i;
 /** The offer to revise a remembered value: `If X is no longer right, tell me the new one`. */
 const REVISION_OFFER =
-    /^if\b[^.?!]*\b(?:no longer|isn['\u2019]?t|is not|not)\b[^.?!]*\b(?:right|current|valid|correct|accurate)\b[^.?!]*\b(?:tell me|let me know)\b/i;
+    /^if\b[^.?!]*\b(?:no longer|isn['\u2019]?t|is not|not)\b[^.?!]*\b(?:right|current|valid|correct|accurate)\b[^.?!]*\b(?:tell me|let me know)\b[^.?!]*[.?!]*$/i;
 /** A sentence after the answer that switches to another value: `Actually, use Y instead`. */
 const CORRECTION =
     /\b(?:actually|instead|correction|on second thought|scratch that|I meant|rather)\b/i;
@@ -215,16 +215,20 @@ function mentions(sentence: string, value: string, stale: string[]): Mention[] {
 
 /**
  * Whether a sentence after the committed one says the repository or machine lacks the value
- * (`ABSENCE`) or offers to revise it (`REVISION_OFFER`) without rejecting it. Each clause (split
- * at `;` and `:`) that names the value must state the absence and hold no rejection or
+ * (`ABSENCE`) or offers to revise it (`REVISION_OFFER`, naming no competitor) without rejecting
+ * it. Each clause (split at `;`, `:`, and `, but`) that names the value must state the absence and hold no rejection or
  * prohibition (`REJECTS`), and a competitor it leaves standing must sit in such a clause listed
  * beside the value (`neither X nor Y`, `either X or Y`).
  */
 const stepsAside = (sentence: string, found: Mention[]): boolean => {
-    if (REVISION_OFFER.test(sentence)) return !REJECTS.test(sentence);
-    const bounds = [...sentence.matchAll(/[;:]/g)].map((m) => m.index);
+    if (REVISION_OFFER.test(sentence)) {
+        return !REJECTS.test(sentence) && found.every((m) => m.expected || m.negated);
+    }
+    const bounds = [...sentence.matchAll(/[;:]|,\s*(?:but|yet|though|although)\b/g)].map(
+        (m) => m.index,
+    );
     const clauseOf = (at: number) => bounds.filter((b) => b < at).length;
-    const clauses = sentence.split(/[;:]/);
+    const clauses = sentence.split(/[;:]|,\s*(?:but|yet|though|although)\b/);
     const absent = (k: number) => ABSENCE.test(clauses[k] ?? "");
     return found.every((m) => {
         const k = clauseOf(m.at);
