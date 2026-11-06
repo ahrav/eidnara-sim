@@ -34,8 +34,12 @@ another tier or seed, a journal with no `ClockOffset` before the probe, an
 arm whose `capabilities.json` fails grade-run's capability check, an
 `eidnara-cf` arm (its grades depend on run-level deletion checks), an arm
 that kept its store on `store.img`, a probe turn whose calls carry a proxy
-fault, a `host_upgrade` fired on the arm before the probe, and variant `e`
-on the `host-oracle` arm, which already delivers the note.
+fault or during which a fault fired, a `host_upgrade` fired on the arm before
+the probe, a project name that is not a plain name, a recorded run directory
+that is `/`, overlaps the Eidnara checkout, or holds this checkout, and
+variant `e` on the `host-oracle` arm, which already delivers the note.
+Each copied snapshot repository gets a fresh config (hooks off) and is
+refused when it borrows objects through alternates.
 
 ## Variants
 
@@ -85,10 +89,11 @@ before the replay deletes or rewrites anything beneath them.
 | Workspace git | The branch moves to the newest first-parent commit of the final head from before the probe, and the index resets to it. A harness commit (`sim-user`) whose date and message match an `apply_diff` event of the project counts by that event's place in the scenario; every other commit counts by its commit time against the probe's scenario instant. Git runs with the arm's baseline `<project>.gitconfig` in place of the repository config, hooks and fsmonitor off, and replace refs ignored, and refuses a `.git` that is a link or carries `commondir`, `gitdir`, or alternates. The reflogs and `ORIG_HEAD` are removed, so only refs reach later commits. | `exact` when every other ref is a remote-tracking ref or a branch the new head already contains, and the repository config and hooks equal the clone's baseline; a branch that reaches a later commit or a stash keeps its final value and is listed under `other_refs`, a changed config under `config_matches_baseline: false`, and installed hooks under `hooks`; `agent_commits_kept` counts agent commits before the probe |
 | Pi transcript | Every session entry before the probe's user message, unchanged, at the same path under the agent directory: the first user message that carries the probe text and was sent no earlier than two seconds before `BeginTurn` on the daemon's clock. | exact in `source` path mode |
 | Eidnara store | The arm's data directory is copied and rolled back to the probe. The Kernel versions its rows by commit: rows a commit after the last one recorded before `BeginTurn` (on the daemon's clock) created are deleted, a later invalidation or supersession is undone, and projection and consumer cursors move back to that commit. The guard triggers (the `BEFORE` triggers that raise) are dropped for the rollback and recreated from their recorded SQL, so the schema digest the daemon checks is unchanged, while the maintenance triggers keep firing for each delete. A commit column without a rule refuses the replay. The memory store keeps session working state without history, so rows of the probe's session and of every later session go and rows created after the probe go; a commit column there other than the capture job's refuses the replay. Rows `foreign_key_check` then reports in either database are deleted until it reports none. | not exact. The daemon rebuilds the probe session's working state from the transcript the host sends, so on an arm with Eidnara compaction a mid-session probe's request carries a fresh fold of the history. A capture job committed after the probe stays terminal, since Eidnara clears a job's text when it commits, and its memories are gone with the rollback (`capture_jobs_committed_after_probe`). Memory-store rows without a session or creation time keep their final values, and any other SQLite file under the data directory is listed under `untouched` |
-| Clock | The arm's clock offset targets the scenario time of the source turn's `BeginTurn` when the daemon starts. | `clock_lag_ms` in each result is how far the clock had run when the prompt went to the host |
+| Clock | The arm's clock offset targets the scenario time of the source turn's `BeginTurn` when the daemon starts. | `clock_lag_ms` in each result is how far the clock had run when the turn's first agent call reached the proxy |
 | Arm configuration | The driver derives the profile, `eidnara.jsonc`, and daemon config from the arm label, and the identity check compares them with the manifest's `arms` entry. | exact when the check passes |
 
-The model index is the count of `model_switch` faults fired before the probe,
+The model index is the count of `model_switch` faults fired and observed
+before the probe,
 read from the manifest's `fault_override` when it has one and from the
 scenario otherwise. The manifest lists the faults fired on the arm from the
 probe's session start to the end of its turn under `session_faults`; the

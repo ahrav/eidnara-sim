@@ -104,6 +104,9 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
     const project = String(
         sessionStart.project ?? scenario.sessions.find((s) => s.id === event.session)?.project,
     );
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(project) || project.includes("..")) {
+        throw new Error(`probe ${item} names project ${JSON.stringify(project)}, not a plain name`);
+    }
     const journal = readJsonl<Entry>(join(root, "journal.jsonl"));
     if (!journal.some((e) => e.kind === "EndRun")) {
         throw new Error(`${root} has no EndRun: replay reads finished runs only`);

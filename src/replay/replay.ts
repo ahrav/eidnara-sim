@@ -25,8 +25,10 @@ import { readToolLedger, sourceEvents, withSourceCommands } from "../grade/sourc
 import { armProfile, deliveryOf } from "../hosts/profiles";
 import { SnapshotRecorder } from "../hosts/snapshot";
 import type { ConverseBody } from "../proxy/classify";
+import type { CallRecord } from "../proxy/records";
 import { RequestPartLog, rebuildRequest } from "../proxy/requests";
 import { componentCosts } from "../report/cost";
+import { readJsonl } from "../run/journal";
 import { oracleBackground } from "../run/oracle-note";
 import { type Preflight, preflight, preflightDrift } from "../run/preflight";
 import { armConfigs, MEASUREMENT_PATHS, runIdentity, simIdentity } from "../run/run";
@@ -305,7 +307,17 @@ function modelIndex(source: ProbeSource): number {
     if (fired.some((e) => types.get(String(e.fault)) === "host_upgrade")) {
         throw new Error(`a host_upgrade fired on ${source.arm} before the probe`);
     }
-    return fired.filter((e) => types.get(String(e.fault)) === "model_switch").length;
+    const observed = new Set(
+        source.journal
+            .filter(
+                (e) =>
+                    e.arm === source.arm && e.kind === "FaultObserved" && e.seq < source.begin.seq,
+            )
+            .map((e) => String(e.fault)),
+    );
+    return fired.filter(
+        (e) => types.get(String(e.fault)) === "model_switch" && observed.has(String(e.fault)),
+    ).length;
 }
 
 function sessionFaults(source: ProbeSource): Record<string, unknown>[] {
@@ -371,6 +383,18 @@ function priorCalls(source: ProbeSource): CallView[] {
     );
 }
 
+const SNAPSHOT_CONFIG =
+    "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n\thooksPath = /dev/null\n";
+
+function trustSnapshotGit(gitDir: string): void {
+    if (existsSync(join(gitDir, "objects", "info", "alternates"))) {
+        throw new Error(`${gitDir} borrows objects through alternates`);
+    }
+    rmSync(join(gitDir, "config"), { force: true });
+    rmSync(join(gitDir, "hooks"), { recursive: true, force: true });
+    writeFileSync(join(gitDir, "config"), SNAPSHOT_CONFIG, { flag: "wx" });
+}
+
 function requireRealDir(path: string, root: string): void {
     if (!lstatSync(path, { throwIfNoEntry: false })?.isDirectory()) {
         throw new Error(`${path} is not a real directory`);
@@ -392,6 +416,7 @@ function prepareRepeat(o: {
     mkdirSync(join(o.armDir, "clock"), { recursive: true });
     copyTree(join(from, "snapshot.git"), join(o.armDir, "snapshot.git"));
     requireRealDir(join(o.armDir, "snapshot.git"), o.armDir);
+    trustSnapshotGit(join(o.armDir, "snapshot.git"));
     for (const f of readdirSync(from).filter((f) => f.endsWith(".gitconfig"))) {
         copyFileSync(join(from, f), join(o.armDir, f));
     }
@@ -672,6 +697,17 @@ function refuseUnreplayable(source: ProbeSource, variant: string): void {
         const refs = [...new Set(faulted.map((c) => c.fault_ref))].join(", ");
         throw new Error(`the probe turn ran under proxy faults (${refs}), and replay runs none`);
     }
+    const inTurn = source.journal.filter(
+        (e) =>
+            e.arm === source.arm &&
+            e.kind === "FaultFired" &&
+            e.seq > source.begin.seq &&
+            e.seq < source.end.seq,
+    );
+    if (inTurn.length > 0) {
+        const ids = inTurn.map((e) => String(e.fault)).join(", ");
+        throw new Error(`faults fired during the probe turn (${ids}), and replay runs none`);
+    }
     requireCapabilities(
         source.dir,
         source.manifest as Parameters<typeof requireCapabilities>[1],
@@ -722,27 +758,48 @@ function repeatResult(
                 : null,
         failures,
         notes: turn.notes ?? [],
-        clock_lag_ms:
-            turn.prompt_scenario_ms === null
-                ? null
-                : turn.prompt_scenario_ms - source.begin.scenario_ms,
+        clock_lag_ms: (() => {
+            const first = turn.records.find(
+                (r) => r.component === "agent" && r.turn === source.event.id,
+            );
+            return first ? first.scenario_ms - source.begin.scenario_ms : null;
+        })(),
     };
 }
 
-function failedRepeat(k: number, variant: string, caught: unknown): RepeatResult {
+function failedRepeat(
+    k: number,
+    variant: string,
+    caught: unknown,
+    source: ProbeSource,
+    repeatDir: string,
+): RepeatResult {
     const reason = caught instanceof Error ? caught.message : String(caught);
+    const logged = join(repeatDir, "calls.jsonl");
+    const records = existsSync(logged) ? readJsonl<CallRecord>(logged) : [];
+    const rates = source.manifest.price_table.rates as never;
+    const cost = componentCosts(records, rates);
+    const own = componentCosts(
+        records.filter((r) => r.turn === source.event.id),
+        rates,
+    );
     return {
         repeat: k,
         variant,
         verdict: "harness-failed",
         reason,
         grade: null,
-        cost_usd: 0,
-        cost_turn_usd: 0,
-        cost: [],
+        cost_usd: cost.reduce((s, c) => s + c.usd, 0),
+        cost_turn_usd: own.reduce((s, c) => s + c.usd, 0),
+        cost,
         prompt_ms: null,
-        agent_calls: 0,
-        requests: [],
+        agent_calls: records.filter((r) => r.component === "agent").length,
+        requests: records.map((r) => ({
+            seq: r.seq,
+            component: r.component,
+            sha256: r.request?.sha256 ?? null,
+            bytes: r.request?.bytes ?? null,
+        })),
         transformed: 0,
         prefix: null,
         failures: [reason],
@@ -760,6 +817,18 @@ export async function replayProbe(o: ReplayOptions): Promise<RepeatResult[]> {
     refuseUnreplayable(source, transformFor(o.variant).id);
     const out = resolve(o.out);
     requireOutside(out, [source.dir, source.recordedDir, o.config.eidnara_checkout]);
+    const recorded = canonical(source.recordedDir);
+    const checkout = canonical(o.config.eidnara_checkout);
+    if (
+        recorded === "/" ||
+        contains(checkout, recorded) ||
+        contains(recorded, checkout) ||
+        contains(recorded, canonical(ROOT))
+    ) {
+        throw new Error(
+            `the recorded run directory ${source.recordedDir} overlaps the Eidnara checkout or holds this checkout`,
+        );
+    }
     if (existsSync(out) && readdirSync(out).length > 0) {
         throw new Error(`--out ${out} is not empty`);
     }
@@ -800,6 +869,7 @@ async function replayInto(
     const probeGit = join(out, "probe-tree.git");
     copyTree(join(source.dir, source.arm, "snapshot.git"), probeGit);
     requireRealDir(probeGit, out);
+    trustSnapshotGit(probeGit);
     const found = probeTree({
         gitDir: probeGit,
         journal: source.journal.filter((e) => e.arm === source.arm),
@@ -933,7 +1003,7 @@ async function replayInto(
             const graded = gradeRepeat(source, armDir);
             result = repeatResult(k, transform.id, source, turn, graded, sourceFirst);
         } catch (caught) {
-            result = failedRepeat(k, transform.id, caught);
+            result = failedRepeat(k, transform.id, caught, source, repeatDir);
             if (caught instanceof ReplayInterrupted) {
                 appendFileSync(join(out, "results.jsonl"), `${JSON.stringify(result)}\n`);
                 throw caught;

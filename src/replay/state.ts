@@ -218,6 +218,8 @@ export function rewindHead(o: {
     const flags = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
     const run = (args: string[]) => git(o.workspace, [...flags, ...args], env).trim();
     const configPath = join(dotGit, "config");
+    const configStat = lstatSync(configPath, { throwIfNoEntry: false });
+    if (!configStat?.isFile()) throw new Error(`${configPath} is not a regular file`);
     const config = readFileSync(configPath);
     writeFileSync(configPath, readFileSync(o.gitconfig));
     try {
@@ -293,12 +295,19 @@ export function rewindHead(o: {
 
 export function findSession(agentDir: string, sessionId: string): string {
     const root = join(agentDir, "sessions");
-    const hits = existsSync(root)
-        ? readdirSync(root).flatMap((dir) =>
-              readdirSync(join(root, dir))
-                  .filter((f) => f.endsWith(`_${sessionId}.jsonl`))
-                  .map((f) => join(root, dir, f)),
-          )
+    const real = (p: string, dir: boolean) => {
+        const s = lstatSync(p, { throwIfNoEntry: false });
+        return dir ? !!s?.isDirectory() : !!s?.isFile();
+    };
+    const hits = real(root, true)
+        ? readdirSync(root)
+              .filter((dir) => real(join(root, dir), true))
+              .flatMap((dir) =>
+                  readdirSync(join(root, dir))
+                      .filter((f) => f.endsWith(`_${sessionId}.jsonl`))
+                      .map((f) => join(root, dir, f))
+                      .filter((f) => real(f, false)),
+              )
         : [];
     if (hits.length !== 1) {
         throw new Error(`${root} holds ${hits.length} session files for ${sessionId}, not one`);
