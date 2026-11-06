@@ -119,6 +119,49 @@ On an arm whose host compacts beside the Eidnara plugin, each forced p90
 session's row reports whether it holds a `native_compaction` record
 (SIM-P76), and the report states the count.
 
+Each row also counts the session's answers that carry an Eidnara marker:
+the `§<n>§` block tag the transform prefixes to every text block it tags,
+or the opening or closing tag of a block Eidnara injects (`project-memory`,
+`session-history`, `session-history-since`, `eidnara-search-hint`,
+`eidnara-search-auto`, `packed-context`, `project-note`, `memory-updates`, `new-notes`,
+`covered-system-messages`, `project-docs`, `new-history_segments`), as
+`EIDNARA_MARKER` in `src/evidence/health.ts` matches them. A turn's answer is its final text, counted two ways:
+
+- `answers_streamed` and `marker_answers_streamed`: the turn's last
+  completed agent call (status 200, no error, stream not cut), as the proxy
+  relayed the provider stream (`calls.jsonl` `response_text`, its first
+  262,144 characters); a turn whose last completed call has no text has no
+  answer, and a session whose final completed call of a turn carries no
+  whole recorded text (no `response_text`, as a run from before the proxy
+  kept it records, or a prefix the proxy cut at its cap) has both streamed
+  counts `null`. Graders read their answers the same way, the user simulator
+  receives its replies from this stream, and a live UI may show it while
+  streaming.
+- `answers_persisted` and `marker_answers_persisted`: the text of the turn's
+  last assistant message in the host transcript, what the user keeps; a
+  turn whose last assistant message has no text has no answer, as on the
+  streamed side.
+  On Pi it comes from `<arm>/r/home/.pi/agent/sessions/**/<time>_sim-<session>.jsonl`
+  (`readPiAnswers`), where a user message opens a turn and a complete last
+  record without its newline is read too; a link on the path from the arm
+  directory down reads as no transcript, and a session with a complete user
+  or assistant record that does not parse reads as unread. On a host whose transcript this
+  harness does not read (OpenCode), or for a declared session with no
+  transcript file, both are `null`, and so is the arm's total in the report;
+  a session the scenario does not declare (a second client's `-b` session)
+  counts 0 on both sides.
+
+The Pi plugin rewrites a leading tag out of the message it persists at
+`message_end`, so the two counts differ on an Eidnara arm; a turn a stop cut
+can also leave a streamed answer the transcript lacks. In the c7 final
+runs the Eidnara arms streamed a marker in 3.4% to 7.2% of answers and
+persisted none.
+
+`content_filtered_calls` counts the session's calls (every component but
+the user simulator's and the judge's) that the provider ended with
+`finish_reason` `content_filtered`, and `content_filtered_turns` the turns
+of agent calls so ended, so comparisons can set those turns apart.
+
 ## Probe-time state
 
 `probe_time` records the `BeginTurn` and `EndTurn` pointers, the turn outcome
@@ -134,8 +177,9 @@ session's health cause.
 
 `evidence.md` holds the `## Evidence path` section: counts by arm and cause,
 one row per probe with its stage statuses, cause, reason, and the pointers of
-the attributed stage, the context-health rows, the SIM-P76 line, and an arm
-comparison whose healthy rows leave out the turns, calls, and probes of
+the attributed stage, the context-health rows, the SIM-P76 line, a per-arm
+table of answers with an Eidnara marker (streamed and persisted, each with its
+share) and of `content_filtered` calls and turns, and an arm comparison whose healthy rows leave out the turns, calls, and probes of
 flagged sessions from `flagged_from` on, which get rows of their own.
 
 An arm of the manifest's order is a directory of the run: a plain name, or an

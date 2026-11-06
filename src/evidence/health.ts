@@ -31,7 +31,30 @@ export interface SessionHealth {
      * compacts beside the Eidnara plugin; null on every other session.
      */
     p90_native_compaction: boolean | null;
+    /**
+     * Turns whose final agent reply the proxy streamed with text (`calls.jsonl` `response_text`,
+     * the text graders read and the user simulator receives), and of those the ones holding an
+     * Eidnara marker (`EIDNARA_MARKER`).
+     */
+    answers_streamed: number | null;
+    marker_answers_streamed: number | null;
+    /**
+     * The same over each turn's final assistant text as the host transcript persists it, what
+     * the user keeps; null on a host whose transcript this harness does not read.
+     */
+    answers_persisted: number | null;
+    marker_answers_persisted: number | null;
+    /** Calls the provider ended `content_filtered`, and the turns of agent calls so ended. */
+    content_filtered_calls: number;
+    content_filtered_turns: number;
 }
+
+/**
+ * Eidnara's block tag (`§<n>§`, the transform's `tag_prefix`) and the tags of the context blocks
+ * it injects, any of which in an answer is text the agent copied from Eidnara's own framing.
+ */
+export const EIDNARA_MARKER =
+    /§\d+§|<\/?(?:project-memory|session-history|session-history-since|eidnara-search-hint|eidnara-search-auto|packed-context|project-note|memory-updates|new-notes|covered-system-messages|project-docs|new-history_segments)(?=[\s>]|\/>)/;
 
 const COMPACTION = new Set(["native_compaction", "history_summarizer"]);
 const TOO_LONG =
@@ -113,9 +136,27 @@ export function sessionHealth(run: RunData): SessionHealth[] {
         let over = 0;
         let tooLong = 0;
         let native = false;
+        let filtered = 0;
+        const filteredTurns = new Set<string>();
+        // A final completed call whose whole text is not on record (no `response_text`, as a run
+        // from before the proxy kept it records, a value that is not text, or a prefix the proxy
+        // cut at its cap) leaves its turn's answer unknown.
+        const finalReply = new Map<string, string | undefined>();
         const refusals: HeldCall[] = [];
         let overflowCall: HeldCall | null = null;
         for (const c of sorted) {
+            if (c.finish_reason === "content_filtered") {
+                filtered++;
+                if (c.component === "agent" && c.turn !== null) filteredTurns.add(c.turn);
+            }
+            // The turn's answer is its last completed agent response, as a grader reads it.
+            const completed =
+                c.status === 200 && c.error === null && c.finish_reason !== "stream_cut";
+            if (c.component === "agent" && c.turn !== null && completed) {
+                const whole =
+                    typeof c.response_text === "string" && c.response_text_truncated !== true;
+                finalReply.set(c.turn, whole ? c.response_text : undefined);
+            }
             if (COMPACTION.has(c.component)) {
                 attempts++;
                 if (c.component === "native_compaction") native = true;
@@ -165,6 +206,15 @@ export function sessionHealth(run: RunData): SessionHealth[] {
                   `${cause_refusal.component} ${cause_refusal.finish_reason ?? "no finish reason"}, ${cause_refusal.output_tokens} output tokens`,
               )
             : first_overflow;
+        const replies = [...finalReply.values()];
+        const streamed = replies.includes(undefined)
+            ? null
+            : (replies as string[]).filter((a) => a.trim());
+        // A session the scenario does not declare (a second client's) has no streamed answers to
+        // set beside its transcript; a declared session without a transcript file is unread.
+        const persisted = run.arms.get(arm)?.answers;
+        const transcript = !persisted ? null : projectOf.has(session) ? persisted.get(session) : [];
+        const kept = transcript ? transcript.filter((a) => a.trim()) : null;
         out.push({
             schema: "sim-evidence-session/v1",
             arm,
@@ -186,6 +236,16 @@ export function sessionHealth(run: RunData): SessionHealth[] {
                 profile?.plugin === true && profile.host_compaction === true && p90.get(session)
                     ? native
                     : null,
+            answers_streamed: streamed?.length ?? null,
+            marker_answers_streamed: streamed
+                ? streamed.filter((a) => EIDNARA_MARKER.test(a)).length
+                : null,
+            answers_persisted: kept?.length ?? null,
+            marker_answers_persisted: kept
+                ? kept.filter((a) => EIDNARA_MARKER.test(a)).length
+                : null,
+            content_filtered_calls: filtered,
+            content_filtered_turns: filteredTurns.size,
         });
     }
     return out.sort((a, b) => (a.arm + a.session < b.arm + b.session ? -1 : 1));
