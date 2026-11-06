@@ -213,6 +213,7 @@ async function sessionCalls(
         if (typeof r.model !== "string" || typeof r.seq !== "number") {
             throw new Error(`calls.jsonl record ${String(r.seq)} names no model`);
         }
+
         if (r.component === "agent") agentModels.add(r.model);
         if (placed.offset !== next) blank ??= line;
         next = placed.offset + placed.length;
@@ -230,6 +231,13 @@ async function sessionCalls(
         if (whole.has(key)) {
             const { response_text: _text, response_text_truncated: _cut, ...lean } = view;
             const list = views.get(key);
+            // The writer numbers records in log order, which the view's placement relies on.
+            const prior = list?.at(-1)?.seq;
+            if (prior !== undefined && lean.seq <= prior) {
+                throw new HarnessFailure(
+                    `${path} line ${line} is corrupt: seq ${lean.seq} after ${prior} in ${key}`,
+                );
+            }
             if (list) list.push(lean);
             else views.set(key, [lean]);
         }
@@ -448,10 +456,10 @@ export async function judgeP7(o: {
         clock: { scenarioMs: () => 0 },
         scope: () => ({ arm: "judge", session: null, turn: null }),
     });
-    await gateway.start();
     const judged: { arm: string; grades: GradeRecord[] }[] = [];
     const judgments: Record<string, unknown>[] = [];
     try {
+        await gateway.start();
         const judge = judgeFirewall(gateway.urls[0] as string, rules, models);
         for (const { probe, arm, a, b, rows } of pairs) {
             const reference = String((probe.check as { judge?: string }).judge ?? "");
@@ -508,7 +516,11 @@ export async function judgeP7(o: {
             judgments.push({ item: probe.id, arm, against: "host", calls, judgment });
         }
     } finally {
-        await gateway.stop();
+        try {
+            await gateway.stop();
+        } finally {
+            records.close();
+        }
     }
     if (gateway.failures.length > 0) {
         judgeErrors += gateway.failures.length;
@@ -776,6 +788,11 @@ export async function openRun(dir: string) {
             .filter((p) => p.type === "P14" && p14Reached(p))
             .flatMap((p) => arms.map((arm) => `${arm}/${p.session}`)),
     );
+    if (p14Sessions.size > 0 && !existsSync(join(dir, "calls.jsonl"))) {
+        throw new Error(
+            "the run reached P14 items but holds no calls.jsonl to build their sessions",
+        );
+    }
     const { recorded: sessions, views: sessionViewsOf } = await sessionCalls(
         join(dir, "calls.jsonl"),
         new Set([...metas.values()].map(sessionKey)),
@@ -789,13 +806,15 @@ export async function openRun(dir: string) {
      * places them.
      */
     const sessionSnapshot = (arm: string, probe: Scenario["probes"][number]): Snapshot => {
-        const id = p14SnapshotId(arm, probe.id, probe.session);
         const calls = withUserTurns(
             sessionViewsOf.get(`${arm}/${probe.session}`) ?? [],
             sessionTurns(entries, arm, probe.session, turnIndex),
             arm,
             probe.session,
         );
+        const id = p14SnapshotId(arm, probe.id, probe.session);
+        // The artefact names the SHA-256 of its calls, so a grade records which view it read.
+        const artefact = `${id}:calls@${sha256Hex(canonicalJson(calls))}`;
         return {
             id,
             item: probe.id,
@@ -803,7 +822,7 @@ export async function openRun(dir: string) {
             session: probe.session,
             turn: String(probe.event),
             turn_outcome: "ok",
-            artefacts: [{ id: `${id}:calls`, class: "proxy-call", calls }],
+            artefacts: [{ id: artefact, class: "proxy-call", calls }],
         };
     };
     for (const meta of metas.values()) {
@@ -915,6 +934,9 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     // The grader's identity is read once, before any grade, so the summary names the code that ran.
     const grader = graderDigest();
     const graderSim = simIdentity();
+    // A P14 grade stands only for the session view it read, which its input names.
+    const evidenceKey = (g: Pick<GradeRecord, "probe_type" | "snapshot" | "inputs">) =>
+        g.probe_type === "P14" ? `${g.snapshot}|${g.inputs.join("|")}` : g.snapshot;
     const priorKey = (item: string, arm: string, against: string | undefined, snapshot: string) =>
         `${item}/${arm}/${against ?? ""}/${snapshot}`;
     const latest = log.latest();
@@ -923,7 +945,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
             ? []
             : latest
                   .filter((g) => g.grader === grader)
-                  .map((g) => priorKey(g.item, g.arm, g.against, g.snapshot)),
+                  .map((g) => priorKey(g.item, g.arm, g.against, evidenceKey(g))),
     );
     // A counterfactual arm's sampled item counts only once its journaled deletion verified
     // every targeted memory gone; until then it is graded excluded(cf-unverified), and a grade
@@ -1076,7 +1098,13 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
                     continue;
                 }
             }
-            if (gradedBefore(probe.id, arm, undefined, (mine[0] as Snapshot).id)) {
+            const first = mine[0] as Snapshot;
+            const read = {
+                probe_type: probe.type,
+                snapshot: first.id,
+                inputs: first.artefacts.map((a) => a.id),
+            };
+            if (gradedBefore(probe.id, arm, undefined, evidenceKey(read))) {
                 skip(arm, "already graded");
                 continue;
             }

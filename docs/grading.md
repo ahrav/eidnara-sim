@@ -280,8 +280,12 @@ strings, so it passes the judge none; blinding still refuses arm names.
 A P14 item has no probe turn of its own. Once its session's `session_end`
 lies in the run's events (the reach `aa-report` reads), grade-run grades it
 for each arm from a session view it builds: one
-`proxy-call` artefact, id `<arm>:<item>:<session>:calls`, in a snapshot
-`<arm>:<item>:<session>` (`p14SnapshotId`) that no capture wrote. The view
+`proxy-call` artefact, id `<arm>:<item>:<session>:calls@<SHA-256 of its
+calls>`, in a snapshot `<arm>:<item>:<session>` (`p14SnapshotId`) that no
+capture wrote. A P14 grade stands only while the view it read still hashes
+to its input's digest, so a pass after the session's records or labels
+changed grades it again. A run that reaches a P14 item must hold
+`calls.jsonl`, and each session's records in it must carry increasing `seq`. The view
 holds every `calls.jsonl` record of the session, every component but the
 user simulator's, projected as a capture projects them (`src/run/callviews.ts`)
 with the response text left out, and the arm's delivered `UserTurn` rows of
@@ -316,7 +320,8 @@ links on its path) and a judge log with more than one link, requires the host ru
 `snapshots.jsonl`, the arms, and the shared setting),
 `judge-calls.jsonl`, `judgments.jsonl`, `grades.jsonl`, and
 `p7-summary.json`; a later pass refuses an out directory whose `pair.json`
-names other digests, and skips a pair this grader
+names other digests or holds result logs without a `pair.json`, and skips a
+pair this grader
 already graded. Its grades carry the grader digest with `scripts/p7-pair.ts`
 added to the files it covers. The tier and A/A reports read each run's own
 `grades.jsonl`; a pairing directory's P7 results are read from its

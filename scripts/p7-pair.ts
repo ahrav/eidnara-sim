@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { GradeLog, type GradeRecord, graderDigest, verdictCounts } from "../src/grade/probes";
@@ -136,6 +136,12 @@ export async function pairRuns(
                 throw new Error(`${recorded} pairs other runs or other states of these runs`);
             }
         } else {
+            // A pairing writes pair.json before any result, so results without one are foreign.
+            for (const name of ["grades.jsonl", "judgments.jsonl", "judge-calls.jsonl"]) {
+                if ((lstatSync(join(out, name), { throwIfNoEntry: false })?.size ?? 0) > 0) {
+                    throw new Error(`${join(out, name)} holds results no pair.json binds`);
+                }
+            }
             writeAtomic(recorded, `${JSON.stringify(identity, null, 2)}\n`);
         }
         rmSync(summaryPath(out), { force: true });

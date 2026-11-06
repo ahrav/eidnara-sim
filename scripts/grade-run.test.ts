@@ -1582,13 +1582,21 @@ describe("P7 across runs and P14 without a probe turn", () => {
         await expect(pairRuns(host, later, out, judgeSaysBoth())).rejects.toThrow(
             "the runs differ in turns_await_jobs",
         );
+        // Results a pair.json never bound are refused before any is written.
+        const foreign = join(dirname(out), "foreign");
+        mkdirSync(foreign);
+        writeFileSync(join(foreign, "grades.jsonl"), "{}\n");
+        await expect(pairRuns(host, memory, foreign, judgeSaysBoth())).rejects.toThrow(
+            "holds results no pair.json binds",
+        );
+        expect(existsSync(join(foreign, "pair.json"))).toBe(false);
         // A judge log linked to another file is refused before the judge starts.
         const linked = join(dirname(out), "linked");
         mkdirSync(linked);
-        writeFileSync(join(dirname(out), "victim"), "keep me\n");
+        writeFileSync(join(dirname(out), "victim"), "");
         linkSync(join(dirname(out), "victim"), join(linked, "judgments.jsonl"));
         await expect(pairRuns(host, memory, linked, judgeSaysBoth())).rejects.toThrow("2 links");
-        expect(readFileSync(join(dirname(out), "victim"), "utf8")).toBe("keep me\n");
+        expect(readFileSync(join(dirname(out), "victim"), "utf8")).toBe("");
         await pairRuns(host, memory, out, judgeSaysBoth());
         // A pairing stays bound to the answers it judged as well as to the journal.
         const answers = join(memory, "eidnara", "snapshots.jsonl");
@@ -1662,6 +1670,9 @@ describe("P7 across runs and P14 without a probe turn", () => {
         expect(fail?.verdict).toBe("fail");
         expect(fail?.metrics).toEqual({ "P14.post_compaction_correction_count": 1 });
         expect(fail?.snapshot).toBe("eidnara:P14-s:s-1");
+        expect(fail?.inputs).toEqual([
+            expect.stringMatching(/^eidnara:P14-s:s-1:calls@[0-9a-f]{64}$/),
+        ]);
         const quiet = foldedSession("task");
         await gradeRun(quiet, null);
         const [pass] = new GradeLog(join(quiet, "grades.jsonl"))
@@ -1669,6 +1680,28 @@ describe("P7 across runs and P14 without a probe turn", () => {
             .filter((g) => g.probe_type === "P14");
         expect(pass?.verdict).toBe("pass");
         expect(pass?.metrics).toEqual({ "P14.post_compaction_correction_count": 0 });
+        // A view that changed names another snapshot, so the pass grades it again.
+        const relabelled = readFileSync(join(quiet, "journal.jsonl"), "utf8").replace(
+            '"label":"task"',
+            '"label":"pushback"',
+        );
+        writeFileSync(join(quiet, "journal.jsonl"), relabelled);
+        await gradeRun(quiet, null);
+        const regraded = new GradeLog(join(quiet, "grades.jsonl"))
+            .latest()
+            .filter((g) => g.probe_type === "P14");
+        expect(regraded.map((g) => [g.version, g.verdict])).toEqual([[2, "fail"]]);
+        expect(regraded[0]?.inputs).not.toEqual(pass?.inputs);
+    });
+
+    test("P14 sessions need the run's call log, each record at its own position", async () => {
+        const missing = foldedSession("task");
+        rmSync(join(missing, "calls.jsonl"));
+        await expect(gradeRun(missing, null)).rejects.toThrow("holds no calls.jsonl");
+        const shuffled = foldedSession("task");
+        const rows = readFileSync(join(shuffled, "calls.jsonl"), "utf8").trim().split("\n");
+        writeFileSync(join(shuffled, "calls.jsonl"), `${[...rows].reverse().join("\n")}\n`);
+        await expect(gradeRun(shuffled, null)).rejects.toThrow("line 2 is corrupt: seq 0 after 1");
     });
 
     test("P14 grades a session that ended in the run, whatever its last turn's delivery", async () => {
