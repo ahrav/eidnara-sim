@@ -703,6 +703,7 @@ describe("P6: resume in code, or ask the user to choose", () => {
             `I'll start with ${a} meanwhile. Should it be u32 or u64?`,
             `I'll start with task ${a} once you confirm the counter type.`,
             `I choose task ${a}. What should the counter count? Does the command take arguments?`,
+            `I have chosen task ${a}. What should the counter count? Does the command take arguments?`,
             `I'll start with whichever implementation of task ${a} is simplest.`,
             "Here is a plan. Step one adds the field. Step two wires it. Step three tests it.",
         ]) {
@@ -850,6 +851,15 @@ describe("P8: the answer commits to the value", () => {
                 `Use ${v}. Neither ${v} appears in the repo nor can I tell which of ${v} or ${old} is right.`,
                 "answer names a competing value beside it",
             ],
+            [
+                `Use ${v}. No file contains ${v} because it is not usable.`,
+                "answer turns the value down",
+            ],
+            [
+                `Use ${v}. No file mentions ${v} because either ${old} or brisk-otter-08 may be right.`,
+                "answer names a competing value beside it",
+            ],
+            [`Formerly, as documented, ${v} was the alias.`, "answer turns the value down"],
             [
                 `Use ${v}. Nothing mentions ${v}, but either ${v} or ${old} may be right.`,
                 "answer names a competing value beside it",

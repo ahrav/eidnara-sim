@@ -118,7 +118,7 @@ const STALE_ADJECTIVE =
     /\b(?:old|older|earlier|previous|previously|prior|former|formerly|originally|retired|outdated|stale|deprecated|obsolete)\b(?=(?:\s+(?!(?:to|and|but|so)\b)[\w-]+,?){0,4}?\s+$)/i;
 /** A sentence that opens by placing what follows in the past: `Previously, X was the alias`. */
 const LEADING_STALE =
-    /^\s*(?:previously|formerly|originally|earlier|before that|at first)\s*,(?:\s+(?!(?:to|and|but|so)\b)[\w-]+){0,4}?\s+$/i;
+    /^\s*(?:previously|formerly|originally|earlier|before that|at first)\s*,(?:\s+(?!(?:to|and|but|so)\b)[\w-]+,?){0,6}?\s+$/i;
 /** What follows a value to say it is wrong or superseded. */
 const AFTER = new RegExp(
     `^[^.?!;]{0,30}?(?:${[
@@ -222,9 +222,10 @@ function mentions(sentence: string, value: string, stale: string[]): Mention[] {
 /**
  * Whether a sentence after the committed one says the repository or machine lacks the value
  * (`ABSENCE`) or offers to revise it (`REVISION_OFFER`, naming no competitor) without rejecting
- * it. Each clause (split at `;`, `:`, and `, but`) that names the value must state the absence and hold no rejection or
- * prohibition (`REJECTS`), and a competitor it leaves standing must sit in such a clause listed
- * beside the value (`neither X nor Y`, `either X or Y`).
+ * it. Each clause (split at `;`, `:`, and `, but`) that names the value must state the absence
+ * and hold no rejection, whether a prohibition (`REJECTS`) or a verdict on the value (`AFTER`),
+ * and a competitor it leaves standing must sit in such a clause listed with the value (`neither
+ * X nor Y`, `either X or Y`).
  */
 const stepsAside = (sentence: string, found: Mention[]): boolean => {
     if (REVISION_OFFER.test(sentence)) {
@@ -234,10 +235,17 @@ const stepsAside = (sentence: string, found: Mention[]): boolean => {
     const clauseOf = (at: number) => bounds.filter((b) => b < at).length;
     const clauses = sentence.split(CLAUSE_BREAK);
     const absent = (k: number) => ABSENCE.test(clauses[k] ?? "");
+    const value = found.find((m) => m.expected)?.token ?? "";
     return found.every((m) => {
         const k = clauseOf(m.at);
-        if (m.expected) return absent(k) && !REJECTS.test(clauses[k] ?? "");
-        return m.negated || (absent(k) && LISTED.test(clauses[k] ?? ""));
+        const clause = clauses[k] ?? "";
+        if (m.expected) {
+            const after = sentence.slice(m.at + m.token.length);
+            return absent(k) && !REJECTS.test(clause) && !AFTER.test(after);
+        }
+        if (m.negated) return true;
+        const listed = LISTED.exec(clause);
+        return absent(k) && listed !== null && clause.slice(listed.index).includes(value);
     });
 };
 
