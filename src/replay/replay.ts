@@ -49,6 +49,7 @@ import {
 import {
     evidenceNote,
     probeBlock,
+    projectMemoryBlock,
     type TransformInputs,
     transformDigest,
     transformFor,
@@ -59,7 +60,7 @@ export const REPLAY_SCHEMA = "sim-replay-manifest/v1";
 export const REPLAY_MANIFEST = "replay-manifest.json";
 const ROOT = resolve(import.meta.dir, "../..");
 const CLEAN_WORKTREE = createHash("sha256").digest("hex");
-const NOTE_VARIANTS = new Set(["evidence-note", "oracle-note"]);
+const NOTE_VARIANTS = new Set(["evidence-note", "oracle-note", "memory-block"]);
 
 /**
  * Replay consumes the run's compiled scenario and delivered probe text; its identity check
@@ -278,6 +279,11 @@ function transformInputs(source: ProbeSource): TransformInputs {
         evidence_note: evidenceNote(
             source.scenario.events as unknown as Record<string, unknown>[],
             gt?.sources ?? [],
+        ),
+        project_memory: projectMemoryBlock(
+            source.scenario.events as unknown as Record<string, unknown>[],
+            gt?.sources ?? [],
+            source.probe.type,
         ),
     };
 }

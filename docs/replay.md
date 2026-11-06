@@ -9,7 +9,7 @@ repeat. `src/replay/` owns the command.
 
 ```sh
 bun scripts/replay-probe.ts --run <finished run> --arm <arm> --item <probe id> \
-    --variant <a|b|c|d|e or name> --repeats N --out <empty dir> \
+    --variant <a|b|c|c2|d|d2|e|f or name> --repeats N --out <empty dir> \
     [--allow-identity <field,...>] [--path-mode source|replay] [--keep]
 ```
 
@@ -63,17 +63,20 @@ a test checks every campaign `Gateway` construction for that.
 | a | `none` | forwards each request unchanged: the replay-noise baseline |
 | b | `evidence-note` | appends, after the probe text, a note quoting the probe's `ground_truth.sources` events: `Note from earlier sessions:` then `- I wrote: <text>` per user turn, `- <path> was committed with:` and the fenced content per committed file, and `- <path> was removed from the repository.` per removal |
 | c | `drop-competing` | in Eidnara-delivered memory listings, drops each item carrying a `stale` or `absent` literal and, in a listing that holds an item carrying a literal of every `present` group, every item that does not; numbered items are renumbered and the listing's count follows |
+| c2 | `drop-competing-caution` | variant c, and also drops each caution item that does not support the ground truth, and removes from each kept numbered caution item every sentence that carries caution wording and no `present` literal. A caution item carries caution wording (unconfirmed, pending, waiting on the user, ask first; the `CAUTION` pattern) in a statement whose first line does not open with a user attribution (`User stated:`) |
 | d | `provenance-off` | removes Eidnara's provenance wording from delivered memory items: the `trust=[...]` header label, the opening attribution (`User stated:`, `Assistant reported:`), and the JSON provenance record that closes the item (an object whose `anchor`, `citation`, `quote`, and `source` are strings) |
+| d2 | `provenance-notices-off` | variant d, and also removes the daemon's `Memory:` notice lines from a search result (the search route and the freshness of the results), keeping the plugin's `§n§` marker that opens the first one |
 | e | `oracle-note` | puts the `host-oracle` arm's note (`src/run/oracle-note.ts`) ahead of the probe text, after any marker the plugin put in front of it |
+| f | `memory-block` | appends a `<project-memory>` block to the text of the first message's m0 region, the text block holding `</session-history>`, after a blank line, where Eidnara's m0 composer puts the block. The block renders the probe's `ground_truth.sources` events in the layout of `memory_render.rs`: one category element by probe type (P1 and P4 `PROJECT_RULES`, P3 `CONSTRAINTS`, P6 `USER_DIRECTIVES`, P8 and P12 `CONFIG_VALUES`, otherwise `PROJECT_RULES`), then one `mem_<id>: <content>` line per event sorted by id, with `&`, `<`, and `>` escaped and continuation lines indented by two spaces. A user turn reads `User stated: <text>`; a committed file and a removal read as in variant b. The id is the first 32 hex digits of the SHA-256 of the event id and content |
 
-Variants c and d read two listing shapes: the numbered search results of an
+Variants c, c2, d, and d2 read two listing shapes: the numbered search results of an
 `eidnara_*` tool (`[1] [memory] score=... id=...`, each item running to its
 first blank line) and the `- ` fragments of `<eidnara-search-hint>`. They
 also visit `<project-memory>`, `<memory-updates>`, `<project-note>`, and
 `<eidnara-search-auto>` blocks; a block or tool result with no listing in
 those shapes passes unchanged and is named under `unparsed` in the
 application detail. Literals match case-insensitively as substrings, and a
-numeric literal matches only as a whole number. A note variant (b or e) that
+numeric literal matches only as a whole number. A note variant (b, e, or f) that
 changes no agent request of a repeat fails that repeat.
 
 The variant digest in the manifest is the SHA-256 of the transform id, the
