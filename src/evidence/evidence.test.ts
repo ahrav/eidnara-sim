@@ -516,7 +516,9 @@ describe("evidence stages on a memory arm", () => {
                 ground_truth: { ...p.ground_truth, present: [["double"]] },
             })),
         };
-        const wrapped = searchTurn("1. inside src/ws use double\nquotes for strings");
+        const wrapped = searchTurn(
+            "1. inside src/ws use double\nquotes for strings\n3. double quotes",
+        );
         const p = evidence(
             build({ calls: [SOURCE_READ, CAPTURED, wrapped], scenario, objects: [] }),
         );
@@ -737,6 +739,9 @@ describe("evidence stages on the host arm", () => {
         expect(rule.attributed.cause).toBe("application");
         const p1 = graded(run(), { metrics: { "P13.ratio_in_bounds": false } });
         expect(stage(p1, "fold")).toBeUndefined();
+        const legacy = graded(run(), { probe_type: "P13", metrics: { "P13.rule_kept": true } });
+        expect(stage(legacy, "fold")?.status).toBe("unobserved");
+        expect(legacy.attributed.cause).toBe("application");
     });
 
     test("a P13 item with no fold in range is set aside at the fold, as its grade says", () => {

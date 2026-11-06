@@ -224,10 +224,9 @@ function rankOf(text: string, alts: string[]): number | null {
     const found = alts.filter((a) => a.length > 0 && carriesLiteral(text, a));
     if (found.length === 0) return null;
     const lines = text.split("\n");
-    const i = lines.findIndex((l) => found.some((a) => carriesLiteral(l, a)));
-    if (i >= 0) return i + 1;
-    // The wording wraps: the match completes on the first line whose prefix carries it, found by
-    // bisection, since a prefix that carries the literal keeps carrying it as it grows.
+    // The match completes on the first line whose prefix carries the literal, found by bisection,
+    // since a prefix that carries the literal keeps carrying it as it grows; a wrapped match
+    // ahead of a one-line repeat is therefore ranked first.
     let lo = 1;
     let hi = lines.length;
     while (lo < hi) {
@@ -1021,12 +1020,19 @@ export function probeEvidence(
               : [
                     {
                         stage: "fold",
-                        status: metrics["P13.ratio_in_bounds"] === false ? "failed" : "ok",
+                        status:
+                            metrics["P13.ratio_in_bounds"] === false
+                                ? "failed"
+                                : metrics["P13.ratio_in_bounds"] === true
+                                  ? "ok"
+                                  : "unobserved",
                         ...(metrics["P13.ratio_in_bounds"] === false
                             ? {
                                   reason: "a fold's output-to-input token ratio is outside p13_reduction_ratio",
                               }
-                            : {}),
+                            : metrics["P13.ratio_in_bounds"] === true
+                              ? {}
+                              : { reason: "the grade records no fold ratio" }),
                         pointers: [gradePointer],
                         detail: { folds: metrics["P13.folds"] ?? null },
                     },

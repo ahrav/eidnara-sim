@@ -35,7 +35,7 @@ a grade record).
 | `eligibility` | One such object per group is live at the probe (not invalidated, not superseded) and in the probe project's scope: the kernel `project:<key>` scope whose key the project's capture jobs carry, or a note whose project path ends in the project | the same stores, `memory_capture_jobs` |
 | `retrieval` | An `eidnara_*` tool result new in the probe turn, or a block the plugin writes into the request (`<project-memory>`, `<memory-updates>`, `<project-note>`, `<eidnara-search-auto>`, `<eidnara-search-hint>`), carries each group; the detail gives each hit's source and line (its rank) and every search's input, route (`fused`, `legacy-scan` with the fallback reason, `errored`), and whether its result reached a request | Pi transcripts (what the tool returned), request bodies (what the model received) |
 | `delivery` / `context` | A probe-turn agent request carries each group, with the probe's own text removed first | `calls.jsonl` + `requests.jsonl` |
-| `fold` | P13 items only, before `application`: the grade found a fold in the item's range (else `unavailable`) and every fold's output-to-input token ratio is within `p13_reduction_ratio` (else `failed`), read from the grade's `P13.ratio_in_bounds` | `grades.jsonl` |
+| `fold` | P13 items only, before `application`: the grade found a fold in the item's range (else `unavailable`) and every fold's output-to-input token ratio is within `p13_reduction_ratio` (else `failed`), read from the grade's `P13.ratio_in_bounds`; a grade that records no ratio (a historical schema) leaves the stage `unobserved` | `grades.jsonl` |
 | `application` | The latest grade passes (the S3 grade) | `grades.jsonl`, `<arm>/snapshots.jsonl` |
 
 A stage finds a literal in text as the grade's evidence names it. A number
@@ -45,7 +45,8 @@ rule's wording, case-insensitively: `double quotes`, `double-quoted`, `the
 info level`, `log at INFO`, `warn-level logs`; `single-shot`, `single
 quota`, `traced`, or `an error` carries nothing. A retrieval hit's rank is
 the first line that carries the literal, or, when the wording wraps, the
-line where the match completes (found by bisection over line prefixes). Any other literal is a generated identifier
+line where the match completes (found by bisection over line prefixes, so a
+wrapped match ahead of a one-line repeat ranks first). Any other literal is a generated identifier
 that the scenario uses as a stem (`OCHRE_IBIS_MAX`, `onYONDER_EGRET`), and
 it matches case-sensitively anywhere, so `AMBER_DINGO` is absent from
 `amber_dingo.ts`. A probe whose rule is to be applied (`expect` `apply` or
