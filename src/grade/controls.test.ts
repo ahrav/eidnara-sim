@@ -918,7 +918,7 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
         const byCheck = readme([
             `\`${script}\` exits with ${idOf(tool)} when a frame is too large.`,
         ]);
-        expect(outcome(tool, { files: [byCheck], source: [`python ./${script}`] })).toEqual([
+        expect(outcome(tool, { files: [byCheck], source: [`python3.12 ./${script}`] })).toEqual([
             "pass",
         ]);
         const figure = /declared = (\d+)/.exec(String(source.content))?.[1];
@@ -943,6 +943,8 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
             [`python3 -V ${script}`],
             [`python3 - ${script}`],
             [`python3 -Q ${script}`],
+            [`python ${script}`],
+            [`python3 --check-hash-based-pycs nonsense ${script}`],
             [`sh ${script}`],
             [`bash ./${script}`],
         ]) {

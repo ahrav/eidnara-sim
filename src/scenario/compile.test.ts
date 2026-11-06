@@ -179,7 +179,10 @@ describe("compiled S scenario", async () => {
             if (n === 0) continue;
             const variant = variants[n - 1];
             if (variant !== undefined) {
-                expect([p.id, p.text]).toEqual([p.id, variant.replace(/\{\w+\}/g, () => "")]);
+                const rendered = new RegExp(
+                    `^${variant.replace(/[.*+?^$()|[\]\\]/g, "\\$&").replace(/\{\w+\}/g, "\\S+")}$`,
+                );
+                expect([p.id, rendered.test(p.text)]).toEqual([p.id, true]);
                 expect(seen).not.toContain(p.text);
             } else {
                 expect([p.id, framings.some((x) => p.text?.startsWith(`${x} `))]).toEqual([

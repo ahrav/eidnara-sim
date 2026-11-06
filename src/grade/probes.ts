@@ -1552,7 +1552,8 @@ export const runsScript = (path: string) => (x: Command) =>
                 named(operand)
             );
         }
-        if (!/^python3?(?:\.\d+)?$/.test(words[0] ?? "") || !path.endsWith(".py")) return false;
+        // The toolchain preflight probes python3; a bare python may be absent and exit 127.
+        if (!/^python3(?:\.\d+)?$/.test(words[0] ?? "") || !path.endsWith(".py")) return false;
         return named(pythonProgram(words.slice(1)));
     });
 /**
@@ -1565,6 +1566,7 @@ const pythonProgram = (words: string[]): string | undefined => {
         const w = words[i] as string;
         if (w === "--") return words[i + 1];
         if (w === "--check-hash-based-pycs") {
+            if (!/^(?:always|default|never)$/.test(words[i + 1] ?? "")) return undefined;
             i++;
             continue;
         }

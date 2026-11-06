@@ -1334,7 +1334,7 @@
                     "Have the websocket wrapper throw an error whose message names the method when send is called after the socket has closed.",
                     "Have the websocket wrapper reject a publish to an empty topic with a message.",
                     "Have the websocket wrapper's unsubscribe throw an error with a message when the topic was never subscribed.",
-                    "Make the websocket wrapper log a message when a subscription is dropped."
+                    "Have the websocket wrapper's subscribe throw an error with a message when the topic name is empty."
                 ],
                 "out_probe_variants": [
                     "Throw an error with a clear message when an empty route path is registered.",
