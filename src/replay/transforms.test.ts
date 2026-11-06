@@ -5,6 +5,8 @@ import type { ConverseBody } from "../proxy/classify";
 import {
     evidenceNote,
     joinListing,
+    originCategory,
+    probeTypeCategory,
     projectMemoryBlock,
     splitListing,
     TRANSFORMS,
@@ -32,6 +34,8 @@ const inputs = (over: Partial<TransformInputs> = {}): TransformInputs => ({
         "Note from earlier sessions:\n- I wrote: the next step is an onYONDER_BADGER hook.",
     project_memory:
         "<project-memory>\n<USER_DIRECTIVES>\nmem_1: User stated: add an onYONDER_BADGER hook.\n</USER_DIRECTIVES>\n</project-memory>",
+    origin_memory:
+        "<project-memory>\n<USER_DIRECTIVES>\nmem_2: User stated: add an onYONDER_BADGER hook.\n</USER_DIRECTIVES>\n</project-memory>",
     ...over,
 });
 
@@ -142,7 +146,9 @@ describe("replay transforms on a recorded agent request", () => {
     });
 
     test("a variant resolves by name or letter, and an unknown one is refused", () => {
-        expect(["a", "b", "c", "c2", "d", "d2", "e", "f"].map((v) => transformFor(v).id)).toEqual([
+        expect(
+            ["a", "b", "c", "c2", "d", "d2", "e", "f", "f2"].map((v) => transformFor(v).id),
+        ).toEqual([
             "none",
             "evidence-note",
             "drop-competing",
@@ -151,6 +157,7 @@ describe("replay transforms on a recorded agent request", () => {
             "provenance-notices-off",
             "oracle-note",
             "memory-block",
+            "memory-block-origin",
         ]);
         expect(() => transformFor("z")).toThrow("unknown replay variant z");
         for (const inherited of ["constructor", "toString", "__proto__"]) {
@@ -178,7 +185,7 @@ describe("evidenceNote", () => {
         const block = projectMemoryBlock(
             [...events, { id: "e-4", kind: "user_turn", text: "Keep <T> & U." }],
             ["e-4", "e-2"],
-            "P8",
+            probeTypeCategory("P8"),
         ) as string;
         const lines = block.split("\n");
         expect(lines[0]).toBe("<project-memory>");
@@ -198,8 +205,10 @@ describe("evidenceNote", () => {
                 /^mem_[0-9a-f]{32}: notes\/a\.md was committed with:\n {2}use ```fences```$/,
             ),
         );
-        expect(projectMemoryBlock(events, ["e-1"], "P99")).toContain("<PROJECT_RULES>");
-        expect(projectMemoryBlock(events, ["e-9"], "P8")).toBeNull();
+        expect(projectMemoryBlock(events, ["e-1"], probeTypeCategory("P99"))).toContain(
+            "<PROJECT_RULES>",
+        );
+        expect(projectMemoryBlock(events, ["e-9"], probeTypeCategory("P8"))).toBeNull();
     });
 
     test("quotes each source in scenario order, fencing committed files past their backticks", () => {
@@ -488,5 +497,70 @@ describe("caution, notice, and memory-block variants", () => {
             changed: false,
             detail: { reason: "no sources" },
         });
+    });
+});
+
+describe("memory-block-origin", () => {
+    test("groups rows by the origin of their source, project rules first", () => {
+        const events = [
+            { id: "e-1", kind: "user_turn", text: "The alias is yonder-yak-52." },
+            { id: "e-2", kind: "apply_diff", path: "a.md", content: "rule\n" },
+        ];
+        const block = projectMemoryBlock(events, ["e-1", "e-2"], originCategory) as string;
+        const tags = block.split("\n").filter((l) => /^<\/?[A-Z_]+>$/.test(l));
+        expect(tags).toEqual([
+            "<PROJECT_RULES>",
+            "</PROJECT_RULES>",
+            "<USER_DIRECTIVES>",
+            "</USER_DIRECTIVES>",
+        ]);
+        expect(block).toMatch(
+            /<PROJECT_RULES>\nmem_[0-9a-f]{32}: a\.md was committed with:\n {2}rule\n<\/PROJECT_RULES>/,
+        );
+    });
+
+    test("renders categories in the daemon's order with each category's rows together", () => {
+        const events = [
+            { id: "e-1", kind: "user_turn", text: "one" },
+            { id: "e-2", kind: "user_turn", text: "two" },
+            { id: "e-3", kind: "user_turn", text: "three" },
+            { id: "e-4", kind: "apply_diff", path: "gone.md", remove: true },
+        ];
+        const category: Record<string, string> = {
+            "e-1": "CONFIG_VALUES",
+            "e-2": "CONSTRAINTS",
+            "e-3": "CONFIG_VALUES",
+            "e-4": "USER_DIRECTIVES",
+        };
+        const block = projectMemoryBlock(
+            events,
+            ["e-1", "e-2", "e-3", "e-4"],
+            (e) => category[String(e.id)] as string,
+        ) as string;
+        const lines = block.split("\n");
+        expect(lines.filter((l) => /^<\/?[A-Z_]+>$/.test(l))).toEqual([
+            "<CONSTRAINTS>",
+            "</CONSTRAINTS>",
+            "<CONFIG_VALUES>",
+            "</CONFIG_VALUES>",
+            "<USER_DIRECTIVES>",
+            "</USER_DIRECTIVES>",
+        ]);
+        const config = lines.slice(
+            lines.indexOf("<CONFIG_VALUES>") + 1,
+            lines.indexOf("</CONFIG_VALUES>"),
+        );
+        expect(config).toHaveLength(2);
+        expect(config).toEqual([...config].sort());
+        expect(originCategory(events[3] as Record<string, unknown>)).toBe("PROJECT_RULES");
+        expect(originCategory(events[0] as Record<string, unknown>)).toBe("USER_DIRECTIVES");
+    });
+
+    test("f2 appends the origin block to the m0 region", () => {
+        const body = recorded();
+        expect(transformFor("f2").apply(body, inputs()).changed).toBe(true);
+        expect(text(body, 0)).toBe(
+            `<session-history></session-history>\n\n${inputs().origin_memory as string}`,
+        );
     });
 });
