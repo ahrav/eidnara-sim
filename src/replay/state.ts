@@ -260,8 +260,7 @@ export function rewindHead(o: {
         const others = refs.filter(
             (r) =>
                 r !== current &&
-                !r.startsWith("refs/remotes/") &&
-                (!r.startsWith("refs/heads/") || reaches(r)),
+                (!(r.startsWith("refs/heads/") || r.startsWith("refs/remotes/")) || reaches(r)),
         );
         const baseline = readFileSync(o.gitconfig);
         const hooks = existsSync(join(dotGit, "hooks"))
@@ -389,13 +388,15 @@ const CLAMP = new Set([
     "last_checkpoint_commit_seq",
 ]);
 
+const q = (name: string) => `"${name.replaceAll('"', '""')}"`;
+
 const tables = (db: Database) =>
     (db.query("select name from sqlite_master where type = 'table'").all() as { name: string }[])
         .map((r) => r.name)
         .filter((n) => n !== "sqlite_sequence");
 
 const columns = (db: Database, table: string) =>
-    (db.query(`pragma table_info("${table}")`).all() as { name: string }[]).map((c) => c.name);
+    (db.query(`pragma table_info(${q(table)})`).all() as { name: string }[]).map((c) => c.name);
 
 type Counts = Record<string, number>;
 const counter = (counts: Counts) => (table: string, n: number) => {
@@ -409,7 +410,7 @@ function withoutGuards<T>(db: Database, edit: () => T): T {
             .all() as { name: string; sql: string }[]
     ).filter((t) => /\bBEFORE\b/i.test(t.sql) && /\bRAISE\s*\(/i.test(t.sql));
     return db.transaction(() => {
-        for (const t of guards) db.run(`drop trigger "${t.name}"`);
+        for (const t of guards) db.run(`drop trigger ${q(t.name)}`);
         const result = edit();
         for (const t of guards) db.run(t.sql);
         return result;
@@ -429,14 +430,14 @@ export function dropOrphans(db: Database): Counts {
         const keys = new Map(orphans.map((r) => [`${r.table}\0${r.fkid}`, r]));
         for (const r of keys.values()) {
             const links = (
-                db.query(`pragma foreign_key_list("${r.table}")`).all() as {
+                db.query(`pragma foreign_key_list(${q(r.table)})`).all() as {
                     id: number;
                     from: string;
                     to: string | null;
                 }[]
             ).filter((l) => l.id === r.fkid);
             const pk = (
-                db.query(`pragma table_info("${r.parent}")`).all() as {
+                db.query(`pragma table_info(${q(r.parent)})`).all() as {
                     name: string;
                     pk: number;
                 }[]
@@ -444,12 +445,12 @@ export function dropOrphans(db: Database): Counts {
                 .filter((c) => c.pk > 0)
                 .sort((a, b) => a.pk - b.pk)
                 .map((c) => c.name);
-            const pairs = links.map((l, i) => [l.from, l.to ?? pk[i]] as const);
-            const set = pairs.map(([from]) => `"${r.table}"."${from}" is not null`).join(" and ");
+            const pairs = links.map((l, i) => [l.from, String(l.to ?? pk[i] ?? "rowid")] as const);
+            const set = pairs.map(([from]) => `${q(r.table)}.${q(from)} is not null`).join(" and ");
             const match = pairs
-                .map(([from, to]) => `p."${to}" = "${r.table}"."${from}"`)
+                .map(([from, to]) => `p.${q(to)} = ${q(r.table)}.${q(from)}`)
                 .join(" and ");
-            const sql = `delete from "${r.table}" where ${set} and not exists (select 1 from "${r.parent}" p where ${match})`;
+            const sql = `delete from ${q(r.table)} where ${set} and not exists (select 1 from ${q(r.parent)} p where ${match})`;
             note(r.table, db.run(sql).changes);
         }
     }
@@ -463,14 +464,14 @@ export function rollbackKernel(db: Database, cut: number): Counts {
         const cols = columns(db, t);
         for (const c of cols.filter((c) => c.endsWith("commit_seq"))) {
             if (DELETE_ABOVE.has(c)) {
-                note(t, db.run(`delete from "${t}" where "${c}" > ?`, [cut]).changes);
+                note(t, db.run(`delete from ${q(t)} where ${q(c)} > ?`, [cut]).changes);
             } else if (c === "invalidated_commit_seq") {
                 const sets = cols.includes("superseded_by")
-                    ? `"${c}" = null, superseded_by = null`
-                    : `"${c}" = null`;
-                note(t, db.run(`update "${t}" set ${sets} where "${c}" > ?`, [cut]).changes);
+                    ? `${q(c)} = null, superseded_by = null`
+                    : `${q(c)} = null`;
+                note(t, db.run(`update ${q(t)} set ${sets} where ${q(c)} > ?`, [cut]).changes);
             } else if (CLAMP.has(c)) {
-                const sql = `update "${t}" set "${c}" = ? where "${c}" > ?`;
+                const sql = `update ${q(t)} set ${q(c)} = ? where ${q(c)} > ?`;
                 note(t, db.run(sql, [cut, cut]).changes);
             } else {
                 throw new Error(`kernel table ${t} has commit column ${c} with no rollback rule`);
@@ -499,12 +500,12 @@ export function rollbackMemoryStore(
                 t === "memory_capture_jobs"
                     ? " and not (commit_seq > ? and created_at_ms <= ?)"
                     : "";
-            const sql = `delete from "${t}" where session_id in (${marks})${terminal}`;
+            const sql = `delete from ${q(t)} where session_id in (${marks})${terminal}`;
             const args = terminal ? [...o.sessions, o.commit, o.cutoffMs] : o.sessions;
             note(t, db.run(sql, args).changes);
         }
         if (cols.includes("created_at_ms")) {
-            note(t, db.run(`delete from "${t}" where created_at_ms > ?`, [o.cutoffMs]).changes);
+            note(t, db.run(`delete from ${q(t)} where created_at_ms > ?`, [o.cutoffMs]).changes);
         }
     }
     const committedAfter = names.includes("memory_capture_jobs")

@@ -159,6 +159,9 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
     if (end.outcome !== "ok" || typeof end.snapshot !== "string") {
         throw new Error(`probe turn ${event.id} of ${arm} ended ${String(end.outcome)}`);
     }
+    if (end.seq < begin.seq) {
+        throw new Error(`the journal ends probe turn ${event.id} of ${arm} before it begins`);
+    }
     const offsets = mine.filter((e) => e.kind === "ClockOffset" && e.seq < begin.seq);
     const offset = offsets.at(-1);
     if (!offset) throw new Error(`the journal holds no ClockOffset for ${arm} before the probe`);
@@ -183,7 +186,7 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
     }
     const calls = matchingLines<CallRecord>(
         join(root, "calls.jsonl"),
-        `"turn":${JSON.stringify(event.id)}`,
+        JSON.stringify(event.id),
         (r) => r.arm === arm && r.turn === event.id,
     );
     calls.forEach((r, i) => {

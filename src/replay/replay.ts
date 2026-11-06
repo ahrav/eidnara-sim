@@ -131,7 +131,7 @@ export interface RepeatResult {
     prompt_ms: number | null;
     agent_calls: number;
     requests: { seq: number; component: string; sha256: string | null; bytes: number | null }[];
-    transformed: number;
+    transformed: number | null;
     prefix: PrefixComparison | null;
     failures: string[];
     notes: string[];
@@ -390,11 +390,14 @@ const SNAPSHOT_CONFIG =
     "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n\thooksPath = /dev/null\n";
 
 function trustSnapshotGit(gitDir: string): void {
-    const linked = readdirSync(gitDir, { recursive: true, withFileTypes: true }).find((d) =>
-        d.isSymbolicLink(),
+    const linked = readdirSync(gitDir, { recursive: true, withFileTypes: true }).find(
+        (d) => !d.isDirectory() && !d.isFile(),
     );
-    if (linked)
-        throw new Error(`${gitDir} holds a link at ${join(linked.parentPath, linked.name)}`);
+    if (linked) {
+        throw new Error(
+            `${gitDir} holds a link or special file at ${join(linked.parentPath, linked.name)}`,
+        );
+    }
     if (existsSync(join(gitDir, "objects", "info", "alternates"))) {
         throw new Error(`${gitDir} borrows objects through alternates`);
     }
@@ -820,7 +823,7 @@ function failedRepeat(
             sha256: r.request?.sha256 ?? null,
             bytes: r.request?.bytes ?? null,
         })),
-        transformed: 0,
+        transformed: null,
         prefix: null,
         failures: [reason],
         notes: [],
@@ -835,6 +838,17 @@ export async function replayProbe(o: ReplayOptions): Promise<RepeatResult[]> {
     const pathMode = o.pathMode ?? "source";
     const source = loadProbeSource(o.run, o.arm, o.item);
     refuseUnreplayable(source, transformFor(o.variant).id);
+    const events = source.scenario.events as unknown as ScenarioEvent[];
+    const probeAt = events.indexOf(source.event);
+    const late = (source.probe.ground_truth?.sources ?? []).filter((id) => {
+        const at = events.findIndex((e) => e.id === id);
+        return at < 0 || at >= probeAt;
+    });
+    if (late.length > 0) {
+        throw new Error(
+            `probe ${source.probe.id} names sources at or after it: ${late.join(", ")}`,
+        );
+    }
     const out = resolve(o.out);
     requireOutside(out, [source.dir, source.recordedDir, o.config.eidnara_checkout]);
     const recorded = canonical(source.recordedDir);
@@ -1027,16 +1041,19 @@ async function replayInto(
             result = failedRepeat(k, transform.id, caught, source, repeatDir);
             if (caught instanceof ReplayInterrupted) {
                 appendFileSync(join(out, "results.jsonl"), `${JSON.stringify(result)}\n`);
+                if (!o.keep) clearRepeat(armDir);
                 throw caught;
             }
         }
         appendFileSync(join(out, "results.jsonl"), `${JSON.stringify(result)}\n`);
         results.push(result);
-        if (!o.keep) {
-            for (const heavy of ["r", "s", "snapshot.git", "runtime"]) {
-                rmSync(join(armDir, heavy), { recursive: true, force: true });
-            }
-        }
+        if (!o.keep) clearRepeat(armDir);
     }
     return results;
+}
+
+function clearRepeat(armDir: string): void {
+    for (const heavy of ["r", "s", "snapshot.git", "runtime"]) {
+        rmSync(join(armDir, heavy), { recursive: true, force: true });
+    }
 }

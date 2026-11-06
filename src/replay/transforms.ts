@@ -269,7 +269,7 @@ function provenanceOff(body: ConverseBody): Applied {
         const scrub = (item: string[]) => {
             const out: string[] = [];
             item.forEach((line, i) => {
-                if (i > 0 && isProvenanceLine(line)) {
+                if (i > 0 && i === item.length - 1 && isProvenanceLine(line)) {
                     counts.records++;
                     return;
                 }
