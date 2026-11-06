@@ -54,7 +54,7 @@ export interface SessionHealth {
  * it injects, any of which in an answer is text the agent copied from Eidnara's own framing.
  */
 export const EIDNARA_MARKER =
-    /§\d+§|<\/?(?:project-memory|session-history|session-history-since|eidnara-search-hint|eidnara-search-auto|packed-context|project-note|memory-updates|new-notes|covered-system-messages|project-docs|new-history_segments)(?=[\s>/])/;
+    /§\d+§|<\/?(?:project-memory|session-history|session-history-since|eidnara-search-hint|eidnara-search-auto|packed-context|project-note|memory-updates|new-notes|covered-system-messages|project-docs|new-history_segments)(?=[\s>]|\/>)/;
 
 const COMPACTION = new Set(["native_compaction", "history_summarizer"]);
 const TOO_LONG =
@@ -146,8 +146,11 @@ export function sessionHealth(run: RunData): SessionHealth[] {
                 filtered++;
                 if (c.component === "agent" && c.turn !== null) filteredTurns.add(c.turn);
             }
-            if (c.component === "agent" && c.turn !== null && c.response_text?.trim()) {
-                finalReply.set(c.turn, c.response_text);
+            // The turn's answer is its last completed agent response, as a grader reads it.
+            const completed =
+                c.status === 200 && c.error === null && c.finish_reason !== "stream_cut";
+            if (c.component === "agent" && c.turn !== null && completed) {
+                finalReply.set(c.turn, c.response_text ?? "");
             }
             if (COMPACTION.has(c.component)) {
                 attempts++;
@@ -198,11 +201,11 @@ export function sessionHealth(run: RunData): SessionHealth[] {
                   `${cause_refusal.component} ${cause_refusal.finish_reason ?? "no finish reason"}, ${cause_refusal.output_tokens} output tokens`,
               )
             : first_overflow;
-        const streamed = [...finalReply.values()];
+        const streamed = [...finalReply.values()].filter((a) => a.trim());
         // A session the scenario does not declare (a second client's) has no streamed answers to
         // set beside its transcript; a declared session without a transcript file is unread.
         const persisted = run.arms.get(arm)?.answers;
-        const transcript = projectOf.has(session) ? persisted?.get(session) : [];
+        const transcript = !persisted ? null : projectOf.has(session) ? persisted.get(session) : [];
         const kept = transcript ? transcript.filter((a) => a.trim()) : null;
         out.push({
             schema: "sim-evidence-session/v1",

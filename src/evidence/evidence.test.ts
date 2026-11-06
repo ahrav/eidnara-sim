@@ -899,6 +899,12 @@ describe("answer markers and content filtering", () => {
                 agent("e-7", "\u00a79\u00a7 draft"),
                 agent("e-7", "plain answer"),
                 { ...agent("e-8", ""), finish_reason: "content_filtered" },
+                // A cut stream after a completed reply leaves the completed reply as the answer.
+                agent("e-9", "\u00a73\u00a7 ok"),
+                { ...agent("e-9", "partial"), finish_reason: "stream_cut" },
+                // A final completed call without text leaves the turn without an answer.
+                agent("e-10", "\u00a74\u00a7 step"),
+                agent("e-10", ""),
                 {
                     session: "s-2",
                     turn: null,
@@ -908,21 +914,22 @@ describe("answer markers and content filtering", () => {
             ],
             answers: new Map([
                 ["s-1", []],
-                ["s-2", ["I reran the tests", "Done", "plain answer", ""]],
+                ["s-2", ["I reran the tests", "Done", "plain answer", "", "<project-note> kept"]],
             ]),
         });
         const h = sessionHealth(r).find((x) => x.session === "s-2");
         expect(h).toMatchObject({
-            answers_streamed: 3,
-            marker_answers_streamed: 2,
-            answers_persisted: 3,
-            marker_answers_persisted: 0,
+            answers_streamed: 4,
+            marker_answers_streamed: 3,
+            answers_persisted: 4,
+            marker_answers_persisted: 1,
             content_filtered_calls: 2,
             content_filtered_turns: 1,
         });
         expect(armAnswers(sessionHealth(r)).get("eidnara")).toMatchObject({
-            answers_streamed: 3,
-            marker_answers_streamed: 2,
+            answers_streamed: 4,
+            marker_answers_streamed: 3,
+            marker_answers_persisted: 1,
         });
         // A host whose transcript is unread, or a session without its transcript file, reports no
         // persisted count, and the arm's total is unread with it.
@@ -952,7 +959,7 @@ describe("answer markers and content filtering", () => {
                 .split("\n")
                 .filter((l) => l.startsWith("| R | eidnara |") && l.split("|").length === 10);
         expect(table(sessionHealth(r))).toEqual([
-            "| R | eidnara | 3 | 2 (66.7%) | 3 | 0 (0.0%) | 2 | 1 |",
+            "| R | eidnara | 4 | 3 (75.0%) | 4 | 1 (25.0%) | 2 | 1 |",
         ]);
         expect(table(unread)).toEqual(["| R | eidnara | 1 | 0 (0.0%) | not read |  | 0 | 0 |"]);
     });
@@ -964,6 +971,7 @@ describe("answer markers and content filtering", () => {
             "</packed-context>",
             "<memory-updates>",
             "<project-note>",
+            "<project-memory/>",
         ]) {
             expect(EIDNARA_MARKER.test(text)).toBe(true);
         }
@@ -973,6 +981,7 @@ describe("answer markers and content filtering", () => {
             "price \u00a73",
             "<project-memory-backup>",
             "<session-history-summary>",
+            "<project-memory/foo>",
         ]) {
             expect(EIDNARA_MARKER.test(text)).toBe(false);
         }
@@ -980,41 +989,52 @@ describe("answer markers and content filtering", () => {
 
     test("a Pi session file's turns each answer with their last assistant text", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-pi-answers-"));
-        const project = join(dir, "--work--");
-        mkdirSync(project);
-        const message = (role: string, content: unknown[]) =>
-            JSON.stringify({ type: "message", message: { role, content } });
-        const text = (t: string) => ({ type: "text", text: t });
-        writeFileSync(
-            join(project, "2026-01-01T00-00-00-000Z_sim-s-1.jsonl"),
-            [
-                JSON.stringify({ type: "session" }),
-                message("user", [text("go")]),
-                message("assistant", [text("checking"), { type: "toolCall", name: "bash" }]),
-                message("toolResult", [text("ok")]),
-                message("assistant", [{ type: "thinking", thinking: "" }, text("all done")]),
-                message("user", [text("again")]),
-                message("assistant", [{ type: "toolCall", name: "bash" }]),
-            ]
-                .map((l) => `${l}\n`)
-                .join(""),
-        );
-        writeFileSync(
-            join(project, "2026-01-01T01-00-00-000Z_sim-s-1.jsonl"),
-            // The last record lacks its newline, as a cut append leaves a complete one.
-            `${message("user", [text("resumed")])}\n${message("assistant", [text("back")])}`,
-        );
-        expect(readPiAnswers(dir)).toEqual(new Map([["s-1", ["all done", "", "back"]]]));
-        expect(readPiAnswers(join(dir, "absent"))).toBeNull();
-        // A link on the way down from the run's own directory reads as no transcript.
-        const run = mkdtempSync(join(tmpdir(), "sim-pi-run-"));
-        symlinkSync(dir, join(run, "home"));
-        expect(readPiAnswers(join(run, "home"), run)).toBeNull();
-        mkdirSync(join(run, "real"));
-        symlinkSync(project, join(run, "real", "sessions"));
-        expect(readPiAnswers(join(run, "real", "sessions"), run)).toBeNull();
-        rmSync(run, { recursive: true });
-        rmSync(dir, { recursive: true });
+        try {
+            const project = join(dir, "--work--");
+            mkdirSync(project);
+            const message = (role: string, content: unknown[]) =>
+                JSON.stringify({ type: "message", message: { role, content } });
+            const text = (t: string) => ({ type: "text", text: t });
+            writeFileSync(
+                join(project, "2026-01-01T00-00-00-000Z_sim-s-1.jsonl"),
+                [
+                    JSON.stringify({ type: "session" }),
+                    message("user", [text("go")]),
+                    message("assistant", [text("checking"), { type: "toolCall", name: "bash" }]),
+                    message("toolResult", [text("ok")]),
+                    message("assistant", [{ type: "thinking", thinking: "" }, text("all done")]),
+                    message("user", [text("again")]),
+                    // The turn's last assistant message has no text, so the turn has no answer.
+                    message("assistant", [text("step")]),
+                    message("assistant", [{ type: "toolCall", name: "bash" }]),
+                ]
+                    .map((l) => `${l}\n`)
+                    .join(""),
+            );
+            writeFileSync(
+                join(project, "2026-01-01T01-00-00-000Z_sim-s-1.jsonl"),
+                // The last record lacks its newline, as a cut append leaves a complete one.
+                `${message("user", [text("resumed")])}\n${message("assistant", [text("back")])}`,
+            );
+            expect(readPiAnswers(dir)).toEqual(new Map([["s-1", ["all done", "", "back"]]]));
+            // A complete record that does not parse leaves its session unread.
+            writeFileSync(
+                join(project, "2026-01-01T02-00-00-000Z_sim-s-2.jsonl"),
+                `${message("user", [text("go")])}\n{"type":"message","message":{"role":"assistant",\n`,
+            );
+            expect(readPiAnswers(dir)?.has("s-2")).toBe(false);
+            expect(readPiAnswers(join(dir, "absent"))).toBeNull();
+            // A link on the way down from the run's own directory reads as no transcript.
+            const run = mkdtempSync(join(tmpdir(), "sim-pi-run-"));
+            symlinkSync(dir, join(run, "home"));
+            expect(readPiAnswers(join(run, "home"), run)).toBeNull();
+            mkdirSync(join(run, "real"));
+            symlinkSync(project, join(run, "real", "sessions"));
+            expect(readPiAnswers(join(run, "real", "sessions"), run)).toBeNull();
+            rmSync(run, { recursive: true });
+        } finally {
+            rmSync(dir, { recursive: true });
+        }
     });
 });
 

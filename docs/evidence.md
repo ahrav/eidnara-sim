@@ -127,18 +127,22 @@ or the opening or closing tag of a block Eidnara injects (`project-memory`,
 `covered-system-messages`, `project-docs`, `new-history_segments`), as
 `EIDNARA_MARKER` in `src/evidence/health.ts` matches them. A turn's answer is its final text, counted two ways:
 
-- `answers_streamed` and `marker_answers_streamed`: the last agent call of
-  the turn with text, as the proxy relayed the provider stream
-  (`calls.jsonl` `response_text`, its first 262,144 characters). Graders
-  read their answers from this stream (the last completed agent response),
-  the user simulator receives its replies from it, and a live UI may show
-  it while streaming.
-- `answers_persisted` and `marker_answers_persisted`: the turn's last
-  assistant message with text in the host transcript, what the user keeps.
+- `answers_streamed` and `marker_answers_streamed`: the turn's last
+  completed agent call (status 200, no error, stream not cut), as the proxy
+  relayed the provider stream (`calls.jsonl` `response_text`, its first
+  262,144 characters); a turn whose last completed call has no text has no
+  answer. Graders read their answers the same way, the user simulator
+  receives its replies from this stream, and a live UI may show it while
+  streaming.
+- `answers_persisted` and `marker_answers_persisted`: the text of the turn's
+  last assistant message in the host transcript, what the user keeps; a
+  turn whose last assistant message has no text has no answer, as on the
+  streamed side.
   On Pi it comes from `<arm>/r/home/.pi/agent/sessions/**/<time>_sim-<session>.jsonl`
   (`readPiAnswers`), where a user message opens a turn and a complete last
   record without its newline is read too; a link on the path from the arm
-  directory down reads as no transcript. On a host whose transcript this
+  directory down reads as no transcript, and a session with a complete user
+  or assistant record that does not parse reads as unread. On a host whose transcript this
   harness does not read (OpenCode), or for a declared session with no
   transcript file, both are `null`, and so is the arm's total in the report;
   a session the scenario does not declare (a second client's `-b` session)

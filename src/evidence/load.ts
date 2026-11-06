@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import {
     closeSync,
+    constants,
     existsSync,
     lstatSync,
     openSync,
@@ -228,6 +229,9 @@ export function readPiAnswers(
         return session ? [{ session, path, name }] : [];
     });
     const out = new Map<string, string[]>();
+    // A session with a complete user or assistant record that does not parse has no readable
+    // transcript.
+    const broken = new Set<string>();
     for (const f of files.sort((a, b) => (a.name < b.name ? -1 : 1))) {
         const answers = out.get(f.session) ?? [];
         let open = false;
@@ -235,12 +239,13 @@ export function readPiAnswers(
         const close = () => {
             if (open) answers.push(answer);
         };
-        const visit = (line: Buffer) => {
+        const visit = (line: Buffer, complete: boolean) => {
             if (!line.includes('"role":"user"') && !line.includes('"role":"assistant"')) return;
             let entry: { type?: unknown; message?: { role?: unknown; content?: unknown } };
             try {
                 entry = JSON.parse(line.toString("utf8"));
             } catch {
+                if (complete) broken.add(f.session);
                 return;
             }
             const m = entry.message;
@@ -254,17 +259,17 @@ export function readPiAnswers(
                     .filter((c: { type?: unknown }) => c?.type === "text")
                     .map((c: { text?: unknown }) => (typeof c.text === "string" ? c.text : ""))
                     .join("");
-                if (text.trim() !== "") answer = text;
+                answer = text;
             }
         };
         // Pi's loader also reads a complete record that lacks its final newline.
-        const scan = eachLine(f.path, visit);
+        const scan = eachLine(f.path, (line) => visit(line, true));
         if (scan.tail > 0) {
-            const fd = openSync(f.path, "r");
+            const fd = openSync(f.path, constants.O_RDONLY | constants.O_NOFOLLOW);
             try {
                 const tail = Buffer.alloc(scan.tail);
                 readSync(fd, tail, 0, scan.tail, scan.complete);
-                visit(tail);
+                visit(tail, false);
             } finally {
                 closeSync(fd);
             }
@@ -272,6 +277,7 @@ export function readPiAnswers(
         close();
         out.set(f.session, answers);
     }
+    for (const session of broken) out.delete(session);
     return out;
 }
 
