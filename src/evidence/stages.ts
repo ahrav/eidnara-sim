@@ -3,7 +3,6 @@ import type { ConverseBody } from "../proxy/classify";
 import { type RequestPart, rebuildRequest } from "../proxy/requests";
 import type { HeldCall } from "../run/calllog";
 import type { Entry } from "../run/journal";
-import { holds } from "../scenario/compile";
 import type { SessionHealth } from "./health";
 import {
     type ArmData,
@@ -24,7 +23,8 @@ export const STAGES_EIDNARA = [
     "application",
 ] as const;
 export const STAGES_HOST = ["source", "context", "application"] as const;
-export type StageName = (typeof STAGES_EIDNARA)[number] | (typeof STAGES_HOST)[number];
+/** `fold` is a P13 item's own stage, between the others and `application`. */
+export type StageName = (typeof STAGES_EIDNARA)[number] | (typeof STAGES_HOST)[number] | "fold";
 
 /**
  * `unavailable`: the evidence never existed for the agent. `failed`: it existed and this stage
@@ -186,16 +186,57 @@ export function injectedBlocks(text: string): Array<{ tag: string; body: string 
     return [...text.matchAll(INJECTED)].map((m) => ({ tag: m[1] as string, body: m[2] as string }));
 }
 
-/** The first group alternative each group finds in `text`, or null per group it misses. */
-export function findGroups(groups: string[][], text: string): Array<string | null> {
-    return groups.map((g) => g.find((alt) => alt.length > 0 && holds(text, alt)) ?? null);
+/** Quote-style and log-level words a P4 rule names, which ordinary prose also uses. */
+const RULE_WORDS = new Set(["single", "double", "trace", "debug", "info", "warn", "error"]);
+const escaped = (lit: string) => lit.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/**
+ * Whether `text` carries the literal `lit` as a value, not as part of another word. A number
+ * stands with no digit beside it. A quote-style or log-level word counts only inside its rule's
+ * wording (`double quotes`, `double-quoted`, `the info level`, `log at INFO`, `stays at debug`,
+ * `info!(`, `Level::INFO`), case-insensitively, so `single-shot`, `traced`, or `the error logs`
+ * carries nothing. Any other literal is a generated identifier, which
+ * the scenario uses as a stem (`OCHRE_IBIS_MAX`, `onYONDER_EGRET`, `AmberKoalaError`): it matches
+ * case-sensitively anywhere, so `AMBER_DINGO` is absent from `amber_dingo.ts`.
+ */
+export function carriesLiteral(text: string, lit: string): boolean {
+    if (/^\d+$/.test(lit)) return new RegExp(`(?<!\\d)${lit}(?!\\d)`).test(text);
+    const word = lit.toLowerCase();
+    if (RULE_WORDS.has(word)) {
+        const w = escaped(word);
+        const rule =
+            word === "single" || word === "double"
+                ? `(?<![\\w-])${w}[\\s-]+(?:\\w+\\s+)?quot(?:e|es|ed|ing|ation|ations)\\b`
+                : `(?<![\\w-])${w}[\\s-]+level\\b|\\b(?:level|at|to|as)\\s+(?:the\\s+)?${w}(?![\\w-])|\\b${w}!\\s*\\(|\\bLevel::${w.toUpperCase()}\\b`;
+        return new RegExp(rule, "i").test(text);
+    }
+    return text.includes(lit);
 }
 
-/** The 1-based line of `text` where the first found alternative first appears. */
+/** The first group alternative each group finds in `text`, or null per group it misses. */
+export function findGroups(groups: string[][], text: string): Array<string | null> {
+    return groups.map((g) => g.find((alt) => alt.length > 0 && carriesLiteral(text, alt)) ?? null);
+}
+
+/**
+ * The 1-based line of `text` where the first found alternative first appears: the first line that
+ * carries it, else the line where the whole text's match begins (rule wording can wrap).
+ */
 function rankOf(text: string, alts: string[]): number | null {
+    const found = alts.filter((a) => a.length > 0 && carriesLiteral(text, a));
+    if (found.length === 0) return null;
     const lines = text.split("\n");
-    const i = lines.findIndex((l) => alts.some((a) => a.length > 0 && holds(l, a)));
-    return i < 0 ? null : i + 1;
+    // The match completes on the first line whose prefix carries the literal, found by bisection,
+    // since a prefix that carries the literal keeps carrying it as it grows; a wrapped match
+    // ahead of a one-line repeat is therefore ranked first.
+    let lo = 1;
+    let hi = lines.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        const head = lines.slice(0, mid).join("\n");
+        if (found.some((a) => carriesLiteral(head, a))) hi = mid;
+        else lo = mid + 1;
+    }
+    return lo;
 }
 
 const callPointer = (c: HeldCall): Pointer => ({ path: "calls.jsonl", at: `seq ${c.seq}` });
@@ -312,13 +353,14 @@ function carries(ctx: Context, c: HeldCall, group: string[]): boolean {
     if (!intact) return false;
     return group.some((alt) => {
         if (alt.length === 0) return false;
-        if (alt.includes("\n")) {
+        // Rule wording can span two parts, so a rule word is searched in the rebuilt body.
+        if (alt.includes("\n") || RULE_WORDS.has(alt.toLowerCase())) {
             const b = rebuildRequest(ref, parts);
-            return b !== null && holds(bodyText(b), alt);
+            return b !== null && carriesLiteral(bodyText(b), alt);
         }
         return ref.parts.some((id) => {
             const t = ctx.partTexts.get(id, () => parts.get(id));
-            return t !== null && t.length > 0 && holds(t, alt);
+            return t !== null && t.length > 0 && carriesLiteral(t, alt);
         });
     });
 }
@@ -448,10 +490,10 @@ export function probeEvidence(
     });
     const absent = (gt.absent ?? []).filter((a) => a.length > 0);
     const forbiddenInContext = absent.filter((a) =>
-        turnTexts.some(({ t }) => t !== null && holds(scrub(t), a)),
+        turnTexts.some(({ t }) => t !== null && carriesLiteral(scrub(t), a)),
     );
     const staleInContext = stale.filter((s) =>
-        turnTexts.some(({ t }) => t !== null && holds(scrub(t), s)),
+        turnTexts.some(({ t }) => t !== null && carriesLiteral(scrub(t), s)),
     );
     const delivered = bodiesKept && present.length > 0 && whole !== undefined;
     const deliveryStage = (name: "delivery" | "context"): Stage => {
@@ -464,10 +506,15 @@ export function probeEvidence(
             };
         }
         if (present.length === 0) {
+            // An item that expects a rule applied has a rule to deliver; with no literal for it,
+            // its delivery goes unobserved rather than passing.
+            const ruled = gt.expect === "apply" || gt.expect === "resume";
             return {
                 stage: name,
-                status: "n/a",
-                reason: "the probe names no literal to deliver",
+                status: ruled ? "unobserved" : "n/a",
+                reason: ruled
+                    ? "the probe's rule has no literal to find in the probe context"
+                    : "the probe names no literal to deliver",
                 pointers: [],
                 detail: {
                     stale_in_context: staleInContext,
@@ -808,7 +855,7 @@ export function probeEvidence(
                     existsAt(o) &&
                     live(o) &&
                     inScope(o, project ?? "", scopes) === true &&
-                    stale.some((s) => holds(o.text, s)),
+                    stale.some((s) => carriesLiteral(o.text, s)),
             )
             .map((o) => o.id);
         if (eligible.every((h) => h.length > 0)) {
@@ -956,6 +1003,42 @@ export function probeEvidence(
         pointers: [gradePointer, { path: `${armName}/snapshots.jsonl`, at: grade.snapshot }],
     };
 
+    // P13 grades the folds in the item's range before the work after them: no fold sets the item
+    // aside, and a fold whose output-to-input token ratio is out of bounds fails the fold, not
+    // the application.
+    const metrics = grade.metrics ?? {};
+    const foldStage: Stage[] =
+        grade.probe_type !== "P13"
+            ? []
+            : grade.verdict === "excluded"
+              ? [
+                    {
+                        stage: "fold",
+                        status: "unavailable",
+                        reason: grade.reason ?? "no fold in the item's range",
+                        pointers: [gradePointer],
+                    },
+                ]
+              : [
+                    {
+                        stage: "fold",
+                        status:
+                            metrics["P13.ratio_in_bounds"] === false
+                                ? "failed"
+                                : metrics["P13.ratio_in_bounds"] === true
+                                  ? "ok"
+                                  : "unobserved",
+                        ...(metrics["P13.ratio_in_bounds"] === false
+                            ? {
+                                  reason: "a fold's output-to-input token ratio is outside p13_reduction_ratio",
+                              }
+                            : metrics["P13.ratio_in_bounds"] === true
+                              ? {}
+                              : { reason: "the grade records no fold ratio" }),
+                        pointers: [gradePointer],
+                        detail: { folds: metrics["P13.folds"] ?? null },
+                    },
+                ];
     const stages: Stage[] = memory
         ? [
               capturedSourceStage(),
@@ -963,9 +1046,10 @@ export function probeEvidence(
               eligibilityStage(),
               retrievalStage(),
               deliveryStage("delivery"),
+              ...foldStage,
               applicationStage,
           ]
-        : [sourceStage(), deliveryStage("context"), applicationStage];
+        : [sourceStage(), deliveryStage("context"), ...foldStage, applicationStage];
 
     const sessionRow = health.find((h) => h.arm === armName && h.session === session);
     const flagged =
@@ -1056,8 +1140,9 @@ export function probeEvidence(
 }
 
 /**
- * One cause per item. A flagged session wins over every stage; a literal in the probe context
- * makes the item an application failure; otherwise the first stage that did not hold.
+ * One cause per item. A flagged session wins over every stage; a failed P13 fold comes next; a
+ * literal in the probe context makes the item an application failure; otherwise the first stage
+ * that did not hold.
  */
 export function attribute(
     stages: Stage[],
@@ -1071,9 +1156,12 @@ export function attribute(
 ): ProbeEvidence["attributed"] {
     const at = (name: StageName) => stages.find((s) => s.stage === name);
     if (o.verdict === "excluded") {
-        // An item set aside because its evidence never existed (a P12 check that never ran)
-        // names that stage; any other exclusion stays the grader's.
-        const missing = stages.find((s) => s.status === "unavailable");
+        // An item set aside because its evidence never existed (a P12 check that never ran, a
+        // P13 range with no fold) names that stage, the grader's own fold reason first; any other
+        // exclusion stays the grader's.
+        const fold = at("fold");
+        const missing =
+            fold?.status === "unavailable" ? fold : stages.find((s) => s.status === "unavailable");
         if (missing)
             return { cause: missing.stage, status: "unavailable", reason: missing.reason ?? "" };
         const app = at("application") as Stage;
@@ -1101,6 +1189,10 @@ export function attribute(
             status: "failed",
             reason: "a superseded value reached the probe context and the current one did not",
         };
+    }
+    const fold = at("fold");
+    if (fold?.status === "failed") {
+        return { cause: "fold", status: "failed", reason: fold.reason ?? "fold failed" };
     }
     if (o.delivered) {
         const app = at("application") as Stage;
