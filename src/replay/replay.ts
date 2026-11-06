@@ -808,6 +808,7 @@ async function replayInto(
                       grader: source.grade.grader ?? null,
                   }
                 : null,
+            grade_error: source.gradeError,
         },
         arm: source.arm,
         item: source.probe.id,

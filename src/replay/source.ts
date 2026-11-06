@@ -45,6 +45,7 @@ export interface ProbeSource {
     /** Sessions opened after the probe's session, in scenario order. */
     laterSessions: string[];
     grade: GradeRecord | null;
+    gradeError: string | null;
 }
 
 const json = <T>(path: string): T => JSON.parse(readFileSync(path, "utf8")) as T;
@@ -132,9 +133,16 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
         .filter((e) => e.kind === "session_start")
         .map((e) => e.session);
     const gradesPath = join(root, "grades.jsonl");
-    const grade = existsSync(gradesPath)
-        ? (new GradeLog(gradesPath).latest().find((g) => g.item === item && g.arm === arm) ?? null)
-        : null;
+    let grade: GradeRecord | null = null;
+    let gradeError: string | null = null;
+    try {
+        grade = existsSync(gradesPath)
+            ? (new GradeLog(gradesPath).latest().find((g) => g.item === item && g.arm === arm) ??
+              null)
+            : null;
+    } catch (caught) {
+        gradeError = (caught as Error).message;
+    }
     const launcher = (manifest.preflight as { launcher?: unknown } | undefined)?.launcher;
     if (typeof launcher !== "string") throw new Error("the manifest records no preflight launcher");
     return {
@@ -156,6 +164,7 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
         calls,
         laterSessions,
         grade,
+        gradeError,
     };
 }
 
