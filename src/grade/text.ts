@@ -151,11 +151,15 @@ const ABSENCE =
     /\b(?:nothing|nobody|none of|neither|no (?:process|file|commit|config\w*|reference|record|match\w*|mention))\b|\b(?:does|do|did|is|are|was|were)(?:n['\u2019]?t| not)\s+(?:[\w-]+\s+){0,2}?(?:mention|appear|contain|define|set|reference|listen|serve|answer|exist|include|record|show|open|running)\w*|\bnot (?:in|set|defined|mentioned|referenced|listening|found|open|running)\b/i;
 /** Wording that still turns a value down inside an absence clause, a prohibition included. */
 const REJECTS =
-    /\b(?:replac\w*|supersed\w*|retired|outdated|out of date|stale|deprecated|obsolete|wrong|invalid|incorrect|typo|avoid\w*)\b|\b(?:don['\u2019]?t|do not|never|shouldn['\u2019]?t|should not|must not|mustn['\u2019]?t)\s+(?:be\s+)?(?:use|pick|choose|point|rely|trust)\w*/i;
+    /\b(?:replac\w*|supersed\w*|retired|outdated|out of date|stale|deprecated|obsolete|wrong|invalid|incorrect|typo|avoid\w*)\b|\b(?:don['\u2019]?t|do not|never|shouldn['\u2019]?t|should not|must not|mustn['\u2019]?t|is not to be|isn['\u2019]?t to be|cannot be|can['\u2019]?t be)\s+(?:be\s+)?(?:use|pick|choose|point|rely|trust)\w*/i;
 /** Wording that lists values together as all absent: `neither X nor Y`, `on either X or Y`. */
 const LISTED = /\bneither\b[^,]*\bnor\b|\beither\b[^,]*\bor\b|\bboth\b/i;
-/** Where one clause ends and another begins: `;`, `:`, or a comma before a conjunction. */
-const CLAUSE_BREAK = /[;:]|,\s*(?:but|yet|though|although|and|or|so|while|whereas)\b/g;
+/**
+ * Where one clause ends and another begins: `;`, `:`, a comma before a conjunction, or a `nor`
+ * that opens a clause of its own (`nor can I tell`); `neither X nor Y` stays one clause.
+ */
+const CLAUSE_BREAK =
+    /[;:]|,\s*(?:but|yet|though|although|and|or|so|while|whereas)\b|,?\s*\bnor\s+(?=(?:can|could|do|does|did|will|would|should|is|are|was|were|have|has|had|am|I)\b)/g;
 /** The offer to revise a remembered value: `If X is no longer right, tell me the new one`. */
 const REVISION_OFFER =
     /^if\b[^.?!]*\b(?:no longer|isn['\u2019]?t|is not|not)\b[^.?!]*\b(?:right|current|valid|correct|accurate)\b[^.?!]*\b(?:tell me|let me know)\b[^.?!]*[.?!]*$/i;

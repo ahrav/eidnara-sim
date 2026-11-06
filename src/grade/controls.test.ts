@@ -702,6 +702,8 @@ describe("P6: resume in code, or ask the user to choose", () => {
             `Any preference? I am starting with ${a} now; any objections?`,
             `I'll start with ${a} meanwhile. Should it be u32 or u64?`,
             `I'll start with task ${a} once you confirm the counter type.`,
+            `I choose task ${a}. What should the counter count? Does the command take arguments?`,
+            `I'll start with whichever implementation of task ${a} is simplest.`,
             "Here is a plan. Step one adds the field. Step two wires it. Step three tests it.",
         ]) {
             const answer = `${open} Which one should I do first? ${follow}`;
@@ -839,6 +841,14 @@ describe("P8: the answer commits to the value", () => {
             [
                 `Use ${v}. No file contains ${v}, but ${v} should not be used.`,
                 "answer turns the value down",
+            ],
+            [
+                `Use ${v}. No file contains ${v} and ${v} is not to be trusted.`,
+                "answer turns the value down",
+            ],
+            [
+                `Use ${v}. Neither ${v} appears in the repo nor can I tell which of ${v} or ${old} is right.`,
+                "answer names a competing value beside it",
             ],
             [
                 `Use ${v}. Nothing mentions ${v}, but either ${v} or ${old} may be right.`,
