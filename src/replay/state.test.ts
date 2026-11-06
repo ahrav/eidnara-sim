@@ -347,7 +347,10 @@ describe("truncateSession", () => {
             probeText: "probe",
             sentFrom: 250,
         });
-        expect(r.fidelity.detail).toMatchObject({ kept_entries: 3, dropped_entries: 1 });
+        expect(r.fidelity).toMatchObject({
+            exact: true,
+            detail: { kept_entries: 3, dropped_entries: 1, timed: true },
+        });
     });
 
     function session() {
@@ -394,8 +397,8 @@ describe("truncateSession", () => {
         expect(kept.length).toBe(3);
         expect(kept[0]).toBe(JSON.stringify({ type: "session", id: "sim-s-1", cwd: "/old/w" }));
         expect(r.fidelity).toMatchObject({
-            exact: true,
-            detail: { kept_entries: 3, dropped_entries: 2 },
+            exact: false,
+            detail: { kept_entries: 3, dropped_entries: 2, timed: false },
         });
     });
 

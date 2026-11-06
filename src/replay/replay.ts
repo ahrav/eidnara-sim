@@ -256,6 +256,9 @@ export function identityDrift(
     if (!same(arms(m.arms), arms(current.arms))) drift.push(`arms.${source.arm}`);
     if (!source.manifest.models.includes(String(current.agent_model))) drift.push("agent_model");
     if (m.sim_worktree !== CLEAN_WORKTREE) drift.push("sim_worktree");
+    if (current.sim_worktree !== undefined && current.sim_worktree !== CLEAN_WORKTREE) {
+        drift.push("sim:worktree");
+    }
     const changed = simPathsChanged(String(m.sim_commit), root);
     if (changed === null) drift.push("sim_commit");
     else drift.push(...changed.map((p) => `sim:${p}`));
@@ -409,6 +412,7 @@ function prepareRepeat(o: {
     pathMode: PathMode;
     tree: { id: string; fidelity: Fidelity };
     model: number;
+    gitTimeoutMs: number;
 }): Record<string, Fidelity> {
     const { source } = o;
     const from = join(source.dir, source.arm);
@@ -418,6 +422,8 @@ function prepareRepeat(o: {
     requireRealDir(join(o.armDir, "snapshot.git"), o.armDir);
     trustSnapshotGit(join(o.armDir, "snapshot.git"));
     for (const f of readdirSync(from).filter((f) => f.endsWith(".gitconfig"))) {
+        if (!lstatSync(join(from, f)).isFile())
+            throw new Error(`${join(from, f)} is not a regular file`);
         copyFileSync(join(from, f), join(o.armDir, f));
     }
     const state = json<Record<string, unknown>>(join(from, "snapshot-state.json"));
@@ -428,7 +434,7 @@ function prepareRepeat(o: {
     const workspace = join(o.armDir, "r", "workspaces", source.project);
     copyTree(join(from, "r", "workspaces", source.project), workspace);
     requireInside(workspace, o.armDir);
-    const recorder = new SnapshotRecorder(o.armDir, source.arm, () => []);
+    const recorder = new SnapshotRecorder(o.armDir, source.arm, () => [], o.gitTimeoutMs);
     const copied = recorder.tree(workspace);
     checkoutTree({
         gitDir: join(o.armDir, "snapshot.git"),
@@ -529,7 +535,7 @@ function gradeRepeat(
         const failing = Object.entries(grade.metrics)
             .filter(([, v]) => v === false)
             .map(([k]) => k);
-        return { grade, verdict: grade.verdict, reason: failing.join(", ") };
+        return { grade, verdict: grade.verdict, reason: grade.reason ?? failing.join(", ") };
     } catch (caught) {
         if (!(caught instanceof GradeRefused)) throw caught;
         return { grade: null, verdict: "refused", reason: caught.message };
@@ -696,6 +702,15 @@ function refuseUnreplayable(source: ProbeSource, variant: string): void {
     if (faulted.length > 0) {
         const refs = [...new Set(faulted.map((c) => c.fault_ref))].join(", ");
         throw new Error(`the probe turn ran under proxy faults (${refs}), and replay runs none`);
+    }
+    const SESSION_BOUND = new Set(["two_hosts_one_daemon", "store_full"]);
+    const types = new Map(sourceFaults(source).map((f) => [f.id, f.type]));
+    const bound = sessionFaults(source).filter((f) =>
+        SESSION_BOUND.has(String(types.get(String(f.fault)))),
+    );
+    if (bound.length > 0) {
+        const ids = bound.map((f) => String(f.fault)).join(", ");
+        throw new Error(`the probe session ran under ${ids}, whose state replay does not rebuild`);
     }
     const inTurn = source.journal.filter(
         (e) =>
@@ -962,6 +977,7 @@ async function replayInto(
                 pathMode,
                 tree: { id: found.tree, fidelity: found.fidelity },
                 model,
+                gitTimeoutMs: prereg.liveness_bounds.turn_deadline_ms,
             });
             const record = `${JSON.stringify(fidelity, null, 2)}\n`;
             writeFileSync(join(repeatDir, "fidelity.json"), record);

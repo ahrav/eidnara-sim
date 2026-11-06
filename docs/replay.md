@@ -28,13 +28,15 @@ nor an A/A control label (`<arm>~<tag>`), a P7 item (judged across two arms), a
 P14 item (no probe turn), a probe turn that did not end `ok`, a probe
 snapshot row that is missing, repeated, fails the grader's artefact check,
 or names another arm, item, turn, session, or outcome, a run whose
-journal holds no `EndRun`, a manifest that is not `sim-run-manifest/v3`, a
+journal holds no `EndRun`, a manifest that is not `sim-run-manifest/v3` or lacks a valid base wall
+time, context limit, model list, order, or price table, a
 `scenario.json` that does not hash to the manifest's `scenario_hash` or names
 another tier or seed, a journal with no `ClockOffset` before the probe, an
 arm whose `capabilities.json` fails grade-run's capability check, an
 `eidnara-cf` arm (its grades depend on run-level deletion checks), an arm
 that kept its store on `store.img`, a probe turn whose calls carry a proxy
-fault or during which a fault fired, a `host_upgrade` fired on the arm before
+fault or during which a fault fired, a probe session that ran under
+`two_hosts_one_daemon` or `store_full`, a `host_upgrade` fired on the arm before
 the probe, a project name that is not a plain name, a recorded run directory
 that is `/`, overlaps the Eidnara checkout, or holds this checkout, and
 variant `e` on the `host-oracle` arm, which already delivers the note.
@@ -80,14 +82,16 @@ truth, and both notes), so two replays with one digest applied one rewrite.
 Each repeat rebuilds the arm directory from the source run. `fidelity.json`
 in the repeat directory records how each piece was rebuilt and whether it is
 exact. Copied trees are checked to resolve inside the repeat's arm directory
-before the replay deletes or rewrites anything beneath them.
+before the replay deletes or rewrites anything beneath them, each copied
+`<project>.gitconfig` must be a regular file, and the recorder that indexes
+the copied workspace runs git under the turn deadline.
 
 | Piece | Reconstruction | Fidelity |
 |---|---|---|
 | Workspace tree | The arm's `snapshot.git` keeps every tree the recorder wrote as a loose object whose modification time is its last write, and a `write-tree` over an unchanged index returns the tree its previous write left newest. The root tree the journal places in a session of the probe's project (the first `Event` or `EndTurn` at or after the write) and written last before the probe turn's first agent call is the probe's start tree. The probe's recorded turn diff must apply to it; when it does not, up to 200 of the project's other root trees are tried nearest in time first. | never `exact`: `latest-write+patch-check` names a tree the turn diff applies to, `latest-write` (empty turn diff) rests on the write-time rule alone, and `patch-search` names a tree the time rule did not pick |
 | Workspace files | The source workspace is copied with reflinks, the recorder writes its tree, and a two-tree `read-tree -m -u` moves the files to the start tree; ignored files (build outputs) stay as copied. The recorder then writes the tree again, and `exact` holds when it equals the start tree. | exact for tracked files; ignored files come from the end of the run |
 | Workspace git | The branch moves to the newest first-parent commit of the final head from before the probe, and the index resets to it. A harness commit (`sim-user`) whose date and message match an `apply_diff` event of the project counts by that event's place in the scenario; every other commit counts by its commit time against the probe's scenario instant. Git runs with the arm's baseline `<project>.gitconfig` in place of the repository config, hooks and fsmonitor off, and replace refs ignored, and refuses a `.git` that is a link or carries `commondir`, `gitdir`, or alternates. The reflogs and `ORIG_HEAD` are removed, so only refs reach later commits. | `exact` when every other ref is a remote-tracking ref or a branch the new head already contains, and the repository config and hooks equal the clone's baseline; a branch that reaches a later commit or a stash keeps its final value and is listed under `other_refs`, a changed config under `config_matches_baseline: false`, and installed hooks under `hooks`; `agent_commits_kept` counts agent commits before the probe |
-| Pi transcript | Every session entry before the probe's user message, unchanged, at the same path under the agent directory: the first user message that carries the probe text and was sent no earlier than two seconds before `BeginTurn` on the daemon's clock. | exact in `source` path mode |
+| Pi transcript | Every session entry before the probe's user message, unchanged, at the same path under the agent directory: the first user message that carries the probe text and was sent no earlier than two seconds before `BeginTurn` on the daemon's clock. | exact in `source` path mode when the probe message carries a send time (`timed`) |
 | Eidnara store | The arm's data directory is copied and rolled back to the probe. The Kernel versions its rows by commit: rows a commit after the last one recorded before `BeginTurn` (on the daemon's clock) created are deleted, a later invalidation or supersession is undone, and projection and consumer cursors move back to that commit. The guard triggers (the `BEFORE` triggers that raise) are dropped for the rollback and recreated from their recorded SQL, so the schema digest the daemon checks is unchanged, while the maintenance triggers keep firing for each delete. A commit column without a rule refuses the replay. The memory store keeps session working state without history, so rows of the probe's session and of every later session go and rows created after the probe go; a commit column there other than the capture job's refuses the replay. Rows `foreign_key_check` then reports in either database are deleted until it reports none. | not exact. The daemon rebuilds the probe session's working state from the transcript the host sends, so on an arm with Eidnara compaction a mid-session probe's request carries a fresh fold of the history. A capture job committed after the probe stays terminal, since Eidnara clears a job's text when it commits, and its memories are gone with the rollback (`capture_jobs_committed_after_probe`). Memory-store rows without a session or creation time keep their final values, and any other SQLite file under the data directory is listed under `untouched` |
 | Clock | The arm's clock offset targets the scenario time of the source turn's `BeginTurn` when the daemon starts. | `clock_lag_ms` in each result is how far the clock had run when the turn's first agent call reached the proxy |
 | Arm configuration | The driver derives the profile, `eidnara.jsonc`, and daemon config from the arm label, and the identity check compares them with the manifest's `arms` entry. | exact when the check passes |
@@ -134,7 +138,8 @@ the source manifest with this environment: `eidnara_commit`,
 `bedrock.region`, the probe project's corpus checkout, the arm's `arms`
 entry, the agent model, the preflight's interception results and host
 versions, and the sim tree. The sim check names `sim_worktree` when the
-source run was recorded from a tree with uncommitted content, and lists each
+source run was recorded from a tree with uncommitted content, `sim:worktree`
+when this checkout has uncommitted content, and lists each
 path in `REPLAY_PATHS` that differs between the source run's `sim_commit`
 and this working tree, or `sim_commit` when that commit is no ancestor of
 this checkout. `REPLAY_PATHS` is `MEASUREMENT_PATHS` without the scenario
@@ -167,8 +172,8 @@ commit and working-tree digest, the Eidnara commit and working-tree digest,
 the grader digest, the identity check, the chosen workspace tree, the model
 index, the session's fault firings, the clock targets, and the preflight.
 
-Each result holds the verdict, the reason (the grade's false metrics, then
-any failure), the grade record, the cost priced at the source run's price
+Each result holds the verdict, the reason (the grader's reason, or the
+grade's false metrics when it gives none, then any failure), the grade record, the cost priced at the source run's price
 table in total (`cost_usd`, every call the repeat's proxy saw, session open
 included), for the probe turn's own calls (`cost_turn_usd`), and per
 component, the prompt latency, the agent call count, each call's request

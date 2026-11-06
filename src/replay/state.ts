@@ -344,6 +344,9 @@ export function truncateSession(o: {
         );
     });
     if (cut < 0) throw new Error(`${from} holds no user message with the probe text`);
+    const timed =
+        typeof (JSON.parse(lines[cut] as string) as { message?: { timestamp?: unknown } }).message
+            ?.timestamp === "number" && o.sentFrom !== undefined;
     const kept = lines.slice(0, cut);
     let to = join(o.toAgentDir, from.slice(o.fromAgentDir.length));
     if (o.cwd !== undefined) {
@@ -358,11 +361,12 @@ export function truncateSession(o: {
         path: to,
         fidelity: {
             method: "prefix-before-probe-message",
-            exact: o.cwd === undefined,
+            exact: o.cwd === undefined && timed,
             detail: {
                 file: basename(from),
                 kept_entries: kept.length,
                 dropped_entries: lines.filter(Boolean).length - kept.length,
+                timed,
                 ...(o.cwd === undefined ? {} : { cwd: o.cwd }),
             },
         },

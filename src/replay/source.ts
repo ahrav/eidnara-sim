@@ -63,12 +63,42 @@ function matchingLines<T>(path: string, needle: string, keep: (row: T) => boolea
     return out;
 }
 
+function offsetSeconds(entry: Entry): number {
+    const s = entry.offset_s;
+    if (typeof s !== "number" || !Number.isSafeInteger(s)) {
+        throw new Error(`ClockOffset ${entry.seq} holds no whole-second offset`);
+    }
+    return s;
+}
+
 export function loadProbeSource(dir: string, arm: string, item: string): ProbeSource {
     const root = realpathSync(dir);
     const manifest = json<ProbeSource["manifest"]>(join(root, "manifest.json"));
     if (manifest.schema !== MANIFEST_SCHEMA) {
         throw new Error(`manifest.json is ${String(manifest.schema)}, not ${MANIFEST_SCHEMA}`);
     }
+    const rates = Object.values(manifest.price_table?.rates ?? {});
+    const fields: [string, boolean][] = [
+        ["base_wall_ms", Number.isSafeInteger(manifest.base_wall_ms)],
+        [
+            "context_limit",
+            Number.isSafeInteger(manifest.context_limit) && manifest.context_limit > 0,
+        ],
+        [
+            "models",
+            Array.isArray(manifest.models) &&
+                manifest.models.length > 0 &&
+                manifest.models.every((m) => typeof m === "string" && m.length > 0),
+        ],
+        [
+            "price_table",
+            rates.length === 4 &&
+                rates.every((r) => typeof r === "number" && Number.isFinite(r) && r >= 0),
+        ],
+        ["order", Array.isArray(manifest.order)],
+    ];
+    const bad = fields.filter(([, ok]) => !ok).map(([k]) => k);
+    if (bad.length > 0) throw new Error(`manifest.json holds no valid ${bad.join(", ")}`);
     const base = arm.split("~")[0] as string;
     if (!isArmName(base) || (arm !== base && !CONTROL_LABEL.test(arm))) {
         throw new Error(`arm ${JSON.stringify(arm)} is not an arm or control label`);
@@ -179,7 +209,7 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
         project,
         begin,
         end,
-        offsetS: Number(offset.offset_s),
+        offsetS: offsetSeconds(offset),
         firstCallWall: firstAgent?.started_wall_ms ?? end.wall_ms,
         snapshot,
         calls,
