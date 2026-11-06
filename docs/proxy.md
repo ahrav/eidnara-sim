@@ -26,15 +26,15 @@ seed to one backoff sequence.
 
 `RecordWriter` appends one record per request to a JSONL file and keeps them
 in memory unless `retain: false`, which a run-long writer passes since its
-records live on disk and in the run's call index. The journal opens with
+records live on disk and in the run's per-session call views. The journal opens with
 `O_NOFOLLOW` on the normalized path after checking that its parent directory
 resolves without a link, so a symlink in any component or anything other than
 a regular file is refused. A fresh journal is created exclusively, so an
 existing path is refused; `resume: true`, which the run's call log and the
 grader's judge log pass, reopens an existing journal, drops a line a kill cut
 mid-append, and continues the sequence after the last complete record; it
-refuses a last complete line that is not a valid record. The run's call index
-reads every complete line of a resumed call log and refuses one with a missing
+refuses a last complete line that is not a valid record. The run's call-log reader
+(`readCallLog`) reads every complete line of a resumed call log and refuses one with a missing
 field or a `seq` other than its position. A
 record enters memory only after its line reached the file. A
 failed append is truncated back to the bytes that reached the file, and when
@@ -219,7 +219,7 @@ persisted, fed in `restoreOrder`: arrival order, with request start and then
 `seq` for records written without an arrival ordinal. Each restored injection
 is witnessed by the first later agent call of its arm that started within the
 window on the wall clock both records carry. The run collects only the fields
-the witnesses need while its call index reads the log, so the records' text
+the witnesses need while `readCallLog` reads the log, so the records' text
 stays on disk. A resumed run therefore reports a fault that fired before a
 hard kill (its `armed` bit also comes from the journal's `FaultFired` entries
 through `armedBefore`, so an armed episode whose target never called the proxy
