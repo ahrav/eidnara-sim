@@ -33,7 +33,7 @@ import {
     requestRef,
     type StoreObject,
 } from "./load";
-import { armAnswers, armComparison } from "./report";
+import { armAnswers, armComparison, renderEvidence } from "./report";
 import {
     bodyText,
     carriesLiteral,
@@ -896,6 +896,7 @@ describe("answer markers and content filtering", () => {
                 agent("e-5", "\u00a7230\u00a7 I reran the tests"),
                 agent("e-6", ""),
                 agent("e-6", "Done, see <project-memory> notes"),
+                agent("e-7", "\u00a79\u00a7 draft"),
                 agent("e-7", "plain answer"),
                 { ...agent("e-8", ""), finish_reason: "content_filtered" },
                 {
@@ -905,7 +906,10 @@ describe("answer markers and content filtering", () => {
                     finish_reason: "content_filtered",
                 },
             ],
-            answers: new Map([["s-2", ["I reran the tests", "Done", "plain answer", ""]]]),
+            answers: new Map([
+                ["s-1", []],
+                ["s-2", ["I reran the tests", "Done", "plain answer", ""]],
+            ]),
         });
         const h = sessionHealth(r).find((x) => x.session === "s-2");
         expect(h).toMatchObject({
@@ -920,9 +924,37 @@ describe("answer markers and content filtering", () => {
             answers_streamed: 3,
             marker_answers_streamed: 2,
         });
-        // A host whose transcript is unread reports no persisted count.
+        // A host whose transcript is unread, or a session without its transcript file, reports no
+        // persisted count, and the arm's total is unread with it.
         const unread = sessionHealth(build({ arm: "eidnara", calls: [agent("e-5", "x")] }));
         expect(unread.find((x) => x.session === "s-2")?.answers_persisted).toBeNull();
+        const fileless = sessionHealth(
+            build({ arm: "eidnara", calls: [agent("e-5", "x")], answers: new Map() }),
+        );
+        expect(fileless.find((x) => x.session === "s-2")?.answers_persisted).toBeNull();
+        expect(armAnswers(fileless).get("eidnara")?.answers_persisted).toBeNull();
+        // A second client's session, which the scenario does not declare, counts no persisted
+        // answer beside its streamed ones.
+        const second = sessionHealth(
+            build({
+                arm: "eidnara",
+                calls: [{ ...agent("e-5", "x"), session: "s-2-b", turn: null }],
+                answers: new Map([["s-2-b", ["prompted"]]]),
+            }),
+        );
+        expect(second.find((x) => x.session === "s-2-b")).toMatchObject({
+            answers_streamed: 0,
+            answers_persisted: 0,
+        });
+        // The report gives each arm's shares, and an unread transcript as such.
+        const table = (sessions: typeof unread) =>
+            renderEvidence([{ name: "R", run: r, probes: [], sessions }])
+                .split("\n")
+                .filter((l) => l.startsWith("| R | eidnara |") && l.split("|").length === 10);
+        expect(table(sessionHealth(r))).toEqual([
+            "| R | eidnara | 3 | 2 (66.7%) | 3 | 0 (0.0%) | 2 | 1 |",
+        ]);
+        expect(table(unread)).toEqual(["| R | eidnara | 1 | 0 (0.0%) | not read |  | 0 | 0 |"]);
     });
 
     test("the marker matches Eidnara's block tags and injected block names alone", () => {
@@ -930,10 +962,17 @@ describe("answer markers and content filtering", () => {
             "\u00a712\u00a7 hi",
             "a <session-history-since> b",
             "</packed-context>",
+            "<memory-updates>",
         ]) {
             expect(EIDNARA_MARKER.test(text)).toBe(true);
         }
-        for (const text of ["\u00a7 section", "<project-memo>", "price \u00a73"]) {
+        for (const text of [
+            "\u00a7 section",
+            "<project-memo>",
+            "price \u00a73",
+            "<project-memory-backup>",
+            "<session-history-summary>",
+        ]) {
             expect(EIDNARA_MARKER.test(text)).toBe(false);
         }
     });
@@ -955,11 +994,14 @@ describe("answer markers and content filtering", () => {
                 message("assistant", [{ type: "thinking", thinking: "" }, text("all done")]),
                 message("user", [text("again")]),
                 message("assistant", [{ type: "toolCall", name: "bash" }]),
-            ].join("\n"),
+            ]
+                .map((l) => `${l}\n`)
+                .join(""),
         );
         writeFileSync(
             join(project, "2026-01-01T01-00-00-000Z_sim-s-1.jsonl"),
-            `${message("user", [text("resumed")])}\n${message("assistant", [text("back")])}\n`,
+            // The last record lacks its newline, as a cut append leaves a complete one.
+            `${message("user", [text("resumed")])}\n${message("assistant", [text("back")])}`,
         );
         expect(readPiAnswers(dir)).toEqual(new Map([["s-1", ["all done", "", "back"]]]));
         expect(readPiAnswers(join(dir, "absent"))).toBeNull();

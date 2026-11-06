@@ -1,6 +1,14 @@
 import { Database } from "bun:sqlite";
-import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import {
+    closeSync,
+    existsSync,
+    lstatSync,
+    openSync,
+    readdirSync,
+    readFileSync,
+    readSync,
+} from "node:fs";
+import { basename, join, relative } from "node:path";
 import { GradeRefused } from "../grade/artefacts";
 import { GradeLog, type GradeRecord } from "../grade/probes";
 import { armBase, CONTROL_LABEL, requireOrder } from "../hosts/arms";
@@ -151,58 +159,62 @@ function readJsonFile<T>(path: string): T | null {
 
 /** Pi's session transcripts under the arm's home: every tool result keyed by its call id. */
 export function readPiTranscripts(sessionsDir: string): Map<string, TranscriptResult> | null {
-    const stat = lstatSync(sessionsDir, { throwIfNoEntry: false });
-    if (!stat?.isDirectory()) return null;
+    const files = piSessionFiles(sessionsDir);
+    if (!files) return null;
     const out = new Map<string, TranscriptResult>();
-    const walk = (dir: string, depth: number) => {
-        for (const name of readdirSync(dir).sort()) {
-            const path = join(dir, name);
-            const s = lstatSync(path, { throwIfNoEntry: false });
-            if (s?.isDirectory() && depth > 0) walk(path, depth - 1);
-            if (!s?.isFile() || !name.endsWith(".jsonl")) continue;
-            for (const line of readFileSync(path, "utf8").split("\n")) {
-                if (!line.includes('"toolResult"')) continue;
-                let entry: { message?: Record<string, unknown> };
-                try {
-                    entry = JSON.parse(line);
-                } catch {
-                    continue;
-                }
-                const m = entry.message;
-                if (m?.role !== "toolResult" || typeof m.toolCallId !== "string") continue;
-                // Retrieval reads Eidnara's own tools only; other results stay unread.
-                if (typeof m.toolName !== "string" || !m.toolName.startsWith("eidnara_")) continue;
-                const text = (Array.isArray(m.content) ? m.content : [])
-                    .map((c: { text?: unknown }) => (typeof c?.text === "string" ? c.text : ""))
-                    .join("\n");
-                out.set(m.toolCallId, {
-                    file: path,
-                    toolCallId: m.toolCallId,
-                    toolName: typeof m.toolName === "string" ? m.toolName : "",
-                    text,
-                    isError: m.isError === true,
-                });
+    for (const path of files) {
+        for (const line of readFileSync(path, "utf8").split("\n")) {
+            if (!line.includes('"toolResult"')) continue;
+            let entry: { message?: Record<string, unknown> };
+            try {
+                entry = JSON.parse(line);
+            } catch {
+                continue;
             }
+            const m = entry.message;
+            if (m?.role !== "toolResult" || typeof m.toolCallId !== "string") continue;
+            // Retrieval reads Eidnara's own tools only; other results stay unread.
+            if (typeof m.toolName !== "string" || !m.toolName.startsWith("eidnara_")) continue;
+            const text = (Array.isArray(m.content) ? m.content : [])
+                .map((c: { text?: unknown }) => (typeof c?.text === "string" ? c.text : ""))
+                .join("\n");
+            out.set(m.toolCallId, {
+                file: path,
+                toolCallId: m.toolCallId,
+                toolName: typeof m.toolName === "string" ? m.toolName : "",
+                text,
+                isError: m.isError === true,
+            });
         }
-    };
-    walk(sessionsDir, 2);
+    }
     return out;
 }
 
-export function readPiAnswers(sessionsDir: string): Map<string, string[]> | null {
+/** The `.jsonl` files two levels under Pi's sessions directory, in walk order; null when it is absent. */
+function piSessionFiles(sessionsDir: string): string[] | null {
     const stat = lstatSync(sessionsDir, { throwIfNoEntry: false });
     if (!stat?.isDirectory()) return null;
-    const files: Array<{ session: string; path: string; name: string }> = [];
+    const files: string[] = [];
     const walk = (dir: string, depth: number) => {
         for (const name of readdirSync(dir).sort()) {
             const path = join(dir, name);
             const s = lstatSync(path, { throwIfNoEntry: false });
             if (s?.isDirectory() && depth > 0) walk(path, depth - 1);
-            const session = /_sim-(.+)\.jsonl$/.exec(name)?.[1];
-            if (s?.isFile() && session) files.push({ session, path, name });
+            if (s?.isFile() && name.endsWith(".jsonl")) files.push(path);
         }
     };
     walk(sessionsDir, 2);
+    return files;
+}
+
+export function readPiAnswers(sessionsDir: string): Map<string, string[]> | null {
+    const listed = piSessionFiles(sessionsDir);
+    if (!listed) return null;
+    const files = listed.flatMap((path) => {
+        const name = basename(path);
+        const session = /_sim-(.+)\.jsonl$/.exec(name)?.[1];
+        return session ? [{ session, path, name }] : [];
+    });
     const out = new Map<string, string[]>();
     for (const f of files.sort((a, b) => (a.name < b.name ? -1 : 1))) {
         const answers = out.get(f.session) ?? [];
@@ -211,7 +223,7 @@ export function readPiAnswers(sessionsDir: string): Map<string, string[]> | null
         const close = () => {
             if (open) answers.push(answer);
         };
-        eachLine(f.path, (line) => {
+        const visit = (line: Buffer) => {
             if (!line.includes('"role":"user"') && !line.includes('"role":"assistant"')) return;
             let entry: { type?: unknown; message?: { role?: unknown; content?: unknown } };
             try {
@@ -232,7 +244,19 @@ export function readPiAnswers(sessionsDir: string): Map<string, string[]> | null
                     .join("");
                 if (text.trim() !== "") answer = text;
             }
-        });
+        };
+        // Pi's loader also reads a complete record that lacks its final newline.
+        const scan = eachLine(f.path, visit);
+        if (scan.tail > 0) {
+            const fd = openSync(f.path, "r");
+            try {
+                const tail = Buffer.alloc(scan.tail);
+                readSync(fd, tail, 0, scan.tail, scan.complete);
+                visit(tail);
+            } finally {
+                closeSync(fd);
+            }
+        }
         close();
         out.set(f.session, answers);
     }

@@ -121,23 +121,31 @@ session's row reports whether it holds a `native_compaction` record
 
 Each row also counts the session's answers that carry an Eidnara marker:
 the `§<n>§` block tag the transform prefixes to every text block it tags,
-or the tag of a block Eidnara injects (`project-memory`, `session-history`,
-`session-history-since`, `eidnara-search-hint`, `eidnara-search-auto`,
-`packed-context`), as `EIDNARA_MARKER` in `src/evidence/health.ts` matches
-them. A turn's answer is its final text, counted two ways:
+or the opening or closing tag of a block Eidnara injects (`project-memory`,
+`session-history`, `session-history-since`, `eidnara-search-hint`,
+`eidnara-search-auto`, `packed-context`, `memory-updates`, `new-notes`,
+`covered-system-messages`, `project-docs`, `new-history_segments`), as
+`EIDNARA_MARKER` in `src/evidence/health.ts` matches them. A turn's answer is its final text, counted two ways:
 
 - `answers_streamed` and `marker_answers_streamed`: the last agent call of
   the turn with text, as the proxy relayed the provider stream
-  (`calls.jsonl` `response_text`). Graders read this text, the user
-  simulator receives it, and a live UI may show it while streaming.
+  (`calls.jsonl` `response_text`, its first 262,144 characters). Graders
+  read their answers from this stream (the last completed agent response),
+  the user simulator receives its replies from it, and a live UI may show
+  it while streaming.
 - `answers_persisted` and `marker_answers_persisted`: the turn's last
   assistant message with text in the host transcript, what the user keeps.
   On Pi it comes from `<arm>/r/home/.pi/agent/sessions/**/<time>_sim-<session>.jsonl`
-  (`readPiAnswers`), where a user message opens a turn. On a host whose
-  transcript this harness does not read (OpenCode), both are `null`.
+  (`readPiAnswers`), where a user message opens a turn and a complete last
+  record without its newline is read too. On a host whose transcript this
+  harness does not read (OpenCode), or for a declared session with no
+  transcript file, both are `null`, and so is the arm's total in the report;
+  a session the scenario does not declare (a second client's `-b` session)
+  counts 0 on both sides.
 
 The Pi plugin rewrites a leading tag out of the message it persists at
-`message_end`, so the two counts differ on an Eidnara arm. In the c7 final
+`message_end`, so the two counts differ on an Eidnara arm; a turn a stop cut
+can also leave a streamed answer the transcript lacks. In the c7 final
 runs the Eidnara arms streamed a marker in 3.4% to 7.2% of answers and
 persisted none.
 

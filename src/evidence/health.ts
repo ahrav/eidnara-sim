@@ -54,7 +54,7 @@ export interface SessionHealth {
  * it injects, any of which in an answer is text the agent copied from Eidnara's own framing.
  */
 export const EIDNARA_MARKER =
-    /§\d+§|<\/?(?:project-memory|session-history|session-history-since|eidnara-search-hint|eidnara-search-auto|packed-context)\b/;
+    /§\d+§|<\/?(?:project-memory|session-history|session-history-since|eidnara-search-hint|eidnara-search-auto|packed-context|memory-updates|new-notes|covered-system-messages|project-docs|new-history_segments)(?=[\s>/])/;
 
 const COMPACTION = new Set(["native_compaction", "history_summarizer"]);
 const TOO_LONG =
@@ -199,8 +199,11 @@ export function sessionHealth(run: RunData): SessionHealth[] {
               )
             : first_overflow;
         const streamed = [...finalReply.values()];
+        // A session the scenario does not declare (a second client's) has no streamed answers to
+        // set beside its transcript; a declared session without a transcript file is unread.
         const persisted = run.arms.get(arm)?.answers;
-        const kept = persisted ? (persisted.get(session) ?? []).filter((a) => a.trim()) : null;
+        const transcript = projectOf.has(session) ? persisted?.get(session) : [];
+        const kept = transcript ? transcript.filter((a) => a.trim()) : null;
         out.push({
             schema: "sim-evidence-session/v1",
             arm,
