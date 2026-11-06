@@ -92,7 +92,7 @@ describe("SIM-P01: deterministic compile across processes", () => {
             expect(body.manifest).toMatchObject({
                 seed,
                 tier,
-                generator_version: "sim-scenario/v6",
+                generator_version: "sim-scenario/v7",
             });
         }, 180_000);
     }
@@ -156,6 +156,44 @@ describe("compiled S scenario", async () => {
         }
     });
 
+    test("a repeated line asks its template's variant task, and a repeat past the list keeps a framing", async () => {
+        const m = await compileScenario(loadCompileInput(201, "M", hashEmbedder, true));
+        const bank = input.bank as Record<string, Record<string, unknown>>;
+        const templates = Object.values(bank).flatMap((kinds) =>
+            Object.values(kinds).flatMap((v) => (Array.isArray(v) ? (v as Template[]) : [])),
+        );
+        const byId = new Map(templates.map((t) => [t.id, t]));
+        const facts = new Map(m.facts.map((f) => [f.id, f]));
+        const framings = (bank.any?.framings ?? []) as string[];
+        const byText = new Map<string, string[]>();
+        for (const p of m.probes) {
+            if (!p.text || !["P1", "P2", "P4", "P10", "P11"].includes(p.type)) continue;
+            const f = facts.get(p.fact ?? "") as (typeof m.facts)[number];
+            const tpl = byId.get(f.template) as Template;
+            const key = `${p.project}/${p.type}/${f.template}/${(p.check as { side?: string }).side ?? ""}`;
+            const seen = byText.get(key) ?? [];
+            byText.set(key, [...seen, p.text]);
+            const out = p.type === "P2" || (p.check as { side?: string }).side === "out";
+            const variants = (out ? tpl.out_probe_variants : tpl.probe_variants) ?? [];
+            const n = seen.length;
+            if (n === 0) continue;
+            const variant = variants[n - 1];
+            if (variant !== undefined) {
+                const rendered = new RegExp(
+                    `^${variant.replace(/[.*+?^$()|[\]\\]/g, "\\$&").replace(/\{\w+\}/g, "\\S+")}$`,
+                );
+                expect([p.id, rendered.test(p.text)]).toEqual([p.id, true]);
+                expect(seen).not.toContain(p.text);
+            } else {
+                expect([p.id, framings.some((x) => p.text?.startsWith(`${x} `))]).toEqual([
+                    p.id,
+                    true,
+                ]);
+            }
+        }
+        expect([...byText.values()].filter((v) => v.length > 1).length).toBeGreaterThan(0);
+    }, 120_000);
+
     test("no probe of a project asks a P1 task before that P1 item, apart from an earlier instance of its line", async () => {
         const framings = (input.bank.any?.framings ?? []) as string[];
         const task = (shown: string | null | undefined) => {
@@ -185,7 +223,8 @@ describe("compiled S scenario", async () => {
                 });
                 repeats += earlier.length;
             }
-            expect(repeats).toBe(sc === s ? 0 : 10);
+            // A line's later instance asks its template's variant task, so no P1 task text repeats.
+            expect(repeats).toBe(0);
         }
     });
 
@@ -1377,6 +1416,47 @@ describe("compile-time refusals", () => {
                 (bank.any as Record<string, string[]>).framings = [];
             }),
         ).rejects.toThrow(/probe text .* repeats for 2 facts and the bank holds 0 framings/);
+    });
+
+    test("a check script that echoes an identity it never defines or raises is refused", async () => {
+        const scripts = (bank: Record<string, unknown>) =>
+            (["rust", "typescript"] as const).flatMap((lang) =>
+                ((bank[lang] as Record<string, Template[]>).tool_error ?? []).filter(
+                    (t) => t.form === "tool_result",
+                ),
+            );
+        await expect(
+            withInput((bank) => {
+                for (const t of scripts(bank)) {
+                    t.script = {
+                        path: t.script?.path ?? "scripts/check.py",
+                        content: '#!/bin/sh\necho "error: {Alt}Error: frame 318" >&2\nexit 1\n',
+                    };
+                }
+            }),
+        ).rejects.toThrow(/check script scripts\/check\S* must define and raise the error/);
+        await expect(
+            withInput((bank) => {
+                for (const t of scripts(bank)) {
+                    const content = t.script?.content ?? "";
+                    t.script = {
+                        path: t.script?.path ?? "",
+                        content: content.replace(/raise \{Alt\}Error\(/, "raise ValueError("),
+                    };
+                }
+            }),
+        ).rejects.toThrow(/must define and raise the error/);
+        await expect(
+            withInput((bank) => {
+                for (const t of scripts(bank)) {
+                    t.script = {
+                        path: t.script?.path ?? "",
+                        content:
+                            "#!/usr/bin/env python3\n# class {Alt}Error(Exception): pass\n# raise {Alt}Error('x')\nmsg = \"class {Alt}Error(Exception):\"\nraise SystemExit(1)\n",
+                    };
+                }
+            }),
+        ).rejects.toThrow(/must define and raise the error/);
     });
 
     test("a template carrying its own ledger key is refused", async () => {

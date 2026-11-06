@@ -1,4 +1,5 @@
 import { sample } from "../corpus/cdf";
+import { definesAndRaises } from "../corpus/check-script";
 import { type Distributions, table } from "../corpus/distributions";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
@@ -7,7 +8,7 @@ import { scheduleFaults, validateFault } from "./faults";
 import { bm25Ratio, cosine, type Embedder, round4 } from "./similarity";
 import { Tokens } from "./tokens";
 
-export const GENERATOR_VERSION = "sim-scenario/v6";
+export const GENERATOR_VERSION = "sim-scenario/v7";
 
 export const MANNER_WEIGHTS = {
     correction: 0.35,
@@ -26,6 +27,13 @@ export interface Template {
     task?: string;
     probe: string;
     out_probe?: string;
+    /**
+     * Further tasks under the same rule for later instances in one project, so a repeated line
+     * asks for new work rather than the work the agent already did; the n-th repeat of a task text
+     * takes the n-th variant, and a repeat past the list keeps the text behind a framing.
+     */
+    probe_variants?: string[];
+    out_probe_variants?: string[];
     update?: string;
     /** The conveyance of a later instance in the same project, with `{old_*}` naming the prior values. */
     revise?: string;
@@ -488,13 +496,23 @@ export async function compileScenario(input: CompileInput) {
         if (d) e.diffs.push(d);
         exposure.set(fact, e);
     };
-    const distinct = (project: string, fact: string, text: string): string => {
+    const distinct = (
+        project: string,
+        fact: string,
+        text: string,
+        variants: string[] = [],
+        vars: Record<string, string> = {},
+    ): string => {
         const k = `${project}\n${text}`;
         const users = probeTexts.get(k) ?? [];
         if (!users.includes(fact)) users.push(fact);
         probeTexts.set(k, users);
         const n = users.indexOf(fact);
         if (n === 0) return text;
+        const variant = variants[n - 1];
+        // A variant takes its own place among the project's task texts, so a later fact whose
+        // task equals it is framed rather than asked the same text twice.
+        if (variant !== undefined) return distinct(project, fact, render(variant, vars));
         const framing = framings[n - 1];
         if (framing === undefined) {
             throw new Error(
@@ -799,6 +817,19 @@ export async function compileScenario(input: CompileInput) {
         let conveyed: Turn;
         if (form === "tool_result") {
             const script = renderDeep(tpl.script ?? { path: "", content: "" }, vars);
+            // The identity the agent documents is a type the committed script defines and raises,
+            // so a reader who checks the repository finds it, and running the script produces it.
+            // The definition and the raise are read from the script's code, comments and string
+            // literals blanked, each at the start of a statement.
+            for (const must of [tpl.check.must].flat()) {
+                if (typeof must !== "string") continue;
+                const named = render(must, vars);
+                if (!definesAndRaises(script.content, named)) {
+                    throw new Error(
+                        `${tpl.id}: the check script ${script.path} must define and raise the error ${named} names`,
+                    );
+                }
+            }
             const text = render((revision > 0 && tpl.revise) || tpl.command || "", withOld);
             conveyed = cue(text, commits([script]), [text, script.content]);
         } else if (form === "pasted") {
@@ -871,10 +902,11 @@ export async function compileScenario(input: CompileInput) {
             truth: TruthOf,
             at = all,
             opens = false,
+            variants: string[] = [],
         ) => {
             const pid = pad("q", probes.length);
             keys.push(pid);
-            const shown = distinct(projectId, id, text);
+            const shown = distinct(projectId, id, text, variants, vars);
             const turn = {
                 role: "probe" as const,
                 text: shown,
@@ -986,12 +1018,44 @@ export async function compileScenario(input: CompileInput) {
         };
         const probeText = render(tpl.probe, vars);
         const outText = render(tpl.out_probe ?? tpl.probe, vars);
+        const alsoAsk = tpl.probe_variants ?? [];
+        const alsoOut = tpl.out_probe_variants ?? alsoAsk;
         const fromConveyed = later(project.id);
         if (f.type === "P1") {
-            addProbe("P1", project.id, probeText, check, fromConveyed, truthFor("apply"));
-            addProbe("P2", project.id, outText, mustNot, fromConveyed, truthFor("avoid"));
+            addProbe(
+                "P1",
+                project.id,
+                probeText,
+                check,
+                fromConveyed,
+                truthFor("apply"),
+                all,
+                false,
+                alsoAsk,
+            );
+            addProbe(
+                "P2",
+                project.id,
+                outText,
+                mustNot,
+                fromConveyed,
+                truthFor("avoid"),
+                all,
+                false,
+                alsoOut,
+            );
             const twin = twinOf(project.id);
-            addProbe("P11", twin, probeText, mustNot, later(twin), truthFor("avoid"));
+            addProbe(
+                "P11",
+                twin,
+                probeText,
+                mustNot,
+                later(twin),
+                truthFor("avoid"),
+                all,
+                false,
+                alsoAsk,
+            );
         } else if (host) {
             const turns: [number, number] = [conveyed.index + 1, turnHi];
             const ranged = { ...check, turns };
@@ -1012,7 +1076,18 @@ export async function compileScenario(input: CompileInput) {
             const scope = (base as { scope?: string }).scope;
             const c = { ...scoped, ...(out && scope ? { scope } : {}), side: out ? "out" : "in" };
             const truth = truthFor("apply", out);
-            addProbe("P4", project.id, out ? outText : probeText, c, fromConveyed, truth);
+            const variants = out ? alsoOut : alsoAsk;
+            addProbe(
+                "P4",
+                project.id,
+                out ? outText : probeText,
+                c,
+                fromConveyed,
+                truth,
+                all,
+                false,
+                variants,
+            );
         } else if (f.type === "P6") {
             const target = resumeTarget(sessionOf(conveyed.session), inWindow(project.id));
             const t = addProbe(
@@ -1088,7 +1163,17 @@ export async function compileScenario(input: CompileInput) {
                         : f.type === "P9"
                           ? "abstain"
                           : "apply";
-            addProbe(f.type, project.id, probeText, check, fromConveyed, truthFor(expect));
+            addProbe(
+                f.type,
+                project.id,
+                probeText,
+                check,
+                fromConveyed,
+                truthFor(expect),
+                all,
+                false,
+                alsoAsk,
+            );
             if (f.type === "P8" && controls.has("wrong-project-lookup")) {
                 // The twin asks the same lookup: the value is the base project's, never the twin's.
                 const value = (check as { answer: string }).answer;
