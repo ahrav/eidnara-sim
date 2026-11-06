@@ -41,8 +41,8 @@ export function armAnswers(sessions: readonly SessionHealth[]): Map<string, Answ
             content_filtered_turns: 0,
         };
         out.set(s.arm, {
-            answers_streamed: t.answers_streamed + s.answers_streamed,
-            marker_answers_streamed: t.marker_answers_streamed + s.marker_answers_streamed,
+            answers_streamed: add(t.answers_streamed, s.answers_streamed),
+            marker_answers_streamed: add(t.marker_answers_streamed, s.marker_answers_streamed),
             answers_persisted: add(t.answers_persisted, s.answers_persisted),
             marker_answers_persisted: add(t.marker_answers_persisted, s.marker_answers_persisted),
             content_filtered_calls: t.content_filtered_calls + s.content_filtered_calls,
@@ -281,8 +281,10 @@ export function renderEvidence(runs: RunEvidence[]): string {
                 row([
                     r.name,
                     arm,
-                    t.answers_streamed,
-                    share(t.marker_answers_streamed, t.answers_streamed),
+                    t.answers_streamed ?? "not recorded",
+                    t.answers_streamed === null
+                        ? ""
+                        : share(t.marker_answers_streamed ?? 0, t.answers_streamed),
                     t.answers_persisted ?? "not read",
                     t.answers_persisted === null
                         ? ""

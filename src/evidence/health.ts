@@ -36,8 +36,8 @@ export interface SessionHealth {
      * the text graders read and the user simulator receives), and of those the ones holding an
      * Eidnara marker (`EIDNARA_MARKER`).
      */
-    answers_streamed: number;
-    marker_answers_streamed: number;
+    answers_streamed: number | null;
+    marker_answers_streamed: number | null;
     /**
      * The same over each turn's final assistant text as the host transcript persists it, what
      * the user keeps; null on a host whose transcript this harness does not read.
@@ -138,7 +138,9 @@ export function sessionHealth(run: RunData): SessionHealth[] {
         let native = false;
         let filtered = 0;
         const filteredTurns = new Set<string>();
-        const finalReply = new Map<string, string>();
+        // A final completed call without a recorded `response_text` (a run from before the proxy
+        // kept it) leaves its turn's answer unknown.
+        const finalReply = new Map<string, string | undefined>();
         const refusals: HeldCall[] = [];
         let overflowCall: HeldCall | null = null;
         for (const c of sorted) {
@@ -150,7 +152,7 @@ export function sessionHealth(run: RunData): SessionHealth[] {
             const completed =
                 c.status === 200 && c.error === null && c.finish_reason !== "stream_cut";
             if (c.component === "agent" && c.turn !== null && completed) {
-                finalReply.set(c.turn, c.response_text ?? "");
+                finalReply.set(c.turn, c.response_text);
             }
             if (COMPACTION.has(c.component)) {
                 attempts++;
@@ -201,7 +203,10 @@ export function sessionHealth(run: RunData): SessionHealth[] {
                   `${cause_refusal.component} ${cause_refusal.finish_reason ?? "no finish reason"}, ${cause_refusal.output_tokens} output tokens`,
               )
             : first_overflow;
-        const streamed = [...finalReply.values()].filter((a) => a.trim());
+        const replies = [...finalReply.values()];
+        const streamed = replies.includes(undefined)
+            ? null
+            : (replies as string[]).filter((a) => a.trim());
         // A session the scenario does not declare (a second client's) has no streamed answers to
         // set beside its transcript; a declared session without a transcript file is unread.
         const persisted = run.arms.get(arm)?.answers;
@@ -228,8 +233,10 @@ export function sessionHealth(run: RunData): SessionHealth[] {
                 profile?.plugin === true && profile.host_compaction === true && p90.get(session)
                     ? native
                     : null,
-            answers_streamed: streamed.length,
-            marker_answers_streamed: streamed.filter((a) => EIDNARA_MARKER.test(a)).length,
+            answers_streamed: streamed?.length ?? null,
+            marker_answers_streamed: streamed
+                ? streamed.filter((a) => EIDNARA_MARKER.test(a)).length
+                : null,
             answers_persisted: kept?.length ?? null,
             marker_answers_persisted: kept
                 ? kept.filter((a) => EIDNARA_MARKER.test(a)).length
