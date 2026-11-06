@@ -20,6 +20,8 @@ export interface TransformInputs {
     oracle_note: string | null;
     /** The short note built from the probe's ground-truth source events, or null without sources. */
     evidence_note: string | null;
+    /** The probe's ground-truth source text as a `<project-memory>` block. */
+    project_memory: string | null;
 }
 
 /** One application to one request: whether the body changed and what the transform did. */
@@ -167,12 +169,71 @@ const supports = (item: string, gt: TransformInputs["ground_truth"]) =>
 const isStale = (item: string, gt: TransformInputs["ground_truth"]) =>
     [...gt.stale, ...gt.absent].some((l) => carries(item, l));
 
+const carriesPresent = (text: string, gt: TransformInputs["ground_truth"]) =>
+    gt.present.some((group) => group.some((l) => carries(text, l)));
+
+const CAUTION = new RegExp(
+    `\\b(?:${[
+        "can['\u2019]?t confirm",
+        "cannot confirm",
+        "not confirmed",
+        "unconfirmed",
+        "unverified",
+        "can['\u2019]?t verify",
+        "not verified",
+        "don['\u2019]?t (?:assume|deploy|guess|pick|choose)",
+        "ask (?:before|first|the user|you)",
+        "before (?:implementing|building|committing|I start)",
+        "wait(?:ing)? (?:for|on) (?:you|the user|your)",
+        "still (?:open|pending|unanswered|waiting)",
+        "haven['\u2019]?t (?:decided|made a decision)",
+        "no decision",
+        "needs? (?:your|the user['\u2019]?s) (?:confirmation|decision|approval)",
+        "approval",
+        "go-ahead",
+        "say-so",
+        "undecided",
+        "never got an answer",
+        "not (?:yet )?answered",
+    ].join("|")})\\b`,
+    "i",
+);
+
+const USER_STATED = /^(?:- )?(?:User|The user) (?:stated|said|wrote|noted)\b/;
+
+const statementOf = (item: string[], numbered: boolean) =>
+    (numbered ? item.slice(1) : item).filter((l) => !isProvenanceLine(l));
+
+function isCautionItem(item: string[], numbered: boolean): boolean {
+    const statement = statementOf(item, numbered);
+    return !USER_STATED.test(statement[0] ?? "") && CAUTION.test(statement.join("\n"));
+}
+
+function stripCaution(
+    item: string[],
+    gt: TransformInputs["ground_truth"],
+): { item: string[]; removed: number } {
+    let removed = 0;
+    const out: string[] = [item[0] as string];
+    for (const line of item.slice(1)) {
+        if (isProvenanceLine(line)) {
+            out.push(line);
+            continue;
+        }
+        const sentences = line.split(/(?<=[.!?;])\s+/);
+        const kept = sentences.filter((s) => !(CAUTION.test(s) && !carriesPresent(s, gt)));
+        removed += sentences.length - kept.length;
+        if (kept.length > 0) out.push(kept.join(" "));
+    }
+    return { item: out, removed };
+}
+
 /**
  * Drops each stale item (one carrying a `stale` or `absent` literal) and, in a listing that holds
  * a supporting item, every item that does not support the ground truth. A numbered listing is
  * renumbered from 1 and its count line follows the kept items.
  */
-function dropCompeting(body: ConverseBody, inputs: TransformInputs): Applied {
+function dropCompeting(body: ConverseBody, inputs: TransformInputs, caution = false): Applied {
     const gt = inputs.ground_truth;
     const slots: Record<string, unknown>[] = [];
     const unparsed: string[] = [];
@@ -184,17 +245,40 @@ function dropCompeting(body: ConverseBody, inputs: TransformInputs): Applied {
             unparsed.push(name);
             return text;
         }
+        const numbered = items.some((i) => ITEM_HEADER.test(i[0] ?? ""));
         const texts = items.map((i) => i.join("\n"));
         const anySupport = texts.some((t) => supports(t, gt));
+        let cautionDropped = 0;
         const keep = new Map(
             items.map((item, i) => {
                 const t = texts[i] as string;
-                return [item, !isStale(t, gt) && (!anySupport || supports(t, gt))] as const;
+                const competing = isStale(t, gt) || (anySupport && !supports(t, gt));
+                const cautious =
+                    caution && !competing && !supports(t, gt) && isCautionItem(item, numbered);
+                if (cautious) cautionDropped++;
+                return [item, !competing && !cautious] as const;
             }),
         );
+        const rewritten = new Map<string[], string[]>();
+        let sentences = 0;
+        if (caution && numbered) {
+            for (const item of items) {
+                if (!keep.get(item) || !isCautionItem(item, numbered)) continue;
+                const stripped = stripCaution(item, gt);
+                if (stripped.removed === 0) continue;
+                sentences += stripped.removed;
+                rewritten.set(item, stripped.item);
+            }
+        }
         const dropped = [...keep.values()].filter((k) => !k).length;
-        slots.push({ slot: name, items: items.length, dropped, supporting: anySupport });
-        if (dropped === 0) return text;
+        slots.push({
+            slot: name,
+            items: items.length,
+            dropped,
+            supporting: anySupport,
+            ...(caution ? { caution_dropped: cautionDropped, caution_sentences: sentences } : {}),
+        });
+        if (dropped === 0 && sentences === 0) return text;
         changed = true;
         const kept: Segment[] = [];
         let n = 0;
@@ -211,7 +295,7 @@ function dropCompeting(body: ConverseBody, inputs: TransformInputs): Applied {
             skipBlank = false;
             if ("item" in s) {
                 n++;
-                const [first, ...rest] = s.item;
+                const [first, ...rest] = rewritten.get(s.item) ?? s.item;
                 kept.push({ item: [(first as string).replace(/^\[\d+\]/, `[${n}]`), ...rest] });
             } else {
                 kept.push(s);
@@ -232,6 +316,8 @@ function dropCompeting(body: ConverseBody, inputs: TransformInputs): Applied {
 const ATTRIBUTION =
     /^(?:User|Assistant|The user|The assistant) (?:stated|reported|said|wrote|noted): /;
 const TRUST = / trust=\[[^\]]*\]/;
+const NOTICE = /^(\u00a7\d+\u00a7)? ?Memory: /;
+const SEARCH_TOOL = "eidnara_search";
 
 /** A provenance record line: a JSON object naming the memory's citation or capture source. */
 const PROVENANCE_KEYS = ["anchor", "citation", "quote", "source"];
@@ -256,15 +342,21 @@ function isProvenanceLine(line: string): boolean {
  * Removes Eidnara's provenance wording from each delivered memory item: the `trust=[...]` label
  * on its header, the attribution that opens its statement, and its JSON provenance record.
  */
-function provenanceOff(body: ConverseBody): Applied {
+function provenanceOff(body: ConverseBody, notices = false): Applied {
     let changed = false;
-    const counts = { trust: 0, attribution: 0, records: 0 };
+    const counts: { trust: number; attribution: number; records: number; notices?: number } = {
+        trust: 0,
+        attribution: 0,
+        records: 0,
+    };
+    if (notices) counts.notices = 0;
     const unparsed: string[] = [];
     editMemory(body, (name, text) => {
         const segments = splitListing(text);
+        const stripNotices = notices && name === SEARCH_TOOL;
         if (itemsOf(segments).length === 0) {
             unparsed.push(name);
-            return text;
+            if (!stripNotices) return text;
         }
         const scrub = (item: string[]) => {
             const out: string[] = [];
@@ -286,11 +378,36 @@ function provenanceOff(body: ConverseBody): Applied {
             });
             return out;
         };
-        const next = joinListing(segments.map((s) => ("item" in s ? { item: scrub(s.item) } : s)));
+        const unnoticed = (s: Segment): Segment[] => {
+            if (!stripNotices || !("line" in s)) return [s];
+            const m = NOTICE.exec(s.line);
+            if (!m) return [s];
+            counts.notices = (counts.notices ?? 0) + 1;
+            return m[1] ? [{ line: m[1] }] : [];
+        };
+        const next = joinListing(
+            segments.flatMap((s) => ("item" in s ? [{ item: scrub(s.item) }] : unnoticed(s))),
+        );
         if (next !== text) changed = true;
         return next;
     });
     return { changed, detail: { ...counts, unparsed } };
+}
+
+const M0_END = "</session-history>";
+
+function injectProjectMemory(body: ConverseBody, inputs: TransformInputs): Applied {
+    const block = inputs.project_memory;
+    if (block === null) return { changed: false, detail: { reason: "no sources" } };
+    const first = (body.messages ?? [])[0] as Message | undefined;
+    const content = first?.role === "user" && Array.isArray(first.content) ? first.content : [];
+    const m0 = content.find((b) => typeof b.text === "string" && b.text.includes(M0_END));
+    if (!m0) return { changed: false, detail: { reason: "no m0 region" } };
+    if ((m0.text as string).includes("<project-memory>")) {
+        return { changed: false, detail: { reason: "m0 region holds a project-memory block" } };
+    }
+    m0.text = `${m0.text as string}\n\n${block}`;
+    return { changed: true, detail: { bytes: Buffer.byteLength(block) } };
 }
 
 export const TRANSFORMS: Record<string, ReplayTransform> = {
@@ -318,11 +435,24 @@ export const TRANSFORMS: Record<string, ReplayTransform> = {
             "removes stale items and items that compete with a supporting one from Eidnara-delivered memory",
         apply: dropCompeting,
     },
+    "drop-competing-caution": {
+        id: "drop-competing-caution",
+        alias: "c2",
+        summary:
+            "drop-competing, plus caution items that do not support the ground truth and caution sentences of kept items",
+        apply: (body, inputs) => dropCompeting(body, inputs, true),
+    },
     "provenance-off": {
         id: "provenance-off",
         alias: "d",
         summary: "removes Eidnara's provenance wording from delivered memory items",
         apply: (body) => provenanceOff(body),
+    },
+    "provenance-notices-off": {
+        id: "provenance-notices-off",
+        alias: "d2",
+        summary: "provenance-off, plus the daemon's `Memory:` notice lines in search results",
+        apply: (body) => provenanceOff(body, true),
     },
     "oracle-note": {
         id: "oracle-note",
@@ -334,6 +464,13 @@ export const TRANSFORMS: Record<string, ReplayTransform> = {
             const changed = rewriteProbe(body, inputs.probe_text, (t) => `${note}${t}`);
             return { changed, detail: changed ? {} : { reason: "no probe message" } };
         },
+    },
+    "memory-block": {
+        id: "memory-block",
+        alias: "f",
+        summary:
+            "appends the probe's ground-truth source text as a <project-memory> block to the m0 region",
+        apply: injectProjectMemory,
     },
 };
 
@@ -383,6 +520,54 @@ export function evidenceNote(
         return `- ${String(e.path)} was committed with:\n${fence}\n${content}\n${fence}`;
     });
     return `Note from earlier sessions:\n${lines.join("\n")}`;
+}
+
+const MEMORY_CATEGORY: Record<string, string> = {
+    P1: "PROJECT_RULES",
+    P3: "CONSTRAINTS",
+    P4: "PROJECT_RULES",
+    P6: "USER_DIRECTIVES",
+    P8: "CONFIG_VALUES",
+    P12: "CONFIG_VALUES",
+};
+
+const escapeXml = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+export function projectMemoryBlock(
+    events: readonly Record<string, unknown>[],
+    sources: readonly string[],
+    probeType: string,
+): string | null {
+    const byId = new Map(events.map((e) => [String(e.id), e]));
+    const picked = sources
+        .map((id) => byId.get(id))
+        .filter((e): e is Record<string, unknown> => e !== undefined);
+    if (picked.length === 0) return null;
+    const rows = picked.map((e) => {
+        const content =
+            e.kind === "user_turn"
+                ? `User stated: ${String(e.text ?? "")
+                      .replace(/\s*\n\s*/g, " ")
+                      .trim()}`
+                : e.remove === true
+                  ? `${String(e.path)} was removed from the repository.`
+                  : `${String(e.path)} was committed with:\n${String(e.content ?? "").replace(/\n$/, "")}`;
+        const digest = createHash("sha256")
+            .update(`${String(e.id)}\n${content}`)
+            .digest("hex");
+        const id = `mem_${digest.slice(0, 32)}`;
+        return { id, line: `${id}: ${escapeXml(content).split("\n").join("\n  ")}` };
+    });
+    rows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const category = MEMORY_CATEGORY[probeType] ?? "PROJECT_RULES";
+    return [
+        "<project-memory>",
+        `<${category}>`,
+        ...rows.map((r) => r.line),
+        `</${category}>`,
+        "</project-memory>",
+    ].join("\n");
 }
 
 /**
