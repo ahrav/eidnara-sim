@@ -9,7 +9,7 @@ repeat. `src/replay/` owns the command.
 
 ```sh
 bun scripts/replay-probe.ts --run <finished run> --arm <arm> --item <probe id> \
-    --variant <a|b|c|c2|d|d2|e|f or name> --repeats N --out <empty dir> \
+    --variant <a|b|c|c2|d|d2|e|f|f2 or name> --repeats N --out <empty dir> \
     [--allow-identity <field,...>] [--path-mode source|replay] [--keep]
 ```
 
@@ -68,6 +68,7 @@ a test checks every campaign `Gateway` construction for that.
 | d2 | `provenance-notices-off` | variant d, and also removes the daemon's `Memory:` notice lines from an `eidnara_search` result (the search route and the freshness of the results), including a result with no hits, keeping the plugin's `§n§` marker that opens the first one |
 | e | `oracle-note` | puts the `host-oracle` arm's note (`src/run/oracle-note.ts`) ahead of the probe text, after any marker the plugin put in front of it |
 | f | `memory-block` | appends a `<project-memory>` block to the text of the first message's m0 region, the text block holding `</session-history>`, after a blank line, where Eidnara's m0 composer puts the block. The block renders the probe's `ground_truth.sources` events recorded in the probe's project (project memory is scoped to one project, so a wrong-project control whose sources all lie in the base project gets no block and its repeats fail) in the layout of `memory_render.rs`: one category element by probe type (P1 and P4 `PROJECT_RULES`, P3 `CONSTRAINTS`, P6 `USER_DIRECTIVES`, P8 and P12 `CONFIG_VALUES`, otherwise `PROJECT_RULES`), then one `mem_<id>: <content>` line per event sorted by id, with `&`, `<`, and `>` escaped and continuation lines indented by two spaces. A user turn reads `User stated: <text>`; a committed file and a removal read as in variant b. The id is the first 32 hex digits of the SHA-256 of the event id and content |
+| f2 | `memory-block-origin` | variant f with each row's category taken from its source's origin instead of the probe type: a user turn is `USER_DIRECTIVES`, a committed file or removal `PROJECT_RULES`, one category element each, in the daemon's category order |
 
 Variants c, c2, d, and d2 read two listing shapes: the numbered search results of an
 `eidnara_*` tool (`[1] [memory] score=... id=...`, each item running to its
@@ -76,7 +77,7 @@ also visit `<project-memory>`, `<memory-updates>`, `<project-note>`, and
 `<eidnara-search-auto>` blocks; a block or tool result with no listing in
 those shapes passes unchanged and is named under `unparsed` in the
 application detail. Literals match case-insensitively as substrings, and a
-numeric literal matches only as a whole number. A note variant (b, e, or f) that
+numeric literal matches only as a whole number. A note variant (b, e, f, or f2) that
 changes no agent request of a repeat fails that repeat.
 
 The variant digest in the manifest is the SHA-256 of the transform id, the

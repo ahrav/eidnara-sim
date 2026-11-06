@@ -22,6 +22,8 @@ export interface TransformInputs {
     evidence_note: string | null;
     /** The probe's ground-truth source text as a `<project-memory>` block. */
     project_memory: string | null;
+    /** The same block with each row's category taken from its source's origin. */
+    origin_memory: string | null;
 }
 
 /** One application to one request: whether the body changed and what the transform did. */
@@ -472,6 +474,13 @@ export const TRANSFORMS: Record<string, ReplayTransform> = {
             "appends the probe's ground-truth source text as a <project-memory> block to the m0 region",
         apply: injectProjectMemory,
     },
+    "memory-block-origin": {
+        id: "memory-block-origin",
+        alias: "f2",
+        summary: "memory-block with each row's category taken from its source's origin",
+        apply: (body, inputs) =>
+            injectProjectMemory(body, { ...inputs, project_memory: inputs.origin_memory }),
+    },
 };
 
 /** The transform a variant name or letter selects. */
@@ -534,10 +543,29 @@ const MEMORY_CATEGORY: Record<string, string> = {
 const escapeXml = (s: string) =>
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+/** The category f gives every row: one per probe type. */
+export const probeTypeCategory =
+    (probeType: string) =>
+    (_event: Record<string, unknown>): string =>
+        MEMORY_CATEGORY[probeType] ?? "PROJECT_RULES";
+
+/**
+ * The category f2 gives a row, from the source's origin alone: a user statement is a user
+ * directive and a repository change is a project rule.
+ */
+export const originCategory = (event: Record<string, unknown>): string =>
+    event.kind === "user_turn" ? "USER_DIRECTIVES" : "PROJECT_RULES";
+
+const RENDER_ORDER = ["PROJECT_RULES", "ARCHITECTURE", "CONSTRAINTS", "CONFIG_VALUES", "NAMING"];
+const renderRank = (category: string) => {
+    const i = RENDER_ORDER.indexOf(category);
+    return i < 0 ? RENDER_ORDER.length : i;
+};
+
 export function projectMemoryBlock(
     events: readonly Record<string, unknown>[],
     sources: readonly string[],
-    probeType: string,
+    categoryOf: (event: Record<string, unknown>) => string,
 ): string | null {
     const byId = new Map(events.map((e) => [String(e.id), e]));
     const picked = sources
@@ -557,17 +585,28 @@ export function projectMemoryBlock(
             .update(`${String(e.id)}\n${content}`)
             .digest("hex");
         const id = `mem_${digest.slice(0, 32)}`;
-        return { id, line: `${id}: ${escapeXml(content).split("\n").join("\n  ")}` };
+        return {
+            id,
+            category: categoryOf(e),
+            line: `${id}: ${escapeXml(content).split("\n").join("\n  ")}`,
+        };
     });
-    rows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    const category = MEMORY_CATEGORY[probeType] ?? "PROJECT_RULES";
-    return [
-        "<project-memory>",
-        `<${category}>`,
-        ...rows.map((r) => r.line),
-        `</${category}>`,
-        "</project-memory>",
-    ].join("\n");
+    rows.sort(
+        (a, b) =>
+            renderRank(a.category) - renderRank(b.category) ||
+            (a.category < b.category ? -1 : a.category > b.category ? 1 : 0) ||
+            (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    );
+    const lines = ["<project-memory>"];
+    rows.forEach((r, i) => {
+        if (i === 0 || rows[i - 1]?.category !== r.category) {
+            if (i > 0) lines.push(`</${rows[i - 1]?.category}>`);
+            lines.push(`<${r.category}>`);
+        }
+        lines.push(r.line);
+    });
+    lines.push(`</${rows[rows.length - 1]?.category}>`, "</project-memory>");
+    return lines.join("\n");
 }
 
 /**
