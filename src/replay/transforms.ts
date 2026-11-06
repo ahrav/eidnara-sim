@@ -305,14 +305,20 @@ function cautionOff(body: ConverseBody): Applied {
             const statementLines = numbered ? item.slice(1, closing ? last : undefined) : item;
             const statement: string[] = [];
             let removed = 0;
+            let attribution = "";
             statementLines.forEach((line, j) => {
                 const bullet = !numbered && line.startsWith("- ") ? "- " : "";
-                const bodyText = line.slice(bullet.length);
-                const attribution = j === 0 ? (ATTRIBUTION.exec(bodyText)?.[0] ?? "") : "";
-                const sentences = bodyText.slice(attribution.length).split(SENTENCE_BREAK);
+                let bodyText = line.slice(bullet.length);
+                if (j === 0) {
+                    attribution = ATTRIBUTION.exec(bodyText)?.[0] ?? "";
+                    bodyText = bodyText.slice(attribution.length);
+                }
+                const sentences = bodyText.split(SENTENCE_BREAK);
                 const kept = sentences.filter((x) => !CAUTION.test(x));
                 removed += sentences.length - kept.length;
-                if (kept.length > 0) statement.push(bullet + attribution + kept.join(" "));
+                if (kept.length === 0) return;
+                statement.push(bullet + attribution + kept.join(" "));
+                attribution = "";
             });
             if (removed === 0) continue;
             counts.items++;

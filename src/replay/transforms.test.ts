@@ -639,13 +639,34 @@ describe("caution-off", () => {
     });
 
     test("leaves bullet lines of an eidnara_note result alone", () => {
-        const body = withListing(
-            "\u00a73\u00a7 ## Notes\n\n- Ask before changing production.\n- Port 31411.",
-        );
-        const before = result(body, 1);
+        const body = recorded();
+        const note = messages(body)[4]?.content[0]?.toolResult as { content: { text: string }[] };
+        const notes = "\u00a73\u00a7 ## Notes\n\n- Ask before changing production.\n- Port 31411.";
+        (note.content[0] as { text: string }).text = notes;
         const applied = transformFor("c3").apply(body, inputs());
-        expect(result(body, 1)).toBe(before);
-        expect(applied.changed).toBe(false);
+        expect(note.content[0]?.text).toBe(notes);
+        expect(applied.detail.unparsed).toEqual(["eidnara_note"]);
+    });
+
+    test("carries the attribution to the first kept line", () => {
+        const body = withListing(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: Still pending.",
+                "The limit is 31411.",
+            ].join("\n"),
+        );
+        transformFor("c3").apply(body, inputs());
+        expect(result(body, 1)).toBe(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: The limit is 31411.",
+            ].join("\n"),
+        );
     });
 
     test("trims a search-hint fragment and leaves a listing without caution unchanged", () => {
