@@ -693,6 +693,7 @@ describe("P6: resume in code, or ask the user to choose", () => {
             "I am doing neither until you choose.",
             "I am starting with whichever you choose.",
             "I will go over the shared requirements while you decide. Which one do you prefer?",
+            "I'll implement neither until you choose.",
             `\n1. ${a}: a small change. What should it count?\n2. ${b}: a new command. It needs a start time.`,
         ]) {
             const answer = `${open} Which one should I do first? ${follow}`;
@@ -878,6 +879,7 @@ describe("P8: the answer commits to the value", () => {
                 "answer names a competing value beside it",
             ],
             [`Formerly, as documented, ${v} was the alias.`, "answer turns the value down"],
+            [`The old, documented alias is ${v}.`, "answer turns the value down"],
             [
                 `Use ${v}. The repo does not mention either ${v} or brisk-otter-08 because either ${old} or brisk-otter-09 may be right.`,
                 "answer turns the value down",

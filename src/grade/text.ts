@@ -112,10 +112,11 @@ const NEGATOR =
     /\b(?:not|never|no longer|[a-z]+n['\u2019]t|instead of|rather than|other than|except|replac(?:e|es|ed|ing)(?!\s+(?:by|with)\b)|supersed(?:e|es|ed|ing)(?!\s+by\b)|(?:changed|moved|renamed|switched|updated|went)\s+from|avoid(?:ing)?)\b/gi;
 /**
  * A word that marks the value right after it, at most four words on, as superseded. A comma right
- * after the word closes its phrase, so `told me earlier, it should be X` marks nothing.
+ * after the word closes its phrase, so `told me earlier, it should be X` marks nothing, except
+ * after a determiner, where it coordinates another modifier: `the old, documented alias X`.
  */
 const STALE_ADJECTIVE =
-    /\b(?:old|older|earlier|previous|previously|prior|former|formerly|originally|retired|outdated|stale|deprecated|obsolete)\b(?=(?:\s+(?!(?:to|and|but|so)\b)[\w-]+,?){0,4}?\s+$)/i;
+    /(?:\b(?:the|a|an|this|that|its|their)\s+(?:old|older|earlier|previous|prior|former|retired|outdated|stale|deprecated|obsolete)\b,?|\b(?:old|older|earlier|previous|previously|prior|former|formerly|originally|retired|outdated|stale|deprecated|obsolete)\b)(?=(?:\s+(?!(?:to|and|but|so)\b)[\w-]+,?){0,4}?\s+$)/i;
 /** A sentence that opens by placing what follows in the past: `Previously, X was the alias`. */
 const LEADING_STALE =
     /^\s*(?:previously|formerly|originally|earlier|before that|at first)\s*,(?:\s+(?!(?:to|and|but|so)\b)[\w-]+,?){0,6}?\s+$/i;

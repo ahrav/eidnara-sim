@@ -947,7 +947,7 @@ function p4(r: ArtefactReader, c: Check): Outcome {
 const CHOICE = /\b(?:which|either|whether|or|first|order|prefer|rather)\b/i;
 /** A sentence that picks a task after all: `I'll start with`, `let me begin`. */
 const COMMITS =
-    /\bI(?:'ll| will|'m going to| am going to|'ve decided to| have decided to| decided to) (?:start|begin|go with|do|take|pick|work on|tackle|implement|proceed|build|add)\b(?!\s+(?:with\s+|on\s+)?whichever\s+(?:you|the user)\b)|\bI(?:'m| am) (?:starting|beginning|going with|doing|taking|picking|working on|tackling|implementing|proceeding with)\b(?!\s+(?:with\s+|on\s+)?(?:neither|whichever\s+(?:you|the user))\b)|\bI(?:'ve| have)? (?:choose|pick|chose|picked|chosen|selected|select|decided on|went with|gone with|will go with|am going with)\b(?!\s+(?:neither|whichever\s+(?:you|the user))\b)|\blet me (?:start|begin)\b/i;
+    /\bI(?:'ll| will|'m going to| am going to|'ve decided to| have decided to| decided to) (?:start|begin|go with|do|take|pick|work on|tackle|implement|proceed|build|add)\b(?!\s+(?:with\s+|on\s+)?(?:neither|whichever\s+(?:you|the user))\b)|\bI(?:'m| am) (?:starting|beginning|going with|doing|taking|picking|working on|tackling|implementing|proceeding with)\b(?!\s+(?:with\s+|on\s+)?(?:neither|whichever\s+(?:you|the user))\b)|\bI(?:'ve| have)? (?:choose|pick|chose|picked|chosen|selected|select|decided on|went with|gone with|will go with|am going with)\b(?!\s+(?:neither|whichever\s+(?:you|the user))\b)|\blet me (?:start|begin)\b/i;
 /**
  * The answer leaves the choice to the user: its last choice question is followed by at most three
  * statements and any number of questions, and a sentence after its first choice question that
