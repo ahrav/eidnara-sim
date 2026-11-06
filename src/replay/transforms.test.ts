@@ -519,6 +519,43 @@ describe("memory-block-origin", () => {
         );
     });
 
+    test("renders categories in the daemon's order with each category's rows together", () => {
+        const events = [
+            { id: "e-1", kind: "user_turn", text: "one" },
+            { id: "e-2", kind: "user_turn", text: "two" },
+            { id: "e-3", kind: "user_turn", text: "three" },
+            { id: "e-4", kind: "apply_diff", path: "gone.md", remove: true },
+        ];
+        const category: Record<string, string> = {
+            "e-1": "CONFIG_VALUES",
+            "e-2": "CONSTRAINTS",
+            "e-3": "CONFIG_VALUES",
+            "e-4": "USER_DIRECTIVES",
+        };
+        const block = projectMemoryBlock(
+            events,
+            ["e-1", "e-2", "e-3", "e-4"],
+            (e) => category[String(e.id)] as string,
+        ) as string;
+        const lines = block.split("\n");
+        expect(lines.filter((l) => /^<\/?[A-Z_]+>$/.test(l))).toEqual([
+            "<CONSTRAINTS>",
+            "</CONSTRAINTS>",
+            "<CONFIG_VALUES>",
+            "</CONFIG_VALUES>",
+            "<USER_DIRECTIVES>",
+            "</USER_DIRECTIVES>",
+        ]);
+        const config = lines.slice(
+            lines.indexOf("<CONFIG_VALUES>") + 1,
+            lines.indexOf("</CONFIG_VALUES>"),
+        );
+        expect(config).toHaveLength(2);
+        expect(config).toEqual([...config].sort());
+        expect(originCategory(events[3] as Record<string, unknown>)).toBe("PROJECT_RULES");
+        expect(originCategory(events[0] as Record<string, unknown>)).toBe("USER_DIRECTIVES");
+    });
+
     test("f2 appends the origin block to the m0 region", () => {
         const body = recorded();
         expect(transformFor("f2").apply(body, inputs()).changed).toBe(true);
