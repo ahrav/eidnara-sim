@@ -3,6 +3,7 @@ import {
     appendFileSync,
     copyFileSync,
     existsSync,
+    lstatSync,
     mkdirSync,
     readdirSync,
     readFileSync,
@@ -370,6 +371,13 @@ function priorCalls(source: ProbeSource): CallView[] {
     );
 }
 
+function requireRealDir(path: string, root: string): void {
+    if (!lstatSync(path, { throwIfNoEntry: false })?.isDirectory()) {
+        throw new Error(`${path} is not a real directory`);
+    }
+    requireInside(path, root);
+}
+
 function prepareRepeat(o: {
     source: ProbeSource;
     armDir: string;
@@ -383,6 +391,7 @@ function prepareRepeat(o: {
     mkdirSync(join(o.armDir, "runtime"), { recursive: true });
     mkdirSync(join(o.armDir, "clock"), { recursive: true });
     copyTree(join(from, "snapshot.git"), join(o.armDir, "snapshot.git"));
+    requireRealDir(join(o.armDir, "snapshot.git"), o.armDir);
     for (const f of readdirSync(from).filter((f) => f.endsWith(".gitconfig"))) {
         copyFileSync(join(from, f), join(o.armDir, f));
     }
@@ -523,6 +532,8 @@ const NAMESPACE = [
     'exec /usr/bin/setpriv --reuid "$uid" --regid "$gid" --init-groups -- /usr/bin/env PATH="$path" USER="$user" LOGNAME="$user" "$@"',
 ].join("\n");
 
+export class ReplayInterrupted extends Error {}
+
 export async function spawnTurn(
     spec: TurnSpec,
     specPath: string,
@@ -558,7 +569,24 @@ export async function spawnTurn(
           ]
         : self;
     const child = Bun.spawn(argv, { stdio: ["ignore", "inherit", "inherit"], cwd: ROOT });
-    const code = await child.exited;
+    let signalled: NodeJS.Signals | null = null;
+    const forward = (signal: NodeJS.Signals) => {
+        signalled = signal;
+        child.kill(signal);
+    };
+    const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
+    for (const s of signals) process.on(s, forward);
+    let code: number;
+    try {
+        code = await child.exited;
+    } finally {
+        for (const s of signals) process.off(s, forward);
+    }
+    if (signalled) {
+        throw new ReplayInterrupted(
+            `replay interrupted by ${signalled}; the turn process exited ${code}`,
+        );
+    }
     const result = join(spec.out, "turn.json");
     if (!existsSync(result)) throw new Error(`the turn process exited ${code} without ${result}`);
     return json<TurnResult>(result);
@@ -771,6 +799,7 @@ async function replayInto(
     ) as { patch?: string } | undefined;
     const probeGit = join(out, "probe-tree.git");
     copyTree(join(source.dir, source.arm, "snapshot.git"), probeGit);
+    requireRealDir(probeGit, out);
     const found = probeTree({
         gitDir: probeGit,
         journal: source.journal.filter((e) => e.arm === source.arm),
@@ -905,6 +934,10 @@ async function replayInto(
             result = repeatResult(k, transform.id, source, turn, graded, sourceFirst);
         } catch (caught) {
             result = failedRepeat(k, transform.id, caught);
+            if (caught instanceof ReplayInterrupted) {
+                appendFileSync(join(out, "results.jsonl"), `${JSON.stringify(result)}\n`);
+                throw caught;
+            }
         }
         appendFileSync(join(out, "results.jsonl"), `${JSON.stringify(result)}\n`);
         results.push(result);

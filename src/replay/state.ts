@@ -240,22 +240,49 @@ export function rewindHead(o: {
         run(["reset", "--mixed", "-q", target.id]);
         rmSync(join(dotGit, "logs"), { recursive: true, force: true });
         rmSync(join(dotGit, "ORIG_HEAD"), { force: true });
-        const others = run(["for-each-ref", "--format=%(refname)"])
-            .split("\n")
-            .filter((r) => r && !r.startsWith("refs/heads/") && !r.startsWith("refs/remotes/"));
+        let current = "";
+        try {
+            current = run(["symbolic-ref", "-q", "HEAD"]);
+        } catch {
+            current = "";
+        }
+        const refs = run(["for-each-ref", "--format=%(refname)"]).split("\n").filter(Boolean);
+        const reaches = (ref: string) => {
+            try {
+                run(["merge-base", "--is-ancestor", ref, target.id]);
+                return false;
+            } catch {
+                return true;
+            }
+        };
+        const others = refs.filter(
+            (r) =>
+                r !== current &&
+                !r.startsWith("refs/remotes/") &&
+                (!r.startsWith("refs/heads/") || reaches(r)),
+        );
+        const baseline = readFileSync(o.gitconfig);
+        const hooks = existsSync(join(dotGit, "hooks"))
+            ? readdirSync(join(dotGit, "hooks")).filter((h) => !h.endsWith(".sample"))
+            : [];
+        const metadata = {
+            config_matches_baseline: config.equals(baseline),
+            hooks,
+        };
         const stop = chain.findIndex((c) => c.id === o.base);
         const agent = chain
             .slice(at, stop < 0 ? chain.length : stop)
             .filter((c) => !c.email.startsWith("sim-user@"));
         return {
             method: "first-parent-rewind",
-            exact: others.length === 0,
+            exact: others.length === 0 && metadata.config_matches_baseline && hooks.length === 0,
             detail: {
                 final_head: head,
                 head: target.id,
                 dropped: at,
                 agent_commits_kept: agent.length,
                 other_refs: others,
+                ...metadata,
                 reflogs: "cleared",
             },
         };
@@ -455,8 +482,13 @@ export function rollbackMemoryStore(
             throw new Error(`memory store table ${t} has commit column ${commit.join(", ")}`);
         }
         if (cols.includes("session_id") && o.sessions.length > 0) {
-            const sql = `delete from "${t}" where session_id in (${marks})`;
-            note(t, db.run(sql, o.sessions).changes);
+            const terminal =
+                t === "memory_capture_jobs"
+                    ? " and not (commit_seq > ? and created_at_ms <= ?)"
+                    : "";
+            const sql = `delete from "${t}" where session_id in (${marks})${terminal}`;
+            const args = terminal ? [...o.sessions, o.commit, o.cutoffMs] : o.sessions;
+            note(t, db.run(sql, args).changes);
         }
         if (cols.includes("created_at_ms")) {
             note(t, db.run(`delete from "${t}" where created_at_ms > ?`, [o.cutoffMs]).changes);

@@ -1,7 +1,9 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Snapshot } from "../grade/artefacts";
+import { assertArtefactsOnly, type Snapshot } from "../grade/artefacts";
 import { GradeLog, type GradeRecord } from "../grade/probes";
+import { CONTROL_LABEL } from "../hosts/arms";
+import { isArmName } from "../hosts/profiles";
 import type { CallRecord } from "../proxy/records";
 import { type Entry, eachLine, readJsonl } from "../run/journal";
 import type { ScenarioEvent } from "../run/scheduler";
@@ -67,6 +69,10 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
     if (manifest.schema !== MANIFEST_SCHEMA) {
         throw new Error(`manifest.json is ${String(manifest.schema)}, not ${MANIFEST_SCHEMA}`);
     }
+    const base = arm.split("~")[0] as string;
+    if (!isArmName(base) || (arm !== base && !CONTROL_LABEL.test(arm))) {
+        throw new Error(`arm ${JSON.stringify(arm)} is not an arm or control label`);
+    }
     if (!manifest.order.includes(arm)) {
         throw new Error(`arm ${arm} is not in the run's order (${manifest.order.join(", ")})`);
     }
@@ -115,12 +121,24 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
     const offset = offsets.at(-1);
     if (!offset) throw new Error(`the journal holds no ClockOffset for ${arm} before the probe`);
     const snapshotId = end.snapshot;
-    const [snapshot] = matchingLines<Snapshot>(
+    const rows = matchingLines<Snapshot>(
         join(root, arm, "snapshots.jsonl"),
         `"id":${JSON.stringify(snapshotId)}`,
         (s) => s.id === snapshotId,
     );
-    if (!snapshot) throw new Error(`${arm}/snapshots.jsonl has no row ${snapshotId}`);
+    if (rows.length !== 1) {
+        throw new Error(`${arm}/snapshots.jsonl holds ${rows.length} rows ${snapshotId}, not one`);
+    }
+    const snapshot = rows[0] as Snapshot;
+    assertArtefactsOnly(snapshot);
+    const own = { arm, item, turn: event.id, session: event.session, turn_outcome: "ok" };
+    for (const [key, value] of Object.entries(own)) {
+        if (snapshot[key as keyof Snapshot] !== value) {
+            throw new Error(
+                `snapshot ${snapshotId} names ${key} ${String(snapshot[key as keyof Snapshot])}, not ${value}`,
+            );
+        }
+    }
     const calls = matchingLines<CallRecord>(
         join(root, "calls.jsonl"),
         `"turn":${JSON.stringify(event.id)}`,

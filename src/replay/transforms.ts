@@ -217,7 +217,8 @@ function dropCompeting(body: ConverseBody, inputs: TransformInputs): Applied {
                 kept.push(s);
             }
         }
-        const opening = kept.findIndex((s) => "item" in s);
+        const first = kept.findIndex((s) => "item" in s);
+        const opening = first < 0 ? kept.length : first;
         const count = /\b\d+( (?:results?|related fragments?)\b)/;
         return joinListing(
             kept.map((s, i) =>
@@ -233,12 +234,19 @@ const ATTRIBUTION =
 const TRUST = / trust=\[[^\]]*\]/;
 
 /** A provenance record line: a JSON object naming the memory's citation or capture source. */
+const PROVENANCE_KEYS = ["anchor", "citation", "quote", "source"];
+
 function isProvenanceLine(line: string): boolean {
     const t = line.trim();
     if (!t.startsWith("{") || !t.endsWith("}")) return false;
     try {
         const v = JSON.parse(t) as Record<string, unknown>;
-        return typeof v === "object" && v !== null && ("citation" in v || "source" in v);
+        return (
+            typeof v === "object" &&
+            v !== null &&
+            !Array.isArray(v) &&
+            PROVENANCE_KEYS.every((k) => typeof v[k] === "string")
+        );
     } catch {
         return false;
     }
@@ -261,7 +269,7 @@ function provenanceOff(body: ConverseBody): Applied {
         const scrub = (item: string[]) => {
             const out: string[] = [];
             item.forEach((line, i) => {
-                if (isProvenanceLine(line)) {
+                if (i > 0 && isProvenanceLine(line)) {
                     counts.records++;
                     return;
                 }

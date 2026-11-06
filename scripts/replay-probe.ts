@@ -71,5 +71,5 @@ if (import.meta.main) {
             `repeat ${r.repeat}: ${r.verdict} $${r.cost_usd.toFixed(4)} ${r.prompt_ms ?? "-"} ms prefix ${prefix}${r.reason ? ` (${r.reason})` : ""}`,
         );
     }
-    process.exit(0);
+    process.exit(results.some((r) => r.verdict === "harness-failed") ? 1 : 0);
 }

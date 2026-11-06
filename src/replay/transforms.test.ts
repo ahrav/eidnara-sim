@@ -189,6 +189,26 @@ describe("evidenceNote", () => {
 });
 
 describe("splitListing", () => {
+    test("the count line follows when every item goes", () => {
+        const body = recorded();
+        const tool = messages(body)[4]?.content[1]?.toolResult as { content: { text: string }[] };
+        (tool.content[0] as { text: string }).text =
+            "Found 1 results:\n\n[1] [memory] id=a\nstale 57766";
+        const gt = { present: [["absent-literal"]], stale: ["57766"], absent: [] };
+        transformFor("c").apply(body, inputs({ ground_truth: gt }));
+        expect(result(body, 1)).toBe("Found 0 results:\n");
+    });
+
+    test("provenance-off keeps a remembered JSON line that is not a provenance record", () => {
+        const body = recorded();
+        const tool = messages(body)[4]?.content[1]?.toolResult as { content: { text: string }[] };
+        const listing =
+            '[1] [memory] id=a trust=[labeled]\nUser stated: set this config\n{"source":"api"}';
+        (tool.content[0] as { text: string }).text = listing;
+        transformFor("d").apply(body, inputs());
+        expect(result(body, 1)).toBe('[1] [memory] id=a\nset this config\n{"source":"api"}');
+    });
+
     test("keeps every line in place when rejoined", () => {
         const t = "head\n\n[1] [memory] a\nbody\n\n[2] [memory] b\nbody\n\ntrailer";
         const segments = splitListing(t);

@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { writeAtomic } from "./atomic";
@@ -33,6 +33,18 @@ export function plainPath(path: string): string {
 
 const within = (path: string, dir: string) =>
     path === dir || path.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
+
+const TMPFS_MOUNT = /^mount -t tmpfs -o mode=1777 tmpfs (\S+)$/gm;
+
+function scriptMasks(launcher: string): string[] {
+    let text: string;
+    try {
+        text = readFileSync(launcher, "utf8");
+    } catch {
+        return [];
+    }
+    return [...text.matchAll(TMPFS_MOUNT)].map((m) => m[1] as string);
+}
 
 export function maskedPaths(runRoot: string, extra: readonly string[] = []): string[] {
     const candidates = [
@@ -124,7 +136,12 @@ export function launch(
             return parent === path ? path : join(canonical(parent), basename(path));
         }
     };
-    const masked = ["/tmp", realpathSync(homedir()), canonical(dirname(launcher))];
+    const masked = [
+        "/tmp",
+        realpathSync(homedir()),
+        canonical(dirname(launcher)),
+        ...scriptMasks(launcher),
+    ];
     for (const path of [...kept, ...ro]) {
         const hidden = masked.find((m) => within(m, path) || within(m, canonical(path)));
         if (hidden) throw new Error(`sandbox path ${path} would restore masked ${hidden}`);

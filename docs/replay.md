@@ -19,10 +19,15 @@ was recorded in, and the Eidnara checkout; `replay.lock` claims it for the
 invocation. In `source` path mode it also creates the recorded arm path when
 that path is missing and removes the directories it created afterwards (see
 [Path mode](#path-mode)). `--turn <spec>` is the entry point the command
-starts for each prepared turn.
+starts for each prepared turn. The command exits 1 when any repeat is
+`harness-failed`, and a SIGINT, SIGTERM, or SIGHUP is forwarded to the
+running turn, whose repeat is recorded before the command stops.
 
-The replay serves Pi arms. It refuses a P7 item (judged across two arms), a
-P14 item (no probe turn), a probe turn that did not end `ok`, a run whose
+The replay serves Pi arms. It refuses an arm label that is neither an arm
+nor an A/A control label (`<arm>~<tag>`), a P7 item (judged across two arms), a
+P14 item (no probe turn), a probe turn that did not end `ok`, a probe
+snapshot row that is missing, repeated, fails the grader's artefact check,
+or names another arm, item, turn, session, or outcome, a run whose
 journal holds no `EndRun`, a manifest that is not `sim-run-manifest/v3`, a
 `scenario.json` that does not hash to the manifest's `scenario_hash` or names
 another tier or seed, a journal with no `ClockOffset` before the probe, an
@@ -49,7 +54,7 @@ a test checks every campaign `Gateway` construction for that.
 | a | `none` | forwards each request unchanged: the replay-noise baseline |
 | b | `evidence-note` | appends, after the probe text, a note quoting the probe's `ground_truth.sources` events: `Note from earlier sessions:` then `- I wrote: <text>` per user turn, `- <path> was committed with:` and the fenced content per committed file, and `- <path> was removed from the repository.` per removal |
 | c | `drop-competing` | in Eidnara-delivered memory listings, drops each item carrying a `stale` or `absent` literal and, in a listing that holds an item carrying a literal of every `present` group, every item that does not; numbered items are renumbered and the listing's count follows |
-| d | `provenance-off` | removes Eidnara's provenance wording from delivered memory items: the `trust=[...]` header label, the opening attribution (`User stated:`, `Assistant reported:`), and the JSON provenance record line |
+| d | `provenance-off` | removes Eidnara's provenance wording from delivered memory items: the `trust=[...]` header label, the opening attribution (`User stated:`, `Assistant reported:`), and the JSON provenance record line after the header (an object whose `anchor`, `citation`, `quote`, and `source` are strings) |
 | e | `oracle-note` | puts the `host-oracle` arm's note (`src/run/oracle-note.ts`) ahead of the probe text, after any marker the plugin put in front of it |
 
 Variants c and d read two listing shapes: the numbered search results of an
@@ -77,7 +82,7 @@ before the replay deletes or rewrites anything beneath them.
 |---|---|---|
 | Workspace tree | The arm's `snapshot.git` keeps every tree the recorder wrote as a loose object whose modification time is its last write, and a `write-tree` over an unchanged index returns the tree its previous write left newest. The root tree the journal places in a session of the probe's project (the first `Event` or `EndTurn` at or after the write) and written last before the probe turn's first agent call is the probe's start tree. The probe's recorded turn diff must apply to it; when it does not, up to 200 of the project's other root trees are tried nearest in time first. | never `exact`: `latest-write+patch-check` names a tree the turn diff applies to, `latest-write` (empty turn diff) rests on the write-time rule alone, and `patch-search` names a tree the time rule did not pick |
 | Workspace files | The source workspace is copied with reflinks, the recorder writes its tree, and a two-tree `read-tree -m -u` moves the files to the start tree; ignored files (build outputs) stay as copied. The recorder then writes the tree again, and `exact` holds when it equals the start tree. | exact for tracked files; ignored files come from the end of the run |
-| Workspace git | The branch moves to the newest first-parent commit of the final head from before the probe, and the index resets to it. A harness commit (`sim-user`) whose date and message match an `apply_diff` event of the project counts by that event's place in the scenario; every other commit counts by its commit time against the probe's scenario instant. Git runs with the arm's baseline `<project>.gitconfig` in place of the repository config, hooks and fsmonitor off, and replace refs ignored, and refuses a `.git` that is a link or carries `commondir`, `gitdir`, or alternates. The reflogs and `ORIG_HEAD` are removed, so only refs reach later commits. | `exact` when no ref outside `refs/heads` and `refs/remotes` exists (a stash keeps its final value, listed under `other_refs`); `agent_commits_kept` counts agent commits before the probe |
+| Workspace git | The branch moves to the newest first-parent commit of the final head from before the probe, and the index resets to it. A harness commit (`sim-user`) whose date and message match an `apply_diff` event of the project counts by that event's place in the scenario; every other commit counts by its commit time against the probe's scenario instant. Git runs with the arm's baseline `<project>.gitconfig` in place of the repository config, hooks and fsmonitor off, and replace refs ignored, and refuses a `.git` that is a link or carries `commondir`, `gitdir`, or alternates. The reflogs and `ORIG_HEAD` are removed, so only refs reach later commits. | `exact` when every other ref is a remote-tracking ref or a branch the new head already contains, and the repository config and hooks equal the clone's baseline; a branch that reaches a later commit or a stash keeps its final value and is listed under `other_refs`, a changed config under `config_matches_baseline: false`, and installed hooks under `hooks`; `agent_commits_kept` counts agent commits before the probe |
 | Pi transcript | Every session entry before the probe's user message, unchanged, at the same path under the agent directory: the first user message that carries the probe text and was sent no earlier than two seconds before `BeginTurn` on the daemon's clock. | exact in `source` path mode |
 | Eidnara store | The arm's data directory is copied and rolled back to the probe. The Kernel versions its rows by commit: rows a commit after the last one recorded before `BeginTurn` (on the daemon's clock) created are deleted, a later invalidation or supersession is undone, and projection and consumer cursors move back to that commit. The guard triggers (the `BEFORE` triggers that raise) are dropped for the rollback and recreated from their recorded SQL, so the schema digest the daemon checks is unchanged, while the maintenance triggers keep firing for each delete. A commit column without a rule refuses the replay. The memory store keeps session working state without history, so rows of the probe's session and of every later session go and rows created after the probe go; a commit column there other than the capture job's refuses the replay. Rows `foreign_key_check` then reports in either database are deleted until it reports none. | not exact. The daemon rebuilds the probe session's working state from the transcript the host sends, so on an arm with Eidnara compaction a mid-session probe's request carries a fresh fold of the history. A capture job committed after the probe stays terminal, since Eidnara clears a job's text when it commits, and its memories are gone with the rollback (`capture_jobs_committed_after_probe`). Memory-store rows without a session or creation time keep their final values, and any other SQLite file under the data directory is listed under `untouched` |
 | Clock | The arm's clock offset targets the scenario time of the source turn's `BeginTurn` when the daemon starts. | `clock_lag_ms` in each result is how far the clock had run when the prompt went to the host |
@@ -167,9 +172,9 @@ comparison, failures, notes, and the clock lag. The verdict is the grade's
 (`pass`, `fail`, or `excluded`), `refused` with the grader's reason,
 `turn-failed` when the probe turn failed, `no-snapshot`, or `harness-failed`
 whenever the repeat recorded a failure: a transform that threw, a note
-variant that changed nothing, a daemon exit, a proxy failure, or an error
-before the turn ran. A harness failure takes precedence over a decided
-grade, which stays in the record. The prefix comparison sets the first agent
+variant that changed nothing, a daemon exit, a proxy failure, a driver stop
+that failed, or an error before the turn ran. A harness failure takes
+precedence over a decided grade, which stays in the record. The prefix comparison sets the first agent
 request the host sent in the replay, before the transform, against the
 source turn's first agent request, through the probe message: `identical`
 when both hold the probe message and the bytes match, otherwise the fields

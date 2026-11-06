@@ -538,6 +538,15 @@ describe("replayProbe on a fixture run", () => {
         expect(results.map((r) => r.verdict)).toEqual(["pass", "pass", "pass"]);
     });
 
+    test("an arm label outside the arm and control-label grammar is refused", async () => {
+        const f = await sourceRun();
+        for (const arm of ["host~/../../x", "../host", "nobody"]) {
+            await expect(replay(f, "q-a", "a", { arm })).rejects.toThrow(
+                "is not an arm or control label",
+            );
+        }
+    });
+
     test("campaign gateways carry no transform", () => {
         for (const file of ["src/run/run.ts", "scripts/grade-run.ts"]) {
             const text = readFileSync(join(ROOT, file), "utf8");

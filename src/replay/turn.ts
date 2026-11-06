@@ -187,8 +187,11 @@ export async function runTurn(spec: TurnSpec, seams: TurnSeams = {}): Promise<Tu
         await driver.resume(spec.sessionStart);
         scope.turn = spec.probe.id;
         promptMs = now();
-        outcome = { ...(await driver.event(spec.probe)) };
-        scope.turn = null;
+        try {
+            outcome = { ...(await driver.event(spec.probe)) };
+        } finally {
+            scope.turn = null;
+        }
         if (typeof outcome.failed === "string") notes.push(`turn failed: ${outcome.failed}`);
     } catch (caught) {
         failures.push(`turn: ${(caught as Error).message}`);
@@ -196,7 +199,7 @@ export async function runTurn(spec: TurnSpec, seams: TurnSeams = {}): Promise<Tu
         try {
             await driver.stop();
         } catch (caught) {
-            notes.push(`stop: ${(caught as Error).message}`);
+            failures.push(`stop: ${(caught as Error).message}`);
         }
         await gateway.stop();
         records.close();

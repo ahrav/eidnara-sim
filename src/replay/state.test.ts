@@ -83,7 +83,7 @@ function storeDb(path: string): Database {
     db.run("create table notes (id integer, session_id text, content text)");
     db.run("insert into cache_state values ('sim-s-1', x'00'), ('sim-s-2', x'00')");
     db.run(
-        "insert into memory_capture_jobs values (1, 'sim-s-1', 2, null, 150), (2, 'sim-s-1', 3, null, 190), (3, 'sim-s-1', null, 260, 180), (4, 'sim-s-2', 4, null, 350)",
+        "insert into memory_capture_jobs values (1, 'sim-s-1', 2, null, 150), (2, 'sim-s-1', 3, null, 190), (3, 'sim-s-1', null, 260, 180), (4, 'sim-s-2', 4, null, 350), (5, 'sim-s-2', 3, null, 200)",
     );
     db.run("insert into scan_batches values (1, 120), (2, 320)");
     db.run("insert into notes values (1, 'sim-s-1', 'kept'), (2, 'sim-s-2', 'later')");
@@ -148,7 +148,7 @@ describe("rollbackStore", () => {
         const root = dataDir();
         const fidelity = rollbackStore({ dataDir: root, cutoffMs: 250, sessions: ["sim-s-2"] });
         expect(fidelity.detail).toMatchObject({
-            capture_jobs_committed_after_probe: 1,
+            capture_jobs_committed_after_probe: 2,
             memory_store_orphans: { field_scans: 1 },
         });
         const db = new Database(join(root, "eidnara", "context", "store.db"));
@@ -166,6 +166,7 @@ describe("rollbackStore", () => {
             { job_id: 1, c: 2, a: null },
             { job_id: 2, c: 3, a: null },
             { job_id: 3, c: null, a: 260 },
+            { job_id: 5, c: 3, a: null },
         ]);
         expect(db.query("select scan_batch_id from scan_batches").all()).toEqual([
             { scan_batch_id: 1 },
@@ -287,6 +288,8 @@ describe("probe-time workspace", () => {
         const agent = commit("agent", 30, "agent@example.com");
         commit("Add late.md", 35, "sim-user@users.noreply.github.com");
         commit("later", 50, "sim-user@users.noreply.github.com");
+        sh(root, ["branch", "future"]);
+        sh(root, ["branch", "past", agent]);
         const baseline = join(tmp(), "baseline.gitconfig");
         writeFileSync(baseline, "[core]\n\trepositoryformatversion = 0\n");
         writeFileSync(
@@ -311,8 +314,9 @@ describe("probe-time workspace", () => {
         expect(fidelity.detail).toMatchObject({
             dropped: 2,
             agent_commits_kept: 1,
-            other_refs: [],
+            other_refs: ["refs/heads/future"],
         });
+        expect(fidelity.exact).toBe(false);
     });
 });
 
