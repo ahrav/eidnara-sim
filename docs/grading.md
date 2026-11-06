@@ -330,16 +330,25 @@ single quotes expands from the command's earlier assignment segments
 (`P="[tag]"`, `export P=...`), as data, and an assignment inside a `( ... )`
 subshell, a pipeline, or a background job stays in that scope. The command
 writes a file the channels can read with `>`, `>>`, or `tee` (`-a` appends)
-from text it carries: a `cat` or `tee` of one input source, an `echo` of
-literal words, or a `printf` of one literal format or of `%s`; an append to
-a file the command did not write, or a write from any other source, leaves
-the file unresolved. A heredoc body belongs to the segment whose `<<` opened
+from text it carries: a `cat` (with no option but `-u`) or `tee` of one
+input source, an `echo` of literal words, or a `printf` of one literal
+format or of `%s` (its arguments inserted as written); only a part's last
+standard-output target receives the text and earlier `>` targets are
+emptied; an unquoted heredoc expands tracked `$NAME` values and any other
+expansion leaves it unresolved. An append to a file the command did not
+write, a write from any other source, a path with `..`, a later part that
+names the file other than to read it (`mv`, `sed -i`, and the rest), a
+redirection on a group, and, for a relative path, a `cd` leave the file
+unresolved; `unset` drops a variable. `--cleanup=strip` drops `#` lines
+before the subject is chosen, and `--no-message` and `--no-file` cancel the
+sources given before them. A heredoc body belongs to the segment whose `<<` opened
 it, with `<<-` tabs stripped, so `git commit -F - <<'EOF'; echo done` reads
 its message. `--squash` and `--fixup` read as their `squash! ` and `fixup! `
 subjects. A segment with two standard-input sources, a commit after a `git`
 global option outside Git's documented set (`-c`, `-C`, `-p`, `-P`,
 `--git-dir`, and kin), one that reuses a message (`-c`, `-C`,
-`--reuse-message`, `--reedit-message`), or one whose message the text does
+`--reuse-message`, `--reedit-message`), a status-only one (`--porcelain`,
+`--short`, `--branch`, `--long`, `-z`), or one whose message the text does
 not carry is read as written. Shell words keep a
 double-quoted `\"` as a quote character. `scope`, a directory prefix ending in `/` or one file path, limits
 the diff channels to files under it or to that file; on a P4 `out` item it

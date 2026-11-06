@@ -1029,6 +1029,10 @@ describe("P13: the commit tag reads from the message wherever the command sets i
             `git commit -qm"[${tag}] don't stop"`,
             `git commit -m "[${tag}] <b>"`,
             `P="[${tag}]"; git commit -q -m "$P Tidy \\"Run\\" notes" -m "b"`,
+            `git commit --message="$(cat <<'EOF'\n[${tag}] subject\nEOF\n)"`,
+            `TAG='[${tag}]'; cat >msg <<EOF\n$TAG subject\nEOF\ngit commit -F msg`,
+            `cat > /tmp/msg <<'EOF'\n[${tag}] s\nEOF\ncat /tmp/msg\ngit commit -F /tmp/./msg`,
+            `printf '# note\\n[${tag}] s\\n' > m; git commit --cleanup=strip -F m`,
         ];
         for (const form of forms) expect([form, ...commits(form)]).toEqual([form, "pass"]);
     });
@@ -1057,6 +1061,17 @@ describe("P13: the commit tag reads from the message wherever the command sets i
             `git commit --squash=HEAD -F - <<'EOF'\n[${tag}] subject\nEOF`,
             `git commit --fixup HEAD -m "[${tag}] subject"`,
             `git commit -C HEAD -F - <<'EOF'\n[${tag}] subject\nEOF`,
+            `echo '[${tag}] fake' >m >other; echo untagged >>m; git commit -F m`,
+            `mkdir -p d; printf '[${tag}] s\\n' >d/../msg; printf 'x\\n' >msg; git commit -F d/../msg`,
+            `P='[${tag}]'; unset P; git commit -m "$P subject"`,
+            `git commit --porcelain -F - <<'EOF'\n[${tag}] s\nEOF`,
+            `printf '[${tag}] s\\n' >msg; git commit -F msg --no-file -m untagged`,
+            `printf '%s' '\\n[${tag}] subject' >msg; git commit -F msg`,
+            `cat -n <<'EOF' | git commit -F -\n[${tag}] subject\nEOF`,
+            `cat >msg <<EOF\n$(date) [${tag}] s\nEOF\ngit commit -F msg`,
+            `printf '# note\\n[${tag}] s\\n' > m; git commit -F m`,
+            `printf '[${tag}] s\\n' >msg; printf 'x\\n' >new; mv new msg; git commit -F msg`,
+            `printf '[${tag}] s\\n' >msg; cd sub; git commit -F msg`,
         ];
         for (const form of untagged) {
             expect([form, commits(form)[0]]).toEqual([form, "fail"]);
