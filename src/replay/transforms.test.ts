@@ -398,6 +398,46 @@ describe("caution, notice, and memory-block variants", () => {
         expect((applied.detail.slots as Record<string, unknown>[])[0]?.caution_sentences).toBe(1);
     });
 
+    test("drop-competing-caution matches caution wording at word boundaries", () => {
+        const body = withListing(
+            [
+                "Found 2 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: Mask your API key; complete the task before deployment.",
+                "",
+                "[2] [memory] id=b",
+                "Assistant reported: The limit is still open.",
+            ].join("\n"),
+        );
+        const gt = { present: [["absent-literal"]], stale: [], absent: [] };
+        transformFor("c2").apply(body, inputs({ ground_truth: gt }));
+        expect(result(body, 1)).toBe(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: Mask your API key; complete the task before deployment.",
+                "",
+            ].join("\n"),
+        );
+    });
+
+    test("provenance-notices-off removes notice lines from a result with no hits", () => {
+        const notices = [
+            "\u00a79\u00a7 Memory: the fused search route is unavailable (disabled).",
+            "Memory: Memory freshness cannot be judged because no consumer is registered.",
+            "",
+            'Found 0 results for "alias".',
+        ].join("\n");
+        const body = withListing(notices);
+        const applied = transformFor("d2").apply(body, inputs());
+        expect(applied.changed).toBe(true);
+        expect(result(body, 1)).toBe('\u00a79\u00a7\n\nFound 0 results for "alias".');
+        const d = withListing(notices);
+        expect(transformFor("d").apply(d, inputs()).changed).toBe(false);
+    });
+
     test("provenance-notices-off also removes the daemon's Memory: notice lines", () => {
         const body = recorded();
         const applied = transformFor("d2").apply(body, inputs());

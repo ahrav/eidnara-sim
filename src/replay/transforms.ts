@@ -173,7 +173,7 @@ const carriesPresent = (text: string, gt: TransformInputs["ground_truth"]) =>
     gt.present.some((group) => group.some((l) => carries(text, l)));
 
 const CAUTION = new RegExp(
-    [
+    `\\b(?:${[
         "can['\u2019]?t confirm",
         "cannot confirm",
         "not confirmed",
@@ -195,7 +195,7 @@ const CAUTION = new RegExp(
         "undecided",
         "never got an answer",
         "not (?:yet )?answered",
-    ].join("|"),
+    ].join("|")})\\b`,
     "i",
 );
 
@@ -354,7 +354,7 @@ function provenanceOff(body: ConverseBody, notices = false): Applied {
         const segments = splitListing(text);
         if (itemsOf(segments).length === 0) {
             unparsed.push(name);
-            return text;
+            if (!notices) return text;
         }
         const scrub = (item: string[]) => {
             const out: string[] = [];

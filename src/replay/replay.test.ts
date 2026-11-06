@@ -27,7 +27,8 @@ import { PRICE_TABLE } from "../run/price";
 import { projectCall } from "../run/run";
 import { scenarioHash } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
-import { REPLAY_MANIFEST, replayProbe } from "./replay";
+import { projectSources, REPLAY_MANIFEST, replayProbe } from "./replay";
+import type { ProbeSource } from "./source";
 import { piSessionDir } from "./state";
 import { TRANSFORMS } from "./transforms";
 import { runTurn } from "./turn";
@@ -564,5 +565,26 @@ describe("replayProbe on a fixture run", () => {
                 expect(call.slice(0, call.indexOf("});"))).not.toContain("transform");
             }
         }
+    });
+});
+
+describe("projectSources", () => {
+    test("keeps the sources recorded in the probe's project", () => {
+        const source = {
+            project: "base-twin",
+            probe: { ground_truth: { sources: ["e-1", "e-2", "e-3", "e-9"] } },
+            scenario: {
+                sessions: [
+                    { id: "s-1", project: "base" },
+                    { id: "s-2", project: "base-twin" },
+                ],
+                events: [
+                    { id: "e-1", kind: "user_turn", session: "s-1" },
+                    { id: "e-2", kind: "user_turn", session: "s-2" },
+                    { id: "e-3", kind: "apply_diff", project: "base-twin" },
+                ],
+            },
+        } as unknown as ProbeSource;
+        expect(projectSources(source)).toEqual(["e-2", "e-3"]);
     });
 });

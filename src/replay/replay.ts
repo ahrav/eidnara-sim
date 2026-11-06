@@ -282,10 +282,27 @@ function transformInputs(source: ProbeSource): TransformInputs {
         ),
         project_memory: projectMemoryBlock(
             source.scenario.events as unknown as Record<string, unknown>[],
-            gt?.sources ?? [],
+            projectSources(source),
             source.probe.type,
         ),
     };
+}
+
+/** Project memory is scoped to a single project. */
+export function projectSources(source: ProbeSource): string[] {
+    const sessions = new Map(source.scenario.sessions.map((s) => [s.id, s.project]));
+    const events = new Map(
+        (source.scenario.events as unknown as Record<string, unknown>[]).map((e) => [
+            String(e.id),
+            e,
+        ]),
+    );
+    return (source.probe.ground_truth?.sources ?? []).filter((id) => {
+        const e = events.get(id);
+        const project =
+            typeof e?.project === "string" ? e.project : sessions.get(String(e?.session));
+        return project === source.project;
+    });
 }
 
 const oracleArm = (source: ProbeSource) => deliveryOf(armProfile(source.arm)) === "oracle-context";
