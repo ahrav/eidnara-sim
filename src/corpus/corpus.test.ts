@@ -222,6 +222,10 @@ describe("committed corpus", () => {
         broken.any.framings = ["Next.", "Next."];
         broken.rust.plan[1].check = { paths_must: ["x"] };
         broken.typescript.tool_error[0].command = "true";
+        broken.typescript.tool_error[0].script.content =
+            'print("{Alt}Error: cookie header on request 71 holds {value} bytes")';
+        broken.typescript.constraint[0].probe_variants = [broken.typescript.constraint[0].probe];
+        broken.typescript.constraint[1].out_probe_variants = ["Add {nothing} here."];
         broken.typescript.scoped_update[0].variants[0].outer = "backtick";
         expect(bankProblems(broken)).toEqual([
             "fact-bank rust/constraint[0] rs-cmd-const-prefix: revise names an unknown placeholder",
@@ -230,10 +234,12 @@ describe("committed corpus", () => {
             "fact-bank rust/scoped_update[0] rs-scope-log-level: variants is not a list of at least two objects",
             "fact-bank rust/tool_error[0] rs-check-replay: form is not tool_result or pasted",
             "fact-bank rust/tool_error[1] rs-ci-paste: the pasted text does not carry the error the check names",
+            "fact-bank typescript/constraint[0] ts-const-prefix: probe_variants is not a non-empty list of distinct non-blank strings apart from the task",
+            "fact-bank typescript/constraint[1] ts-error-tag: out_probe_variants names an unknown placeholder",
             "fact-bank typescript/plan: expected at least 2 templates",
             "fact-bank typescript/scoped_update[0] ts-scope-quotes out_check: check key quote_style_must is not double or single",
-            "fact-bank typescript/tool_error[0] ts-check-replay: command does not run the committed script scripts/check-quiet_vole.sh",
-            "fact-bank typescript/tool_error[0] ts-check-replay: the tool_result text does not carry the error the check names",
+            "fact-bank typescript/tool_error[0] ts-check-replay: command does not run the committed script scripts/check-quiet_vole.py",
+            "fact-bank typescript/tool_error[0] ts-check-replay: the check script must define and raise the error the check names",
             "fact-bank any/framings: expected a non-empty list of distinct non-blank strings",
         ]);
     });

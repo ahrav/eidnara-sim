@@ -471,8 +471,10 @@ const invokes = (patterns: string[]) => (x: Command) =>
 const invokesAny = (patterns: string[]) => (x: Command) => patterns.some((p) => invokes([p])(x));
 
 /**
- * The statements an `applies` pattern finds in the files' added lines: each match extended to the
- * end of its line, and over following lines while a bracket it opened stays open (ten lines at most).
+ * The statements an `applies` pattern finds in the files' added lines: each match, from its first
+ * non-blank character, extended to the end of its line, and over following lines while a bracket
+ * it opened stays open (ten lines at most). A leading `\s*` that crosses a blanked comment line
+ * therefore starts the unit at the construct below the comment.
  * Patterns and brackets read the code mask, so a comment or a string literal starts no unit and
  * opens no bracket; the unit is the source text with its comments blanked, so a comment satisfies
  * no rule.
@@ -487,8 +489,10 @@ function unitsOf(files: DiffFile[], patterns: string[]): string[] {
         const starts = new Set<number>();
         for (const p of patterns) {
             const re = pattern(p);
-            for (const m of mask.matchAll(new RegExp(re.source, `${re.flags}g`)))
-                starts.add(m.index);
+            for (const m of mask.matchAll(new RegExp(re.source, `${re.flags}g`))) {
+                const code = m[0].search(/\S/);
+                starts.add(m.index + Math.max(code, 0));
+            }
         }
         const open = (code: string) =>
             (code.match(/[([{]/g)?.length ?? 0) - (code.match(/[)\]}]/g)?.length ?? 0);
@@ -1334,18 +1338,23 @@ function p4(r: ArtefactReader, c: Check): Outcome {
     );
 }
 
-/** A question that asks the user to choose: the answer's last three sentences hold one. */
 const CHOICE = /\b(?:which|either|whether|or|first|order|prefer|rather)\b/i;
 /** A sentence that picks a task after all: `I'll start with`, `let me begin`. */
 const COMMITS =
-    /\bI(?:'ll| will|'m going to| am going to) (?:start|begin|go|do|take|pick|work|tackle)\b|\blet me (?:start|begin)\b/i;
-/** The answer asks the user to choose in its last three sentences and picks nothing after asking. */
+    /\bI(?:'ll| will|'m going to| am going to|'ve decided to| have decided to| decided to) (?:start|begin|go with|do|take|pick|work on|tackle|implement|proceed|build|add)\b(?!\s+(?:with\s+|on\s+)?(?:neither|whichever\s+(?:you|the user))\b)|\bI(?:'m| am) (?:starting|beginning|going with|doing|taking|picking|working on|tackling|implementing|proceeding with)\b(?!\s+(?:with\s+|on\s+)?(?:neither|whichever\s+(?:you|the user))\b)|\bI(?:'ve| have)? (?:choose|pick|chose|picked|chosen|selected|select|decided on|went with|gone with|will go with|am going with)\b(?!\s+(?:neither|whichever\s+(?:you|the user))\b)|\blet me (?:start|begin)\b/i;
+/**
+ * The answer leaves the choice to the user: its last choice question is followed by at most three
+ * statements and any number of questions, and a sentence after its first choice question that
+ * matches `COMMITS` makes the answer a pick.
+ */
 const asksToChoose = (answer: string) => {
     const all = sentences(answer);
-    const asked = all.reduce((at, s, i) => (s.endsWith("?") && CHOICE.test(s) ? i : at), -1);
-    return (
-        asked >= 0 && asked >= all.length - 3 && !all.slice(asked + 1).some((s) => COMMITS.test(s))
-    );
+    const choices = all.flatMap((s, i) => (s.endsWith("?") && CHOICE.test(s) ? [i] : []));
+    const first = choices[0];
+    const last = choices.at(-1);
+    if (first === undefined || last === undefined) return false;
+    const statements = all.slice(last + 1).filter((s) => !s.endsWith("?"));
+    return statements.length <= 3 && !all.slice(first + 1).some((s) => COMMITS.test(s));
 };
 
 /**
@@ -1541,13 +1550,53 @@ export const runsScript = (path: string) => (x: Command) =>
         const named = (w: string | undefined) =>
             w !== undefined && (w === path || w === `./${path}` || w.endsWith(`/${path}`));
         if (named(words[0])) return true;
-        if (!/^(?:sh|bash|dash|zsh)$/.test(words[0] ?? "")) return false;
-        const options = words.slice(1).filter((w) => w.startsWith("-"));
-        const operand = words.slice(1).find((w) => !w.startsWith("-"));
-        return (
-            !options.some((o) => /^-[a-z]*[nc]/i.test(o) && !o.startsWith("--")) && named(operand)
-        );
+        // A shell runs a shell script and python a Python one; the other pairing exits on a
+        // syntax error before the check reports anything.
+        if (/^(?:sh|bash|dash|zsh)$/.test(words[0] ?? "") && !path.endsWith(".py")) {
+            const options = words.slice(1).filter((w) => w.startsWith("-"));
+            const operand = words.slice(1).find((w) => !w.startsWith("-"));
+            // `sh -n` parses the script and `sh -c` runs other text.
+            return (
+                !options.some((o) => /^-[a-z]*[nc]/i.test(o) && !o.startsWith("--")) &&
+                named(operand)
+            );
+        }
+        // The toolchain preflight probes python3; a bare python may be absent and exit 127.
+        if (!/^python3(?:\.\d+)?$/.test(words[0] ?? "") || !path.endsWith(".py")) return false;
+        return named(pythonProgram(words.slice(1)));
     });
+/**
+ * The program file a `python` command runs, after its options, or undefined when it runs other
+ * text (`-c`, `-m`, `-` for standard input), exits before running anything (`-h`, `-V`, an
+ * unknown option), or takes an unknown long option.
+ */
+const pythonProgram = (words: string[]): string | undefined => {
+    for (let i = 0; i < words.length; i++) {
+        const w = words[i] as string;
+        if (w === "--") return words[i + 1];
+        if (w === "--check-hash-based-pycs") {
+            if (!/^(?:always|default|never)$/.test(words[i + 1] ?? "")) return undefined;
+            i++;
+            continue;
+        }
+        if (w === "-" || w.startsWith("--")) return undefined;
+        if (!w.startsWith("-")) return w;
+        for (let k = 1; k < w.length; k++) {
+            const ch = w[k] as string;
+            if (/[WX]/.test(ch)) {
+                const value = k + 1 < w.length ? w.slice(k + 1) : (words[++i] ?? "");
+                // A malformed -W filter or -X option stops Python before the program runs.
+                if (ch === "X" && !/^(?:[a-z_]+)(?:=[A-Za-z0-9_.:/-]+)?$/.test(value))
+                    return undefined;
+                if (ch === "W" && !/^[A-Za-z]*(?::[^:]*){0,4}$/.test(value)) return undefined;
+                break;
+            }
+            // Python's flags that run on: an unknown one, like -c, -m, -h, and -V, runs no file.
+            if (!/[bBdEiIOPqsSuvx]/.test(ch)) return undefined;
+        }
+    }
+    return undefined;
+};
 /**
  * The failure evidence a P12 entry can cite: the issue number the probe names, and the paths,
  * snake_case names, and figures of three or more digits its sources carry.
