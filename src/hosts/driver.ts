@@ -23,7 +23,11 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { GitBound, git } from "../git";
 import type { CallView } from "../grade/artefacts";
-import { captureCountersProblem } from "../run/capabilities";
+import {
+    type CaptureGeneration,
+    captureCountersProblem,
+    combineCaptureGenerations,
+} from "../run/capabilities";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import {
     type ArmDriver,
@@ -127,6 +131,9 @@ const GIT_ENV = {
  * The rename publishes a complete file, so a kill mid-write leaves the previous one. The staged
  * file is created exclusively, so a link planted at its name is removed, never written through.
  */
+const sameGeneration = (a: CaptureGeneration["daemon"], b: CaptureGeneration["daemon"]): boolean =>
+    a !== null && b !== null && a.pid === b.pid && a.start === b.start;
+
 function writeWhole(path: string, text: string): void {
     const staged = `${path}.${process.pid}`;
     rmSync(staged, { force: true });
@@ -574,6 +581,63 @@ export class HostDriver implements ArmDriver {
         }
     }
 
+    private get captureRecord(): string {
+        return join(this.armDir, "source-capture.json");
+    }
+
+    private captureGenerations(): CaptureGeneration[] {
+        if (!existsSync(this.captureRecord)) return [];
+        const record = this.readRecord<{ generations?: unknown }>(this.captureRecord);
+        if (!Array.isArray(record.generations)) {
+            throw new HarnessFailure(
+                `arm ${this.o.arm}: ${this.captureRecord} lists no generations`,
+            );
+        }
+        return record.generations as CaptureGeneration[];
+    }
+
+    private writeCaptureGenerations(generations: CaptureGeneration[]): void {
+        const total = combineCaptureGenerations(generations);
+        writeWhole(this.captureRecord, `${JSON.stringify({ ...total, generations })}\n`);
+    }
+
+    /**
+     * recordGeneration persists each generation's `source_capture` counters before the daemon
+     * ends, because the daemon process owns them. `waitMs` bounds the wait for capture to settle.
+     * A generation already listed keeps its entry, so a read a killed harness left pending stays
+     * unread. The pending entry stands until the read returns.
+     */
+    private async recordGeneration(
+        daemon: DaemonStack,
+        ended: string,
+        waitMs: number,
+    ): Promise<CaptureGeneration | null> {
+        if (!armProfile(this.o.arm).source_capture) return null;
+        const id = this.daemonId;
+        const generations = this.captureGenerations();
+        const listed = generations.find((g) => sameGeneration(g.daemon, id));
+        if (listed) return listed;
+        const pending: CaptureGeneration = {
+            daemon: id,
+            ended,
+            counters: null,
+            error: "the counter read did not finish",
+        };
+        this.writeCaptureGenerations([...generations, pending]);
+        const read = await Promise.resolve()
+            .then(() => daemon.sourceCapture(waitMs))
+            .then(
+                (counters) => {
+                    const problem = captureCountersProblem(counters);
+                    return problem ? { counters: null, error: problem } : { counters, error: null };
+                },
+                (caught: unknown) => ({ counters: null, error: String(caught) }),
+            );
+        const entry = { ...pending, ...read };
+        this.writeCaptureGenerations([...generations, entry]);
+        return entry;
+    }
+
     private get ballast(): string | null {
         return this.storeMount ? join(this.storeMount, "ballast") : null;
     }
@@ -734,9 +798,23 @@ export class HostDriver implements ArmDriver {
         this.switched = undone ? null : (state.switched ?? null);
         this.live = true;
         this.storeFaults = new Map(Object.entries(state.store_faults ?? {}));
-        // A record a cleanup finish wrote before the arm's last event belongs to a generation
-        // that has more events to run after this resume, so the final finish reads anew.
-        if (open !== null) rmSync(join(this.armDir, "source-capture.json"), { force: true });
+        // The daemon's counters ended with the killed harness; recovery preserves any persisted
+        // counter-read result.
+        const ended = state.daemon;
+        if (ended && armProfile(this.o.arm).source_capture) {
+            const generations = this.captureGenerations();
+            if (!generations.some((g) => sameGeneration(g.daemon, ended))) {
+                this.writeCaptureGenerations([
+                    ...generations,
+                    {
+                        daemon: ended,
+                        ended: "harness",
+                        counters: null,
+                        error: "the generation ended with its harness before a counter read",
+                    },
+                ]);
+            }
+        }
         const checked = join(this.armDir, "transcripts.json");
         if (existsSync(checked)) {
             const record = this.readRecord<{
@@ -1441,6 +1519,7 @@ export class HostDriver implements ArmDriver {
         // An earlier restart's check that a served pass has earned is taken from this daemon.
         const stores = this.owedStores();
         this.o.sampleDaemon?.();
+        await this.recordGeneration(daemon, `fault ${fault}`, 0);
         await daemon.crash();
         const store = checkStore(this.storeDb);
         // Marked before the start, so a pass the replacement serves while its start settles counts.
@@ -1671,47 +1750,17 @@ export class HostDriver implements ArmDriver {
         }
         try {
             const daemon = this.daemon;
-            const captureRecord = join(this.armDir, "source-capture.json");
-            // A record an earlier finish wrote after the arm's last event holds the generation
-            // that ran it; a resumed finish keeps it, since its own generation started afresh.
-            if (
-                daemon &&
-                checkFinalStore &&
-                armProfile(this.o.arm).source_capture &&
-                !existsSync(captureRecord)
-            ) {
-                // Read before the stop: the counters live in the daemon process. The placeholder
-                // stands until the read is recorded, so a harness killed mid-read leaves an unread
-                // record a resume keeps.
-                const pending = { counters: null, error: "the counter read did not finish" };
-                let recorded = true;
+            if (daemon) {
+                let generation: CaptureGeneration | null = null;
                 try {
-                    writeWhole(captureRecord, `${JSON.stringify(pending)}\n`);
+                    const ended = checkFinalStore ? "finish" : "stop";
+                    generation = await this.recordGeneration(daemon, ended, 30_000);
                 } catch (caught) {
-                    recorded = false;
+                    // The record is evidence only; a failed write still lets the daemon stop.
                     failure ??= caught;
                 }
-                const capture = await Promise.resolve()
-                    .then(() => daemon.sourceCapture())
-                    .then(
-                        (counters) => {
-                            const problem = captureCountersProblem(counters);
-                            return problem
-                                ? { counters: null, error: problem }
-                                : { counters, error: null };
-                        },
-                        (caught: unknown) => ({ counters: null, error: String(caught) }),
-                    );
-                // The record is evidence only; a failed write still lets the daemon stop.
-                try {
-                    if (recorded) writeWhole(captureRecord, `${JSON.stringify(capture)}\n`);
-                } catch (caught) {
-                    failure ??= caught;
-                }
-                // The counters live only in this daemon generation, so an unread record fails
-                // the finish, and the arm's recorded failure keeps a resume from replacing them.
-                if (capture.error !== null) {
-                    failure ??= new Error(`source capture counters unread: ${capture.error}`);
+                if (checkFinalStore && generation?.error) {
+                    failure ??= new Error(`source capture counters unread: ${generation.error}`);
                 }
             }
             await daemon?.stop();

@@ -1937,9 +1937,20 @@ describe("HostDriver faults", () => {
         const daemon = fakeDaemon(PID + 10);
         driver.daemon = daemon as unknown as DaemonStack;
         await driver.finish();
-        const record = () =>
-            JSON.parse(readFileSync(join(driver.armDir, "source-capture.json"), "utf8"));
-        expect(record()).toEqual({ counters: { admitted: 2, completed: 2 }, error: null });
+        const record = (d: { armDir: string }) =>
+            JSON.parse(readFileSync(join(d.armDir, "source-capture.json"), "utf8"));
+        const read = (counters: Record<string, number>, ended = "finish") => ({
+            daemon: null,
+            ended,
+            counters,
+            error: null,
+        });
+        expect(record(driver)).toEqual({
+            counters: { admitted: 2, completed: 2 },
+            error: null,
+            unread_generations: 0,
+            generations: [read({ admitted: 2, completed: 2 })],
+        });
         const failing = fixture("eidnara-cf").driver;
         const silent = fakeDaemon(PID + 11);
         silent.capture = new Error("source capture never settled");
@@ -1948,9 +1959,11 @@ describe("HostDriver faults", () => {
             /source capture counters unread: Error: source capture never settled/,
         );
         expect(silent.stops).toBe(1);
-        expect(
-            JSON.parse(readFileSync(join(failing.armDir, "source-capture.json"), "utf8")),
-        ).toEqual({ counters: null, error: "Error: source capture never settled" });
+        expect(record(failing)).toMatchObject({
+            counters: null,
+            error: "Error: source capture never settled",
+            unread_generations: 1,
+        });
         const odd = fixture("eidnara").driver;
         const shifted = fakeDaemon(PID + 13);
         shifted.capture = { admitted: 1, completed: -1 };
@@ -1958,34 +1971,118 @@ describe("HostDriver faults", () => {
         await expect(odd.finish()).rejects.toThrow(
             /source capture counters unread: malformed counters/,
         );
-        // A harness killed mid-read leaves the placeholder, which a resumed finish keeps unread.
-        const killed = fixture("eidnara").driver;
-        writeFileSync(
-            join(killed.armDir, "source-capture.json"),
-            JSON.stringify({ counters: null, error: "the counter read did not finish" }),
-        );
-        killed.daemon = fakeDaemon(PID + 15) as unknown as DaemonStack;
-        await killed.finish();
-        expect(
-            JSON.parse(readFileSync(join(killed.armDir, "source-capture.json"), "utf8")),
-        ).toEqual({ counters: null, error: "the counter read did not finish" });
-        // A resumed finish keeps the record of the generation that ran the arm's events.
-        const resumed = fixture("eidnara").driver;
-        writeFileSync(
-            join(resumed.armDir, "source-capture.json"),
-            JSON.stringify({ counters: { admitted: 9, completed: 9 }, error: null }),
-        );
-        const fresh = fakeDaemon(PID + 14);
-        fresh.capture = { admitted: 0, completed: 0 };
-        resumed.daemon = fresh as unknown as DaemonStack;
-        await resumed.finish();
-        expect(
-            JSON.parse(readFileSync(join(resumed.armDir, "source-capture.json"), "utf8")).counters,
-        ).toEqual({ admitted: 9, completed: 9 });
         const kl = fixture("eidnara-kl").driver;
         kl.daemon = fakeDaemon(PID + 12) as unknown as DaemonStack;
         await kl.finish();
         expect(existsSync(join(kl.armDir, "source-capture.json"))).toBe(false);
+    });
+
+    test("source capture counters add up over the arm's daemon generations", async () => {
+        const { driver } = fixture("eidnara");
+        const generation = (pid: number, counters: Record<string, number> | Error) => {
+            const d = fakeDaemon(pid);
+            d.capture = counters;
+            return d;
+        };
+        // A harness stop reads the generation it ends; the arm's later generations add to it.
+        const first = generation(PID + 10, {
+            admitted: 5,
+            completed: 4,
+            publish_ms_max: 50,
+            publish_ms_last: 5,
+            active: 1,
+        });
+        driver.daemon = first as unknown as DaemonStack;
+        await driver.stop();
+        // A fault kill reads without waiting; a generation still capturing is listed unread.
+        const busy = fakeDaemon(PID + 11);
+        const waits: number[] = [];
+        busy.sourceCapture = async (waitMs?: number) => {
+            waits.push(waitMs ?? -1);
+            throw new Error("source capture never settled");
+        };
+        driver.daemon = busy as unknown as DaemonStack;
+        await driver.fault(episode("daemon_restart"));
+        expect(waits).toEqual([0]);
+        const last = generation(PID + 12, {
+            admitted: 2,
+            completed: 3,
+            publish_ms_max: 20,
+            publish_ms_last: 7,
+            active: 0,
+        });
+        driver.daemon = last as unknown as DaemonStack;
+        await driver.finish();
+        const record = JSON.parse(readFileSync(join(driver.armDir, "source-capture.json"), "utf8"));
+        expect(record.counters).toEqual({
+            admitted: 7,
+            completed: 7,
+            publish_ms_max: 50,
+            publish_ms_last: 7,
+            active: 0,
+        });
+        expect(record.error).toBeNull();
+        expect(record.unread_generations).toBe(1);
+        expect(record.generations.map((g: { ended: string }) => g.ended)).toEqual([
+            "stop",
+            "fault f-daemon_restart",
+            "finish",
+        ]);
+        expect(record.generations[1]).toMatchObject({
+            counters: null,
+            error: "Error: source capture never settled",
+        });
+    });
+
+    test("a resume lists the generation its killed harness ran as unread, and keeps a pending read", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        const record = () => JSON.parse(readFileSync(join(armDir, "source-capture.json"), "utf8"));
+        const pending = {
+            daemon: { pid: PID + 19, start: "t-1" },
+            ended: "stop",
+            counters: null,
+            error: "the counter read did not finish",
+        };
+        const counted = {
+            daemon: { pid: PID + 18, start: "t-2" },
+            ended: "stop",
+            counters: { admitted: 3, completed: 3 },
+            error: null,
+        };
+        // The rest of the resume needs a daemon runtime it fails to start; the generation is
+        // listed first, and the stop releases what the resume set up.
+        const resumeOver = async (daemon: { pid: number; start: string }) => {
+            writeFileSync(join(armDir, "state.json"), JSON.stringify({ model: 0, daemon }));
+            const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+            await fresh.resume(null).catch(() => undefined);
+            const listed = record();
+            fresh.daemon = null;
+            await fresh.stop().catch(() => undefined);
+            return listed;
+        };
+        writeFileSync(
+            join(armDir, "source-capture.json"),
+            JSON.stringify({ generations: [counted, pending] }),
+        );
+        // A read the killed harness left pending stays as it was.
+        expect((await resumeOver(pending.daemon)).generations).toEqual([counted, pending]);
+        // A generation with no read at all is listed unread, and the total keeps the others.
+        const killed = { pid: PID + 20, start: "t0" };
+        expect(await resumeOver(killed)).toEqual({
+            counters: { admitted: 3, completed: 3 },
+            error: "the generation ended with its harness before a counter read",
+            unread_generations: 2,
+            generations: [
+                counted,
+                pending,
+                {
+                    daemon: killed,
+                    ended: "harness",
+                    counters: null,
+                    error: "the generation ended with its harness before a counter read",
+                },
+            ],
+        });
     });
 
     test("an A/A control label runs as its arm: the host sees the base arm and no store", async () => {

@@ -221,24 +221,29 @@ complete evidence only when the two agree:
 - `capabilities.json` also holds `source_capture`: the Kernel source
   descriptors (`srcdesc:*` observations) in `<arm>/final-store/kernel.sqlite`
   by class (`messages`, `raw_tool_spans`, `repository_documents`), how many
-  of them are live, and the settled `source_capture` counters that the last
-  daemon generation reported. A store with a descriptor whose creation or
-  retirement commit is missing from its `commit_log` counts as unreadable. Before the final daemon stop, the driver reads those
-  counters through the fixture's control socket (`settledSourceCapture`,
-  waiting up to 30 s for every capture job to settle) into
-  `<arm>/source-capture.json`; the counters are process-local, so they cover
-  the generation since its last start, while the descriptors cover the whole
-  arm. The driver writes an unread placeholder before the read and replaces
-  it with the result, so a harness killed mid-read leaves an unread record. A
-  finish that finds the record already written (a resume after a stop past
-  the read's start) keeps it, since the resumed daemon generation started
-  afresh; a resume that reopens the arm before its last event removes the
-  record a cleanup finish wrote, so the final finish reads the generation
-  that runs the remaining events, and `reset` removes it with the arm. A read that fails or times out is
-  recorded with its error, the daemon
-  still stops and its store is archived, and then the finish fails, so the
-  arm's recorded failure keeps a resume from replacing the record with a
-  later generation's counters. Counters without numeric `admitted` and
+  of them are live, and the `source_capture` counters summed over the arm's
+  daemon generations. A count is process-local, so the driver reads each
+  generation's counters through the fixture's control socket
+  (`settledSourceCapture`) before that generation ends, and lists every
+  generation in `<arm>/source-capture.json` under `generations`, each with its
+  `daemon` identity (pid and start time), what `ended` it (`finish`, a harness
+  `stop`, `fault <id>`, or `harness`), and its `counters` or read `error`. A
+  finish or a harness stop (a teardown, an abort) waits up to 30 s for every
+  capture job to settle. A daemon fault reads without waiting so the kill
+  fires on schedule, and lists a generation still capturing as unread. A
+  resume lists the generation its killed harness ran as `harness`, unread,
+  unless that generation is already listed: a read the killed harness left
+  pending stays unread. The record's top level holds the arm's total over
+  the generations read (event counts summed, `publish_ms_max` the largest,
+  and the gauges `active`, `draining`, `retained_bytes`, `publish_ms_last`,
+  and `oldest_deferred_age_ms` from the last generation read), the last
+  generation's read `error`, and `unread_generations`, the generations the
+  total leaves out. The descriptors cover the whole arm. The driver writes
+  each generation's entry as pending before the read and replaces it with
+  the result. `reset` removes the record with the arm. A final read that
+  fails or times out is recorded with its error, the daemon still stops and
+  its store is archived, and then the finish fails, so the arm's recorded
+  failure keeps a resume from replacing the record. Counters without numeric `admitted` and
   `completed`, with a value that is not a non-negative integer (`null` only
   for `oldest_deferred_age_ms`), or beside a recorded error count as unread. An arm that consents to source capture and answered agent calls is a
   mismatch when its final store is unreadable, holds no `messages`

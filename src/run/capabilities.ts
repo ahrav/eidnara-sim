@@ -77,7 +77,7 @@ export interface SourceCaptureObservation {
     descriptors: Record<string, number> | null;
     /** Of those, the descriptors no later revision retired. */
     live: number | null;
-    /** The last daemon generation's counters; null when they were not read. */
+    /** The arm's counters aggregate successful reads across daemon generations. */
     counters: Record<string, number | null> | null;
     /** Why the counters could not be read, or null. */
     counters_error: string | null;
@@ -447,6 +447,52 @@ export function readDescriptors(
 
 /** Counters every `metrics.source_capture` block carries (Eidnara docs/host-wire-protocol.md 7.9). */
 const CAPTURE_COUNTERS = ["admitted", "completed"];
+
+/** Values of a `metrics.source_capture` block that report the daemon's state at the read. */
+const CAPTURE_GAUGES = new Set([
+    "active",
+    "draining",
+    "retained_bytes",
+    "publish_ms_last",
+    "oldest_deferred_age_ms",
+]);
+
+export interface CaptureGeneration {
+    daemon: { pid: number; start: string | null } | null;
+    ended: string;
+    counters: Record<string, number | null> | null;
+    error: string | null;
+}
+
+/**
+ * The arm's counters over every generation read: event counts summed, `publish_ms_max` the
+ * largest, and each gauge from the last successful read containing it. A final generation with a
+ * read error supplies `error`; earlier successful reads still contribute to `counters`.
+ */
+export function combineCaptureGenerations(generations: readonly CaptureGeneration[]): {
+    counters: Record<string, number | null> | null;
+    error: string | null;
+    unread_generations: number;
+} {
+    const read = generations.filter((g) => g.counters !== null && g.error === null);
+    let counters: Record<string, number | null> | null = null;
+    for (const g of read) {
+        const next: Record<string, number | null> = { ...(counters ?? {}) };
+        for (const [key, value] of Object.entries(g.counters ?? {})) {
+            const prior = next[key];
+            if (CAPTURE_GAUGES.has(key) || typeof prior !== "number" || typeof value !== "number")
+                next[key] = value;
+            else next[key] = key === "publish_ms_max" ? Math.max(prior, value) : prior + value;
+        }
+        counters = next;
+    }
+    const last = generations.at(-1);
+    return {
+        counters,
+        error: last?.error ?? null,
+        unread_generations: generations.length - read.length,
+    };
+}
 
 /**
  * Why a settled `source_capture` report is no counter evidence, or null: it must be an object
