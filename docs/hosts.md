@@ -222,18 +222,20 @@ complete evidence only when the two agree:
   descriptors (`srcdesc:*` observations) in `<arm>/final-store/kernel.sqlite`
   by class (`messages`, `raw_tool_spans`, `repository_documents`), how many
   of them are live, and the `source_capture` counters summed over the arm's
-  daemon generations. A count is process-local, so the driver reads each
+  daemon generations. A count is process-local, so the driver reads a
   generation's counters through the fixture's control socket
-  (`settledSourceCapture`) before that generation ends, and lists every
+  (`settledSourceCapture`) before that generation ends, as below, and lists every
   generation in `<arm>/source-capture.json` under `generations`, each with its
   `daemon` identity (pid and start time), what `ended` it (`finish`, a harness
   `stop`, `fault <id>`, or `harness`), and its `counters` or read `error`. A
   finish or a harness stop (a teardown, an abort) waits up to 30 s for every
   capture job to settle and up to 35 s for the read as a whole; a second stop
-  during the read waits for that read. A daemon fault reads the report once without waiting
-  for capture to settle and gives the reply at most 250 ms before its kill;
-  a generation still capturing, or one whose reply comes later, is listed
-  unread. A
+  during the read waits for that read. A `daemon_restart` fault reads the
+  report once without waiting for capture to settle and gives the reply at
+  most 250 ms before its kill; a generation still capturing, or one whose
+  reply comes later, is listed unread. A `daemon_sigkill_mid_fold` kill must
+  land while the fold runs, so it lists its generation unread and kills at
+  once. A
   resume lists the generation its killed harness ran as `harness`, unread,
   unless that generation is already listed: a read the killed harness left
   pending stays unread. The record's top level holds the arm's total over
