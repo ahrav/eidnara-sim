@@ -317,6 +317,7 @@ const ATTRIBUTION =
     /^(?:User|Assistant|The user|The assistant) (?:stated|reported|said|wrote|noted): /;
 const TRUST = / trust=\[[^\]]*\]/;
 const NOTICE = /^(\u00a7\d+\u00a7)? ?Memory: /;
+const SEARCH_TOOL = "eidnara_search";
 
 /** A provenance record line: a JSON object naming the memory's citation or capture source. */
 const PROVENANCE_KEYS = ["anchor", "citation", "quote", "source"];
@@ -352,9 +353,10 @@ function provenanceOff(body: ConverseBody, notices = false): Applied {
     const unparsed: string[] = [];
     editMemory(body, (name, text) => {
         const segments = splitListing(text);
+        const stripNotices = notices && name === SEARCH_TOOL;
         if (itemsOf(segments).length === 0) {
             unparsed.push(name);
-            if (!notices) return text;
+            if (!stripNotices) return text;
         }
         const scrub = (item: string[]) => {
             const out: string[] = [];
@@ -377,7 +379,7 @@ function provenanceOff(body: ConverseBody, notices = false): Applied {
             return out;
         };
         const unnoticed = (s: Segment): Segment[] => {
-            if (!notices || !("line" in s)) return [s];
+            if (!stripNotices || !("line" in s)) return [s];
             const m = NOTICE.exec(s.line);
             if (!m) return [s];
             counts.notices = (counts.notices ?? 0) + 1;

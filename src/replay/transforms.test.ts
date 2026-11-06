@@ -456,6 +456,15 @@ describe("caution, notice, and memory-block variants", () => {
         expect(result(d, 1)).toContain("Memory: Memory freshness cannot be judged");
     });
 
+    test("provenance-notices-off leaves Memory: lines outside eidnara_search results", () => {
+        const body = recorded();
+        const note = "<project-note>\n- first\nMemory: a remembered line\n</project-note>";
+        (messages(body)[0]?.content[0] as { text: string }).text = note;
+        transformFor("d2").apply(body, inputs());
+        expect(text(body, 0)).toBe(note);
+        expect(result(body, 1)).not.toContain("Memory:");
+    });
+
     test("memory-block appends the block to the m0 region and needs one", () => {
         const body = recorded();
         const applied = transformFor("f").apply(body, inputs());
