@@ -555,6 +555,7 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "/tmp/rg spawn_blocking src",
             "{ cat; } <<< 'spawn_blocking(f)'",
             "cd repo; cp src/db.rs /tmp/db.rs && sed -i 's/block_on/spawn_blocking/' /tmp/db.rs; ls",
+            "( cd repo && sed -i 's/block_on/spawn_blocking/' /tmp/db.rs )",
         ]) {
             const g = grade(blocking, { files: [digest], commands: [applied] });
             expect([applied, g.verdict, g.reason]).toEqual([
@@ -1000,6 +1001,7 @@ describe("P13: the commit tag reads from the message wherever the command sets i
             `git add f && git commit -m "[${tag}] f" || true; ls`,
             `git add f && git commit -m "[${tag}] f" & wait`,
             `( cd repo && git commit -m "[${tag}] f" ); ls`,
+            `git add f && git commit -m "[${tag}] f" &`,
         ]) {
             expect([uncredited, commits(uncredited)[0]]).toEqual([uncredited, "fail"]);
         }
@@ -1030,6 +1032,11 @@ describe("P13: the commit tag reads from the message wherever the command sets i
             `git commit -m "[${tag}] <b>"`,
             `P="[${tag}]"; git commit -q -m "$P Tidy \\"Run\\" notes" -m "b"`,
             `git commit --message="$(cat <<'EOF'\n[${tag}] subject\nEOF\n)"`,
+            `git commit -m "$(cat <<-EOF\n\t[${tag}] subject\n\tEOF\n)"`,
+            `echo "[${tag}] s">/tmp/msg; git commit -F /tmp/msg`,
+            `cat >/tmp/m<<'EOF'\n[${tag}] s\nEOF\ngit commit -F /tmp/m`,
+            `git --work-tree /tmp/repo commit -m "[${tag}] s"`,
+            `P="[${tag}] subject"; Q=$P; git commit -m "$Q"`,
             `TAG='[${tag}]'; cat >msg <<EOF\n$TAG subject\nEOF\ngit commit -F msg`,
             `cat > /tmp/msg <<'EOF'\n[${tag}] s\nEOF\ncat /tmp/msg\ngit commit -F /tmp/./msg`,
             `printf '# note\\n[${tag}] s\\n' > m; git commit --cleanup=strip -F m`,
@@ -1072,6 +1079,14 @@ describe("P13: the commit tag reads from the message wherever the command sets i
             `printf '# note\\n[${tag}] s\\n' > m; git commit -F m`,
             `printf '[${tag}] s\\n' >msg; printf 'x\\n' >new; mv new msg; git commit -F msg`,
             `printf '[${tag}] s\\n' >msg; cd sub; git commit -F msg`,
+            `P='[${tag}]'; git commit -m $P-subject`,
+            `echo '[${tag}] fake' >/dev/null; git commit -F /dev/null`,
+            `printf '[${tag}] s\\n' >msg; cat <msg >msg; git commit -F msg`,
+            `printf '[${tag}] s\\n' >msg; git commit -e -F msg`,
+            `cat > msg <<'EOF'\n[${tag}] s\nEOF\necho untagged>msg; git commit -F msg`,
+            `git commit -m "\\$(cat <<'EOF'\n[${tag}] subject\nEOF\n)"`,
+            `true && P="[${tag}]" && true & git commit -m "$P subject"`,
+            `{ P="[${tag}]" & }; git commit -m "$P subject"`,
         ];
         for (const form of untagged) {
             expect([form, commits(form)[0]]).toEqual([form, "fail"]);
@@ -1079,6 +1094,7 @@ describe("P13: the commit tag reads from the message wherever the command sets i
         }
         expect(commits("git commit -F /tmp/unwritten")[0]).toBe("fail");
         expect(commits(`git -h commit -m "[${tag}] subject"`)[0]).toBe("fail");
+        expect(commits(tagged, "git commit --dry-run --squash=HEAD")).toEqual(["pass"]);
         expect(commits(`git commit --dry-run -F - <<'EOF'\n[${tag}] s\nEOF`)[0]).toBe("fail");
     });
 

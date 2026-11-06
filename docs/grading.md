@@ -319,16 +319,19 @@ literal; `commands_must` requires one executed shell segment to start with
 every pattern, and `commands_must_not` refuses a segment that starts with any
 (both read the turn's command log, and P13 the session's commands from the
 fold on). Both read a `git commit` segment whose message the command text
-carries as the segment's other words followed by `-m '<subject>'`, where the
+carries as `git commit`, its commit options, and `-m '<subject>'`, where the
 subject is the message's first non-blank line. The message is every `-m` or
 `--message` value (bundled as in `-qam`, attached as in `-m"..."`, and a
 `"$(cat <<'EOF' ... EOF)"` value read as its body) joined as paragraphs, else
 the `-F` or `--file` source: for `-`, the segment's one standard-input
 source (a heredoc, a here-string, a `<` file, or the output of the pipeline
-member before it), and for a path, the file. A `$NAME` or `${NAME}` outside
-single quotes expands from the command's earlier assignment segments
-(`P="[tag]"`, `export P=...`), as data, and an assignment inside a `( ... )`
-subshell, a pipeline, or a background job stays in that scope. The command
+member before it), and for a path, the file. A `$NAME` or `${NAME}` inside
+double quotes or in an assignment value expands from the command's earlier
+assignment segments (`P="[tag]"`, `export P=...`), as data; an unquoted one
+elsewhere, which the shell would split and glob, stays as written. An
+assignment inside a `( ... )` subshell, a pipeline, or a background list
+(a trailing `&` included) stays in that scope. An unquoted `<` or `>` starts
+a new word, so `echo x>msg` writes `msg`. The command
 writes a file the channels can read with `>`, `>>`, or `tee` (`-a` appends)
 from text it carries: a `cat` (with no option but `-u`) or `tee` of one
 input source, an `echo` of literal words, or a `printf` of one literal
@@ -336,7 +339,8 @@ format or of `%s` (its arguments inserted as written); only a part's last
 standard-output target receives the text and earlier `>` targets are
 emptied; an unquoted heredoc expands tracked `$NAME` values and any other
 expansion leaves it unresolved. An append to a file the command did not
-write, a write from any other source, a path with `..`, a later part that
+write, a write from any other source, a path with `..` or under `/dev/` or
+`/proc/`, a part that reads and truncates the same file, a later part that
 names the file other than to read it (`mv`, `sed -i`, and the rest), a
 redirection on a group, and, for a relative path, a `cd` leave the file
 unresolved; `unset` drops a variable. `--cleanup=strip` drops `#` lines
@@ -347,7 +351,9 @@ its message. `--squash` and `--fixup` read as their `squash! ` and `fixup! `
 subjects. A segment with two standard-input sources, a commit after a `git`
 global option outside Git's documented set (`-c`, `-C`, `-p`, `-P`,
 `--git-dir`, and kin), one that reuses a message (`-c`, `-C`,
-`--reuse-message`, `--reedit-message`), a status-only one (`--porcelain`,
+`--reuse-message`, `--reedit-message`), one that opens an editor (`-e`,
+`--edit`), one whose standard input is a duplicated descriptor (`<&3`), an
+`echo -e` source, a status-only one (`--porcelain`,
 `--short`, `--branch`, `--long`, `-z`), or one whose message the text does
 not carry is read as written. Shell words keep a
 double-quoted `\"` as a quote character. `scope`, a directory prefix ending in `/` or one file path, limits

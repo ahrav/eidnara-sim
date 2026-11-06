@@ -568,6 +568,7 @@ describe("grading harness", () => {
         expect(ranTests("false && echo; cd crate && cargo test; ls", 0)).toBe(true);
         expect(ranTests("cd crate && cargo test; ls || echo none", 0)).toBe(true);
         expect(ranTests("cd crate && cargo test & wait", 0)).toBe(false);
+        expect(ranTests("cd crate && cargo test &", 0)).toBe(false);
     });
 
     test("P10 applies answer_must_not to the final response only", () => {
