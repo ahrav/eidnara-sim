@@ -2063,6 +2063,56 @@ describe("HostDriver faults", () => {
         });
     });
 
+    test("a finish read a killed harness left pending stays the record's error after a later read", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        const pending = {
+            daemon: { pid: PID + 19, start: "t-1" },
+            ended: "finish",
+            counters: null,
+            error: "the counter read did not finish",
+        };
+        writeFileSync(
+            join(armDir, "source-capture.json"),
+            JSON.stringify({ generations: [pending] }),
+        );
+        driver.daemon = fakeDaemon(PID + 21) as unknown as DaemonStack;
+        (driver as unknown as { noteDaemon(): void }).noteDaemon();
+        await driver.finish();
+        const record = JSON.parse(readFileSync(join(armDir, "source-capture.json"), "utf8"));
+        expect(record.counters).toEqual({ admitted: 2, completed: 2 });
+        expect(record.error).toBe("the counter read did not finish");
+        expect(record.unread_generations).toBe(1);
+    });
+
+    test("a stop that arrives during a stop's counter read waits for that read", async () => {
+        const { driver } = fixture("eidnara");
+        const slow = fakeDaemon(PID + 22);
+        let release: () => void = () => undefined;
+        let reads = 0;
+        slow.sourceCapture = async () => {
+            reads++;
+            await new Promise<void>((done) => {
+                release = done;
+            });
+            return { admitted: 1, completed: 1 };
+        };
+        const order: string[] = [];
+        slow.stop = async () => {
+            order.push(`stop after ${reads} read`);
+        };
+        driver.daemon = slow as unknown as DaemonStack;
+        (driver as unknown as { noteDaemon(): void }).noteDaemon();
+        const first = driver.stop();
+        await Bun.sleep(10);
+        const second = driver.stop();
+        await Bun.sleep(10);
+        expect(order).toEqual([]);
+        release();
+        await Promise.all([first, second]);
+        expect(reads).toBe(1);
+        expect(order[0]).toBe("stop after 1 read");
+    });
+
     test("a resume lists the generation its killed harness ran as unread, and a failed finish stays unread", async () => {
         const daemonFactory = () =>
             ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;

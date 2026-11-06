@@ -176,6 +176,9 @@ export function combineCaptureGenerations(generations: readonly CaptureGeneratio
 /** The longest a daemon fault waits for the dying generation's counters before its kill. */
 const FAULT_READ_MS = 250;
 
+/** A stop's bound on the read: the 30 s settle wait and one more control request. */
+const STOP_READ_MS = 35_000;
+
 const sameGeneration = (a: CaptureGeneration["daemon"], b: CaptureGeneration["daemon"]): boolean =>
     a !== null && b !== null && a.pid === b.pid && a.start === b.start;
 
@@ -656,11 +659,29 @@ export class HostDriver implements ArmDriver {
      * A generation already listed keeps its entry, so a read a killed harness left pending stays
      * unread. The pending entry stands until the read returns.
      */
-    private async recordGeneration(
+    private recordGeneration(
         daemon: DaemonStack,
         ended: string,
         waitMs: number,
-        deadlineMs: number | null = null,
+        deadlineMs: number,
+    ): Promise<CaptureGeneration | null> {
+        // A caller that arrives while the generation's read is in flight waits for that read.
+        if (this.reading?.daemon === daemon) return this.reading.entry;
+        const entry = this.readGeneration(daemon, ended, waitMs, deadlineMs);
+        this.reading = { daemon, entry };
+        return entry.finally(() => {
+            if (this.reading?.entry === entry) this.reading = null;
+        });
+    }
+
+    private reading: { daemon: DaemonStack; entry: Promise<CaptureGeneration | null> } | null =
+        null;
+
+    private async readGeneration(
+        daemon: DaemonStack,
+        ended: string,
+        waitMs: number,
+        deadlineMs: number,
     ): Promise<CaptureGeneration | null> {
         if (!armProfile(this.o.arm).source_capture) return null;
         const id = this.daemonId;
@@ -685,7 +706,6 @@ export class HostDriver implements ArmDriver {
             );
         let timer: ReturnType<typeof setTimeout> | undefined;
         const expired = new Promise<{ counters: null; error: string }>((done) => {
-            if (deadlineMs === null) return;
             timer = setTimeout(
                 () => done({ counters: null, error: `no counter reply in ${deadlineMs} ms` }),
                 deadlineMs,
@@ -1813,7 +1833,7 @@ export class HostDriver implements ArmDriver {
                 let generation: CaptureGeneration | null = null;
                 try {
                     const ended = checkFinalStore ? "finish" : "stop";
-                    generation = await this.recordGeneration(daemon, ended, 30_000);
+                    generation = await this.recordGeneration(daemon, ended, 30_000, STOP_READ_MS);
                 } catch (caught) {
                     // The record is evidence only; a failed write still lets the daemon stop.
                     failure ??= caught;

@@ -229,7 +229,8 @@ complete evidence only when the two agree:
   `daemon` identity (pid and start time), what `ended` it (`finish`, a harness
   `stop`, `fault <id>`, or `harness`), and its `counters` or read `error`. A
   finish or a harness stop (a teardown, an abort) waits up to 30 s for every
-  capture job to settle. A daemon fault reads the report once without waiting
+  capture job to settle and up to 35 s for the read as a whole; a second stop
+  during the read waits for that read. A daemon fault reads the report once without waiting
   for capture to settle and gives the reply at most 250 ms before its kill;
   a generation still capturing, or one whose reply comes later, is listed
   unread. A

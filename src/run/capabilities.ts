@@ -489,7 +489,7 @@ function readCaptureCounters(
             error?: unknown;
             unread_generations?: unknown;
         };
-        if (Number.isSafeInteger(raw.unread_generations)) {
+        if (Number.isSafeInteger(raw.unread_generations) && Number(raw.unread_generations) >= 0) {
             unread_generations = raw.unread_generations as number;
         }
         const error = typeof raw.error === "string" ? raw.error : null;

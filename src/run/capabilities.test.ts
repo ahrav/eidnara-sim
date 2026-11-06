@@ -200,6 +200,13 @@ test("the capability check reads the counter total over an arm's daemon generati
     expect(armMismatches(read)).toEqual([]);
     // A total beside a failed finish read is unread.
     write({ counters: total, error: "the counter read did not finish", unread_generations: 1 });
+    const failed = observeArm("eidnara", "pi", root, { agent: 1 });
+    expect(failed.source_capture?.unread_generations).toBe(1);
+    write({ counters: total, error: null, unread_generations: -1 });
+    expect(
+        observeArm("eidnara", "pi", root, { agent: 1 }).source_capture?.unread_generations,
+    ).toBeNull();
+    write({ counters: total, error: "the counter read did not finish", unread_generations: 1 });
     expect(armMismatches(observeArm("eidnara", "pi", root, { agent: 1 }))).toEqual([
         "source capture counters unread: the record also reports the counter read did not finish",
     ]);
