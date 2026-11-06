@@ -689,6 +689,7 @@ describe("P6: resume in code, or ask the user to choose", () => {
         for (const follow of [
             "Once you pick, I need a few details. What should the counter count? Does the command take arguments?",
             "Also tell me what the counter should count. The working tree has other edits. I'll leave those alone.",
+            "I'll start with whichever you choose.",
             `\n1. ${a}: a small change. What should it count?\n2. ${b}: a new command. It needs a start time.`,
         ]) {
             const answer = `${open} Which one should I do first? ${follow}`;
@@ -697,6 +698,7 @@ describe("P6: resume in code, or ask the user to choose", () => {
         const asked = "asked no question choosing between the open tasks";
         for (const follow of [
             `Once you pick, I need details. I'll start with ${a} meanwhile.`,
+            `Any preference? I am starting with ${a} now; any objections?`,
             "Here is a plan. Step one adds the field. Step two wires it. Step three tests it.",
         ]) {
             const answer = `${open} Which one should I do first? ${follow}`;
@@ -801,6 +803,7 @@ describe("P8: the answer commits to the value", () => {
             `Use ${v}. No process is listening on either ${v} or ${old} right now.`,
             `Use ${v}. If ${v} is no longer right, tell me the new one.`,
             `Going by what you told me earlier, it should be ${v}, but nothing answers there yet.`,
+            `Use ${v}. The repo does not mention ${v}; ${old} is retired.`,
         ]) {
             expect([answer, ...outcome(p8, { answer })]).toEqual([answer, "pass"]);
         }
@@ -816,6 +819,17 @@ describe("P8: the answer commits to the value", () => {
                 "answer turns the value down",
             ],
             [`Use ${v}. If ${v} is wrong, use ${old}.`, "answer turns the value down"],
+            [
+                `Use ${v}. Nothing listens on ${v}, so don't use ${v}.`,
+                "answer turns the value down",
+            ],
+            [`Use ${v}. Do not use ${v}.`, "answer turns the value down"],
+            [`Use ${v}. If deployment begins, avoid ${v}.`, "answer turns the value down"],
+            [
+                `Use ${v}. Nothing mentions ${v}; either ${v} or ${old} may be right.`,
+                "answer names a competing value beside it",
+            ],
+            [`Previously, ${v} was the alias.`, "answer turns the value down"],
         ];
         for (const [answer, reason] of cases) {
             expect([answer, ...outcome(p8, { answer })]).toEqual([answer, "fail", reason]);

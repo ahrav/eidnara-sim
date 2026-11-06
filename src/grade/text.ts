@@ -116,6 +116,9 @@ const NEGATOR =
  */
 const STALE_ADJECTIVE =
     /\b(?:old|older|earlier|previous|previously|prior|former|formerly|originally|retired|outdated|stale|deprecated|obsolete)\b(?=(?:\s+(?!(?:to|and|but|so)\b)[\w-]+,?){0,4}?\s+$)/i;
+/** A sentence that opens by placing what follows in the past: `Previously, X was the alias`. */
+const LEADING_STALE =
+    /^\s*(?:previously|formerly|originally|earlier|before that|at first)\s*,(?:\s+[\w-]+,?){0,4}?\s+$/i;
 /** What follows a value to say it is wrong or superseded. */
 const AFTER = new RegExp(
     `^[^.?!;]{0,30}?(?:${[
@@ -145,12 +148,15 @@ const HISTORY = /^[^.?!;]{0,30}?\b(?:was|were)\s+(?:only|used|for)\b/i;
  * `nothing in this repo listens on X`, `the repo doesn't mention X`, `neither X nor Y appears`.
  */
 const ABSENCE =
-    /\b(?:nothing|nobody|none of|neither|no (?:process|file|commit|config\w*|reference|record|match\w*|mention))\b|\b(?:does|do|did|is|are|was|were)(?:n['\u2019]?t| not)\s+(?:[\w-]+\s+){0,2}?(?:mention|appear|contain|define|set|use|reference|listen|serve|answer|exist|include|record|show|open|running)\w*|\bnot (?:in|set|defined|mentioned|referenced|listening|found|open|running)\b/i;
-/** Wording that still turns a value down inside an absence or conditional sentence. */
+    /\b(?:nothing|nobody|none of|neither|no (?:process|file|commit|config\w*|reference|record|match\w*|mention))\b|\b(?:does|do|did|is|are|was|were)(?:n['\u2019]?t| not)\s+(?:[\w-]+\s+){0,2}?(?:mention|appear|contain|define|set|reference|listen|serve|answer|exist|include|record|show|open|running)\w*|\bnot (?:in|set|defined|mentioned|referenced|listening|found|open|running)\b/i;
+/** Wording that still turns a value down inside an absence clause, a prohibition included. */
 const REJECTS =
-    /\b(?:replac\w*|supersed\w*|retired|outdated|out of date|stale|deprecated|obsolete|wrong|invalid|incorrect|typo)\b/i;
+    /\b(?:replac\w*|supersed\w*|retired|outdated|out of date|stale|deprecated|obsolete|wrong|invalid|incorrect|typo|avoid\w*)\b|\b(?:don['\u2019]?t|do not|never|shouldn['\u2019]?t|should not)\s+(?:use|pick|choose|point|rely)\b/i;
 /** Wording that lists values together as all absent: `neither X nor Y`, `on either X or Y`. */
-const LISTED = /\b(?:neither|either|nor|both)\b/i;
+const LISTED = /\bneither\b[^,]*\bnor\b|\beither\b[^,]*\bor\b|\bboth\b/i;
+/** The offer to revise a remembered value: `If X is no longer right, tell me the new one`. */
+const REVISION_OFFER =
+    /^if\b[^.?!]*\b(?:no longer|isn['\u2019]?t|is not|not)\b[^.?!]*\b(?:right|current|valid|correct|accurate)\b[^.?!]*\b(?:tell me|let me know)\b/i;
 /** A sentence after the answer that switches to another value: `Actually, use Y instead`. */
 const CORRECTION =
     /\b(?:actually|instead|correction|on second thought|scratch that|I meant|rather)\b/i;
@@ -200,7 +206,8 @@ function mentions(sentence: string, value: string, stale: string[]): Mention[] {
             m.at,
         );
         const after = sentence.slice(m.at + m.token.length, list[i + 1]?.at ?? sentence.length);
-        if (STALE_ADJECTIVE.test(before) || AFTER.test(after)) m.negated = true;
+        const leading = i === 0 && LEADING_STALE.test(before);
+        if (STALE_ADJECTIVE.test(before) || leading || AFTER.test(after)) m.negated = true;
         m.past = HISTORY.test(after);
     }
     return list;
@@ -208,13 +215,23 @@ function mentions(sentence: string, value: string, stale: string[]): Mention[] {
 
 /**
  * Whether a sentence after the committed one says the repository or machine lacks the value
- * (`ABSENCE`) or offers to revise it (`If X is no longer right, tell me`) without rejecting it.
- * A competitor it leaves standing must be listed beside the value as absent too (`neither X nor Y`).
+ * (`ABSENCE`) or offers to revise it (`REVISION_OFFER`) without rejecting it. Each clause (split
+ * at `;` and `:`) that names the value must state the absence and hold no rejection or
+ * prohibition (`REJECTS`), and a competitor it leaves standing must sit in such a clause listed
+ * beside the value (`neither X nor Y`, `either X or Y`).
  */
-const stepsAside = (sentence: string, found: Mention[]): boolean =>
-    (ABSENCE.test(sentence) || /^if\b/i.test(sentence)) &&
-    !REJECTS.test(sentence) &&
-    (LISTED.test(sentence) || found.every((m) => m.expected || m.negated));
+const stepsAside = (sentence: string, found: Mention[]): boolean => {
+    if (REVISION_OFFER.test(sentence)) return !REJECTS.test(sentence);
+    const bounds = [...sentence.matchAll(/[;:]/g)].map((m) => m.index);
+    const clauseOf = (at: number) => bounds.filter((b) => b < at).length;
+    const clauses = sentence.split(/[;:]/);
+    const absent = (k: number) => ABSENCE.test(clauses[k] ?? "");
+    return found.every((m) => {
+        const k = clauseOf(m.at);
+        if (m.expected) return absent(k) && !REJECTS.test(clauses[k] ?? "");
+        return m.negated || (absent(k) && LISTED.test(clauses[k] ?? ""));
+    });
+};
 
 /**
  * Why an answer fails to commit to `value` (`committed-whole-word`), or null when it commits. The
