@@ -17,7 +17,7 @@ abandon, clarify, or paste, and P14 derives from labels only.
 M6 (#1031) journals one `UserTurn` per sent or skipped turn with a label from
 task, pushback, interrupt, redirect, abandon, clarify, or paste, ahead of the
 turn's `EndTurn`, and lists the delivered turns' labels as `user-sim` entries
-in each probe snapshot's call records, which the P14 grader reads. Compiled
+in each probe snapshot's call records. Compiled
 P14 items have no probe turn; `scripts/grade-run.ts` grades each from a
 session view (`sessionSnapshot`) that places the arm's delivered `UserTurn`
 labels among the session's `calls.jsonl` records, the placement a capture

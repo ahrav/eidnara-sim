@@ -1680,7 +1680,9 @@ describe("P7 across runs and P14 without a probe turn", () => {
             .filter((g) => g.probe_type === "P14");
         expect(pass?.verdict).toBe("pass");
         expect(pass?.metrics).toEqual({ "P14.post_compaction_correction_count": 0 });
-        // A view that changed names another snapshot, so the pass grades it again.
+        // An unchanged view stands graded.
+        expect((await gradeRun(quiet, null)).skipped).toEqual({ eidnara: { "already graded": 1 } });
+        // A view that changed names another input, so the pass grades it again.
         const relabelled = readFileSync(join(quiet, "journal.jsonl"), "utf8").replace(
             '"label":"task"',
             '"label":"pushback"',
