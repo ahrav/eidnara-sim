@@ -197,6 +197,36 @@ const pascal = (word: string) =>
  * The placeholder names of a check's positive (or negative) grading keys, one group per pattern:
  * a pattern holds when any one of its group's values occurs, so the group lists alternatives.
  */
+/** A Python source with its comments and string literals blanked to spaces, line breaks kept. */
+export function pythonCode(source: string): string {
+    const out = source.split("");
+    const wipe = (from: number, to: number) => {
+        for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
+    };
+    let i = 0;
+    while (i < source.length) {
+        const ch = source[i] as string;
+        if (ch === "#") {
+            const end = source.indexOf("\n", i);
+            const stop = end < 0 ? source.length : end;
+            wipe(i, stop);
+            i = stop;
+        } else if (ch === '"' || ch === "'") {
+            const triple = source.startsWith(ch.repeat(3), i);
+            const close = triple ? ch.repeat(3) : ch;
+            let j = i + close.length;
+            while (j < source.length && !source.startsWith(close, j)) {
+                if (!triple && source[j] === "\n") break;
+                j += source[j] === "\\" ? 2 : 1;
+            }
+            const stop = Math.min(j, source.length);
+            wipe(i, Math.min(stop + close.length, source.length));
+            i = stop + close.length;
+        } else i++;
+    }
+    return out.join("");
+}
+
 export function placeholderGroups(check: unknown, positive: boolean): string[][] {
     if (!check || typeof check !== "object") return [];
     const out: string[][] = [];
@@ -816,11 +846,14 @@ export async function compileScenario(input: CompileInput) {
             const script = renderDeep(tpl.script ?? { path: "", content: "" }, vars);
             // The identity the agent documents is a type the committed script defines and raises,
             // so a reader who checks the repository finds it, and running the script produces it.
+            // The definition and the raise are read from the script's code, comments and string
+            // literals blanked, each at the start of a statement.
+            const code = pythonCode(script.content);
             for (const must of [tpl.check.must].flat()) {
                 if (typeof must !== "string") continue;
                 const named = render(must, vars);
-                const defined = new RegExp(`\\bclass\\s+(?:${named})`).test(script.content);
-                const raised = new RegExp(`\\braise\\s+(?:${named})`).test(script.content);
+                const defined = new RegExp(`^[ \\t]*class\\s+(?:${named})\\s*[(:]`, "m").test(code);
+                const raised = new RegExp(`^[ \\t]*raise\\s+(?:${named})\\s*\\(`, "m").test(code);
                 if (!defined || !raised) {
                     throw new Error(
                         `${tpl.id}: the check script ${script.path} must define and raise the error ${named} names`,

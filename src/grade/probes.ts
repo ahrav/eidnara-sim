@@ -1541,15 +1541,39 @@ export const runsScript = (path: string) => (x: Command) =>
         const named = (w: string | undefined) =>
             w !== undefined && (w === path || w === `./${path}` || w.endsWith(`/${path}`));
         if (named(words[0])) return true;
-        const shell = /^(?:sh|bash|dash|zsh)$/.test(words[0] ?? "");
-        const python = /^python3?(?:\.\d+)?$/.test(words[0] ?? "");
-        if (!shell && !python) return false;
-        const options = words.slice(1).filter((w) => w.startsWith("-"));
-        const operand = words.slice(1).find((w) => !w.startsWith("-"));
-        // `sh -n` parses and `sh -c`/`python3 -c` runs other text; `-m` runs a module.
-        const only = shell ? /^-[a-z]*[nc]/i : /^-[a-z]*[cm]/i;
-        return !options.some((o) => only.test(o) && !o.startsWith("--")) && named(operand);
+        if (/^(?:sh|bash|dash|zsh)$/.test(words[0] ?? "")) {
+            const options = words.slice(1).filter((w) => w.startsWith("-"));
+            const operand = words.slice(1).find((w) => !w.startsWith("-"));
+            // `sh -n` parses the script and `sh -c` runs other text.
+            return (
+                !options.some((o) => /^-[a-z]*[nc]/i.test(o) && !o.startsWith("--")) &&
+                named(operand)
+            );
+        }
+        if (!/^python3?(?:\.\d+)?$/.test(words[0] ?? "")) return false;
+        return named(pythonProgram(words.slice(1)));
     });
+/**
+ * The program file a `python` command runs, after its options, or undefined when it runs other
+ * text (`-c`, `-m`, `-` for standard input) or exits before running anything (`-h`, `-V`).
+ */
+const pythonProgram = (words: string[]): string | undefined => {
+    for (let i = 0; i < words.length; i++) {
+        const w = words[i] as string;
+        if (w === "--") return words[i + 1];
+        if (w === "-" || w.startsWith("--")) return undefined;
+        if (!w.startsWith("-")) return w;
+        for (let k = 1; k < w.length; k++) {
+            const ch = w[k] as string;
+            if (/[cmhV?]/.test(ch)) return undefined;
+            if (/[WX]/.test(ch)) {
+                if (k + 1 >= w.length) i++;
+                break;
+            }
+        }
+    }
+    return undefined;
+};
 /**
  * The failure evidence a P12 entry can cite: the issue number the probe names, and the paths,
  * snake_case names, and figures of three or more digits its sources carry.

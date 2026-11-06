@@ -938,6 +938,10 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
             [`sh -c 'true' ${script}`],
             [`python3 -c 'print(1)' ${script}`],
             [`python3 -m py_compile ${script}`],
+            [`python3 --help ${script}`],
+            [`python3 -h ${script}`],
+            [`python3 -V ${script}`],
+            [`python3 - ${script}`],
         ]) {
             expect(outcome(tool, { files: [entry], source })).toEqual([
                 "excluded",
@@ -952,6 +956,16 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
         ]);
         const finished = [...cut, { command: `python3 ${script}`, exit: 1 }];
         expect(outcome(tool, { files: [entry], source: finished })).toEqual(["pass"]);
+        for (const ran of [
+            `python3 -W ignore ${script}`,
+            `python3 -u -X dev ${script}`,
+            `python3 -B -- ${script}`,
+        ]) {
+            expect([ran, ...outcome(tool, { files: [entry], source: [ran] })]).toEqual([
+                ran,
+                "pass",
+            ]);
+        }
     });
 
     test("a wrong identity, the wrong file, no tie, and a no-op fail", () => {

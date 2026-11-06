@@ -1443,6 +1443,17 @@ describe("compile-time refusals", () => {
                 }
             }),
         ).rejects.toThrow(/must define and raise the error/);
+        await expect(
+            withInput((bank) => {
+                for (const t of scripts(bank)) {
+                    t.script = {
+                        path: t.script?.path ?? "",
+                        content:
+                            "#!/usr/bin/env python3\n# class {Alt}Error(Exception): pass\n# raise {Alt}Error('x')\nmsg = \"class {Alt}Error(Exception):\"\nraise SystemExit(1)\n",
+                    };
+                }
+            }),
+        ).rejects.toThrow(/must define and raise the error/);
     });
 
     test("a template carrying its own ledger key is refused", async () => {

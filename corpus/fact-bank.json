@@ -1331,7 +1331,7 @@
                 ],
                 "revise": "the quote rule flips: string literals you add now use {outer} quotes, except inside src/ws, where they use {inner} quotes",
                 "probe_variants": [
-                    "Give the websocket wrapper a default close code when the caller passes none.",
+                    "Have the websocket wrapper throw an error whose message names the method when send is called after the socket has closed.",
                     "Have the websocket wrapper reject a publish to an empty topic with a message.",
                     "Add a method on the websocket wrapper that sends a named ping payload.",
                     "Make the websocket wrapper log a message when a subscription is dropped."

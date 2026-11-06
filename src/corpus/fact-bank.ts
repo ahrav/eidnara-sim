@@ -322,6 +322,27 @@ function renderedProblems(where: string, kind: string, t: Json, vars: Vars): str
             problems.push(`${where}: ${field} names an unknown placeholder`);
         }
     }
+    for (const field of ["probe_variants", "out_probe_variants"]) {
+        if (!(field in t)) continue;
+        const list = t[field];
+        const texts = Array.isArray(list) ? list : [];
+        const base = field === "probe_variants" ? t.probe : (t.out_probe ?? t.probe);
+        if (
+            !Array.isArray(list) ||
+            list.length === 0 ||
+            !list.every((x) => typeof x === "string" && x.trim() !== "") ||
+            new Set([...texts, base]).size !== texts.length + 1
+        ) {
+            problems.push(
+                `${where}: ${field} is not a non-empty list of distinct non-blank strings apart from the task`,
+            );
+        }
+        for (const text of texts) {
+            if (typeof text === "string" && placeholderProblem(text, vars)) {
+                problems.push(`${where}: ${field} names an unknown placeholder`);
+            }
+        }
+    }
     if (typeof t.revise === "string") {
         if (t.revise.trim() === "") problems.push(`${where}: revise is blank`);
         else if (placeholderProblem(t.revise, { ...vars, ...oldOf(vars) })) {

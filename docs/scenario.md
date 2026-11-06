@@ -269,7 +269,8 @@ frame or request, and exits 1 with the error on standard error. The identity
 the agent documents is therefore a type the repository defines and a failure
 the script produces. The compiler refuses a tool_result template whose
 rendered script does not both define (`class X`) and raise (`raise X`) the
-error its `must` pattern names. The c7 audit (TAXONOMY G10) found agents on
+error its `must` pattern names, read from the script's code with comments
+and string literals blanked, each at the start of a statement. The c7 audit (TAXONOMY G10) found agents on
 every arm refusing to document an echoed type the code base never defined.
 
 ## Controls
@@ -395,15 +396,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `59b2b55f` | 0.2768 | 0.4982 |
-| S | 102 | `d21f0363` | 0.2672 | 0.5142 |
-| M | 201 | `c3e8f482` | 0.3552 | 0.5807 |
-| M | 202 | `587b5d14` | 0.3513 | 0.5807 |
-| M | 203 | `e8d5dc93` | 0.3225 | 0.551 |
-| L | 301 | `6627865e` | 0.3247 | 0.5807 |
-| L | 302 | `48ef409e` | 0.3261 | 0.5807 |
-| L | 303 | `4fc9df72` | 0.3254 | 0.5807 |
-| XL | 401 | `a3d03542` | 0.3197 | 0.5807 |
+| S | 101 | `979eece8` | 0.2768 | 0.4982 |
+| S | 102 | `95bee5cf` | 0.2672 | 0.5142 |
+| M | 201 | `5e20af89` | 0.3552 | 0.5807 |
+| M | 202 | `cf08560f` | 0.3513 | 0.5807 |
+| M | 203 | `aa26732d` | 0.3225 | 0.551 |
+| L | 301 | `bad6ed50` | 0.3247 | 0.5807 |
+| L | 302 | `5f0dd439` | 0.3261 | 0.5807 |
+| L | 303 | `1592373e` | 0.3254 | 0.5807 |
+| XL | 401 | `8531f3fc` | 0.3197 | 0.5807 |
 
 Under qualification Q (revision 3, `e8c1f508`), which adds its P8-twin
 controls, the seeds compile to these scenarios; 103 is its exploratory
@@ -411,9 +412,9 @@ hold-out:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| Q | 101 | `13db1685` | 0.2768 | 0.4982 |
-| Q | 102 | `1857ecc3` | 0.262 | 0.5142 |
-| Q | 103 | `c5faf434` | 0.2712 | 0.5021 |
+| Q | 101 | `dc798552` | 0.2768 | 0.4982 |
+| Q | 102 | `89c5b9ab` | 0.262 | 0.5142 |
+| Q | 103 | `4a166e86` | 0.2712 | 0.5021 |
 
 ## Known limits
 
