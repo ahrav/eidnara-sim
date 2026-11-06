@@ -268,6 +268,14 @@ async function sourceRun(over: Record<string, unknown> = {}): Promise<Fixture> {
     let seq = 0;
     const entry = (kind: string, ms: number, extra: Record<string, unknown> = {}) =>
         journal.push({ kind, arm: ARM, scenario_ms: ms, seq: seq++, wall_ms: wall(ms), ...extra });
+    journal.push({
+        kind: "StartRun",
+        arm: null,
+        order: [ARM],
+        scenario_ms: 0,
+        seq: seq++,
+        wall_ms: wall(0),
+    });
     entry("StartArm", 0);
     entry("ClockOffset", 0, { offset_s: 0 });
     entry("Event", 1000, { event: "e-000004", outcome: "ok" });

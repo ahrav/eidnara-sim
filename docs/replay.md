@@ -15,7 +15,8 @@ bun scripts/replay-probe.ts --run <finished run> --arm <arm> --item <probe id> \
 
 The command reads the source run and writes its records under `--out`, which
 must be empty and must resolve outside the source run, the directory the run
-was recorded in, and the Eidnara checkout; `replay.lock` claims it for the
+was recorded in, and the Eidnara checkout, be owned by the invoking user,
+and be closed to writes by others; `replay.lock` claims it for the
 invocation. In `source` path mode it also creates the recorded arm path when
 that path is missing and removes the directories it created afterwards (see
 [Path mode](#path-mode)). `--turn <spec>` is the entry point the command
@@ -28,7 +29,8 @@ nor an A/A control label (`<arm>~<tag>`), a P7 item (judged across two arms), a
 P14 item (no probe turn), a probe turn that did not end `ok`, a probe
 snapshot row that is missing, repeated, fails the grader's artefact check,
 or names another arm, item, turn, session, or outcome, a run whose
-journal holds no `EndRun`, a manifest that is not `sim-run-manifest/v3` or lacks a valid base wall
+journal does not end in `EndRun` or never ends the arm, a journal that fires a
+fault its fault schedule lacks, a manifest that is not `sim-run-manifest/v3` or lacks a valid base wall
 time, context limit, model list, order, or price table, a
 `scenario.json` that does not hash to the manifest's `scenario_hash` or names
 another tier or seed, a journal with no `ClockOffset` before the probe, an
@@ -121,8 +123,8 @@ user with `setpriv` before the turn starts. The host and daemon therefore see
 the paths the source run saw, the driver's process scans see only the turn's
 own processes, and the bind mount ends with the namespace. The recorded arm
 path must be normalized and lie under a directory the invoking user owns; a
-lock under the system temporary directory named after that path admits one
-replay at a time. `source` mode needs passwordless `sudo` for `unshare`, plus
+lock named after that path, in a private per-user directory under the
+system temporary directory, admits one replay at a time. `source` mode needs passwordless `sudo` for `unshare`, plus
 `setpriv` and `mount` in `/usr/bin`.
 
 `replay` mode runs the turn as a child process at the repeat directory's own

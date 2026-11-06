@@ -89,6 +89,9 @@ function treeChildren(gitDir: string, ids: string[]): Map<string, string[]> {
         let i = 0;
         while (i < body.length) {
             const nul = body.indexOf(0, i);
+            if (nul < 0 || nul + 21 > body.length) {
+                throw new Error(`git cat-file --batch: tree ${id} is malformed`);
+            }
             const mode = body.toString("utf8", i, body.indexOf(32, i));
             if (mode === "40000") subtrees.push(body.subarray(nul + 1, nul + 21).toString("hex"));
             i = nul + 21;
@@ -514,6 +517,9 @@ export function rollbackMemoryStore(
         }
         if (cols.includes("created_at_ms")) {
             note(t, db.run(`delete from ${q(t)} where created_at_ms > ?`, [o.cutoffMs]).changes);
+        } else if (cols.includes("created_at")) {
+            const sql = `delete from ${q(t)} where typeof(created_at) = 'integer' and created_at > ?`;
+            note(t, db.run(sql, [o.cutoffMs]).changes);
         }
     }
     const committedAfter = names.includes("memory_capture_jobs")

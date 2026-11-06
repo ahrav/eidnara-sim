@@ -142,8 +142,11 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
         throw new Error(`probe ${item} names project ${JSON.stringify(project)}, not a plain name`);
     }
     const journal = readJournal(join(root, "journal.jsonl"));
-    if (!journal.some((e) => e.kind === "EndRun")) {
-        throw new Error(`${root} has no EndRun: replay reads finished runs only`);
+    if (journal.at(-1)?.kind !== "EndRun" || !journal.some((e) => e.kind === "StartRun")) {
+        throw new Error(`${root} does not end in EndRun: replay reads finished runs only`);
+    }
+    if (!journal.some((e) => e.kind === "EndArm" && e.arm === arm)) {
+        throw new Error(`the journal never ends arm ${arm}`);
     }
     const mine = journal.filter((e) => e.arm === arm);
     const turnEntries = (kind: string) =>

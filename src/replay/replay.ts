@@ -304,6 +304,13 @@ function sourceFaults(source: ProbeSource): { id: string; type: string }[] {
 
 function modelIndex(source: ProbeSource): number {
     const types = new Map(sourceFaults(source).map((f) => [f.id, f.type]));
+    const unknown = source.journal.filter(
+        (e) => e.arm === source.arm && e.kind === "FaultFired" && !types.has(String(e.fault)),
+    );
+    if (unknown.length > 0) {
+        const ids = unknown.map((e) => String(e.fault)).join(", ");
+        throw new Error(`the journal fires faults its fault schedule lacks: ${ids}`);
+    }
     const fired = source.journal.filter(
         (e) => e.arm === source.arm && e.kind === "FaultFired" && e.seq < source.begin.seq,
     );
@@ -661,7 +668,13 @@ function claimMountPoint(path: string): { release: () => void } {
     if (!owner.isDirectory() || owner.uid !== process.getuid?.() || existing === "/") {
         throw new Error(`recorded arm path ${path} lies under ${existing}, owned by another user`);
     }
-    const lock = join(tmpdir(), `sim-replay-${sha256(path).slice(0, 16)}.lock`);
+    const lockDir = join(tmpdir(), `sim-replay-${process.getuid?.()}`);
+    mkdirSync(lockDir, { recursive: true, mode: 0o700 });
+    const dir = lstatSync(lockDir);
+    if (!dir.isDirectory() || dir.uid !== process.getuid?.() || (dir.mode & 0o077) !== 0) {
+        throw new Error(`${lockDir} is not a private directory of this user`);
+    }
+    const lock = join(lockDir, `${sha256(path).slice(0, 16)}.lock`);
     for (let attempt = 0; ; attempt++) {
         try {
             writeFileSync(lock, `${process.pid}\n`, { flag: "wx" });
@@ -867,6 +880,10 @@ export async function replayProbe(o: ReplayOptions): Promise<RepeatResult[]> {
         throw new Error(`--out ${out} is not empty`);
     }
     mkdirSync(out, { recursive: true });
+    const owner = lstatSync(out);
+    if (!owner.isDirectory() || owner.uid !== process.getuid?.() || (owner.mode & 0o002) !== 0) {
+        throw new Error(`--out ${out} is not a directory this user owns and others cannot write`);
+    }
     const claim = join(out, "replay.lock");
     writeFileSync(claim, `${process.pid}\n`, { flag: "wx" });
     try {
