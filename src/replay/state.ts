@@ -208,6 +208,14 @@ export function rewindHead(o: {
             throw new Error(`${dotGit} carries ${redirect}`);
         }
     }
+    const odd = readdirSync(dotGit, { recursive: true, withFileTypes: true }).find(
+        (d) => !d.isDirectory() && !d.isFile(),
+    );
+    if (odd) {
+        throw new Error(
+            `${dotGit} holds a link or special file at ${join(odd.parentPath, odd.name)}`,
+        );
+    }
     const env = {
         GIT_DIR: dotGit,
         GIT_WORK_TREE: o.workspace,
