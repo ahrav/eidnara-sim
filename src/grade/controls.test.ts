@@ -806,6 +806,8 @@ describe("P8: the answer commits to the value", () => {
             `Use ${v}. If ${v} is no longer right, tell me the new one.`,
             `Going by what you told me earlier, it should be ${v}, but nothing answers there yet.`,
             `Use ${v}. The repo does not mention ${v}; ${old} is retired.`,
+            `Previously, it moved to ${v}.`,
+            `Earlier, it failed, but ${v} works.`,
         ]) {
             expect([answer, ...outcome(p8, { answer })]).toEqual([answer, "pass"]);
         }

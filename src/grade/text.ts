@@ -118,7 +118,7 @@ const STALE_ADJECTIVE =
     /\b(?:old|older|earlier|previous|previously|prior|former|formerly|originally|retired|outdated|stale|deprecated|obsolete)\b(?=(?:\s+(?!(?:to|and|but|so)\b)[\w-]+,?){0,4}?\s+$)/i;
 /** A sentence that opens by placing what follows in the past: `Previously, X was the alias`. */
 const LEADING_STALE =
-    /^\s*(?:previously|formerly|originally|earlier|before that|at first)\s*,(?:\s+[\w-]+,?){0,4}?\s+$/i;
+    /^\s*(?:previously|formerly|originally|earlier|before that|at first)\s*,(?:\s+(?!(?:to|and|but|so)\b)[\w-]+){0,4}?\s+$/i;
 /** What follows a value to say it is wrong or superseded. */
 const AFTER = new RegExp(
     `^[^.?!;]{0,30}?(?:${[
