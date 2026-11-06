@@ -6,49 +6,37 @@ import { GradeLog, type GradeRecord, graderDigest, verdictCounts } from "../src/
 import { armBase } from "../src/hosts/arms";
 import { canonicalJson } from "../src/prereg/canonical";
 import { bedrockUpstream, type Upstream } from "../src/proxy/gateway";
-import { turnsAwaitJobs } from "../src/report/tier";
+import { manifestIdentity } from "../src/report/tier";
 import { writeAtomic } from "../src/run/atomic";
 import { releaseLease, takeLease } from "../src/run/journal";
 import { contains, realExisting } from "../src/run/paths";
 import { simIdentity } from "../src/run/run";
+import { loadPrereg } from "../src/scenario/inputs";
 import { judgeFirewall, judgeP7, type OpenRun, openRun, p7Pairs } from "./grade-run";
 
+/** Run fields beside the pooled execution identity (`manifestIdentity`) that a pair shares. */
 export const PAIRED_FIELDS = [
     "tier",
     "seed",
     "scenario_hash",
     "prereg_sha256",
-    "events",
     "host",
-    "models",
-    "context_limit",
-    "fault_override",
-    "user_sim_model",
-    "corpus",
     "qualification",
-    "turns_await_jobs",
-    "side_model",
-    "tape_sha256",
-    "binaries",
-    "toolchain",
-    "eidnara_commit",
-    "eidnara_worktree",
-    "sim_commit",
-    "sim_worktree",
-    "bedrock",
 ] as const;
 
-const pairedValue = (
-    manifest: Record<string, unknown>,
-    field: (typeof PAIRED_FIELDS)[number],
-    dir: string,
-) =>
-    field === "turns_await_jobs" ? turnsAwaitJobs(manifest[field], dir) : (manifest[field] ?? null);
+/** What two runs must agree on to pair: the fields and identity tier-report pooling compares. */
+function sharedSetting(run: OpenRun): Record<string, unknown> {
+    const fields = Object.fromEntries(PAIRED_FIELDS.map((k) => [k, run.manifest[k] ?? null]));
+    const prereg = loadPrereg(run.manifest.tier);
+    return { ...fields, ...manifestIdentity(run.dir, run.manifest, run.scenario, prereg) };
+}
 
 interface RunIdentity {
     dir: string;
     manifest_sha256: string;
     journal_sha256: string;
+    /** Each arm's `snapshots.jsonl`, which holds the answers the judge reads. */
+    snapshots_sha256: Record<string, string>;
     arms: string[];
 }
 
@@ -79,6 +67,11 @@ function runIdentity(run: OpenRun): RunIdentity {
         dir: realpathSync(run.dir),
         manifest_sha256: digest("manifest.json"),
         journal_sha256: digest("journal.jsonl"),
+        snapshots_sha256: Object.fromEntries(
+            run.arms
+                .filter((arm) => existsSync(join(run.dir, arm, "snapshots.jsonl")))
+                .map((arm) => [arm, digest(join(arm, "snapshots.jsonl"))]),
+        ),
         arms: run.arms,
     };
 }
@@ -94,10 +87,9 @@ function requireOutside(out: string, roots: readonly string[], what: string): vo
 }
 
 function requirePairable(host: OpenRun, memory: OpenRun): string[] {
-    const differ = PAIRED_FIELDS.filter(
-        (k) =>
-            canonicalJson(pairedValue(host.manifest, k, host.dir)) !==
-            canonicalJson(pairedValue(memory.manifest, k, memory.dir)),
+    const [mine, theirs] = [sharedSetting(host), sharedSetting(memory)];
+    const differ = Object.keys({ ...mine, ...theirs }).filter(
+        (k) => canonicalJson(mine[k] ?? null) !== canonicalJson(theirs[k] ?? null),
     );
     if (differ.length > 0) {
         throw new Error(`the runs differ in ${differ.join(", ")}; P7 pairs one scenario's arms`);
@@ -126,9 +118,7 @@ export async function pairRuns(
         schema: "sim-p7-pair/v1",
         host_run: runIdentity(host),
         memory_run: runIdentity(memory),
-        shared: Object.fromEntries(
-            PAIRED_FIELDS.map((k) => [k, pairedValue(host.manifest, k, host.dir)]),
-        ),
+        shared: sharedSetting(host),
     };
     requireOutside(out, [hostDir, memoryDir], "the run");
     mkdirSync(out, { recursive: true });

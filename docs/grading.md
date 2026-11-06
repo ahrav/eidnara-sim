@@ -301,20 +301,26 @@ A run whose arms exclude `host` skips each P7 item of a memory arm as
 <out dir>` grades those items: it opens each run with grade-run's checks
 (`openRun`: manifest inputs, seed order, a complete journal, arm
 capabilities, and every journaled snapshot against its journal entries and
-its session's recorded calls), requires the two manifests to agree on tier,
-seed, scenario hash, pre-registration digest, event count, host, models,
-context limit, fault schedule, user-sim model, corpus, qualification,
-`turns_await_jobs` (absent reads as true), side model, tape digests, host
-binaries, toolchain, and Eidnara commit, refuses an out directory inside
-either run (through links on its path), requires the host run to hold `host` and the memory run memory arms and no
+its session's recorded calls), requires the two runs to agree on tier, seed,
+scenario hash, pre-registration digest, host, qualification, and every
+execution identity field tier-report pooling compares (`manifestIdentity` in
+`src/report/tier.ts`: models, context limit, events, clock distortions, host
+versions, side and user-sim models, scenario provenance, fault schedule,
+tapes, toolchain, the Eidnara and harness revisions and trees, corpus,
+binaries, Bedrock route, tools, price table, and `turns_await_jobs`),
+refuses an out directory inside either run or the eidnara checkout (through
+links on its path) and a judge log with more than one link, requires the host run to hold `host` and the memory run memory arms and no
 `host`, and pairs and judges each item as grade-run does in one run
 (`p7Pairs`, `judgeP7`). Neither run is written. The out directory holds
-`pair.json` (both runs' paths, manifest and journal SHA-256, and arms),
+`pair.json` (both runs' paths, the SHA-256 of each manifest, journal, and arm
+`snapshots.jsonl`, the arms, and the shared setting),
 `judge-calls.jsonl`, `judgments.jsonl`, `grades.jsonl`, and
 `p7-summary.json`; a later pass refuses an out directory whose `pair.json`
-names other manifest or journal digests, and skips a pair this grader
+names other digests, and skips a pair this grader
 already graded. Its grades carry the grader digest with `scripts/p7-pair.ts`
-added to the files it covers.
+added to the files it covers. The tier and A/A reports read each run's own
+`grades.jsonl`; a pairing directory's P7 results are read from its
+`p7-summary.json` and `grades.jsonl`.
 
 ## Graders
 

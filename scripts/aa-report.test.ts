@@ -416,10 +416,12 @@ describe("aa-report", () => {
             host: [{ event: "e-3", cause: "harness-exit" }],
             "host~aa": [],
         });
-        expect(r?.interrupted_items).toEqual(["p-2"]);
+        // The P14 item k-1 grades the cut turn's whole session, so the cut takes it too.
+        expect(r?.interrupted_items).toEqual(["k-1", "p-2"]);
         // The item leaves the pair on both arms rather than standing unpaired or missing.
         expect(r?.unpaired_items).toEqual(before?.unpaired_items);
-        expect(r?.missing).toEqual(before?.missing);
+        expect(before?.missing).toEqual({ host: 1, "host~aa": 1 });
+        expect(r?.missing).toEqual({ host: 0, "host~aa": 0 });
         const p6 = (r?.metrics as { metric: string; n: number }[]).find(
             (m) => m.metric === "P6.reread_files",
         );

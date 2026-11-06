@@ -60,6 +60,72 @@ export function turnsAwaitJobs(value: unknown, dir: string): boolean {
     return value;
 }
 
+/**
+ * The execution identity a run's manifest pins, every `RunIdentity` field but the grades'
+ * `grader`: runs pool, and two runs pair, only when these agree.
+ */
+export function manifestIdentity(
+    dir: string,
+    manifest: Record<string, unknown>,
+    scenario: Pick<Scenario, "manifest">,
+    prereg: Preregistration,
+): Omit<RunIdentity, "grader"> {
+    const m = manifest as {
+        eidnara_commit: string;
+        models: string[];
+        context_limit: number;
+        events: number;
+        side_model?: string | null;
+        user_sim_model?: string;
+        fault_override?: unknown;
+        preflight?: {
+            distortions?: string[];
+            hosts?: VersionRow[];
+            upgrade?: VersionRow[];
+            toolchain?: unknown[];
+        };
+        tapes?: string[];
+        tape_sha256?: string[];
+    };
+    const pinned = (v: unknown) =>
+        v === undefined || v === null
+            ? "unrecorded"
+            : typeof v === "string"
+              ? v
+              : sha256Hex(canonicalJson(v));
+    const sm = scenario.manifest as {
+        generator_version?: string;
+        random_schema_version?: number;
+        corpus_inputs_sha256?: string;
+        embedding_model?: string;
+    };
+    return {
+        eidnara_commit: m.eidnara_commit,
+        models: m.models,
+        context_limit: m.context_limit,
+        events: m.events,
+        distortions: m.preflight?.distortions ?? [],
+        host_versions: identityVersions(m.preflight ?? {}),
+        side_model: m.side_model ?? null,
+        user_sim_model: m.user_sim_model ?? prereg.user_sim.model,
+        scenario_provenance: `${sm.generator_version}/${sm.random_schema_version}/${sm.corpus_inputs_sha256}/${sm.embedding_model}`,
+        fault_override:
+            m.fault_override == null ? null : sha256Hex(canonicalJson(m.fault_override)),
+        // The digests the run recorded of the tapes and pairing logs it consumed.
+        tapes: m.tape_sha256 ?? (m.tapes ?? []).map((t) => `unrecorded:${t}`),
+        toolchain: (m.preflight?.toolchain ?? []).map((t) => canonicalJson(t)),
+        eidnara_worktree: pinned(manifest.eidnara_worktree),
+        sim_commit: pinned(manifest.sim_commit),
+        sim_worktree: pinned(manifest.sim_worktree),
+        corpus: pinned(manifest.corpus),
+        binaries: pinned(manifest.binaries),
+        bedrock: pinned(manifest.bedrock),
+        tools: pinned(manifest.toolchain),
+        price_table: pinned(manifest.price_table),
+        turns_await_jobs: turnsAwaitJobs(manifest.turns_await_jobs, dir),
+    };
+}
+
 export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     const read = (name: string) => JSON.parse(readFileSync(join(dir, name), "utf8"));
     const manifest = read("manifest.json") as {
@@ -104,12 +170,6 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         | "price_table"
         | "turns_await_jobs"
     > & { side_model?: string | null; user_sim_model?: string };
-    const pinned = (v: unknown) =>
-        v === undefined || v === null
-            ? "unrecorded"
-            : typeof v === "string"
-              ? v
-              : sha256Hex(canonicalJson(v));
     const current = preregistrationHash(prereg);
     if (manifest.prereg_sha256 !== current) {
         throw new Error(
@@ -131,7 +191,6 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         const key = `${g.item}/${g.arm}/${g.inputs.join("\n")}`;
         if ((judged.get(key)?.version ?? 0) < g.version) judged.set(key, g);
     }
-    const { eidnara_commit, models, context_limit, events, side_model, user_sim_model } = manifest;
     const witnesses = new Map<string, WitnessReport>();
     const faults = join(dir, "faults.jsonl");
     const lines = readJsonl<unknown>(faults);
@@ -151,12 +210,6 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         );
     const pairingPath = join(dir, "pairing.jsonl");
     const pairing = existsSync(pairingPath) ? readPairing(pairingPath, manifest.order) : null;
-    const sm = scenario.manifest as {
-        generator_version?: string;
-        random_schema_version?: number;
-        corpus_inputs_sha256?: string;
-        embedding_model?: string;
-    };
     const hostP7 = (r: GradeRecord) => r.probe_type === "P7" && armBase(r.arm) === "host";
     const hostRows = new Map<string, GradeRecord>();
     for (const r of [...judged.values()].filter(
@@ -166,6 +219,29 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     }
     const grades = [...log.latest().filter((r) => !hostP7(r)), ...hostRows.values()];
     const run = loadRun(dir, prereg);
+    const {
+        eidnara_worktree,
+        sim_commit,
+        sim_worktree,
+        corpus,
+        binaries,
+        bedrock,
+        tools,
+        price_table,
+        turns_await_jobs,
+        ...head
+    } = manifestIdentity(dir, manifest, scenario, prereg);
+    const pinnedTrees = {
+        eidnara_worktree,
+        sim_commit,
+        sim_worktree,
+        corpus,
+        binaries,
+        bedrock,
+        tools,
+        price_table,
+        turns_await_jobs,
+    };
     return {
         run,
         scenario: { ...scenario, faults: manifest.fault_override ?? scenario.faults },
@@ -173,32 +249,9 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         judged: [...judged.values()],
         host: manifest.host,
         identity: {
-            eidnara_commit,
-            models,
-            context_limit,
-            events,
-            distortions: manifest.preflight?.distortions ?? [],
-            host_versions: identityVersions(manifest.preflight ?? {}),
-            side_model: side_model ?? null,
-            user_sim_model: user_sim_model ?? prereg.user_sim.model,
-            scenario_provenance: `${sm.generator_version}/${sm.random_schema_version}/${sm.corpus_inputs_sha256}/${sm.embedding_model}`,
-            fault_override:
-                manifest.fault_override == null
-                    ? null
-                    : sha256Hex(canonicalJson(manifest.fault_override)),
-            // The digests the run recorded of the tapes and pairing logs it consumed.
-            tapes: manifest.tape_sha256 ?? (manifest.tapes ?? []).map((t) => `unrecorded:${t}`),
-            toolchain: (manifest.preflight?.toolchain ?? []).map((t) => canonicalJson(t)),
+            ...head,
             grader: [...new Set(grades.map((g) => g.grader ?? "unrecorded"))].sort(),
-            eidnara_worktree: pinned(manifest.eidnara_worktree),
-            sim_commit: pinned(manifest.sim_commit),
-            sim_worktree: pinned(manifest.sim_worktree),
-            corpus: pinned(manifest.corpus),
-            binaries: pinned(manifest.binaries),
-            bedrock: pinned(manifest.bedrock),
-            tools: pinned(manifest.toolchain),
-            price_table: pinned(manifest.price_table),
-            turns_await_jobs: turnsAwaitJobs(manifest.turns_await_jobs, dir),
+            ...pinnedTrees,
         },
         witnesses: reports === null ? null : [...witnesses.values()],
         pairing,

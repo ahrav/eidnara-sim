@@ -2,6 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
     appendFileSync,
     existsSync,
+    linkSync,
     mkdirSync,
     mkdtempSync,
     readdirSync,
@@ -1581,7 +1582,23 @@ describe("P7 across runs and P14 without a probe turn", () => {
         await expect(pairRuns(host, later, out, judgeSaysBoth())).rejects.toThrow(
             "the runs differ in turns_await_jobs",
         );
+        // A judge log linked to another file is refused before the judge starts.
+        const linked = join(dirname(out), "linked");
+        mkdirSync(linked);
+        writeFileSync(join(dirname(out), "victim"), "keep me\n");
+        linkSync(join(dirname(out), "victim"), join(linked, "judgments.jsonl"));
+        await expect(pairRuns(host, memory, linked, judgeSaysBoth())).rejects.toThrow("2 links");
+        expect(readFileSync(join(dirname(out), "victim"), "utf8")).toBe("keep me\n");
         await pairRuns(host, memory, out, judgeSaysBoth());
+        // A pairing stays bound to the answers it judged as well as to the journal.
+        const answers = join(memory, "eidnara", "snapshots.jsonl");
+        const recorded = readFileSync(answers, "utf8");
+        const retry = recorded.split("\n")[0]?.replace(/"id":"[^"]+"/, '"id":"later"');
+        appendFileSync(answers, `${retry}\n`);
+        await expect(pairRuns(host, memory, out, judgeSaysBoth())).rejects.toThrow(
+            "pairs other runs or other states of these runs",
+        );
+        writeFileSync(answers, recorded);
         journalAppend(memory, { kind: "Note", arm: "eidnara", scenario_ms: 0 });
         await expect(pairRuns(host, memory, out, judgeSaysBoth())).rejects.toThrow(
             "pairs other runs or other states of these runs",

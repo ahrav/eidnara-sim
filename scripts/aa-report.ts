@@ -431,10 +431,17 @@ function report(dir: string) {
             userTurns
                 .filter((e) => interrupted.has(`${a}/${e}`))
                 .map((event) => ({ event, cause: interrupted.get(`${a}/${event}`) as string }));
-        // An item whose turn either arm's stop cut leaves the pair on both arms.
+        // An item whose turn either arm's stop cut leaves the pair on both arms; a P14 item grades
+        // its whole session, so a cut turn anywhere in the session cuts it.
         const cutEvents = new Set([...cutTurns(arm), ...cutTurns(control)].map((t) => t.event));
+        const eventSession = new Map(prefix.map((e) => [String(e.id), String(e.session)]));
+        const cutSessions = new Set([...cutEvents].map((e) => eventSession.get(e)));
         const interrupted_items = [...reached]
-            .filter((id) => cutEvents.has(eventOf.get(id) ?? ""))
+            .filter(
+                (id) =>
+                    cutEvents.has(eventOf.get(id) ?? "") ||
+                    (typeOf.get(id) === "P14" && cutSessions.has(sessionOf.get(id))),
+            )
             .sort();
         const cutItems = new Set(interrupted_items);
         // P7 grades come from judgments against the host arm, so they stay out of the pairing.

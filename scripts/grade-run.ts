@@ -2,6 +2,7 @@ import {
     appendFileSync,
     closeSync,
     existsSync,
+    lstatSync,
     openSync,
     readFileSync,
     readSync,
@@ -431,7 +432,13 @@ export async function judgeP7(o: {
     const { pairs, dir, upstream, seed, rules, models, skip } = o;
     const grades: GradeRecord[] = [];
     let judgeErrors = 0;
-    for (const name of ["judge-calls.jsonl", "judgments.jsonl"]) requireAppendable(join(dir, name));
+    for (const name of ["judge-calls.jsonl", "judgments.jsonl"]) {
+        const path = join(dir, name);
+        requireAppendable(path);
+        const links = lstatSync(path, { throwIfNoEntry: false })?.nlink ?? 1;
+        if (links !== 1)
+            throw new Error(`${path} has ${links} links; refusing to write through it`);
+    }
     const records = new RecordWriter(join(dir, "judge-calls.jsonl"), { resume: true });
     const gateway = new Gateway({
         upstream,
