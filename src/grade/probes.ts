@@ -118,6 +118,9 @@ export type GradeKey = Pick<GradeRecord, "item" | "arm" | "against">;
 /** The skip reason of a P7 item in a run without the host arm, which a pairing step grades. */
 export const P7_HOST_ELSEWHERE = "P7 host arm in another run";
 
+/** The skip reason of a host run's P7 item, which a pairing step grades against a memory run. */
+export const P7_MEMORY_ELSEWHERE = "P7 memory arm in another run";
+
 /** The snapshot a P14 grade cites: the session view grade-run builds, which no capture wrote. */
 export const p14SnapshotId = (arm: string, item: string, session: string) =>
     `${arm}:${item}:${session}`;

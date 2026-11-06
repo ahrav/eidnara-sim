@@ -458,13 +458,23 @@ const CHECKS: Record<string, Check> = {
             }
             // Every persisted grade, earlier versions included, cites the item's one snapshot; a
             // P14 grade cites the session view grade-run builds for its item.
+            // A P14 item is reached once its session's session_end lies in the run's events.
+            const ended = new Set(
+                c.g.scenario.events
+                    .slice(0, c.manifest.events)
+                    .filter((e) => e.kind === "session_end")
+                    .map((e) => String(e.session)),
+            );
             const p14s = new Map(
                 c.g.scenario.probes.filter((p) => p.type === "P14").map((p) => [p.id, p.session]),
             );
             for (const r of c.grades.length > 0 ? c.grades : c.g.grades) {
                 if (p14s.has(r.item)) {
                     const session = p14s.get(r.item);
-                    const own = r.probe_type === "P14" && c.g.run.arms.some((a) => a.arm === r.arm);
+                    const own =
+                        r.probe_type === "P14" &&
+                        c.g.run.arms.some((a) => a.arm === r.arm) &&
+                        ended.has(String(session));
                     if (
                         !own ||
                         session === undefined ||

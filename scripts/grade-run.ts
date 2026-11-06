@@ -38,6 +38,7 @@ import {
     graderDigest,
     needsSourceCommands,
     P7_HOST_ELSEWHERE,
+    P7_MEMORY_ELSEWHERE,
     p14SnapshotId,
     RECORDED_TYPES,
     type Rules,
@@ -1011,6 +1012,12 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
             skip,
             gradedBefore,
         });
+        // A host run without a memory arm leaves its P7 items to the pairing step too.
+        if (memoryArms.length === 0) {
+            for (const probe of p7) {
+                skip("host", ran.has(probe.id) ? P7_MEMORY_ELSEWHERE : outside);
+            }
+        }
     } else {
         // `scripts/p7-pair.ts` pairs these items with a host run of the scenario.
         for (const probe of p7) {

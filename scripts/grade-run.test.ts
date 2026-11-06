@@ -17,7 +17,7 @@ import { dirname, join } from "node:path";
 import type { SimConfig } from "../src/config/config";
 import { loadRun as loadEvidence } from "../src/evidence/load";
 import type { CallView, Snapshot } from "../src/grade/artefacts";
-import { GradeLog, P7_HOST_ELSEWHERE } from "../src/grade/probes";
+import { GradeLog, P7_HOST_ELSEWHERE, P7_MEMORY_ELSEWHERE } from "../src/grade/probes";
 import { armProfile } from "../src/hosts/profiles";
 import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
@@ -1520,6 +1520,10 @@ describe("P7 across runs and P14 without a probe turn", () => {
         const { memory } = pairedRuns();
         const summary = await gradeRun(memory, null);
         expect(summary.skipped).toEqual({ eidnara: { [P7_HOST_ELSEWHERE]: 1 } });
+        const { host } = pairedRuns();
+        expect((await gradeRun(host, null)).skipped).toEqual({
+            host: { [P7_MEMORY_ELSEWHERE]: 1 },
+        });
     });
 
     test("a host run and a memory run of one scenario pair their P7 items outside both runs", async () => {

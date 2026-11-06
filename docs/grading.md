@@ -305,7 +305,9 @@ presence and turn of the session's first fold and the plan, and two arms
 differ on it only through when they fold.
 
 A run whose arms exclude `host` skips each P7 item of a memory arm as
-`P7 host arm in another run`. `scripts/p7-pair.ts <host run> <memory run>
+`P7 host arm in another run`, and a run whose arms are `host` alone skips
+each of its P7 items as `P7 memory arm in another run`; neither reason
+counts as covered, so the cost panel leaves such a run's totals open. `scripts/p7-pair.ts <host run> <memory run>
 <out dir>` grades those items: it opens each run with grade-run's checks
 (`openRun`: manifest inputs, seed order, a complete journal, arm
 capabilities, and every journaled snapshot against its journal entries and

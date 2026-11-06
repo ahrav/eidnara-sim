@@ -724,6 +724,7 @@ describe("property witness evidence", () => {
 
     test("SIM-P41 holds a P14 grade to its session view, which has no journaled snapshot", () => {
         const probes = [{ id: "q-14", type: "P14", session: "s-1" }];
+        const events = [{ id: "e-end", kind: "session_end", session: "s-1", scenario_ms: 20 }];
         const grade = (snapshot: string) => ({
             item: "q-14",
             arm: "eidnara",
@@ -731,15 +732,21 @@ describe("property witness evidence", () => {
             version: 1,
             snapshot,
         });
-        expect(one("P41", made({ probes, grades: [grade("eidnara:q-14:s-1")] })).status).toBe(
-            "witnessed",
-        );
+        expect(
+            one("P41", made({ probes, events, grades: [grade("eidnara:q-14:s-1")] })).status,
+        ).toBe("witnessed");
         // A row naming an arm outside the run, or another probe type, is no P14 grade of it.
         const stray = { ...grade("nobody:q-14:s-1"), arm: "nobody" };
-        expect(one("P41", made({ probes, grades: [stray] })).status).toBe("violated");
+        expect(one("P41", made({ probes, events, grades: [stray] })).status).toBe("violated");
         const retyped = { ...grade("eidnara:q-14:s-1"), probe_type: "P5" };
-        expect(one("P41", made({ probes, grades: [retyped] })).status).toBe("violated");
-        expect(one("P41", made({ probes, grades: [grade("eidnara:q-14:s-2")] }))).toMatchObject({
+        expect(one("P41", made({ probes, events, grades: [retyped] })).status).toBe("violated");
+        // A session that ended past the run's events was never graded.
+        expect(one("P41", made({ probes, grades: [grade("eidnara:q-14:s-1")] })).status).toBe(
+            "violated",
+        );
+        expect(
+            one("P41", made({ probes, events, grades: [grade("eidnara:q-14:s-2")] })),
+        ).toMatchObject({
             status: "violated",
             detail: expect.stringContaining("not its session view"),
         });
