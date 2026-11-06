@@ -4,8 +4,9 @@ import { assertArtefactsOnly, type Snapshot } from "../grade/artefacts";
 import { GradeLog, type GradeRecord } from "../grade/probes";
 import { CONTROL_LABEL } from "../hosts/arms";
 import { isArmName } from "../hosts/profiles";
-import type { CallRecord } from "../proxy/records";
-import { type Entry, eachLine, readJsonl } from "../run/journal";
+import { type CallRecord, recordProblems } from "../proxy/records";
+import { type Entry, eachLine, readJournal } from "../run/journal";
+import { requireDeclaredProjects } from "../run/run";
 import type { ScenarioEvent } from "../run/scheduler";
 import { type ProbeItem, type Scenario, scenarioHash } from "../scenario/compile";
 
@@ -92,8 +93,10 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
         ],
         [
             "price_table",
-            rates.length === 4 &&
-                rates.every((r) => typeof r === "number" && Number.isFinite(r) && r >= 0),
+            ["input", "output", "cache_read", "cache_write"].every((k) => {
+                const r = (manifest.price_table?.rates ?? {})[k];
+                return typeof r === "number" && Number.isFinite(r) && r >= 0;
+            }) && rates.length === 4,
         ],
         ["order", Array.isArray(manifest.order)],
     ];
@@ -107,6 +110,7 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
         throw new Error(`arm ${arm} is not in the run's order (${manifest.order.join(", ")})`);
     }
     const scenario = json<Scenario>(join(root, "scenario.json"));
+    requireDeclaredProjects(scenario);
     const identity = scenario.manifest as { tier?: unknown; seed?: unknown };
     if (scenarioHash(scenario) !== manifest.scenario_hash) {
         throw new Error("scenario.json does not hash to the manifest's scenario_hash");
@@ -137,11 +141,16 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(project) || project.includes("..")) {
         throw new Error(`probe ${item} names project ${JSON.stringify(project)}, not a plain name`);
     }
-    const journal = readJsonl<Entry>(join(root, "journal.jsonl"));
+    const journal = readJournal(join(root, "journal.jsonl"));
     if (!journal.some((e) => e.kind === "EndRun")) {
         throw new Error(`${root} has no EndRun: replay reads finished runs only`);
     }
     const mine = journal.filter((e) => e.arm === arm);
+    const turnEntries = (kind: string) =>
+        mine.filter((e) => e.kind === kind && e.event === event.id);
+    if (turnEntries("BeginTurn").length > 1 || turnEntries("EndTurn").length > 1) {
+        throw new Error(`the journal holds more than one ${event.id} turn for ${arm}`);
+    }
     const begin = mine.find((e) => e.kind === "BeginTurn" && e.event === event.id);
     const end = mine.find((e) => e.kind === "EndTurn" && e.event === event.id);
     if (!begin || !end) {
@@ -177,6 +186,14 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
         `"turn":${JSON.stringify(event.id)}`,
         (r) => r.arm === arm && r.turn === event.id,
     );
+    calls.forEach((r, i) => {
+        const problems = recordProblems(r);
+        if (problems.length > 0 || (i > 0 && r.seq <= (calls[i - 1] as CallRecord).seq)) {
+            throw new Error(
+                `call record ${r.seq} of the probe turn is malformed: ${problems.join(", ") || "out of order"}`,
+            );
+        }
+    });
     const firstAgent = calls.find((c) => c.component === "agent");
     const startAt = events.indexOf(sessionStart);
     const laterSessions = events

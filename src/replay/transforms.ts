@@ -278,7 +278,7 @@ function provenanceOff(body: ConverseBody): Applied {
                     l = l.replace(TRUST, "");
                     counts.trust++;
                 }
-                if (ATTRIBUTION.test(l)) {
+                if (i === 1 && ATTRIBUTION.test(l)) {
                     l = l.replace(ATTRIBUTION, "");
                     counts.attribution++;
                 }

@@ -390,6 +390,11 @@ const SNAPSHOT_CONFIG =
     "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n\thooksPath = /dev/null\n";
 
 function trustSnapshotGit(gitDir: string): void {
+    const linked = readdirSync(gitDir, { recursive: true, withFileTypes: true }).find((d) =>
+        d.isSymbolicLink(),
+    );
+    if (linked)
+        throw new Error(`${gitDir} holds a link at ${join(linked.parentPath, linked.name)}`);
     if (existsSync(join(gitDir, "objects", "info", "alternates"))) {
         throw new Error(`${gitDir} borrows objects through alternates`);
     }

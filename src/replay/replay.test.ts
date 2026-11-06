@@ -336,7 +336,7 @@ async function sourceRun(over: Record<string, unknown> = {}): Promise<Fixture> {
     records.close();
     requests.close();
     entry("EndArm", 5000);
-    journal.push({ kind: "EndRun", scenario_ms: 5000, seq: seq++, wall_ms: wall(5000) });
+    journal.push({ kind: "EndRun", arm: null, scenario_ms: 5000, seq: seq++, wall_ms: wall(5000) });
     writeFileSync(
         join(run, "journal.jsonl"),
         journal.map((e) => `${JSON.stringify(e)}\n`).join(""),
