@@ -691,6 +691,7 @@ describe("P6: resume in code, or ask the user to choose", () => {
             "Also tell me what the counter should count. The working tree has other edits. I'll leave those alone.",
             "I'll start with whichever you choose.",
             "I am doing neither until you choose.",
+            "I am starting with whichever you choose.",
             `\n1. ${a}: a small change. What should it count?\n2. ${b}: a new command. It needs a start time.`,
         ]) {
             const answer = `${open} Which one should I do first? ${follow}`;
@@ -704,6 +705,8 @@ describe("P6: resume in code, or ask the user to choose", () => {
             `I'll start with task ${a} once you confirm the counter type.`,
             `I choose task ${a}. What should the counter count? Does the command take arguments?`,
             `I have chosen task ${a}. What should the counter count? Does the command take arguments?`,
+            `I will implement task ${a}. What should the counter count? Does the command take arguments?`,
+            `I decided to proceed with ${a}. What should it count? Any constraints?`,
             `I'll start with whichever implementation of task ${a} is simplest.`,
             "Here is a plan. Step one adds the field. Step two wires it. Step three tests it.",
         ]) {
@@ -810,6 +813,9 @@ describe("P8: the answer commits to the value", () => {
             `Use ${v}. If ${v} is no longer right, tell me the new one.`,
             `Going by what you told me earlier, it should be ${v}, but nothing answers there yet.`,
             `Use ${v}. The repo does not mention ${v}; ${old} is retired.`,
+            `Use ${v}. The repo does not have ${v}.`,
+            `Use ${v}. The repo does not mention ${v}; ${old} was only used earlier.`,
+            `Use ${v}. No process for ${v} is listening on either ${v.toUpperCase()} or ${old}.`,
             `Previously, it moved to ${v}.`,
             `Use ${v}. Actually, the repo does not mention either ${v} or ${old}.`,
             `Earlier, it failed, but ${v} works.`,
@@ -860,6 +866,14 @@ describe("P8: the answer commits to the value", () => {
                 "answer names a competing value beside it",
             ],
             [`Formerly, as documented, ${v} was the alias.`, "answer turns the value down"],
+            [
+                `Use ${v}. The repo does not mention either ${v} or brisk-otter-08 because either ${old} or brisk-otter-09 may be right.`,
+                "answer turns the value down",
+            ],
+            [
+                `Use ${v}. Nothing prevents either ${v} or ${old} from being used.`,
+                "answer names a competing value beside it",
+            ],
             [
                 `Use ${v}. Nothing mentions ${v}, but either ${v} or ${old} may be right.`,
                 "answer names a competing value beside it",

@@ -148,12 +148,12 @@ const HISTORY = /^[^.?!;]{0,30}?\b(?:was|were)\s+(?:only|used|for)\b/i;
  * `nothing in this repo listens on X`, `the repo doesn't mention X`, `neither X nor Y appears`.
  */
 const ABSENCE =
-    /\b(?:nothing|nobody|none of|neither|no (?:process|file|commit|config\w*|reference|record|match\w*|mention))\b|\b(?:does|do|did|is|are|was|were)(?:n['\u2019]?t| not)\s+(?:[\w-]+\s+){0,2}?(?:mention|appear|contain|define|set|reference|listen|serve|answer|exist|include|record|show|open|running)\w*|\bnot (?:in|set|defined|mentioned|referenced|listening|found|open|running)\b/i;
+    /\b(?:nothing|nobody|none of|neither)\b(?![^.?!;:,]*\b(?:prevents?|stops?|forbids?|keeps?|blocks?)\b)|\bno (?:process|file|commit|config\w*|reference|record|match\w*|mention)\b|\b(?:does|do|did|is|are|was|were)(?:n['\u2019]?t| not)\s+(?:[\w-]+\s+){0,2}?(?:mention|appear|contain|define|set|reference|listen|serve|answer|exist|include|record|show|open|running|have|hold|carry|know)\w*|\bnot (?:in|set|defined|mentioned|referenced|listening|found|open|running)\b/i;
 /** Wording that still turns a value down inside an absence clause, a prohibition included. */
 const REJECTS =
     /\b(?:replac\w*|supersed\w*|retired|outdated|out of date|stale|deprecated|obsolete|wrong|invalid|incorrect|typo|avoid\w*)\b|\b(?:don['\u2019]?t|do not|never|shouldn['\u2019]?t|should not|must not|mustn['\u2019]?t|is not to be|isn['\u2019]?t to be|cannot be|can['\u2019]?t be)\s+(?:be\s+)?(?:use|pick|choose|point|rely|trust)\w*/i;
 /** Wording that lists values together as all absent: `neither X nor Y`, `on either X or Y`. */
-const LISTED = /\bneither\b[^,]*\bnor\b|\beither\b[^,]*\bor\b|\bboth\b/i;
+const LISTED = /\bneither\b[^,]*?\bnor\b|\beither\b[^,]*?\bor\b|\bboth\b/i;
 /**
  * Where one clause ends and another begins: `;`, `:`, a comma before a conjunction, or a `nor`
  * that opens a clause of its own (`nor can I tell`); `neither X nor Y` stays one clause.
@@ -235,7 +235,20 @@ const stepsAside = (sentence: string, found: Mention[]): boolean => {
     const clauseOf = (at: number) => bounds.filter((b) => b < at).length;
     const clauses = sentence.split(CLAUSE_BREAK);
     const absent = (k: number) => ABSENCE.test(clauses[k] ?? "");
-    const value = found.find((m) => m.expected)?.token ?? "";
+    const value = (found.find((m) => m.expected)?.token ?? "").toLowerCase();
+    const starts = clauses.map((_c, k) => (k === 0 ? 0 : (bounds[k - 1] as number)));
+    /** The list (`either ... or ...`, `neither ... nor ...`, `both ...`) that holds offset `at`. */
+    const listAt = (k: number, at: number): string | null => {
+        const clause = clauses[k] ?? "";
+        const local = at - (starts[k] as number);
+        for (const m of clause.matchAll(new RegExp(LISTED.source, "gi"))) {
+            // The list runs from its first word through the item after `or`, `nor`, or `both`.
+            const tail = /^\s*(?:and\s+)?[^\s,;]+/.exec(clause.slice(m.index + m[0].length));
+            const stop = m.index + m[0].length + (tail?.[0].length ?? 0);
+            if (m.index <= local && local < stop) return clause.slice(m.index, stop);
+        }
+        return null;
+    };
     return found.every((m) => {
         const k = clauseOf(m.at);
         const clause = clauses[k] ?? "";
@@ -243,9 +256,9 @@ const stepsAside = (sentence: string, found: Mention[]): boolean => {
             const after = sentence.slice(m.at + m.token.length);
             return absent(k) && !REJECTS.test(clause) && !AFTER.test(after);
         }
-        if (m.negated) return true;
-        const listed = LISTED.exec(clause);
-        return absent(k) && listed !== null && clause.slice(listed.index).includes(value);
+        if (m.negated || m.past) return true;
+        const list = listAt(k, m.at);
+        return absent(k) && list?.toLowerCase().includes(value) === true;
     });
 };
 
