@@ -185,6 +185,33 @@ test("search results are checked against the route the arm declares", () => {
     expect(observeArm("eidnara", "opencode", root, { agent: 1 }).search).toBeNull();
 });
 
+test("the capability check reads the counter total over an arm's daemon generations", () => {
+    const root = captured(armRoot([PI_ON, PASS]), ["messages"]);
+    const write = (record: object) =>
+        writeFileSync(join(root, "..", "source-capture.json"), JSON.stringify(record));
+    const total = { admitted: 4, completed: 4 };
+    write({ counters: total, error: null, unread_generations: 1, generations: [] });
+    const read = observeArm("eidnara", "pi", root, { agent: 1 });
+    expect(read.source_capture).toMatchObject({
+        counters: total,
+        counters_error: null,
+        unread_generations: 1,
+    });
+    expect(armMismatches(read)).toEqual([]);
+    // A total beside a failed finish read is unread.
+    write({ counters: total, error: "the counter read did not finish", unread_generations: 1 });
+    const failed = observeArm("eidnara", "pi", root, { agent: 1 });
+    expect(failed.source_capture?.unread_generations).toBe(1);
+    write({ counters: total, error: null, unread_generations: -1 });
+    expect(
+        observeArm("eidnara", "pi", root, { agent: 1 }).source_capture?.unread_generations,
+    ).toBeNull();
+    write({ counters: total, error: "the counter read did not finish", unread_generations: 1 });
+    expect(armMismatches(observeArm("eidnara", "pi", root, { agent: 1 }))).toEqual([
+        "source capture counters unread: the record also reports the counter read did not finish",
+    ]);
+});
+
 test("an arm that consents to source capture must leave message descriptors and counters, and one without it none", () => {
     const ok = observeArm(
         "eidnara",
@@ -199,6 +226,7 @@ test("an arm that consents to source capture must leave message descriptors and 
         live: 1,
         counters: { admitted: 1, completed: 1, units_published: 2 },
         counters_error: null,
+        unread_generations: null,
     });
     expect(armMismatches(ok)).toEqual([]);
     const missing = observeArm("eidnara", "pi", armRoot([PI_ON, PASS]), { agent: 2 });

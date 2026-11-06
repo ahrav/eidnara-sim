@@ -46,7 +46,7 @@ type Tokens = Pick<
     "component" | "input_tokens" | "output_tokens" | "cache_read_tokens" | "cache_write_tokens"
 >;
 
-function componentCosts(calls: readonly Tokens[], price: Price): ComponentCost[] {
+export function componentCosts(calls: readonly Tokens[], price: Price): ComponentCost[] {
     const byComponent = new Map<string, ComponentCost>();
     for (const c of calls) {
         const row = byComponent.get(c.component) ?? {
@@ -111,8 +111,9 @@ function gradingComplete(run: RunLogs): boolean {
 }
 
 /**
- * The grader's skip reasons that leave no useful item ungraded: P14 items have no probe turn, and
- * an item graded by an earlier pass of the same grader keeps that grade in the summary.
+ * The grader's skip reasons that leave no useful item ungraded: an item graded by an earlier pass
+ * of the same grader keeps that grade in the summary, and a summary from a grader before
+ * session-level P14 grading lists its P14 items as having no probe turn.
  */
 const COVERED_SKIPS = new Set(["P14 has no probe turn", "already graded"]);
 

@@ -115,11 +115,15 @@ export function versionOf(config: SimConfig, host: "pi" | "opencode", launcher?:
     }
 }
 
-export async function preflight(config: SimConfig, runRoot: string): Promise<Preflight> {
+export async function preflight(
+    config: SimConfig,
+    runRoot: string,
+    extraMasked: readonly string[] = [],
+): Promise<Preflight> {
     checkBuildMarker(config.eidnara_checkout);
     checkDaemonFromBuild(config.eidnara_checkout, config.daemon_binary);
     await buildFaketime();
-    const launcher = writeLauncher(runRoot);
+    const launcher = writeLauncher(runRoot, extraMasked);
     const node = realpathSync(Bun.which("node") ?? "node");
     const next = config.upgrade?.opencode_binary;
     const time_injection = interceptionTest(launcher, runRoot, [

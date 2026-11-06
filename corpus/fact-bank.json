@@ -1,6 +1,6 @@
 {
     "schema": "sim-fact-bank/v4",
-    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {alt}, {ALT}, and {Alt} a second word in lower, upper, and Pascal case, {value} and {value2} distinct five-digit numbers, and {codename} an adjective-noun-NN codename. A template's variants list binds further placeholders, one entry per instance in turn. When a template repeats in one project, the later instance is conveyed through revise, whose {old_*} placeholders name the previous instance's values. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, an optional scope (a directory prefix ending in /, or one file path) restricts a check's diff-channel keys to files under that prefix or to that file, and an optional applies lists regexes for the constructs a rule governs (a new public constant, a returned error string, a log call): each match in the scoped added lines, extended over its open brackets, is one unit, and the rule holds only when a unit exists and every unit matches every must regex; and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures. A plan template names a task; the compiler composes plan statements from one or two tasks. A tool_error template has form tool_result (a committed script the agent runs) or pasted (a failure transcript the user pastes). Every rust and typescript template carries requires, the constructs its tasks presuppose: each entry names a file path and a regex that the file must match at the pinned commit of every repository of that language and of its twin; the compiler refuses a bank whose requirement a pinned tree lacks.",
+    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {alt}, {ALT}, and {Alt} a second word in lower, upper, and Pascal case, {value} and {value2} distinct five-digit numbers, and {codename} an adjective-noun-NN codename. A template's variants list binds further placeholders, one entry per instance in turn. probe_variants and out_probe_variants list further tasks under the same rule, so the n-th repeat of a task text in one project asks the n-th variant instead of the work the agent already did; a repeat past the list keeps the text behind a framing. A tool_result script is a program the agent runs that defines the error identity the check names and raises it, so the identity exists in the repository and the failure is one the script produces. When a template repeats in one project, the later instance is conveyed through revise, whose {old_*} placeholders name the previous instance's values. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, an optional scope (a directory prefix ending in /, or one file path) restricts a check's diff-channel keys to files under that prefix or to that file, and an optional applies lists regexes for the constructs a rule governs (a new public constant, a returned error string, a log call): each match in the scoped added lines, extended over its open brackets, is one unit, and the rule holds only when a unit exists and every unit matches every must regex; and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures. A plan template names a task; the compiler composes plan statements from one or two tasks. A tool_error template has form tool_result (a committed script the agent runs) or pasted (a failure transcript the user pastes). Every rust and typescript template carries requires, the constructs its tasks presuppose: each entry names a file path and a regex that the file must match at the pinned commit of every repository of that language and of its twin; the compiler refuses a bank whose requirement a pinned tree lacks.",
     "rust": {
         "constraint": [
             {
@@ -13,6 +13,10 @@
                     {
                         "path": "src/server.rs",
                         "pattern": "backoff > 64"
+                    },
+                    {
+                        "path": "src/cmd/publish.rs",
+                        "pattern": "pub struct Publish"
                     }
                 ],
                 "statement": "every new public constant under src/cmd carries the {TOKEN}_ prefix, for example {TOKEN}_MAX_ARGS",
@@ -31,7 +35,13 @@
                         "^\\s*pub(?:\\([^)\\n]*\\))?\\s+const\\s+[A-Za-z_]\\w*\\s*:"
                     ]
                 },
-                "revise": "the {old_TOKEN}_ prefix for new public constants under src/cmd is retired; they carry the {TOKEN}_ prefix now, for example {TOKEN}_MAX_ARGS"
+                "revise": "the {old_TOKEN}_ prefix for new public constants under src/cmd is retired; they carry the {TOKEN}_ prefix now, for example {TOKEN}_MAX_ARGS",
+                "probe_variants": [
+                    "Bound the byte length of a PUBLISH message with a public constant in the command module, and reject larger payloads."
+                ],
+                "out_probe_variants": [
+                    "Give the server module a named constant for how long a shutdown waits for open connections to finish."
+                ]
             },
             {
                 "id": "rs-cmd-error-tag",
@@ -43,6 +53,10 @@
                     {
                         "path": "src/bin/cli.rs",
                         "pattern": "Client::connect\\("
+                    },
+                    {
+                        "path": "src/cmd/get.rs",
+                        "pattern": "pub struct Get"
                     }
                 ],
                 "statement": "error strings returned from src/cmd start with the tag [{token}]",
@@ -61,7 +75,13 @@
                         "\\b(?:Err|Error)\\(\\s*(?:format!\\(\\s*)?[\"']"
                     ]
                 },
-                "revise": "error strings returned from src/cmd now start with the tag [{token}] instead of [{old_token}]"
+                "revise": "error strings returned from src/cmd now start with the tag [{token}] instead of [{old_token}]",
+                "probe_variants": [
+                    "Make GET refuse an empty key with a clear error reply."
+                ],
+                "out_probe_variants": [
+                    "Make the CLI binary print a readable line when the server sends back a reply it does not expect."
+                ]
             },
             {
                 "id": "rs-db-helper-prefix",
@@ -87,7 +107,13 @@
                         "(?<!#\\[(?:tokio::)?test(?:\\([^)\\n]*\\))?\\][ \\t]*\\n(?:[ \\t]*#\\[[^\\]\\n]*\\][ \\t]*\\n)*)^[ \\t]*(?:pub(?:\\([^)\\n]*\\))?\\s+)?(?:async\\s+)?fn\\s+\\w+"
                     ]
                 },
-                "revise": "helper functions added to src/db.rs now take a {token}_ prefix in place of {old_token}_"
+                "revise": "helper functions added to src/db.rs now take a {token}_ prefix in place of {old_token}_",
+                "probe_variants": [
+                    "Add a way to list the keys whose expiry falls within the next second."
+                ],
+                "out_probe_variants": [
+                    "Add a function to the frame module that tells whether a frame is a simple string."
+                ]
             },
             {
                 "id": "rs-test-suffix",
@@ -121,7 +147,13 @@
                         "(?<=#\\[(?:tokio::)?test(?:\\([^)\\n]*\\))?\\][ \\t]*\\n(?:[ \\t]*#\\[[^\\]\\n]*\\][ \\t]*\\n)*[ \\t]*)(?:pub\\s+)?(?:async\\s+)?fn\\s+\\w+"
                     ]
                 },
-                "revise": "integration test functions added under tests/ now end in _{token} rather than _{old_token}"
+                "revise": "integration test functions added under tests/ now end in _{token} rather than _{old_token}",
+                "probe_variants": [
+                    "Write an integration test showing that GET on a missing key returns a null reply."
+                ],
+                "out_probe_variants": [
+                    "Write a doc example on the Frame enum showing how to build an integer frame."
+                ]
             },
             {
                 "id": "rs-tracing-target",
@@ -147,7 +179,13 @@
                         "\\b(?:tracing::)?(?:trace|debug|info|warn|error|event)!\\s*\\("
                     ]
                 },
-                "revise": "tracing events added in src/server.rs now use target \"{token}\" instead of \"{old_token}\""
+                "revise": "tracing events added in src/server.rs now use target \"{token}\" instead of \"{old_token}\"",
+                "probe_variants": [
+                    "Emit a log record when the listener runs out of connection permits and has to wait for one."
+                ],
+                "out_probe_variants": [
+                    "Print a message from the CLI binary just before it opens its connection."
+                ]
             }
         ],
         "decision": [
@@ -564,6 +602,18 @@
                     {
                         "path": "src/bin/server.rs",
                         "pattern": "TcpListener::bind\\("
+                    },
+                    {
+                        "path": "src/cmd/get.rs",
+                        "pattern": "pub struct Get"
+                    },
+                    {
+                        "path": "src/connection.rs",
+                        "pattern": "pub struct Connection"
+                    },
+                    {
+                        "path": "src/bin/cli.rs",
+                        "pattern": "."
                     }
                 ],
                 "statement": "log lines you add use the debug level",
@@ -611,7 +661,19 @@
                         "LEVEL": "ERROR"
                     }
                 ],
-                "revise": "the src/cmd logging exception changes: log lines you add there now use the {level} level instead of {old_level}, and everywhere else stays at debug"
+                "revise": "the src/cmd logging exception changes: log lines you add there now use the {level} level instead of {old_level}, and everywhere else stays at debug",
+                "probe_variants": [
+                    "Log the key each GET looks up as the command runs.",
+                    "Log each channel a SUBSCRIBE adds as it subscribes.",
+                    "Log the payload length of each PUBLISH as it is applied.",
+                    "Log when SET is given an expiry, as the command runs."
+                ],
+                "out_probe_variants": [
+                    "Log when the server receives the shutdown signal.",
+                    "Log when a connection closes, from the connection module.",
+                    "Log each key the database purges when it expires.",
+                    "Log the CLI's target address before it connects."
+                ]
             }
         ],
         "filler": [
@@ -637,11 +699,11 @@
                 "form": "tool_result",
                 "statement": "the {token} replay check fails with {Alt}Error",
                 "script": {
-                    "path": "scripts/check_{token}.sh",
-                    "content": "#!/bin/sh\n# Replays the recorded {token} session against the frame decoder.\necho \"replaying {token} fixture (412 frames)\"\necho \"error: {Alt}Error: frame 318 declares a bulk length of {value} bytes, above the decoder limit\" >&2\nexit 1\n"
+                    "path": "scripts/check_{token}.py",
+                    "content": "#!/usr/bin/env python3\n\"\"\"Replays the recorded {token} session against the frame decoder's bulk limit.\"\"\"\nimport sys\n\nBULK_LIMIT = 4096\nFIXTURE_FRAMES = 412\n\n\nclass {Alt}Error(Exception):\n    \"\"\"A replayed frame declares a bulk length above the decoder limit.\"\"\"\n\n\ndef replay():\n    print(\"replaying {token} fixture (%d frames)\" % FIXTURE_FRAMES)\n    for frame in range(1, FIXTURE_FRAMES + 1):\n        declared = {value} if frame == 318 else 64\n        if declared > BULK_LIMIT:\n            raise {Alt}Error(\n                \"frame %d declares a bulk length of %d bytes, above the decoder limit\"\n                % (frame, declared)\n            )\n\n\nif __name__ == \"__main__\":\n    try:\n        replay()\n    except {Alt}Error as e:\n        print(\"error: {Alt}Error: %s\" % e, file=sys.stderr)\n        sys.exit(1)\n"
                 },
-                "command": "Run `sh scripts/check_{token}.sh` from the repo root and tell me what it reports; it reproduces issue #{value2}.",
-                "revise": "Issue #{value2} has a new repro now that the {old_token} script is gone: run `sh scripts/check_{token}.sh` and tell me what it reports.",
+                "command": "Run `python3 scripts/check_{token}.py` from the repo root and tell me what it reports; it reproduces issue #{value2}.",
+                "revise": "Issue #{value2} has a new repro now that the {old_token} script is gone: run `python3 scripts/check_{token}.py` and tell me what it reports.",
                 "probe": "Issue #{value2} is open again: CI broke the same way after the fix landed. Add a troubleshooting entry to the README naming the exact error type it raised.",
                 "check": {
                     "must": [
@@ -692,6 +754,10 @@
                     {
                         "path": "src/parse-query.ts",
                         "pattern": "export function"
+                    },
+                    {
+                        "path": "src/parse-query.ts",
+                        "pattern": "."
                     }
                 ],
                 "statement": "new exported constants under src/adapter carry the {TOKEN}_ prefix",
@@ -710,7 +776,13 @@
                         "^\\s*export\\s+const\\s+[A-Za-z_$][\\w$]*"
                     ]
                 },
-                "revise": "the {old_TOKEN}_ prefix for new exported constants under src/adapter is retired; they carry {TOKEN}_ now"
+                "revise": "the {old_TOKEN}_ prefix for new exported constants under src/adapter is retired; they carry {TOKEN}_ now",
+                "probe_variants": [
+                    "Cap how many cookies the adapter sets on one response, with the cap in an exported constant."
+                ],
+                "out_probe_variants": [
+                    "Add a ceiling on how long one query value may be in the query parser."
+                ]
             },
             {
                 "id": "ts-error-tag",
@@ -736,7 +808,13 @@
                         "\\bthrow\\s+new\\s+\\w*Error\\s*\\("
                     ]
                 },
-                "revise": "error messages you throw from src/cookies.ts now start with the tag [{token}] instead of [{old_token}]"
+                "revise": "error messages you throw from src/cookies.ts now start with the tag [{token}] instead of [{old_token}]",
+                "probe_variants": [
+                    "Reject a cookie whose value contains a newline."
+                ],
+                "out_probe_variants": [
+                    "Reject a route path that ends with a dot when it is registered."
+                ]
             },
             {
                 "id": "ts-utils-prefix",
@@ -748,6 +826,10 @@
                     {
                         "path": "src/trace.ts",
                         "pattern": "export"
+                    },
+                    {
+                        "path": "src/trace.ts",
+                        "pattern": "."
                     }
                 ],
                 "statement": "helpers added to src/utils.ts are named starting with {token}",
@@ -762,7 +844,13 @@
                         "^(?:export\\s+)?(?:const|let|function\\*?|async\\s+function\\*?)\\s+[A-Za-z_$][\\w$]*"
                     ]
                 },
-                "revise": "helpers added to src/utils.ts are now named starting with {token} rather than {old_token}"
+                "revise": "helpers added to src/utils.ts are now named starting with {token} rather than {old_token}",
+                "probe_variants": [
+                    "Add a helper that joins two path segments with exactly one slash between them."
+                ],
+                "out_probe_variants": [
+                    "Add a small function to the trace module that formats a byte count."
+                ]
             },
             {
                 "id": "ts-test-name",
@@ -788,7 +876,13 @@
                         "\\.{token}\\.test\\.ts$"
                     ]
                 },
-                "revise": "new test files now take the .{token}.test.ts suffix instead of .{old_token}.test.ts"
+                "revise": "new test files now take the .{token}.test.ts suffix instead of .{old_token}.test.ts",
+                "probe_variants": [
+                    "Add a new test file covering a POST handler that receives the parsed JSON body it was sent."
+                ],
+                "out_probe_variants": [
+                    "Add an example under example/ that returns the current time."
+                ]
             },
             {
                 "id": "ts-warn-prefix",
@@ -814,7 +908,13 @@
                         "\\bconsole\\.warn\\s*\\("
                     ]
                 },
-                "revise": "console warnings you add in src/compose.ts now start with ({token}) instead of ({old_token})"
+                "revise": "console warnings you add in src/compose.ts now start with ({token}) instead of ({old_token})",
+                "probe_variants": [
+                    "Warn during composition when two hooks are registered under the same name."
+                ],
+                "out_probe_variants": [
+                    "Warn when the websocket message parser receives an empty frame."
+                ]
             }
         ],
         "decision": [
@@ -1198,6 +1298,14 @@
                     {
                         "path": "src/index.ts",
                         "pattern": "private add\\("
+                    },
+                    {
+                        "path": "src/parse-query.ts",
+                        "pattern": "."
+                    },
+                    {
+                        "path": "src/utils.ts",
+                        "pattern": "."
                     }
                 ],
                 "statement": "string literals you add use {outer} quotes",
@@ -1221,7 +1329,19 @@
                         "outer": "double"
                     }
                 ],
-                "revise": "the quote rule flips: string literals you add now use {outer} quotes, except inside src/ws, where they use {inner} quotes"
+                "revise": "the quote rule flips: string literals you add now use {outer} quotes, except inside src/ws, where they use {inner} quotes",
+                "probe_variants": [
+                    "Have the websocket wrapper throw an error whose message names the method when send is called after the socket has closed.",
+                    "Have the websocket wrapper reject a publish to an empty topic with a message.",
+                    "Have the websocket wrapper's unsubscribe throw an error with a message when the topic was never subscribed.",
+                    "Have the websocket wrapper's subscribe throw an error with a message when the topic name is empty."
+                ],
+                "out_probe_variants": [
+                    "Throw an error with a clear message when an empty route path is registered.",
+                    "Throw an error with a clear message when a cookie is set with an empty name.",
+                    "Give the query parser a default key name for a bare value.",
+                    "Add a helper in utils that prefixes a header value with the word header and a colon for logging."
+                ]
             }
         ],
         "filler": [
@@ -1247,11 +1367,11 @@
                 "form": "tool_result",
                 "statement": "the {token} replay check fails with {Alt}Error",
                 "script": {
-                    "path": "scripts/check-{token}.sh",
-                    "content": "#!/bin/sh\n# Replays the captured {token} request log through the cookie parser.\necho \"replaying {token} request log (96 requests)\"\necho \"{Alt}Error: cookie header on request 71 holds {value} bytes, above the parser limit\" >&2\necho \"    at parseCookie (src/cookies.ts:142:15)\" >&2\nexit 1\n"
+                    "path": "scripts/check-{token}.py",
+                    "content": "#!/usr/bin/env python3\n\"\"\"Replays the captured {token} request log against the cookie header limit.\"\"\"\nimport sys\n\nHEADER_LIMIT = 8192\nREQUESTS = 96\n\n\nclass {Alt}Error(Exception):\n    \"\"\"A replayed request carries a cookie header above the parser limit.\"\"\"\n\n\ndef replay():\n    print(\"replaying {token} request log (%d requests)\" % REQUESTS)\n    for request in range(1, REQUESTS + 1):\n        size = {value} if request == 71 else 240\n        if size > HEADER_LIMIT:\n            raise {Alt}Error(\n                \"cookie header on request %d holds %d bytes, above the parser limit\"\n                % (request, size)\n            )\n\n\nif __name__ == \"__main__\":\n    try:\n        replay()\n    except {Alt}Error as e:\n        print(\"{Alt}Error: %s\" % e, file=sys.stderr)\n        print(\"    at parseCookie (src/cookies.ts:142:15)\", file=sys.stderr)\n        sys.exit(1)\n"
                 },
-                "command": "Run `sh scripts/check-{token}.sh` from the repo root and tell me what it reports; it reproduces issue #{value2}.",
-                "revise": "Issue #{value2} has a new repro now that the {old_token} script is gone: run `sh scripts/check-{token}.sh` and tell me what it reports.",
+                "command": "Run `python3 scripts/check-{token}.py` from the repo root and tell me what it reports; it reproduces issue #{value2}.",
+                "revise": "Issue #{value2} has a new repro now that the {old_token} script is gone: run `python3 scripts/check-{token}.py` and tell me what it reports.",
                 "probe": "Issue #{value2} is open again: CI broke the same way after the fix landed. Add a troubleshooting section to CONTRIBUTING.md naming the exact error type it raised.",
                 "check": {
                     "must": [
@@ -1455,7 +1575,13 @@
                         "(?<!\\d){value}(?!\\d)"
                     ]
                 },
-                "revise": "the internal ticket for the cache rewrite was renumbered from {old_value} to {value}"
+                "revise": "the internal ticket for the cache rewrite was renumbered from {old_value} to {value}",
+                "probe_variants": [
+                    "Add a one-line summary at the top of the README describing the project.",
+                    "Add a short paragraph to the README on how to run the tests.",
+                    "Add a doc comment to the main configuration type explaining its role.",
+                    "Add a short note to the README on how to report a bug."
+                ]
             },
             {
                 "id": "anchor-codename",
@@ -1469,7 +1595,13 @@
                         "{codename}"
                     ]
                 },
-                "revise": "next quarter's work was renamed from {old_codename} to {codename}"
+                "revise": "next quarter's work was renamed from {old_codename} to {codename}",
+                "probe_variants": [
+                    "Write a short description of the repository layout for the README.",
+                    "Write three sentences for the README on what the examples demonstrate.",
+                    "Describe in a paragraph how a request flows through the code, for the README.",
+                    "Add a short note to the README for new contributors on how to build the project."
+                ]
             }
         ],
         "session_rule": [

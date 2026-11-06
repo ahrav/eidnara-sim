@@ -780,8 +780,9 @@ Type: safety
 Reachability: default-production
 Status: active
 Exercised: partial - M6 (#1031) journals a labelled `UserTurn` per turn and
-lists labels in probe snapshots; compiled P14 items are still skipped by the
-grader; no full-tier run yet
+lists labels in probe snapshots; `scripts/grade-run.ts` grades compiled P14
+items from a session view holding those labels; c7 S and M runs graded P14
+on copies; no tier report reads it yet
 Guarantee: SIM-P25: Every user-sim turn carries a label in task, pushback,
 interrupt, redirect, abandon, clarify, or paste, and P14 derives from labels
 only.
@@ -791,10 +792,11 @@ Fault/timing angle: none.
 Required faults and enabling state: a run with user-sim turns.
 Confidence: low - [evidence](evidence/sim-p25-pushback-label-per-turn.md). M6
 (#1031) journals one labelled `UserTurn` per turn ahead of its `EndTurn`;
-verified in `src/run/scheduler.test.ts`. P14 grading of compiled items is a gap
-(see the evidence).
+verified in `src/run/scheduler.test.ts`. Compiled P14 items grade from the
+session view (see the evidence).
 Existing check: `src/run/scheduler.test.ts` checks the label and the order;
-`scripts/grade-run.ts` still skips compiled P14 items
+`scripts/grade-run.test.ts` grades a P14 item from journaled labels after a
+fold
 Impact: P14 reads transcript text and grades by self-report.
 Open questions: None.
 
@@ -1187,9 +1189,12 @@ Exercised: partial - the M5 grading unit (#1029) exercises the grader on
 recorded fixtures in `src/grade/probes.test.ts`; run and report wiring lands in
 later units
 Guarantee: SIM-P41: `SnapshotArtefacts` appears exactly once per item and arm,
-at the first `EndTurn` of the probe task, and grades reference that snapshot id.
+at the first `EndTurn` of the probe task, and grades reference that snapshot id;
+a P14 item, which has no probe task, is graded from the session view
+grade-run builds and its grades reference that view's id (`p14SnapshotId`).
 Check: `always` - count `SnapshotArtefacts` per item and arm, assert exactly one
-at the first `EndTurn`, and assert grades cite it.
+at the first `EndTurn`, and assert grades cite it; assert a P14 grade cites its
+session view's id.
 Fault/timing angle: a user-sim pushback after the probe turn lets the agent
 retry.
 Required faults and enabling state: a probe turn followed by pushback.
@@ -2301,7 +2306,7 @@ Exercised: partial - `src/scenario/compile.test.ts` checks the compiled
 S-101 and M-201 scenarios, framings stripped
 Guarantee: SIM-P82: No probe of a project asks a P1 item's task before that
 P1 item, apart from the P1 item of an earlier instance of the same line,
-which a revision re-asks behind a framing.
+which a revision re-asks only when its template's `probe_variants` run out.
 Check: `always` - for every P1 item, assert that every earlier probe of its
 project whose text, framing stripped, equals the P1 task is the P1 item of
 an earlier instance of the same line; `always`, because one earlier asking
@@ -2312,16 +2317,15 @@ workspace, so any earlier asking of the task stays in the tree.
 Required faults and enabling state: a scenario with P1 items.
 Confidence: medium -
 [evidence](evidence/sim-p82-no-probe-asks-a-p1-task-before-its-item.md). The
-test compares tasks with the bank's framings stripped; at S it finds no
-repeat, at M-201 ten same-line repeats.
+test compares tasks with the bank's framings stripped; at S and at M-201 it
+finds no repeat, since a revised line asks a variant task.
 Existing check: `src/scenario/compile.test.ts` `no probe of a project asks a
 P1 task before that P1 item, apart from an earlier instance of its line`
 (unaudited).
 Impact: a P1 item measures the earlier attempt instead of the rule.
 Open questions:
-- A revised constraint's P1 at M and above meets the work the earlier
-  instance's P1 left in the workspace. Unresolved, needs per-instance probe
-  texts in the fact bank.
+- A line that repeats past its template's `probe_variants` (L and XL for
+  P4 and P10) re-asks the task behind a framing and meets the earlier work.
 
 ## Liveness
 

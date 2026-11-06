@@ -85,9 +85,17 @@ test("a probe is accepted only with the tool's own version line", () => {
     expect(() => versionLine("bun", "hello\n")).toThrow("toolchain: bun printed no version");
 });
 
-test("every generated wrapper is probed, rustdoc included", () => {
-    expect(TOOLCHAIN_PROBES.map(([tool]) => tool)).toEqual(["cargo", "rustc", "rustdoc", "bun"]);
+test("every generated wrapper is probed, rustdoc and the P12 check interpreter included", () => {
+    expect(TOOLCHAIN_PROBES.map(([tool]) => tool)).toEqual([
+        "cargo",
+        "rustc",
+        "rustdoc",
+        "bun",
+        "python3",
+    ]);
     expect(versionLine("rustdoc", "rustdoc 1.99.0 (abc)\n")).toBe("rustdoc 1.99.0 (abc)");
+    expect(versionLine("python3", "Python 3.9.21\n")).toBe("Python 3.9.21");
+    expect(() => versionLine("python3", "python3: not found")).toThrow("printed no version");
 });
 
 test("a toolchain bin reached through a symlink out of its keep path is refused", () => {
