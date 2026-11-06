@@ -20,7 +20,7 @@ import type { ConverseBody } from "../proxy/classify";
 import type { CallRecord, Component } from "../proxy/records";
 import { partId, type RequestPart, RequestPartLog, requestParts } from "../proxy/requests";
 import type { Entry } from "../run/journal";
-import { holds, scenarioHash } from "../scenario/compile";
+import { scenarioHash } from "../scenario/compile";
 import { loadQualification } from "../scenario/inputs";
 import { sessionHealth } from "./health";
 import {
@@ -35,6 +35,7 @@ import {
 import { armComparison } from "./report";
 import {
     bodyText,
+    carriesLiteral,
     findGroups,
     injectedBlocks,
     type ProbeEvidence,
@@ -233,7 +234,7 @@ test("a single-line alternative holds in some part's text exactly when it holds 
         "t0",
     ]) {
         const whole = findGroups([[alt]], bodyText(body))[0] !== null;
-        expect([alt, parts.some((p) => holds(partText(p), alt))]).toEqual([alt, whole]);
+        expect([alt, parts.some((p) => carriesLiteral(partText(p), alt))]).toEqual([alt, whole]);
     }
 });
 
@@ -691,6 +692,67 @@ describe("evidence stages on a memory arm", () => {
 });
 
 describe("evidence stages on the host arm", () => {
+    const host = { arm: "host", memory: false };
+    const graded = (r: RunData, g: Partial<GradeRecord>) => {
+        r.grades = r.grades.map((x) => ({ ...x, ...g }));
+        return evidence(r);
+    };
+
+    test("a P13 fold out of ratio bounds is a fold failure, ahead of a delivered literal", () => {
+        const run = () => build({ ...host, calls: [SOURCE_READ, searchTurn("TAG_X")] });
+        const ratio = graded(run(), {
+            probe_type: "P13",
+            metrics: { "P13.ratio_in_bounds": false, "P13.rule_kept": true, "P13.folds": 1 },
+        });
+        expect(ratio.stages.map((s) => `${s.stage}:${s.status}`)).toEqual([
+            "source:ok",
+            "context:ok",
+            "fold:failed",
+            "application:failed",
+        ]);
+        expect(ratio.attributed).toMatchObject({ cause: "fold", status: "failed" });
+        const rule = graded(run(), {
+            probe_type: "P13",
+            metrics: { "P13.ratio_in_bounds": true, "P13.rule_kept": false, "P13.folds": 1 },
+        });
+        expect(stage(rule, "fold")?.status).toBe("ok");
+        expect(rule.attributed.cause).toBe("application");
+        const p1 = graded(run(), { metrics: { "P13.ratio_in_bounds": false } });
+        expect(stage(p1, "fold")).toBeUndefined();
+    });
+
+    test("a P13 item with no fold in range is set aside at the fold, as its grade says", () => {
+        const r = build({
+            ...host,
+            calls: [SOURCE_READ, searchTurn("TAG_X")],
+            verdict: "excluded",
+        });
+        const p = graded(r, { probe_type: "P13", reason: "no fold in the item's range" });
+        expect(p.verdict).toBe("excluded");
+        expect(p.attributed).toEqual({
+            cause: "fold",
+            status: "unavailable",
+            reason: "no fold in the item's range",
+        });
+    });
+
+    test("a rule with no literal leaves its delivery unobserved; an avoid item's is n/a", () => {
+        const withTruth = (expect: string): EvidenceScenario => ({
+            ...SCENARIO,
+            probes: SCENARIO.probes.map((p) => ({
+                ...p,
+                ground_truth: { ...p.ground_truth, expect, present: [] },
+            })),
+        });
+        const calls = [SOURCE_READ, searchTurn("TAG_X")];
+        const apply = evidence(build({ ...host, calls, scenario: withTruth("apply") }));
+        expect(stage(apply, "context")?.status).toBe("unobserved");
+        expect(apply.attributed).toMatchObject({ cause: "context", status: "unobserved" });
+        const avoid = evidence(build({ ...host, calls, scenario: withTruth("avoid") }));
+        expect(stage(avoid, "context")?.status).toBe("n/a");
+        expect(avoid.attributed.cause).toBe("application");
+    });
+
     test("host stages are source, context, and application", () => {
         const host = { arm: "host", memory: false };
         const missed = evidence(build({ ...host, calls: [SOURCE_READ, searchTurn("nothing")] }));
@@ -929,10 +991,35 @@ describe("context health", () => {
     });
 });
 
-test("literals match as the scenario compiler matches them", () => {
+test("a literal counts as a whole value, an identifier by case, and a rule word in its rule", () => {
     expect(findGroups([["12345"]], "id 9123456")).toEqual([null]);
     expect(findGroups([["12345"]], "id 12345.")).toEqual(["12345"]);
-    expect(findGroups([["tag_x"]], "use TAG_X")).toEqual(["tag_x"]);
+    const carried: [string, string][] = [
+        ["TAG_X", "use TAG_X."],
+        ["AMBER_DINGO", "the AMBER_DINGO prefix"],
+        ["ivory-raven-98", "bucket `ivory-raven-98`"],
+        ["AMBER_DINGO", "AMBER_DINGO_MAX = 4"],
+        ["YONDER_EGRET", "the onYONDER_EGRET hook"],
+        ["single", "string literals you add use single quotes"],
+        ["double", "inside src/ws use double-quoted strings"],
+        ["trace", "log lines you add use the trace level"],
+        ["INFO", "log at INFO in src/cmd"],
+        ["warn", "warn-level logs only"],
+    ];
+    const missed: [string, string][] = [
+        ["tag_x", "use TAG_X"],
+        ["AMBER_DINGO", "src/adapter/amber_dingo.ts"],
+        ["single", "Pi answers in single-shot replies"],
+        ["single", "a single file"],
+        ["double", "double-decode the path"],
+        ["trace", "the error traced to the parser"],
+        ["error", "an error from the server"],
+        ["info", "for more info see the README"],
+    ];
+    for (const [lit, text] of carried)
+        expect([lit, text, carriesLiteral(text, lit)]).toEqual([lit, text, true]);
+    for (const [lit, text] of missed)
+        expect([lit, text, carriesLiteral(text, lit)]).toEqual([lit, text, false]);
 });
 
 test("request text, injected blocks, and search routes read as documented", () => {
