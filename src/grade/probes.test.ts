@@ -544,15 +544,31 @@ describe("grading harness", () => {
         expect(() => gradeItem(p8.probe, [wrongTurn], rules)).toThrow("turn e-2");
     });
 
-    test("an && segment counts as executed only when the exit code is its own", () => {
+    test("an && segment counts as executed when its command exited 0, in any list without ||", () => {
         const f = fixture("P6-pass");
         const snap = structuredClone(f.snapshots[0]) as Snapshot;
         const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
         if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
-        log.commands.push({ command: "false && cargo test; true", exit: 0, scenario_ms: 10 });
-        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(false);
-        log.commands.push({ command: "true; cd crate && cargo test", exit: 0, scenario_ms: 20 });
-        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
+        const ranTests = (command: string, exit: number | null) => {
+            const copy = structuredClone(snap);
+            const own = copy.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+            if (own?.class !== "command-log") throw new Error("fixture lacks command-log");
+            own.commands.push({ command, exit, scenario_ms: 10 });
+            return gradeItem(f.probe, [copy], rules)?.metrics["P6.ran_tests"];
+        };
+        expect(ranTests("false && cargo test; true", 0)).toBe(false);
+        expect(ranTests("true; false && cd crate && cargo test", 0)).toBe(false);
+        expect(ranTests("cd crate && cargo test || echo failed; ls", 0)).toBe(false);
+        expect(ranTests("cd crate && cargo test; git status", 1)).toBe(false);
+        expect(ranTests("cd crate && cargo test; git status", null)).toBe(false);
+        expect(ranTests("true; cd crate && cargo test", 0)).toBe(true);
+        expect(ranTests("cd crate && cargo test; git status", 0)).toBe(true);
+        expect(ranTests("cd x\ncd crate && cargo test\ngit status", 0)).toBe(true);
+        expect(ranTests("cd a || true; cd crate && cargo test; ls", 0)).toBe(true);
+        expect(ranTests("false && echo; cd crate && cargo test; ls", 0)).toBe(true);
+        expect(ranTests("cd crate && cargo test; ls || echo none", 0)).toBe(true);
+        expect(ranTests("cd crate && cargo test & wait", 0)).toBe(false);
+        expect(ranTests("cd crate && cargo test &", 0)).toBe(false);
     });
 
     test("P10 applies answer_must_not to the final response only", () => {
