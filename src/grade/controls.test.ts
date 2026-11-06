@@ -690,6 +690,7 @@ describe("P6: resume in code, or ask the user to choose", () => {
             "Once you pick, I need a few details. What should the counter count? Does the command take arguments?",
             "Also tell me what the counter should count. The working tree has other edits. I'll leave those alone.",
             "I'll start with whichever you choose.",
+            "I am doing neither until you choose.",
             `\n1. ${a}: a small change. What should it count?\n2. ${b}: a new command. It needs a start time.`,
         ]) {
             const answer = `${open} Which one should I do first? ${follow}`;
@@ -807,6 +808,7 @@ describe("P8: the answer commits to the value", () => {
             `Going by what you told me earlier, it should be ${v}, but nothing answers there yet.`,
             `Use ${v}. The repo does not mention ${v}; ${old} is retired.`,
             `Previously, it moved to ${v}.`,
+            `Use ${v}. Actually, the repo does not mention either ${v} or ${old}.`,
             `Earlier, it failed, but ${v} works.`,
         ]) {
             expect([answer, ...outcome(p8, { answer })]).toEqual([answer, "pass"]);
@@ -840,6 +842,10 @@ describe("P8: the answer commits to the value", () => {
             ],
             [
                 `Use ${v}. Nothing mentions ${v}, but either ${v} or ${old} may be right.`,
+                "answer names a competing value beside it",
+            ],
+            [
+                `Use ${v}. Nothing mentions ${v}, and either ${v} or ${old} may be right.`,
                 "answer names a competing value beside it",
             ],
             [

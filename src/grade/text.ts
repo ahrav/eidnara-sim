@@ -154,6 +154,8 @@ const REJECTS =
     /\b(?:replac\w*|supersed\w*|retired|outdated|out of date|stale|deprecated|obsolete|wrong|invalid|incorrect|typo|avoid\w*)\b|\b(?:don['\u2019]?t|do not|never|shouldn['\u2019]?t|should not|must not|mustn['\u2019]?t)\s+(?:be\s+)?(?:use|pick|choose|point|rely|trust)\w*/i;
 /** Wording that lists values together as all absent: `neither X nor Y`, `on either X or Y`. */
 const LISTED = /\bneither\b[^,]*\bnor\b|\beither\b[^,]*\bor\b|\bboth\b/i;
+/** Where one clause ends and another begins: `;`, `:`, or a comma before a conjunction. */
+const CLAUSE_BREAK = /[;:]|,\s*(?:but|yet|though|although|and|or|so|while|whereas)\b/g;
 /** The offer to revise a remembered value: `If X is no longer right, tell me the new one`. */
 const REVISION_OFFER =
     /^if\b[^.?!]*\b(?:no longer|isn['\u2019]?t|is not|not)\b[^.?!]*\b(?:right|current|valid|correct|accurate)\b[^.?!]*\b(?:tell me|let me know)\b[^.?!]*[.?!]*$/i;
@@ -224,11 +226,9 @@ const stepsAside = (sentence: string, found: Mention[]): boolean => {
     if (REVISION_OFFER.test(sentence)) {
         return !REJECTS.test(sentence) && found.every((m) => m.expected || m.negated);
     }
-    const bounds = [...sentence.matchAll(/[;:]|,\s*(?:but|yet|though|although)\b/g)].map(
-        (m) => m.index,
-    );
+    const bounds = [...sentence.matchAll(CLAUSE_BREAK)].map((m) => m.index);
     const clauseOf = (at: number) => bounds.filter((b) => b < at).length;
-    const clauses = sentence.split(/[;:]|,\s*(?:but|yet|though|although)\b/);
+    const clauses = sentence.split(CLAUSE_BREAK);
     const absent = (k: number) => ABSENCE.test(clauses[k] ?? "");
     return found.every((m) => {
         const k = clauseOf(m.at);
@@ -276,7 +276,7 @@ export function uncommitted(answer: string, value: string, stale: string[] = [])
             return "answer turns the value down";
         }
         const current = found.filter((m) => !m.past);
-        if (i > first && live(current) && CORRECTION.test(s) && !asserts(found)) {
+        if (!aside && i > first && live(current) && CORRECTION.test(s) && !asserts(found)) {
             return "answer switches to a competing value";
         }
         if (!aside && found.some((m) => m.expected) && live(found) && EQUALLY.test(s)) {
