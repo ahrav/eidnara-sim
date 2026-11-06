@@ -1575,7 +1575,11 @@ const pythonProgram = (words: string[]): string | undefined => {
         for (let k = 1; k < w.length; k++) {
             const ch = w[k] as string;
             if (/[WX]/.test(ch)) {
-                if (k + 1 >= w.length) i++;
+                const value = k + 1 < w.length ? w.slice(k + 1) : (words[++i] ?? "");
+                // A malformed -W filter or -X option stops Python before the program runs.
+                if (ch === "X" && !/^(?:[a-z_]+)(?:=[A-Za-z0-9_.:/-]+)?$/.test(value))
+                    return undefined;
+                if (ch === "W" && !/^[A-Za-z]*(?::[^:]*){0,4}$/.test(value)) return undefined;
                 break;
             }
             // Python's flags that run on: an unknown one, like -c, -m, -h, and -V, runs no file.

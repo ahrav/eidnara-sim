@@ -1577,10 +1577,10 @@
                 },
                 "revise": "the internal ticket for the cache rewrite was renumbered from {old_value} to {value}",
                 "probe_variants": [
-                    "Write a one-line summary at the top of the README describing the project.",
-                    "Write a short paragraph for the README on how to run the tests.",
+                    "Add a one-line summary at the top of the README describing the project.",
+                    "Add a short paragraph to the README on how to run the tests.",
                     "Add a doc comment to the main configuration type explaining its role.",
-                    "Write a short note for the README on how to report a bug."
+                    "Add a short note to the README on how to report a bug."
                 ]
             },
             {
@@ -1600,7 +1600,7 @@
                     "Write a short description of the repository layout for the README.",
                     "Write three sentences for the README on what the examples demonstrate.",
                     "Describe in a paragraph how a request flows through the code, for the README.",
-                    "Write a short note for new contributors on how to build the project."
+                    "Add a short note to the README for new contributors on how to build the project."
                 ]
             }
         ],

@@ -945,6 +945,8 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
             [`python3 -Q ${script}`],
             [`python ${script}`],
             [`python3 --check-hash-based-pycs nonsense ${script}`],
+            [`python3 -X utf8=non sense ${script}`],
+            [`python3 -X 'utf8=non!sense' ${script}`],
             [`sh ${script}`],
             [`bash ./${script}`],
         ]) {
