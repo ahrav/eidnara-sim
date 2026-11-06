@@ -648,6 +648,31 @@ describe("caution-off", () => {
         expect(applied.detail.unparsed).toEqual(["eidnara_note"]);
     });
 
+    test("keeps a JSON line inside the statement whole and approval talk without pending context", () => {
+        const payload =
+            '{"anchor":"n","citation":"m","quote":"ask before you merge","source":"api"}';
+        const body = withListing(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: Still pending.",
+                payload,
+                "Approval workflows live in src/auth.ts. Merging is awaiting your approval.",
+            ].join("\n"),
+        );
+        transformFor("c3").apply(body, inputs());
+        expect(result(body, 1)).toBe(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                payload,
+                "Assistant reported: Approval workflows live in src/auth.ts.",
+            ].join("\n"),
+        );
+    });
+
     test("carries the attribution to the first kept line", () => {
         const body = withListing(
             [

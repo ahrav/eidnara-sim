@@ -191,7 +191,7 @@ const CAUTION = new RegExp(
         "haven['\u2019]?t (?:decided|made a decision)",
         "no decision",
         "needs? (?:your|the user['\u2019]?s) (?:confirmation|decision|approval)",
-        "approval",
+        "(?:awaiting|pending|without) (?:your |the user['\u2019]?s )?approval",
         "go-ahead",
         "say-so",
         "undecided",
@@ -307,6 +307,10 @@ function cautionOff(body: ConverseBody): Applied {
             let removed = 0;
             let attribution = "";
             statementLines.forEach((line, j) => {
+                if (isProvenanceLine(line)) {
+                    statement.push(line);
+                    return;
+                }
                 const bullet = !numbered && line.startsWith("- ") ? "- " : "";
                 let bodyText = line.slice(bullet.length);
                 if (j === 0) {
