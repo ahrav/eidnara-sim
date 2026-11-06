@@ -950,18 +950,17 @@ const COMMITS =
     /\bI(?:'ll| will|'m going to| am going to) (?:start|begin|go|do|take|pick|work|tackle)\b(?![^.?!]*\b(?:whichever|once you|when you|after you|you (?:pick|choose)))|\bI(?:'m| am) (?:starting|beginning|going with|doing|taking|picking|working on|tackling)\b|\blet me (?:start|begin)\b/i;
 /**
  * The answer leaves the choice to the user: its last choice question is followed by at most three
- * statements and any number of questions; a later sentence that matches `COMMITS` makes the
- * answer a pick.
+ * statements and any number of questions, and a sentence after its first choice question that
+ * matches `COMMITS` makes the answer a pick.
  */
 const asksToChoose = (answer: string) => {
     const all = sentences(answer);
-    const asked = all.reduce((at, s, i) => (s.endsWith("?") && CHOICE.test(s) ? i : at), -1);
-    const after = all.slice(asked + 1);
-    return (
-        asked >= 0 &&
-        after.filter((s) => !s.endsWith("?")).length <= 3 &&
-        !after.some((s) => COMMITS.test(s))
-    );
+    const choices = all.flatMap((s, i) => (s.endsWith("?") && CHOICE.test(s) ? [i] : []));
+    const first = choices[0];
+    const last = choices.at(-1);
+    if (first === undefined || last === undefined) return false;
+    const statements = all.slice(last + 1).filter((s) => !s.endsWith("?"));
+    return statements.length <= 3 && !all.slice(first + 1).some((s) => COMMITS.test(s));
 };
 
 /**

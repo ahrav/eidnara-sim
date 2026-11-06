@@ -699,6 +699,7 @@ describe("P6: resume in code, or ask the user to choose", () => {
         for (const follow of [
             `Once you pick, I need details. I'll start with ${a} meanwhile.`,
             `Any preference? I am starting with ${a} now; any objections?`,
+            `I'll start with ${a} meanwhile. Should it be u32 or u64?`,
             "Here is a plan. Step one adds the field. Step two wires it. Step three tests it.",
         ]) {
             const answer = `${open} Which one should I do first? ${follow}`;
