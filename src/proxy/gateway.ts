@@ -144,6 +144,7 @@ export interface GatewayOptions {
     firstArrival?: number;
     /** Stores each classified call's forwarded body; the record names it as `request`. */
     requests?: RequestStore;
+    transform?: (body: ConverseBody, component: Component, scope: Scope) => void;
 }
 
 const ROUTE = /^\/model\/([^/]+)\/(converse-stream|converse)$/;
@@ -616,6 +617,13 @@ export class Gateway {
         }
         const stripped = stripUnsupported(model, body);
         if (stripped) done.stripped = stripped;
+        if (this.options.transform) {
+            try {
+                this.options.transform(body, tag.component, owner.scope);
+            } catch (caught) {
+                this.failures.push(caught as Error);
+            }
+        }
         if (this.options.requests) {
             // A store that cannot write fails the run at stop; the call itself is still served.
             try {

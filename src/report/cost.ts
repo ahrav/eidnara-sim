@@ -46,7 +46,7 @@ type Tokens = Pick<
     "component" | "input_tokens" | "output_tokens" | "cache_read_tokens" | "cache_write_tokens"
 >;
 
-function componentCosts(calls: readonly Tokens[], price: Price): ComponentCost[] {
+export function componentCosts(calls: readonly Tokens[], price: Price): ComponentCost[] {
     const byComponent = new Map<string, ComponentCost>();
     for (const c of calls) {
         const row = byComponent.get(c.component) ?? {
