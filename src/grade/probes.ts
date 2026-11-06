@@ -1561,6 +1561,10 @@ const pythonProgram = (words: string[]): string | undefined => {
     for (let i = 0; i < words.length; i++) {
         const w = words[i] as string;
         if (w === "--") return words[i + 1];
+        if (w === "--check-hash-based-pycs") {
+            i++;
+            continue;
+        }
         if (w === "-" || w.startsWith("--")) return undefined;
         if (!w.startsWith("-")) return w;
         for (let k = 1; k < w.length; k++) {

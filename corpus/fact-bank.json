@@ -878,7 +878,7 @@
                 },
                 "revise": "new test files now take the .{token}.test.ts suffix instead of .{old_token}.test.ts",
                 "probe_variants": [
-                    "Add coverage showing a POST handler receives the parsed JSON body it was sent."
+                    "Add a new test file covering a POST handler that receives the parsed JSON body it was sent."
                 ],
                 "out_probe_variants": [
                     "Add an example under example/ that returns the current time."
@@ -1333,7 +1333,7 @@
                 "probe_variants": [
                     "Have the websocket wrapper throw an error whose message names the method when send is called after the socket has closed.",
                     "Have the websocket wrapper reject a publish to an empty topic with a message.",
-                    "Add a method on the websocket wrapper that sends a named ping payload.",
+                    "Have the websocket wrapper's unsubscribe throw an error with a message when the topic was never subscribed.",
                     "Make the websocket wrapper log a message when a subscription is dropped."
                 ],
                 "out_probe_variants": [

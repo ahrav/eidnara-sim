@@ -957,6 +957,7 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
         const finished = [...cut, { command: `python3 ${script}`, exit: 1 }];
         expect(outcome(tool, { files: [entry], source: finished })).toEqual(["pass"]);
         for (const ran of [
+            `python3 --check-hash-based-pycs always ${script}`,
             `python3 -W ignore ${script}`,
             `python3 -u -X dev ${script}`,
             `python3 -B -- ${script}`,
