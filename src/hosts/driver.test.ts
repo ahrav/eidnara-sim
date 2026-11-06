@@ -2084,6 +2084,29 @@ describe("HostDriver faults", () => {
         expect(record.unread_generations).toBe(1);
     });
 
+    test("a mid-fold kill lists its generation unread without a read before the kill", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        const daemon = fakeDaemon(PID + 23);
+        let reads = 0;
+        daemon.sourceCapture = async () => {
+            reads++;
+            return { admitted: 1, completed: 1 };
+        };
+        driver.daemon = daemon as unknown as DaemonStack;
+        (driver as unknown as { noteDaemon(): void }).noteDaemon();
+        await driver.fault(episode("daemon_sigkill_mid_fold"));
+        expect(reads).toBe(0);
+        const record = JSON.parse(readFileSync(join(armDir, "source-capture.json"), "utf8"));
+        expect(record.generations).toEqual([
+            {
+                daemon: { pid: PID + 23, start: "fake" },
+                ended: "fault f-daemon_sigkill_mid_fold",
+                counters: null,
+                error: "a mid-fold kill ends the generation unread",
+            },
+        ]);
+    });
+
     test("a stop that arrives during a stop's counter read waits for that read", async () => {
         const { driver } = fixture("eidnara");
         const slow = fakeDaemon(PID + 22);

@@ -659,6 +659,17 @@ export class HostDriver implements ArmDriver {
      * A generation already listed keeps its entry, so a read a killed harness left pending stays
      * unread. The pending entry stands until the read returns.
      */
+    /** Lists a generation unread, unless it is listed already. */
+    private listUnread(id: CaptureGeneration["daemon"], ended: string, error: string): void {
+        if (!armProfile(this.o.arm).source_capture) return;
+        const generations = this.captureGenerations();
+        if (generations.some((g) => sameGeneration(g.daemon, id))) return;
+        this.writeCaptureGenerations([
+            ...generations,
+            { daemon: id, ended, counters: null, error },
+        ]);
+    }
+
     private recordGeneration(
         daemon: DaemonStack,
         ended: string,
@@ -879,20 +890,9 @@ export class HostDriver implements ArmDriver {
         this.storeFaults = new Map(Object.entries(state.store_faults ?? {}));
         // The daemon's counters ended with the killed harness; recovery preserves any persisted
         // counter-read result.
-        const ended = state.daemon;
-        if (ended && armProfile(this.o.arm).source_capture) {
-            const generations = this.captureGenerations();
-            if (!generations.some((g) => sameGeneration(g.daemon, ended))) {
-                this.writeCaptureGenerations([
-                    ...generations,
-                    {
-                        daemon: ended,
-                        ended: "harness",
-                        counters: null,
-                        error: "the generation ended with its harness before a counter read",
-                    },
-                ]);
-            }
+        if (state.daemon) {
+            const error = "the generation ended with its harness before a counter read";
+            this.listUnread(state.daemon, "harness", error);
         }
         const checked = join(this.armDir, "transcripts.json");
         if (existsSync(checked)) {
@@ -1442,7 +1442,7 @@ export class HostDriver implements ArmDriver {
                 throw new HarnessFailure(`${f.type} ${f.id}: daemon already gone before the fault`);
             }
             this.checkDaemonDirs();
-            const restart = this.restartDaemon(this.daemon, f.id);
+            const restart = this.restartDaemon(this.daemon, f.id, f.type === "daemon_restart");
             restart.catch(() => undefined);
             this.restarting = restart;
             return restart;
@@ -1593,12 +1593,18 @@ export class HostDriver implements ArmDriver {
     private async restartDaemon(
         daemon: DaemonStack,
         fault: string,
+        readFirst: boolean,
     ): Promise<Record<string, unknown>> {
         const before = this.daemonPid();
         // An earlier restart's check that a served pass has earned is taken from this daemon.
         const stores = this.owedStores();
         this.o.sampleDaemon?.();
-        await this.recordGeneration(daemon, `fault ${fault}`, 0, FAULT_READ_MS);
+        // A mid-fold kill lands while the fold runs, so its dying generation goes unread.
+        if (readFirst) await this.recordGeneration(daemon, `fault ${fault}`, 0, FAULT_READ_MS);
+        else {
+            const error = "a mid-fold kill ends the generation unread";
+            this.listUnread(this.daemonId, `fault ${fault}`, error);
+        }
         await daemon.crash();
         const store = checkStore(this.storeDb);
         // Marked before the start, so a pass the replacement serves while its start settles counts.
