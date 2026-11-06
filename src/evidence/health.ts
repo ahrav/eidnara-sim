@@ -138,8 +138,9 @@ export function sessionHealth(run: RunData): SessionHealth[] {
         let native = false;
         let filtered = 0;
         const filteredTurns = new Set<string>();
-        // A final completed call without a recorded `response_text` (a run from before the proxy
-        // kept it) leaves its turn's answer unknown.
+        // A final completed call whose whole text is not on record (no `response_text`, as a run
+        // from before the proxy kept it records, a value that is not text, or a prefix the proxy
+        // cut at its cap) leaves its turn's answer unknown.
         const finalReply = new Map<string, string | undefined>();
         const refusals: HeldCall[] = [];
         let overflowCall: HeldCall | null = null;
@@ -152,7 +153,9 @@ export function sessionHealth(run: RunData): SessionHealth[] {
             const completed =
                 c.status === 200 && c.error === null && c.finish_reason !== "stream_cut";
             if (c.component === "agent" && c.turn !== null && completed) {
-                finalReply.set(c.turn, c.response_text);
+                const whole =
+                    typeof c.response_text === "string" && c.response_text_truncated !== true;
+                finalReply.set(c.turn, whole ? c.response_text : undefined);
             }
             if (COMPACTION.has(c.component)) {
                 attempts++;

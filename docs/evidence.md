@@ -132,8 +132,9 @@ or the opening or closing tag of a block Eidnara injects (`project-memory`,
   relayed the provider stream (`calls.jsonl` `response_text`, its first
   262,144 characters); a turn whose last completed call has no text has no
   answer, and a session whose final completed call of a turn carries no
-  recorded `response_text` (a run from before the proxy kept it) has both
-  streamed counts `null`. Graders read their answers the same way, the user simulator
+  whole recorded text (no `response_text`, as a run from before the proxy
+  kept it records, or a prefix the proxy cut at its cap) has both streamed
+  counts `null`. Graders read their answers the same way, the user simulator
   receives its replies from this stream, and a live UI may show it while
   streaming.
 - `answers_persisted` and `marker_answers_persisted`: the text of the turn's

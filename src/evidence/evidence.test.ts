@@ -939,6 +939,13 @@ describe("answer markers and content filtering", () => {
             marker_answers_streamed: null,
         });
         expect(armAnswers(old).get("eidnara")?.answers_streamed).toBeNull();
+        const cut = sessionHealth(
+            build({
+                arm: "eidnara",
+                calls: [{ ...agent("e-5", "x"), response_text_truncated: true }],
+            }),
+        );
+        expect(cut.find((x) => x.session === "s-2")?.answers_streamed).toBeNull();
         // A host whose transcript is unread, or a session without its transcript file, reports no
         // persisted count, and the arm's total is unread with it.
         const unread = sessionHealth(build({ arm: "eidnara", calls: [agent("e-5", "x")] }));
