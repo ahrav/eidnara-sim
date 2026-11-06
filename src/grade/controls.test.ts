@@ -816,6 +816,7 @@ describe("P8: the answer commits to the value", () => {
             `Use ${v}. The repo does not have ${v}.`,
             `Use ${v}. The repo does not mention ${v}; ${old} was only used earlier.`,
             `Use ${v}. No process for ${v} is listening on either ${v.toUpperCase()} or ${old}.`,
+            `Use ${v}. The repo does not mention ${v}, but neither ${v} nor ${old} appears.`,
             `Previously, it moved to ${v}.`,
             `Use ${v}. Actually, the repo does not mention either ${v} or ${old}.`,
             `Earlier, it failed, but ${v} works.`,
@@ -861,6 +862,7 @@ describe("P8: the answer commits to the value", () => {
                 `Use ${v}. No file contains ${v} because it is not usable.`,
                 "answer turns the value down",
             ],
+            [`Use ${v}. I do not know ${v}.`, "answer turns the value down"],
             [
                 `Use ${v}. No file mentions ${v} because either ${old} or brisk-otter-08 may be right.`,
                 "answer names a competing value beside it",
