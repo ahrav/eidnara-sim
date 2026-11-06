@@ -963,6 +963,7 @@ describe("answer markers and content filtering", () => {
             "a <session-history-since> b",
             "</packed-context>",
             "<memory-updates>",
+            "<project-note>",
         ]) {
             expect(EIDNARA_MARKER.test(text)).toBe(true);
         }
@@ -1005,6 +1006,14 @@ describe("answer markers and content filtering", () => {
         );
         expect(readPiAnswers(dir)).toEqual(new Map([["s-1", ["all done", "", "back"]]]));
         expect(readPiAnswers(join(dir, "absent"))).toBeNull();
+        // A link on the way down from the run's own directory reads as no transcript.
+        const run = mkdtempSync(join(tmpdir(), "sim-pi-run-"));
+        symlinkSync(dir, join(run, "home"));
+        expect(readPiAnswers(join(run, "home"), run)).toBeNull();
+        mkdirSync(join(run, "real"));
+        symlinkSync(project, join(run, "real", "sessions"));
+        expect(readPiAnswers(join(run, "real", "sessions"), run)).toBeNull();
+        rmSync(run, { recursive: true });
         rmSync(dir, { recursive: true });
     });
 });

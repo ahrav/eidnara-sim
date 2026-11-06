@@ -123,7 +123,7 @@ Each row also counts the session's answers that carry an Eidnara marker:
 the `§<n>§` block tag the transform prefixes to every text block it tags,
 or the opening or closing tag of a block Eidnara injects (`project-memory`,
 `session-history`, `session-history-since`, `eidnara-search-hint`,
-`eidnara-search-auto`, `packed-context`, `memory-updates`, `new-notes`,
+`eidnara-search-auto`, `packed-context`, `project-note`, `memory-updates`, `new-notes`,
 `covered-system-messages`, `project-docs`, `new-history_segments`), as
 `EIDNARA_MARKER` in `src/evidence/health.ts` matches them. A turn's answer is its final text, counted two ways:
 
@@ -137,7 +137,8 @@ or the opening or closing tag of a block Eidnara injects (`project-memory`,
   assistant message with text in the host transcript, what the user keeps.
   On Pi it comes from `<arm>/r/home/.pi/agent/sessions/**/<time>_sim-<session>.jsonl`
   (`readPiAnswers`), where a user message opens a turn and a complete last
-  record without its newline is read too. On a host whose transcript this
+  record without its newline is read too; a link on the path from the arm
+  directory down reads as no transcript. On a host whose transcript this
   harness does not read (OpenCode), or for a declared session with no
   transcript file, both are `null`, and so is the arm's total in the report;
   a session the scenario does not declare (a second client's `-b` session)

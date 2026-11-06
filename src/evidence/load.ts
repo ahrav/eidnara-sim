@@ -8,7 +8,7 @@ import {
     readFileSync,
     readSync,
 } from "node:fs";
-import { basename, join, relative } from "node:path";
+import { basename, join, relative, sep } from "node:path";
 import { GradeRefused } from "../grade/artefacts";
 import { GradeLog, type GradeRecord } from "../grade/probes";
 import { armBase, CONTROL_LABEL, requireOrder } from "../hosts/arms";
@@ -158,8 +158,11 @@ function readJsonFile<T>(path: string): T | null {
 }
 
 /** Pi's session transcripts under the arm's home: every tool result keyed by its call id. */
-export function readPiTranscripts(sessionsDir: string): Map<string, TranscriptResult> | null {
-    const files = piSessionFiles(sessionsDir);
+export function readPiTranscripts(
+    sessionsDir: string,
+    within = sessionsDir,
+): Map<string, TranscriptResult> | null {
+    const files = piSessionFiles(sessionsDir, within);
     if (!files) return null;
     const out = new Map<string, TranscriptResult>();
     for (const path of files) {
@@ -191,7 +194,13 @@ export function readPiTranscripts(sessionsDir: string): Map<string, TranscriptRe
 }
 
 /** The `.jsonl` files two levels under Pi's sessions directory, in walk order; null when it is absent. */
-function piSessionFiles(sessionsDir: string): string[] | null {
+function piSessionFiles(sessionsDir: string, within: string): string[] | null {
+    // Every directory from `within` down is the run's own: a link on the way reads as absent.
+    let dir = within;
+    for (const part of relative(within, sessionsDir).split(sep).filter(Boolean)) {
+        dir = join(dir, part);
+        if (!lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) return null;
+    }
     const stat = lstatSync(sessionsDir, { throwIfNoEntry: false });
     if (!stat?.isDirectory()) return null;
     const files: string[] = [];
@@ -207,8 +216,11 @@ function piSessionFiles(sessionsDir: string): string[] | null {
     return files;
 }
 
-export function readPiAnswers(sessionsDir: string): Map<string, string[]> | null {
-    const listed = piSessionFiles(sessionsDir);
+export function readPiAnswers(
+    sessionsDir: string,
+    within = sessionsDir,
+): Map<string, string[]> | null {
+    const listed = piSessionFiles(sessionsDir, within);
     if (!listed) return null;
     const files = listed.flatMap((path) => {
         const name = basename(path);
@@ -590,12 +602,15 @@ export function loadRun(dir: string): RunData {
                 manifest.host === "pi"
                     ? relativeFiles(
                           dir,
-                          readPiTranscripts(join(root, "r", "home", ".pi", "agent", "sessions")),
+                          readPiTranscripts(
+                              join(root, "r", "home", ".pi", "agent", "sessions"),
+                              root,
+                          ),
                       )
                     : null,
             answers:
                 manifest.host === "pi"
-                    ? readPiAnswers(join(root, "r", "home", ".pi", "agent", "sessions"))
+                    ? readPiAnswers(join(root, "r", "home", ".pi", "agent", "sessions"), root)
                     : null,
             pluginLog,
             ...readStore(join(root, "final-store")),

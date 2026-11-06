@@ -54,7 +54,7 @@ export interface SessionHealth {
  * it injects, any of which in an answer is text the agent copied from Eidnara's own framing.
  */
 export const EIDNARA_MARKER =
-    /§\d+§|<\/?(?:project-memory|session-history|session-history-since|eidnara-search-hint|eidnara-search-auto|packed-context|memory-updates|new-notes|covered-system-messages|project-docs|new-history_segments)(?=[\s>/])/;
+    /§\d+§|<\/?(?:project-memory|session-history|session-history-since|eidnara-search-hint|eidnara-search-auto|packed-context|project-note|memory-updates|new-notes|covered-system-messages|project-docs|new-history_segments)(?=[\s>/])/;
 
 const COMPACTION = new Set(["native_compaction", "history_summarizer"]);
 const TOO_LONG =
