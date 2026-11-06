@@ -231,6 +231,88 @@ function stripCaution(
 }
 
 /**
+ * Removes caution wording from memory items Eidnara does not attribute to the user, reading no
+ * ground truth: each sentence of such an item's statement that matches `CAUTION` goes, with the
+ * item's provenance record, which quotes the removed text. An item left with no statement goes,
+ * and a numbered listing is renumbered with its count line following the kept items.
+ */
+function cautionOff(body: ConverseBody): Applied {
+    const counts = { items: 0, sentences: 0, dropped: 0 };
+    const unparsed: string[] = [];
+    let changed = false;
+    editMemory(body, (name, text) => {
+        const segments = splitListing(text);
+        const items = itemsOf(segments);
+        if (items.length === 0) {
+            unparsed.push(name);
+            return text;
+        }
+        const numbered = items.some((i) => ITEM_HEADER.test(i[0] ?? ""));
+        const replaced = new Map<string[], string[] | null>();
+        let droppedHere = 0;
+        for (const item of items) {
+            if (!isCautionItem(item, numbered)) continue;
+            const head = numbered ? [item[0] as string] : [];
+            const statement: string[] = [];
+            let removed = 0;
+            for (const line of numbered ? item.slice(1) : item) {
+                if (isProvenanceLine(line)) continue;
+                const bullet = !numbered && line.startsWith("- ") ? "- " : "";
+                const sentences = line.slice(bullet.length).split(/(?<=[.!?;])\s+/);
+                const kept = sentences.filter((x) => !CAUTION.test(x));
+                removed += sentences.length - kept.length;
+                if (kept.length > 0) statement.push(bullet + kept.join(" "));
+            }
+            if (removed === 0) continue;
+            counts.items++;
+            counts.sentences += removed;
+            if (statement.length === 0) droppedHere++;
+            replaced.set(item, statement.length === 0 ? null : [...head, ...statement]);
+        }
+        if (replaced.size === 0) return text;
+        changed = true;
+        counts.dropped += droppedHere;
+        const kept: Segment[] = [];
+        let n = 0;
+        let skipBlank = false;
+        for (const s of segments) {
+            const next =
+                "item" in s ? (replaced.has(s.item) ? replaced.get(s.item) : s.item) : undefined;
+            if ("item" in s && next === null) {
+                skipBlank = true;
+                continue;
+            }
+            if ("line" in s && skipBlank && s.line === "") {
+                skipBlank = false;
+                continue;
+            }
+            skipBlank = false;
+            if ("item" in s && next) {
+                n++;
+                const [first, ...rest] = next;
+                kept.push({
+                    item: numbered
+                        ? [(first as string).replace(/^\[\d+\]/, `[${n}]`), ...rest]
+                        : next,
+                });
+            } else {
+                kept.push(s);
+            }
+        }
+        if (droppedHere === 0) return joinListing(kept);
+        const first = kept.findIndex((s) => "item" in s);
+        const opening = first < 0 ? kept.length : first;
+        const count = /\b\d+( (?:results?|related fragments?)\b)/;
+        return joinListing(
+            kept.map((s, i) =>
+                "line" in s && i < opening ? { line: s.line.replace(count, `${n}$1`) } : s,
+            ),
+        );
+    });
+    return { changed, detail: { ...counts, unparsed } };
+}
+
+/**
  * Drops each stale item (one carrying a `stale` or `absent` literal) and, in a listing that holds
  * a supporting item, every item that does not support the ground truth. A numbered listing is
  * renumbered from 1 and its count line follows the kept items.
@@ -443,6 +525,13 @@ export const TRANSFORMS: Record<string, ReplayTransform> = {
         summary:
             "drop-competing, plus caution items that do not support the ground truth and caution sentences of kept items",
         apply: (body, inputs) => dropCompeting(body, inputs, true),
+    },
+    "caution-off": {
+        id: "caution-off",
+        alias: "c3",
+        summary:
+            "removes caution sentences from memory items not attributed to the user, reading no ground truth",
+        apply: (body) => cautionOff(body),
     },
     "provenance-off": {
         id: "provenance-off",

@@ -147,12 +147,13 @@ describe("replay transforms on a recorded agent request", () => {
 
     test("a variant resolves by name or letter, and an unknown one is refused", () => {
         expect(
-            ["a", "b", "c", "c2", "d", "d2", "e", "f", "f2"].map((v) => transformFor(v).id),
+            ["a", "b", "c", "c2", "c3", "d", "d2", "e", "f", "f2"].map((v) => transformFor(v).id),
         ).toEqual([
             "none",
             "evidence-note",
             "drop-competing",
             "drop-competing-caution",
+            "caution-off",
             "provenance-off",
             "provenance-notices-off",
             "oracle-note",
@@ -561,6 +562,74 @@ describe("memory-block-origin", () => {
         expect(transformFor("f2").apply(body, inputs()).changed).toBe(true);
         expect(text(body, 0)).toBe(
             `<session-history></session-history>\n\n${inputs().origin_memory as string}`,
+        );
+    });
+});
+
+describe("caution-off", () => {
+    const withListing = (listing: string) => {
+        const body = recorded();
+        const tool = messages(body)[4]?.content[1]?.toolResult as { content: { text: string }[] };
+        (tool.content[0] as { text: string }).text = listing;
+        return body;
+    };
+    const record = '{"anchor":"a","citation":"c","quote":"q","source":"memory_capture"}';
+
+    test("strips caution sentences from assistant items, drops emptied ones, keeps user statements", () => {
+        const body = withListing(
+            [
+                "Found 3 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: The limit is 31411. Don't deploy against it yet.",
+                record,
+                "",
+                "[2] [memory] id=b",
+                "Assistant reported: We are still waiting on the user to pick a limit.",
+                "",
+                "[3] [memory] id=c",
+                "User stated: ask before you change the limit.",
+                record,
+            ].join("\n"),
+        );
+        const applied = transformFor("c3").apply(body, inputs());
+        expect(applied).toEqual({
+            changed: true,
+            detail: { items: 2, sentences: 2, dropped: 1, unparsed: ["eidnara_note"] },
+        });
+        expect(result(body, 1)).toBe(
+            [
+                "Found 2 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: The limit is 31411.",
+                "",
+                "[2] [memory] id=c",
+                "User stated: ask before you change the limit.",
+                record,
+            ].join("\n"),
+        );
+    });
+
+    test("trims a search-hint fragment and leaves a listing without caution unchanged", () => {
+        const hint = hinted();
+        const before = JSON.stringify(hint);
+        expect(transformFor("c3").apply(hint, inputs()).changed).toBe(false);
+        expect(JSON.stringify(hint)).toBe(before);
+        const body = withListing(
+            [
+                "Your memory may contain 2 related fragments:",
+                "- the port is 31411. Still pending.",
+                "- unrelated",
+            ].join("\n"),
+        );
+        transformFor("c3").apply(body, inputs());
+        expect(result(body, 1)).toBe(
+            [
+                "Your memory may contain 2 related fragments:",
+                "- the port is 31411.",
+                "- unrelated",
+            ].join("\n"),
         );
     });
 });

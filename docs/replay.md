@@ -9,7 +9,7 @@ repeat. `src/replay/` owns the command.
 
 ```sh
 bun scripts/replay-probe.ts --run <finished run> --arm <arm> --item <probe id> \
-    --variant <a|b|c|c2|d|d2|e|f|f2 or name> --repeats N --out <empty dir> \
+    --variant <a|b|c|c2|c3|d|d2|e|f|f2 or name> --repeats N --out <empty dir> \
     [--allow-identity <field,...>] [--path-mode source|replay] [--keep]
 ```
 
@@ -64,13 +64,14 @@ a test checks every campaign `Gateway` construction for that.
 | b | `evidence-note` | appends, after the probe text, a note quoting the probe's `ground_truth.sources` events: `Note from earlier sessions:` then `- I wrote: <text>` per user turn, `- <path> was committed with:` and the fenced content per committed file, and `- <path> was removed from the repository.` per removal |
 | c | `drop-competing` | in Eidnara-delivered memory listings, drops each item carrying a `stale` or `absent` literal and, in a listing that holds an item carrying a literal of every `present` group, every item that does not; numbered items are renumbered and the listing's count follows |
 | c2 | `drop-competing-caution` | variant c, and also drops each caution item that does not support the ground truth, and removes from each kept numbered caution item every sentence that carries caution wording and no `present` literal. A caution item carries caution wording (unconfirmed, pending, waiting on the user, ask first; the `CAUTION` pattern, matched at word boundaries) in a statement whose first line does not open with a user attribution (`User stated:`) |
+| c3 | `caution-off` | reads no ground truth. In each memory item whose statement does not open with a user attribution (`User stated:`), removes every sentence that matches the `CAUTION` pattern, and removes the item's provenance record, which quotes that text. An item left with no statement is dropped and the listing renumbered with its count line, as in variant c. User statements keep their wording |
 | d | `provenance-off` | removes Eidnara's provenance wording from delivered memory items: the `trust=[...]` header label, the opening attribution (`User stated:`, `Assistant reported:`), and the JSON provenance record that closes the item (an object whose `anchor`, `citation`, `quote`, and `source` are strings) |
 | d2 | `provenance-notices-off` | variant d, and also removes the daemon's `Memory:` notice lines from an `eidnara_search` result (the search route and the freshness of the results), including a result with no hits, keeping the plugin's `§n§` marker that opens the first one |
 | e | `oracle-note` | puts the `host-oracle` arm's note (`src/run/oracle-note.ts`) ahead of the probe text, after any marker the plugin put in front of it |
 | f | `memory-block` | appends a `<project-memory>` block to the text of the first message's m0 region, the text block holding `</session-history>`, after a blank line, where Eidnara's m0 composer puts the block. The block renders the probe's `ground_truth.sources` events recorded in the probe's project (project memory is scoped to one project, so a wrong-project control whose sources all lie in the base project gets no block and its repeats fail) in the layout of `memory_render.rs`: one category element by probe type (P1 and P4 `PROJECT_RULES`, P3 `CONSTRAINTS`, P6 `USER_DIRECTIVES`, P8 and P12 `CONFIG_VALUES`, otherwise `PROJECT_RULES`), then one `mem_<id>: <content>` line per event sorted by id, with `&`, `<`, and `>` escaped and continuation lines indented by two spaces. A user turn reads `User stated: <text>`; a committed file and a removal read as in variant b. The id is the first 32 hex digits of the SHA-256 of the event id and content |
 | f2 | `memory-block-origin` | variant f with each row's category taken from its source's origin instead of the probe type: a user turn is `USER_DIRECTIVES`, a committed file or removal `PROJECT_RULES`, one category element each, in the daemon's category order |
 
-Variants c, c2, d, and d2 read two listing shapes: the numbered search results of an
+Variants c, c2, c3, d, and d2 read two listing shapes: the numbered search results of an
 `eidnara_*` tool (`[1] [memory] score=... id=...`, each item running to its
 first blank line) and the `- ` fragments of `<eidnara-search-hint>`. They
 also visit `<project-memory>`, `<memory-updates>`, `<project-note>`, and
