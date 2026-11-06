@@ -23,11 +23,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { GitBound, git } from "../git";
 import type { CallView } from "../grade/artefacts";
-import {
-    type CaptureGeneration,
-    captureCountersProblem,
-    combineCaptureGenerations,
-} from "../run/capabilities";
+import { captureCountersProblem } from "../run/capabilities";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import {
     type ArmDriver,
@@ -127,13 +123,66 @@ const GIT_ENV = {
 
 /** Clones from a harness-owned source into a fresh workspace run with the harness's own view. */
 
+/** Values of a `metrics.source_capture` block that report the daemon's state at the read. */
+const CAPTURE_GAUGES = new Set([
+    "active",
+    "draining",
+    "retained_bytes",
+    "publish_ms_last",
+    "oldest_deferred_age_ms",
+]);
+
+export interface CaptureGeneration {
+    daemon: { pid: number; start: string | null } | null;
+    ended: string;
+    counters: Record<string, number | null> | null;
+    error: string | null;
+}
+
+/**
+ * The arm's counters over every generation read: event counts summed, `publish_ms_max` the
+ * largest, and the gauges from the last successful read alone. A finish whose read failed or never
+ * returned supplies `error` whatever generation followed it, as does a final generation with a
+ * read error; earlier successful reads still contribute to `counters`.
+ */
+export function combineCaptureGenerations(generations: readonly CaptureGeneration[]): {
+    counters: Record<string, number | null> | null;
+    error: string | null;
+    unread_generations: number;
+} {
+    const read = generations.filter((g) => g.counters !== null && g.error === null);
+    let counters: Record<string, number | null> | null = null;
+    for (const g of read) {
+        const next: Record<string, number | null> = {};
+        for (const [key, value] of Object.entries(counters ?? {})) {
+            if (!CAPTURE_GAUGES.has(key)) next[key] = value;
+        }
+        for (const [key, value] of Object.entries(g.counters ?? {})) {
+            const prior = next[key];
+            if (CAPTURE_GAUGES.has(key) || typeof prior !== "number" || typeof value !== "number")
+                next[key] = value;
+            else next[key] = key === "publish_ms_max" ? Math.max(prior, value) : prior + value;
+        }
+        counters = next;
+    }
+    const finish = [...generations].reverse().find((g) => g.ended === "finish" && g.error !== null);
+    return {
+        counters,
+        error: finish?.error ?? generations.at(-1)?.error ?? null,
+        unread_generations: generations.length - read.length,
+    };
+}
+
+/** The longest a daemon fault waits for the dying generation's counters before its kill. */
+const FAULT_READ_MS = 250;
+
+const sameGeneration = (a: CaptureGeneration["daemon"], b: CaptureGeneration["daemon"]): boolean =>
+    a !== null && b !== null && a.pid === b.pid && a.start === b.start;
+
 /**
  * The rename publishes a complete file, so a kill mid-write leaves the previous one. The staged
  * file is created exclusively, so a link planted at its name is removed, never written through.
  */
-const sameGeneration = (a: CaptureGeneration["daemon"], b: CaptureGeneration["daemon"]): boolean =>
-    a !== null && b !== null && a.pid === b.pid && a.start === b.start;
-
 function writeWhole(path: string, text: string): void {
     const staged = `${path}.${process.pid}`;
     rmSync(staged, { force: true });
@@ -611,6 +660,7 @@ export class HostDriver implements ArmDriver {
         daemon: DaemonStack,
         ended: string,
         waitMs: number,
+        deadlineMs: number | null = null,
     ): Promise<CaptureGeneration | null> {
         if (!armProfile(this.o.arm).source_capture) return null;
         const id = this.daemonId;
@@ -624,7 +674,7 @@ export class HostDriver implements ArmDriver {
             error: "the counter read did not finish",
         };
         this.writeCaptureGenerations([...generations, pending]);
-        const read = await Promise.resolve()
+        const reading = Promise.resolve()
             .then(() => daemon.sourceCapture(waitMs))
             .then(
                 (counters) => {
@@ -633,6 +683,15 @@ export class HostDriver implements ArmDriver {
                 },
                 (caught: unknown) => ({ counters: null, error: String(caught) }),
             );
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const expired = new Promise<{ counters: null; error: string }>((done) => {
+            if (deadlineMs === null) return;
+            timer = setTimeout(
+                () => done({ counters: null, error: `no counter reply in ${deadlineMs} ms` }),
+                deadlineMs,
+            );
+        });
+        const read = await Promise.race([reading, expired]).finally(() => clearTimeout(timer));
         const entry = { ...pending, ...read };
         this.writeCaptureGenerations([...generations, entry]);
         return entry;
@@ -1519,7 +1578,7 @@ export class HostDriver implements ArmDriver {
         // An earlier restart's check that a served pass has earned is taken from this daemon.
         const stores = this.owedStores();
         this.o.sampleDaemon?.();
-        await this.recordGeneration(daemon, `fault ${fault}`, 0);
+        await this.recordGeneration(daemon, `fault ${fault}`, 0, FAULT_READ_MS);
         await daemon.crash();
         const store = checkStore(this.storeDb);
         // Marked before the start, so a pass the replacement serves while its start settles counts.

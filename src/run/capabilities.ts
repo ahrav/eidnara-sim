@@ -69,8 +69,8 @@ export interface ArmObservation {
 
 /**
  * Source capture as the arm's daemon left it: the Kernel source descriptors (`srcdesc:*`
- * observations) in `final-store/kernel.sqlite` by class, and the settled `source_capture`
- * counters the last daemon generation reported before its stop (`source-capture.json`).
+ * observations) in `final-store/kernel.sqlite` by class, and the `source_capture` counters
+ * totalled over the daemon generations the driver read (`source-capture.json`).
  */
 export interface SourceCaptureObservation {
     /** Descriptors by class (`messages`, `raw_tool_spans`, `repository_documents`); null when the store is absent or unreadable. */
@@ -81,6 +81,8 @@ export interface SourceCaptureObservation {
     counters: Record<string, number | null> | null;
     /** Why the counters could not be read, or null. */
     counters_error: string | null;
+    /** The daemon generations whose counters the total leaves out; null on a record without the count. */
+    unread_generations: number | null;
 }
 
 /** An oracle note the arm owes: the probe turn it goes into and the background it quotes. */
@@ -448,52 +450,6 @@ export function readDescriptors(
 /** Counters every `metrics.source_capture` block carries (Eidnara docs/host-wire-protocol.md 7.9). */
 const CAPTURE_COUNTERS = ["admitted", "completed"];
 
-/** Values of a `metrics.source_capture` block that report the daemon's state at the read. */
-const CAPTURE_GAUGES = new Set([
-    "active",
-    "draining",
-    "retained_bytes",
-    "publish_ms_last",
-    "oldest_deferred_age_ms",
-]);
-
-export interface CaptureGeneration {
-    daemon: { pid: number; start: string | null } | null;
-    ended: string;
-    counters: Record<string, number | null> | null;
-    error: string | null;
-}
-
-/**
- * The arm's counters over every generation read: event counts summed, `publish_ms_max` the
- * largest, and each gauge from the last successful read containing it. A final generation with a
- * read error supplies `error`; earlier successful reads still contribute to `counters`.
- */
-export function combineCaptureGenerations(generations: readonly CaptureGeneration[]): {
-    counters: Record<string, number | null> | null;
-    error: string | null;
-    unread_generations: number;
-} {
-    const read = generations.filter((g) => g.counters !== null && g.error === null);
-    let counters: Record<string, number | null> | null = null;
-    for (const g of read) {
-        const next: Record<string, number | null> = { ...(counters ?? {}) };
-        for (const [key, value] of Object.entries(g.counters ?? {})) {
-            const prior = next[key];
-            if (CAPTURE_GAUGES.has(key) || typeof prior !== "number" || typeof value !== "number")
-                next[key] = value;
-            else next[key] = key === "publish_ms_max" ? Math.max(prior, value) : prior + value;
-        }
-        counters = next;
-    }
-    const last = generations.at(-1);
-    return {
-        counters,
-        error: last?.error ?? null,
-        unread_generations: generations.length - read.length,
-    };
-}
-
 /**
  * Why a settled `source_capture` report is no counter evidence, or null: it must be an object
  * holding `admitted` and `completed`, and every value a non-negative integer, with `null` admitted
@@ -513,30 +469,42 @@ export function captureCountersProblem(c: unknown): string | null {
 /** `<arm>/source-capture.json` beside the final store, as the driver wrote it before the stop. */
 function readCaptureCounters(
     path: string,
-): Pick<SourceCaptureObservation, "counters" | "counters_error"> {
+): Pick<SourceCaptureObservation, "counters" | "counters_error" | "unread_generations"> {
     if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) {
-        return { counters: null, counters_error: "source-capture.json was not written" };
+        return {
+            counters: null,
+            counters_error: "source-capture.json was not written",
+            unread_generations: null,
+        };
     }
+    let unread_generations: number | null = null;
+    const unread = (counters_error: string) => ({
+        counters: null,
+        counters_error,
+        unread_generations,
+    });
     try {
         const raw = JSON.parse(readFileSync(path, "utf8")) as {
             counters?: unknown;
             error?: unknown;
+            unread_generations?: unknown;
         };
+        if (Number.isSafeInteger(raw.unread_generations)) {
+            unread_generations = raw.unread_generations as number;
+        }
         const error = typeof raw.error === "string" ? raw.error : null;
         if (raw.counters === null || raw.counters === undefined) {
-            return { counters: null, counters_error: error ?? "no counters recorded" };
+            return unread(error ?? "no counters recorded");
         }
         if (error !== null || raw.error !== null) {
-            return {
-                counters: null,
-                counters_error: `the record also reports ${String(raw.error)}`,
-            };
+            return unread(`the record also reports ${String(raw.error)}`);
         }
         const problem = captureCountersProblem(raw.counters);
-        if (problem) return { counters: null, counters_error: problem };
-        return { counters: raw.counters as Record<string, number | null>, counters_error: null };
+        if (problem) return unread(problem);
+        const counters = raw.counters as Record<string, number | null>;
+        return { counters, counters_error: null, unread_generations };
     } catch (caught) {
-        return { counters: null, counters_error: `source-capture.json: ${String(caught)}` };
+        return unread(`source-capture.json: ${String(caught)}`);
     }
 }
 
@@ -649,7 +617,7 @@ export function armMismatches(o: ArmObservation): string[] {
 
 /**
  * An arm that consents to source capture and answered agent calls must leave message descriptors
- * in its final store and report the last generation's counters; an arm without the consent must
+ * in its final store and report its counter total; an arm without the consent must
  * leave no descriptor.
  */
 function captureMismatches(profile: ArmProfile, o: ArmObservation): string[] {

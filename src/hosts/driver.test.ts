@@ -1979,47 +1979,75 @@ describe("HostDriver faults", () => {
 
     test("source capture counters add up over the arm's daemon generations", async () => {
         const { driver } = fixture("eidnara");
+        const phases: string[] = [];
         const generation = (pid: number, counters: Record<string, number> | Error) => {
             const d = fakeDaemon(pid);
             d.capture = counters;
+            const read = d.sourceCapture;
+            d.sourceCapture = async () => {
+                phases.push(`read:${pid}`);
+                return read();
+            };
+            const stop = d.stop;
+            d.stop = async () => {
+                phases.push(`stop:${pid}`);
+                await stop();
+            };
             return d;
         };
-        // A harness stop reads the generation it ends; the arm's later generations add to it.
-        const first = generation(PID + 10, {
-            admitted: 5,
-            completed: 4,
-            publish_ms_max: 50,
-            publish_ms_last: 5,
-            active: 1,
-        });
-        driver.daemon = first as unknown as DaemonStack;
-        await driver.stop();
-        // A fault kill reads without waiting; a generation still capturing is listed unread.
-        const busy = fakeDaemon(PID + 11);
-        const waits: number[] = [];
-        busy.sourceCapture = async (waitMs?: number) => {
-            waits.push(waitMs ?? -1);
-            throw new Error("source capture never settled");
+        const use = (d: ReturnType<typeof fakeDaemon>) => {
+            driver.daemon = d as unknown as DaemonStack;
+            (driver as unknown as { noteDaemon(): void }).noteDaemon();
         };
-        driver.daemon = busy as unknown as DaemonStack;
+        // A harness stop reads the generation it ends, before the stop.
+        use(
+            generation(PID + 10, {
+                admitted: 5,
+                completed: 4,
+                publish_ms_max: 50,
+                publish_ms_last: 5,
+                oldest_deferred_age_ms: 900,
+            }),
+        );
+        await driver.stop();
+        // A fault kill reads before the kill and gives up on a reply that never comes.
+        const stuck = generation(PID + 11, { admitted: 1, completed: 1 });
+        stuck.sourceCapture = () => {
+            phases.push(`read:${PID + 11}`);
+            return new Promise<Record<string, number>>(() => undefined);
+        };
+        stuck.crash = async () => {
+            phases.push(`crash:${PID + 11}`);
+        };
+        use(stuck);
         await driver.fault(episode("daemon_restart"));
-        expect(waits).toEqual([0]);
+        // The last read carries no deferred age, so the total carries none either.
         const last = generation(PID + 12, {
             admitted: 2,
             completed: 3,
             publish_ms_max: 20,
             publish_ms_last: 7,
-            active: 0,
         });
-        driver.daemon = last as unknown as DaemonStack;
+        use(last);
         await driver.finish();
+        // A second finish of a generation already listed keeps its entry and reads nothing.
+        use(last);
+        await driver.finish();
+        expect(phases).toEqual([
+            `read:${PID + 10}`,
+            `stop:${PID + 10}`,
+            `read:${PID + 11}`,
+            `crash:${PID + 11}`,
+            `read:${PID + 12}`,
+            `stop:${PID + 12}`,
+            `stop:${PID + 12}`,
+        ]);
         const record = JSON.parse(readFileSync(join(driver.armDir, "source-capture.json"), "utf8"));
         expect(record.counters).toEqual({
             admitted: 7,
             completed: 7,
             publish_ms_max: 50,
             publish_ms_last: 7,
-            active: 0,
         });
         expect(record.error).toBeNull();
         expect(record.unread_generations).toBe(1);
@@ -2029,28 +2057,31 @@ describe("HostDriver faults", () => {
             "finish",
         ]);
         expect(record.generations[1]).toMatchObject({
+            daemon: { pid: PID + 11 },
             counters: null,
-            error: "Error: source capture never settled",
+            error: "no counter reply in 250 ms",
         });
     });
 
-    test("a resume lists the generation its killed harness ran as unread, and keeps a pending read", async () => {
-        const { driver, armDir } = fixture("eidnara");
+    test("a resume lists the generation its killed harness ran as unread, and a failed finish stays unread", async () => {
+        const daemonFactory = () =>
+            ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;
+        const { driver, armDir } = fixture("eidnara", {}, { daemonFactory });
         const record = () => JSON.parse(readFileSync(join(armDir, "source-capture.json"), "utf8"));
-        const pending = {
-            daemon: { pid: PID + 19, start: "t-1" },
-            ended: "stop",
-            counters: null,
-            error: "the counter read did not finish",
-        };
         const counted = {
             daemon: { pid: PID + 18, start: "t-2" },
             ended: "stop",
             counters: { admitted: 3, completed: 3 },
             error: null,
         };
-        // The rest of the resume needs a daemon runtime it fails to start; the generation is
-        // listed first, and the stop releases what the resume set up.
+        const pending = {
+            daemon: { pid: PID + 19, start: "t-1" },
+            ended: "finish",
+            counters: null,
+            error: "the counter read did not finish",
+        };
+        // Without sudo the resume stops at its data-directory mount; the generation is listed
+        // before it. The stop releases what the resume set up.
         const resumeOver = async (daemon: { pid: number; start: string }) => {
             writeFileSync(join(armDir, "state.json"), JSON.stringify({ model: 0, daemon }));
             const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
@@ -2066,22 +2097,19 @@ describe("HostDriver faults", () => {
         );
         // A read the killed harness left pending stays as it was.
         expect((await resumeOver(pending.daemon)).generations).toEqual([counted, pending]);
-        // A generation with no read at all is listed unread, and the total keeps the others.
+        // A generation with no read is listed unread; the failed finish keeps the record unread.
         const killed = { pid: PID + 20, start: "t0" };
+        const unread = {
+            daemon: killed,
+            ended: "harness",
+            counters: null,
+            error: "the generation ended with its harness before a counter read",
+        };
         expect(await resumeOver(killed)).toEqual({
             counters: { admitted: 3, completed: 3 },
-            error: "the generation ended with its harness before a counter read",
+            error: "the counter read did not finish",
             unread_generations: 2,
-            generations: [
-                counted,
-                pending,
-                {
-                    daemon: killed,
-                    ended: "harness",
-                    counters: null,
-                    error: "the generation ended with its harness before a counter read",
-                },
-            ],
+            generations: [counted, pending, unread],
         });
     });
 

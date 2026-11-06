@@ -229,16 +229,20 @@ complete evidence only when the two agree:
   `daemon` identity (pid and start time), what `ended` it (`finish`, a harness
   `stop`, `fault <id>`, or `harness`), and its `counters` or read `error`. A
   finish or a harness stop (a teardown, an abort) waits up to 30 s for every
-  capture job to settle. A daemon fault reads without waiting so the kill
-  fires on schedule, and lists a generation still capturing as unread. A
+  capture job to settle. A daemon fault reads the report once without waiting
+  for capture to settle and gives the reply at most 250 ms before its kill;
+  a generation still capturing, or one whose reply comes later, is listed
+  unread. A
   resume lists the generation its killed harness ran as `harness`, unread,
   unless that generation is already listed: a read the killed harness left
   pending stays unread. The record's top level holds the arm's total over
   the generations read (event counts summed, `publish_ms_max` the largest,
   and the gauges `active`, `draining`, `retained_bytes`, `publish_ms_last`,
-  and `oldest_deferred_age_ms` from the last generation read), the last
-  generation's read `error`, and `unread_generations`, the generations the
-  total leaves out. The descriptors cover the whole arm. The driver writes
+  and `oldest_deferred_age_ms` from the last generation read alone), an
+  `error` (that of a `finish` whose read failed or never returned, whatever
+  generation followed it, else the last generation's), and
+  `unread_generations`, the generations the total leaves out, which
+  `capabilities.json` repeats. The descriptors cover the whole arm. The driver writes
   each generation's entry as pending before the read and replaces it with
   the result. `reset` removes the record with the arm. A final read that
   fails or times out is recorded with its error, the daemon still stops and
