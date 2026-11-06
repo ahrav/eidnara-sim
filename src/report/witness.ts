@@ -429,6 +429,8 @@ const CHECKS: Record<string, Check> = {
     "SIM-P41": (runs) => {
         const seen = new Map<string, { n: number; snapshot: unknown }>();
         const bad: string[] = [];
+        // P14 items cite session views, one per item and arm.
+        const views = new Set<string>();
         for (const c of runs) {
             for (const e of journalOf(c).filter((x) => x.kind === "SnapshotArtefacts")) {
                 const key = `${c.g.run.dir}/${e.arm}/${e.item}`;
@@ -469,6 +471,7 @@ const CHECKS: Record<string, Check> = {
                         bad.push(
                             `${r.arm}/${r.item} v${r.version} cites ${r.snapshot}, not its session view`,
                         );
+                    else views.add(`${c.g.run.dir}/${r.arm}/${r.item}`);
                     continue;
                 }
                 const s = seen.get(`${c.g.run.dir}/${r.arm}/${r.item}`);
@@ -483,7 +486,7 @@ const CHECKS: Record<string, Check> = {
         }
         bad.unshift(...[...seen].filter(([, s]) => s.n > 1).map(([k]) => `${k} set twice`));
         return outcome(
-            seen.size,
+            seen.size + views.size,
             bad,
             "item snapshots, each set once at the probe's first turn and cited by its grades",
         );

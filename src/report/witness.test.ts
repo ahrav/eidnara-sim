@@ -731,8 +731,8 @@ describe("property witness evidence", () => {
             version: 1,
             snapshot,
         });
-        expect(one("P41", made({ probes, grades: [grade("eidnara:q-14:s-1")] })).status).not.toBe(
-            "violated",
+        expect(one("P41", made({ probes, grades: [grade("eidnara:q-14:s-1")] })).status).toBe(
+            "witnessed",
         );
         expect(one("P41", made({ probes, grades: [grade("eidnara:q-14:s-2")] }))).toMatchObject({
             status: "violated",
