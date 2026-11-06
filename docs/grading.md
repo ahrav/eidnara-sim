@@ -339,11 +339,16 @@ format or of `%s` (its arguments inserted as written); only a part's last
 standard-output target receives the text and earlier `>` targets are
 emptied; an unquoted heredoc expands tracked `$NAME` values and any other
 expansion leaves it unresolved. An append to a file the command did not
-write, a write from any other source, a path with `..` or under `/dev/` or
-`/proc/`, a part that reads and truncates the same file, a later part that
-names the file other than to read it (`mv`, `sed -i`, and the rest), a
-redirection on a group, and, for a relative path, a `cd` leave the file
-unresolved; `unset` drops a variable. `--cleanup=strip` drops `#` lines
+write, a write from any other source, a write whose standard output is
+duplicated elsewhere (`>&2`), a path with `..` or under `/dev/` or `/proc/`,
+a part that reads and truncates the same file, a part that names the file
+other than to read it (`mv`, `ln`, `sed -i`, and the rest; the path stays
+untrusted for the rest of the command), a write from a `( ... )` subshell or
+a background list, a redirection on a group, and, for a relative path, a
+`cd` (one inside a subshell leaves every later relative write untrusted)
+leave the file unresolved; `unset`, or an assignment the words do not
+resolve (`P=$(printf x)`), drops a variable; `printf --` skips the option
+terminator; `--no-cleanup` restores the default cleanup. `--cleanup=strip` drops `#` lines
 before the subject is chosen, and `--no-message` and `--no-file` cancel the
 sources given before them. A heredoc body belongs to the segment whose `<<` opened
 it, with `<<-` tabs stripped, so `git commit -F - <<'EOF'; echo done` reads
@@ -354,7 +359,7 @@ global option outside Git's documented set (`-c`, `-C`, `-p`, `-P`,
 `--reuse-message`, `--reedit-message`), one that opens an editor (`-e`,
 `--edit`), one whose standard input is a duplicated descriptor (`<&3`), an
 `echo -e` source, a status-only one (`--porcelain`,
-`--short`, `--branch`, `--long`, `-z`), or one whose message the text does
+`--short`, `--long`, `-z`), or one whose message the text does
 not carry is read as written. Shell words keep a
 double-quoted `\"` as a quote character. `scope`, a directory prefix ending in `/` or one file path, limits
 the diff channels to files under it or to that file; on a P4 `out` item it
@@ -391,7 +396,7 @@ into its body's segments; a segment counts as executed when it is
 unconditional, follows `&&` after a chain of `true` or `:`, or follows `&&`
 in a foreground list (the parts between `;`, `&`, and newlines, a list
 ended by `&` running in the background) that has no `||` when the command
-exited 0 and no `false` guard in its chain stops it, so `cd x; git add f &&
+exited 0 and no `false` guard (any arguments or redirections aside) in its chain stops it, so `cd x; git add f &&
 git commit -m "..."; git status` credits its commit (the grader reads an
 exit of 0 as every guard having held, since the log records one status per
 command); a group or subshell that ends the command opens under the

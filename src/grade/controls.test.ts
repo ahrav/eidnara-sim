@@ -515,6 +515,7 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "sed -nE '/spawn_blocking/p' src/db.rs",
             "find src -executable -name '*spawn_blocking*'",
             "grep -n spawn_blocking src >\"/dev/null\" 2>'/dev/null'",
+            "false >/dev/null && echo spawn_blocking >/tmp/x; true",
         ];
         for (const command of looked) {
             const g = grade(blocking, { files: [digest], commands: [command] });
@@ -1037,6 +1038,8 @@ describe("P13: the commit tag reads from the message wherever the command sets i
             `cat >/tmp/m<<'EOF'\n[${tag}] s\nEOF\ngit commit -F /tmp/m`,
             `git --work-tree /tmp/repo commit -m "[${tag}] s"`,
             `P="[${tag}] subject"; Q=$P; git commit -m "$Q"`,
+            `printf -- '[${tag}] subject\\n' >msg; git commit -F msg`,
+            `printf '# c\\n[${tag}] s\\n' >m; git commit --cleanup=strip --branch -F m`,
             `TAG='[${tag}]'; cat >msg <<EOF\n$TAG subject\nEOF\ngit commit -F msg`,
             `cat > /tmp/msg <<'EOF'\n[${tag}] s\nEOF\ncat /tmp/msg\ngit commit -F /tmp/./msg`,
             `printf '# note\\n[${tag}] s\\n' > m; git commit --cleanup=strip -F m`,
@@ -1087,6 +1090,14 @@ describe("P13: the commit tag reads from the message wherever the command sets i
             `git commit -m "\\$(cat <<'EOF'\n[${tag}] subject\nEOF\n)"`,
             `true && P="[${tag}]" && true & git commit -m "$P subject"`,
             `{ P="[${tag}]" & }; git commit -m "$P subject"`,
+            `git commit --message='$(cat <<EOF\n[${tag}] subject\nEOF\n)'`,
+            `git commit -m'$(cat <<EOF\n[${tag}] subject\nEOF\n)'`,
+            `echo '[${tag}] fake' >msg >&2; git commit -F msg`,
+            `P='[${tag}]'; P=$(printf untagged); git commit -m "$P subject"`,
+            `ln -s /dev/null msg; echo '[${tag}] fake' >msg; git commit -F msg`,
+            `printf 'untagged\\n' >msg; { sleep .2; printf '[${tag}] late\\n' >msg; } & git commit -F msg; wait`,
+            `mkdir sub; printf 'untagged\\n' >msg; (cd sub; printf '[${tag}] wrong\\n' >msg); git commit -F msg`,
+            `printf '# comment\\n[${tag}] s\\n' >m; git commit --cleanup=strip --no-cleanup -F m`,
         ];
         for (const form of untagged) {
             expect([form, commits(form)[0]]).toEqual([form, "fail"]);
