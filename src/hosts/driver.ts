@@ -653,12 +653,6 @@ export class HostDriver implements ArmDriver {
         writeWhole(this.captureRecord, `${JSON.stringify({ ...total, generations })}\n`);
     }
 
-    /**
-     * recordGeneration persists each generation's `source_capture` counters before the daemon
-     * ends, because the daemon process owns them. `waitMs` bounds the wait for capture to settle.
-     * A generation already listed keeps its entry, so a read a killed harness left pending stays
-     * unread. The pending entry stands until the read returns.
-     */
     /** Lists a generation unread, unless it is listed already. */
     private listUnread(id: CaptureGeneration["daemon"], ended: string, error: string): void {
         if (!armProfile(this.o.arm).source_capture) return;
@@ -670,6 +664,12 @@ export class HostDriver implements ArmDriver {
         ]);
     }
 
+    /**
+     * recordGeneration persists each generation's `source_capture` counters before the daemon
+     * ends, because the daemon process owns them. `waitMs` bounds the wait for capture to settle.
+     * A generation already listed keeps its entry, so a read a killed harness left pending stays
+     * unread. The pending entry stands until the read returns.
+     */
     private recordGeneration(
         daemon: DaemonStack,
         ended: string,

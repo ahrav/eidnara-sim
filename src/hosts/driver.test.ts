@@ -2105,6 +2105,10 @@ describe("HostDriver faults", () => {
                 error: "a mid-fold kill ends the generation unread",
             },
         ]);
+        // With no finish entry, the record's error is the last generation's.
+        expect(record.error).toBe("a mid-fold kill ends the generation unread");
+        expect(record.unread_generations).toBe(1);
+        expect(record.counters).toBeNull();
     });
 
     test("a stop that arrives during a stop's counter read waits for that read", async () => {
