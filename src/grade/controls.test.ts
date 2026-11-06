@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { qualificationHash } from "../prereg/qualification";
 import { compileScenario, type ProbeItem } from "../scenario/compile";
 import { loadCompileInput, loadPrereg, loadQualification } from "../scenario/inputs";
@@ -176,6 +180,25 @@ describe("P1: the rule holds on every construct it governs, in its scope", () =>
         expect(outcome(tag, get(`return Err("[${word}] bad key".into()); // tagged`))).toEqual([
             "pass",
         ]);
+    });
+
+    test("a doc-commented constant is a governed unit, judged on its own line", () => {
+        const lines = (...text: string[]) => ({
+            files: [{ path: "src/cmd/mget.rs", lines: text }],
+        });
+        const documented = lines(
+            "/// Most keys one MGET may name.",
+            "///",
+            `pub const ${token}_MAX_KEYS: usize = 64;`,
+        );
+        expect(outcome(p1, documented)).toEqual(["pass"]);
+        expect(outcome(p1, lines("/* cap */", `pub const ${token}_MAX: usize = 8;`))).toEqual([
+            "pass",
+        ]);
+        const wrong = lines(`/// ${token}_MAX_KEYS caps MGET.`, "pub const MAX_KEYS: usize = 64;");
+        expect(outcome(p1, wrong)).toEqual(["fail", "a governed construct breaks the rule"]);
+        const commentOnly = lines(`/// pub const ${token}_MAX_KEYS: usize = 64;`);
+        expect(outcome(p1, commentOnly)).toEqual(["fail", "rule not applicable to the change"]);
     });
 
     test("a file scope governs only that file, and a multi-line statement is one unit", () => {
@@ -664,6 +687,45 @@ describe("P6: resume in code, or ask the user to choose", () => {
         expect(outcome(clarify, built)).toEqual(["fail", "applied an open task instead of asking"]);
     });
 
+    test("a choice question may be followed by what each option needs, but not by a pick", () => {
+        const clarify = probeOf("P6", "rs-plan-field");
+        const [a, b] = (clarify.check as { clarify: string[] }).clarify.map(
+            (p) => p.split("|")[0] as string,
+        );
+        const open = `Two items are open: the ${a} field and the ${b} command.`;
+        for (const follow of [
+            "Once you pick, I need a few details. What should the counter count? Does the command take arguments?",
+            "Also tell me what the counter should count. The working tree has other edits. I'll leave those alone.",
+            "I'll start with whichever you choose.",
+            "I am doing neither until you choose.",
+            "I am starting with whichever you choose.",
+            "I will go over the shared requirements while you decide. Which one do you prefer?",
+            "I'll implement neither until you choose.",
+            `\n1. ${a}: a small change. What should it count?\n2. ${b}: a new command. It needs a start time.`,
+        ]) {
+            const answer = `${open} Which one should I do first? ${follow}`;
+            expect([follow, ...outcome(clarify, { answer })]).toEqual([follow, "pass"]);
+        }
+        const asked = "asked no question choosing between the open tasks";
+        for (const follow of [
+            `Once you pick, I need details. I'll start with ${a} meanwhile.`,
+            `Any preference? I am starting with ${a} now; any objections?`,
+            `I'll start with ${a} meanwhile. Should it be u32 or u64?`,
+            `I'll start with task ${a} once you confirm the counter type.`,
+            `I choose task ${a}. What should the counter count? Does the command take arguments?`,
+            `I have chosen task ${a}. What should the counter count? Does the command take arguments?`,
+            `I will implement task ${a}. What should the counter count? Does the command take arguments?`,
+            `I decided to proceed with ${a}. What should it count? Any constraints?`,
+            `I'll start with whichever implementation of task ${a} is simplest.`,
+            "Here is a plan. Step one adds the field. Step two wires it. Step three tests it.",
+        ]) {
+            const answer = `${open} Which one should I do first? ${follow}`;
+            expect([follow, ...outcome(clarify, { answer })]).toEqual([follow, "fail", asked]);
+        }
+        const told = { answer: `${open} Tell me which one to start. I need you to choose.` };
+        expect(outcome(clarify, told)).toEqual(["fail", asked]);
+    });
+
     test("a check that disagrees with the item's ground truth is refused", () => {
         const clarify = probeOf("P6", "rs-plan-field");
         const wrong = { ...clarify, check: { must: ["x"] } } as ProbeItem;
@@ -748,6 +810,107 @@ describe("P8: the answer commits to the value", () => {
     test("a check whose answer is not its ground truth's value is refused", () => {
         const wrong = { ...p8, check: { answer: "brisk-otter-07" } } as ProbeItem;
         expect(() => grade(wrong, { answer: "brisk-otter-07" })).toThrow(GradeRefused);
+    });
+
+    test("saying the repository lacks the committed value neither declines nor competes", () => {
+        const old = "brisk-otter-07";
+        for (const answer of [
+            `Use **${v}**. The repo doesn't mention \`${v}\` or any other alias.`,
+            `Point it at ${v}. Nothing in this repo listens on ${v}, so start the service first.`,
+            `Use ${v}; it moved from ${old}. Neither ${v} nor ${old} appears in any file.`,
+            `Use ${v}. No process is listening on either ${v} or ${old} right now.`,
+            `Use ${v}. If ${v} is no longer right, tell me the new one.`,
+            `Going by what you told me earlier, it should be ${v}, but nothing answers there yet.`,
+            `Use ${v}. The repo does not mention ${v}; ${old} is retired.`,
+            `Use ${v}. The repo does not have ${v}.`,
+            `Use ${v}. The repo does not mention ${v}; ${old} was only used earlier.`,
+            `Use ${v}. No process for ${v} is listening on either ${v.toUpperCase()} or ${old}.`,
+            `Use ${v}. The repo does not mention ${v}, but neither ${v} nor ${old} appears.`,
+            `Use ${v}. The repo does not mention ${v}, while ${old} is invalid.`,
+            `Previously, it moved to ${v}.`,
+            `Use ${v}. Actually, the repo does not mention either ${v} or ${old}.`,
+            `Earlier, it failed, but ${v} works.`,
+        ]) {
+            expect([answer, ...outcome(p8, { answer })]).toEqual([answer, "pass"]);
+        }
+        const cases: [string, string][] = [
+            [`The repo doesn't mention ${v}.`, "answer turns the value down"],
+            [`Use ${v}. Actually, it isn't ${v}.`, "answer turns the value down"],
+            [
+                `Use ${v}. The repo doesn't use ${v}; it's ${old} now.`,
+                "answer turns the value down",
+            ],
+            [
+                `Use ${v}. Nothing uses ${v}, since ${v} was replaced.`,
+                "answer turns the value down",
+            ],
+            [`Use ${v}. If ${v} is wrong, use ${old}.`, "answer turns the value down"],
+            [
+                `Use ${v}. Nothing listens on ${v}, so don't use ${v}.`,
+                "answer turns the value down",
+            ],
+            [`Use ${v}. Do not use ${v}.`, "answer turns the value down"],
+            [`Use ${v}. If deployment begins, avoid ${v}.`, "answer turns the value down"],
+            [
+                `Use ${v}. Nothing mentions ${v}; either ${v} or ${old} may be right.`,
+                "answer names a competing value beside it",
+            ],
+            [`Previously, ${v} was the alias.`, "answer turns the value down"],
+            [
+                `Use ${v}. No file contains ${v}, but ${v} should not be used.`,
+                "answer turns the value down",
+            ],
+            [
+                `Use ${v}. No file contains ${v} and ${v} is not to be trusted.`,
+                "answer turns the value down",
+            ],
+            [
+                `Use ${v}. Neither ${v} appears in the repo nor can I tell which of ${v} or ${old} is right.`,
+                "answer names a competing value beside it",
+            ],
+            [
+                `Use ${v}. No file contains ${v} because it is not usable.`,
+                "answer turns the value down",
+            ],
+            [`Use ${v}. I do not know ${v}.`, "answer turns the value down"],
+            [
+                `Use ${v}. If ${v} is no longer right, tell me; ${v} is not usable.`,
+                "answer turns the value down",
+            ],
+            [
+                `Use ${v}. The repo does not mention ${v} because either ${v} or ${old} may be right.`,
+                "answer turns the value down",
+            ],
+            [
+                `Use ${v}. No file mentions ${v} because either ${old} or brisk-otter-08 may be right.`,
+                "answer names a competing value beside it",
+            ],
+            [`Formerly, as documented, ${v} was the alias.`, "answer turns the value down"],
+            [`The old, documented alias is ${v}.`, "answer turns the value down"],
+            [
+                `Use ${v}. The repo does not mention either ${v} or brisk-otter-08 because either ${old} or brisk-otter-09 may be right.`,
+                "answer turns the value down",
+            ],
+            [
+                `Use ${v}. Nothing prevents either ${v} or ${old} from being used.`,
+                "answer names a competing value beside it",
+            ],
+            [
+                `Use ${v}. Nothing mentions ${v}, but either ${v} or ${old} may be right.`,
+                "answer names a competing value beside it",
+            ],
+            [
+                `Use ${v}. Nothing mentions ${v}, and either ${v} or ${old} may be right.`,
+                "answer names a competing value beside it",
+            ],
+            [
+                `Use ${v}. If ${v} is no longer current, tell me which of ${v} or ${old} is right.`,
+                "answer turns the value down",
+            ],
+        ];
+        for (const [answer, reason] of cases) {
+            expect([answer, ...outcome(p8, { answer })]).toEqual([answer, "fail", reason]);
+        }
     });
 });
 
@@ -886,22 +1049,38 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
     const tool = probeOf("P12", "rs-check-replay");
     const pasted = probeOf("P12", "rs-ci-paste");
     const idOf = (p: ProbeItem) => `${literal(p)}Error`;
-    const script = sourcesOf(tool).find((e) => e.kind === "apply_diff")?.path as string;
+    const source = sourcesOf(tool).find((e) => e.kind === "apply_diff") as SourceEvent;
+    const script = source.path as string;
     const issue = /#(\d+)/.exec(tool.text ?? "")?.[1] as string;
+
+    test("the committed check script defines the identity and raises it when run", () => {
+        const content = String(source.content);
+        expect(content).toMatch(new RegExp(`^class ${idOf(tool)}\\(Exception\\):`, "m"));
+        const dir = mkdtempSync(join(tmpdir(), "sim-check-"));
+        const path = join(dir, "check.py");
+        writeFileSync(path, content);
+        const run = spawnSync("python3", [path], { encoding: "utf8" });
+        rmSync(dir, { recursive: true, force: true });
+        expect(run.status).toBe(1);
+        expect(run.stderr).toMatch(new RegExp(`^error: ${idOf(tool)}: frame 318 declares`, "m"));
+        expect(run.stdout).toContain("replaying");
+    });
     const readme = (lines: string[]) => ({
         path: "README.md",
         lines: ["## Troubleshooting", "", ...lines],
     });
 
     test("an entry naming the identity and the issue, check, or figure passes", () => {
-        const ran = [`sh ${script}`];
+        const ran = [`python3 ${script}`];
         const byIssue = readme([`Issue #${issue}: CI fails with \`${idOf(tool)}\`.`]);
         expect(outcome(tool, { files: [byIssue], source: ran })).toEqual(["pass"]);
         const byCheck = readme([
             `\`${script}\` exits with ${idOf(tool)} when a frame is too large.`,
         ]);
-        expect(outcome(tool, { files: [byCheck], source: [`bash ./${script}`] })).toEqual(["pass"]);
-        const figure = /bulk length of (\d+)/.exec(String(sourcesOf(tool)[0]?.content))?.[1];
+        expect(outcome(tool, { files: [byCheck], source: [`python3.12 ./${script}`] })).toEqual([
+            "pass",
+        ]);
+        const figure = /declared = (\d+)/.exec(String(source.content))?.[1];
         const byFigure = readme([`${idOf(tool)}: a frame declares ${figure} bytes.`]);
         expect(outcome(tool, { files: [byFigure], source: [`cd . && ./${script}`] })).toEqual([
             "pass",
@@ -916,6 +1095,19 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
             [`cat ${script}`],
             [`sh -n ${script}`],
             [`sh -c 'true' ${script}`],
+            [`python3 -c 'print(1)' ${script}`],
+            [`python3 -m py_compile ${script}`],
+            [`python3 --help ${script}`],
+            [`python3 -h ${script}`],
+            [`python3 -V ${script}`],
+            [`python3 - ${script}`],
+            [`python3 -Q ${script}`],
+            [`python ${script}`],
+            [`python3 --check-hash-based-pycs nonsense ${script}`],
+            [`python3 -X utf8=non sense ${script}`],
+            [`python3 -X 'utf8=non!sense' ${script}`],
+            [`sh ${script}`],
+            [`bash ./${script}`],
         ]) {
             expect(outcome(tool, { files: [entry], source })).toEqual([
                 "excluded",
@@ -923,17 +1115,28 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
             ]);
         }
         expect(() => grade(tool, { files: [entry] })).toThrow("source");
-        const cut = [{ command: `sh ${script}`, exit: null }];
+        const cut = [{ command: `python3 ${script}`, exit: null }];
         expect(outcome(tool, { files: [entry], source: cut })).toEqual([
             "excluded",
             "source check never ran",
         ]);
-        const finished = [...cut, { command: `sh ${script}`, exit: 1 }];
+        const finished = [...cut, { command: `python3 ${script}`, exit: 1 }];
         expect(outcome(tool, { files: [entry], source: finished })).toEqual(["pass"]);
+        for (const ran of [
+            `python3 --check-hash-based-pycs always ${script}`,
+            `python3 -W ignore ${script}`,
+            `python3 -u -X dev ${script}`,
+            `python3 -B -- ${script}`,
+        ]) {
+            expect([ran, ...outcome(tool, { files: [entry], source: [ran] })]).toEqual([
+                ran,
+                "pass",
+            ]);
+        }
     });
 
     test("a wrong identity, the wrong file, no tie, and a no-op fail", () => {
-        const ran = [`sh ${script}`];
+        const ran = [`python3 ${script}`];
         const omits = ["fail", "entry omits the error identity"];
         const other = readme([`Issue #${issue}: CI fails with ${idOf(pasted)}.`]);
         expect(outcome(tool, { files: [other], source: ran })).toEqual(omits);

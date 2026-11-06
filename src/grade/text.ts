@@ -110,9 +110,16 @@ const shapeOf = (value: string): RegExp =>
 /** A word that turns down the next value it names within the clause. */
 const NEGATOR =
     /\b(?:not|never|no longer|[a-z]+n['\u2019]t|instead of|rather than|other than|except|replac(?:e|es|ed|ing)(?!\s+(?:by|with)\b)|supersed(?:e|es|ed|ing)(?!\s+by\b)|(?:changed|moved|renamed|switched|updated|went)\s+from|avoid(?:ing)?)\b/gi;
-/** A word that marks the value right after it, at most four words on, as superseded. */
+/**
+ * A word that marks the value right after it, at most four words on, as superseded. A comma right
+ * after the word closes its phrase, so `told me earlier, it should be X` marks nothing, except
+ * after a determiner, where it coordinates another modifier: `the old, documented alias X`.
+ */
 const STALE_ADJECTIVE =
-    /\b(?:old|older|earlier|previous|previously|prior|former|formerly|originally|retired|outdated|stale|deprecated|obsolete)\b(?=,?(?:\s+(?!(?:to|and|but|so)\b)[\w-]+,?){0,4}?\s+$)/i;
+    /(?:\b(?:the|a|an|this|that|its|their)\s+(?:old|older|earlier|previous|prior|former|retired|outdated|stale|deprecated|obsolete)\b,?|\b(?:old|older|earlier|previous|previously|prior|former|formerly|originally|retired|outdated|stale|deprecated|obsolete)\b)(?=(?:\s+(?!(?:to|and|but|so)\b)[\w-]+,?){0,4}?\s+$)/i;
+/** A sentence that opens by placing what follows in the past: `Previously, X was the alias`. */
+const LEADING_STALE =
+    /^\s*(?:previously|formerly|originally|earlier|before that|at first)\s*,(?:\s+(?!(?:to|and|but|so)\b)[\w-]+,?){0,6}?\s+$/i;
 /** What follows a value to say it is wrong or superseded. */
 const AFTER = new RegExp(
     `^[^.?!;]{0,30}?(?:${[
@@ -137,6 +144,26 @@ const EQUALLY =
 const CLAUSE = /\b(?:to|and|but|so)\b/i;
 /** What follows a value to place it in the past: `Y was only for testing`, `Y was used before`. */
 const HISTORY = /^[^.?!;]{0,30}?\b(?:was|were)\s+(?:only|used|for)\b/i;
+/**
+ * A sentence that says the repository or the machine lacks a value rather than turning it down:
+ * `nothing in this repo listens on X`, `the repo doesn't mention X`, `neither X nor Y appears`.
+ */
+const ABSENCE =
+    /\b(?:nothing|nobody|none of|neither)\b(?![^.?!;:,]*\b(?:prevents?|stops?|forbids?|keeps?|blocks?)\b)|\bno (?:process|file|commit|config\w*|reference|record|match\w*|mention)\b|\b(?:does|do|did|is|are|was|were)(?:n['\u2019]?t| not)\s+(?:[\w-]+\s+){0,2}?(?:mention|appear|contain|define|set|reference|listen|serve|answer|exist|include|record|show|open|running|have|hold|carry)\w*|\bnot (?:in|set|defined|mentioned|referenced|listening|found|open|running)\b/i;
+/** Wording that still turns a value down inside an absence clause, a prohibition included. */
+const REJECTS =
+    /\b(?:replac\w*|supersed\w*|retired|outdated|out of date|stale|deprecated|obsolete|wrong|invalid|incorrect|typo|avoid\w*)\b|\b(?:don['\u2019]?t|do not|never|shouldn['\u2019]?t|should not|must not|mustn['\u2019]?t|is not to be|isn['\u2019]?t to be|cannot be|can['\u2019]?t be)\s+(?:be\s+)?(?:use|pick|choose|point|rely|trust)\w*/i;
+/** Wording that lists values together as all absent: `neither X nor Y`, `on either X or Y`. */
+const LISTED = /\bneither\b[^,]*?\bnor\b|\beither\b[^,]*?\bor\b|\bboth\b/i;
+/**
+ * Where one clause ends and another begins: `;`, `:`, a comma before a conjunction, or a `nor`
+ * that opens a clause of its own (`nor can I tell`); `neither X nor Y` stays one clause.
+ */
+const CLAUSE_BREAK =
+    /[;:]|,\s*(?:but|yet|though|although|and|or|so|while|whereas)\b|,?\s*\bnor\s+(?=(?:can|could|do|does|did|will|would|should|is|are|was|were|have|has|had|am|I)\b)/g;
+/** The offer to revise a remembered value: `If X is no longer right, tell me the new one`. */
+const REVISION_OFFER =
+    /^if\b[^.?!]*\b(?:no longer|isn['\u2019]?t|is not|not)\b[^.?!]*\b(?:right|current|valid|correct|accurate)\b[^.?!]*\b(?:tell me|let me know)\b[^.?!]*[.?!]*$/i;
 /** A sentence after the answer that switches to another value: `Actually, use Y instead`. */
 const CORRECTION =
     /\b(?:actually|instead|correction|on second thought|scratch that|I meant|rather)\b/i;
@@ -186,11 +213,75 @@ function mentions(sentence: string, value: string, stale: string[]): Mention[] {
             m.at,
         );
         const after = sentence.slice(m.at + m.token.length, list[i + 1]?.at ?? sentence.length);
-        if (STALE_ADJECTIVE.test(before) || AFTER.test(after)) m.negated = true;
+        const leading = i === 0 && LEADING_STALE.test(before);
+        if (STALE_ADJECTIVE.test(before) || leading || AFTER.test(after)) m.negated = true;
         m.past = HISTORY.test(after);
     }
     return list;
 }
+
+/**
+ * Whether a sentence after the committed one says the repository or machine lacks the value
+ * (`ABSENCE`) or offers to revise it (`REVISION_OFFER`, naming no competitor) without rejecting
+ * it. Each clause (split at `;`, `:`, and `, but`) that names the value must state the absence
+ * and hold no rejection, whether a prohibition (`REJECTS`) or a verdict on the value (`AFTER`),
+ * and a competitor it leaves standing must sit in such a clause listed with the value (`neither
+ * X nor Y`, `either X or Y`).
+ */
+const stepsAside = (sentence: string, found: Mention[]): boolean => {
+    if (REVISION_OFFER.test(sentence)) {
+        // The offer's own condition (`is no longer right`) is no verdict; one after the request is.
+        const ask = sentence.search(/\b(?:tell me|let me know)\b/i);
+        return (
+            !REJECTS.test(sentence) &&
+            found.every(
+                (m) =>
+                    (m.expected &&
+                        (m.at < ask || !AFTER.test(sentence.slice(m.at + m.token.length)))) ||
+                    (!m.expected && m.negated),
+            )
+        );
+    }
+    const breaks = [...sentence.matchAll(CLAUSE_BREAK)];
+    const bounds = breaks.map((m) => m.index);
+    const clauseOf = (at: number) => bounds.filter((b) => b < at).length;
+    const clauses = sentence.split(CLAUSE_BREAK);
+    const absent = (k: number) => ABSENCE.test(clauses[k] ?? "");
+    const value = (found.find((m) => m.expected)?.token ?? "").toLowerCase();
+    const starts = clauses.map((_c, k) => {
+        const before = breaks[k - 1];
+        return before === undefined ? 0 : before.index + before[0].length;
+    });
+    /** The list (`either ... or ...`, `neither ... nor ...`, `both ...`) that holds offset `at`. */
+    const listAt = (k: number, at: number): string | null => {
+        const clause = clauses[k] ?? "";
+        const local = at - (starts[k] as number);
+        for (const m of clause.matchAll(new RegExp(LISTED.source, "gi"))) {
+            // The list runs from its first word through the item after `or`, `nor`, or `both`.
+            const tail = /^\s*(?:and\s+)?[^\s,;]+/.exec(clause.slice(m.index + m[0].length));
+            const stop = m.index + m[0].length + (tail?.[0].length ?? 0);
+            if (m.index <= local && local < stop) return clause.slice(m.index, stop);
+        }
+        return null;
+    };
+    return found.every((m) => {
+        const k = clauseOf(m.at);
+        const clause = clauses[k] ?? "";
+        const local = m.at - (starts[k] as number);
+        if (m.expected) {
+            const after = clause.slice(local + m.token.length);
+            return absent(k) && !REJECTS.test(clause) && !AFTER.test(after);
+        }
+        if (m.negated || m.past) return true;
+        const list = listAt(k, m.at);
+        if (list === null || !absent(k) || !list.toLowerCase().includes(value)) return false;
+        // `either X or Y may be right` offers Y; `neither X nor Y appears` says both are absent.
+        const rest = clause.slice(clause.indexOf(list) + list.length);
+        return !/\b(?:may|might|could|can)\s+(?:be|work|apply|still)\b|\bis right\b|\bpossible\b/i.test(
+            rest,
+        );
+    });
+};
 
 /**
  * Why an answer fails to commit to `value` (`committed-whole-word`), or null when it commits. The
@@ -202,7 +293,8 @@ function mentions(sentence: string, value: string, stale: string[]): Mention[] {
  * superseded stands aside. A later sentence with a correction word (`actually`, `instead`)
  * switches to a competitor it leaves standing, unless the sentence also asserts the value or
  * places the competitor in the past (`Y was only for testing`). A decisive value placed in the past
- * (`X was only for testing`) is turned down unless a later sentence asserts it.
+ * (`X was only for testing`) is turned down unless a later sentence asserts it. A later sentence
+ * that steps aside (`stepsAside`) neither turns the value down nor names a competitor.
  */
 export function uncommitted(answer: string, value: string, stale: string[] = []): string | null {
     if (!carries(answer, value)) return "answer lacks the value";
@@ -225,12 +317,15 @@ export function uncommitted(answer: string, value: string, stale: string[] = [])
     }
     if (live(decisive.found)) return "answer names a competing value beside it";
     for (const [i, { s, found }] of all.entries()) {
-        if (found.some((m) => m.expected && m.negated)) return "answer turns the value down";
+        const aside = i > first && stepsAside(s, found);
+        if (!aside && found.some((m) => m.expected && m.negated)) {
+            return "answer turns the value down";
+        }
         const current = found.filter((m) => !m.past);
-        if (i > first && live(current) && CORRECTION.test(s) && !asserts(found)) {
+        if (!aside && i > first && live(current) && CORRECTION.test(s) && !asserts(found)) {
             return "answer switches to a competing value";
         }
-        if (found.some((m) => m.expected) && live(found) && EQUALLY.test(s)) {
+        if (!aside && found.some((m) => m.expected) && live(found) && EQUALLY.test(s)) {
             return "answer names a competing value beside it";
         }
     }

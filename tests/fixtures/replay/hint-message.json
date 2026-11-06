@@ -1,0 +1,8 @@
+{
+ "role": "user",
+ "content": [
+  {
+   "text": "§156§ Check whether the blocking client handles a closed connection cleanly.\n\n<eidnara-search-hint>\nYour memory may contain 3 related fragments:\n- …king client handles closed connection cleanly. Each time I checked `git status…\n- Explained Frame::check pre-pass before frame decoding user asked why connection…\n- …nst HEAD. I did not run examples to check descriptions. In same reply I c…\nOne or more fragments are cut from longer text and may omit a qualifier such as a negation or a rejection.\nIf these fragments seem relevant to the current request, you may run eidnara_search to search project memory for their topic. Otherwise ignore.\n</eidnara-search-hint>"
+  }
+ ]
+}
