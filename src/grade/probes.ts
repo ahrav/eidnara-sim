@@ -2118,6 +2118,7 @@ export const graderDigest = (): string =>
             "artefacts.ts",
             "judge.ts",
             "probes.ts",
+            "source-commands.ts",
             "text.ts",
             "../../scripts/grade-run.ts",
             "../proxy/records.ts",

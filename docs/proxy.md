@@ -84,6 +84,12 @@ refuses later writes when that truncation fails. A body the store cannot write l
 adds a gateway failure, which fails the run at stop. An injected fault's
 request is stored too; its record's `fault_ref` shows that no provider saw it.
 
+A gateway built with a `transform` option hands it each classified body, with
+the call's component and scope, after `stripUnsupported` and before the store
+and the upstream see it, so the stored body is the forwarded one; a transform
+that throws adds a gateway failure. Only the probe replay
+(`docs/replay.md`) passes one.
+
 ## Component tags
 
 A harness caller (the user simulator or the judge) asserts its component with
