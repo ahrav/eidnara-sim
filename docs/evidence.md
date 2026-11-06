@@ -45,7 +45,7 @@ rule's wording, case-insensitively: `double quotes`, `double-quoted`, `the
 info level`, `log at INFO`, `warn-level logs`; `single-shot`, `single
 quota`, `traced`, or `an error` carries nothing. A retrieval hit's rank is
 the first line that carries the literal, or, when the wording wraps, the
-line where the match completes. Any other literal is a generated identifier
+line where the match completes (found by bisection over line prefixes). Any other literal is a generated identifier
 that the scenario uses as a stem (`OCHRE_IBIS_MAX`, `onYONDER_EGRET`), and
 it matches case-sensitively anywhere, so `AMBER_DINGO` is absent from
 `amber_dingo.ts`. A probe whose rule is to be applied (`expect` `apply` or
@@ -94,7 +94,8 @@ Each probe gets one `attributed` cause with a status and reason:
 
 An excluded probe names the stage whose evidence never existed, such as a
 P12 check that never ran or a P13 item with no fold in its range (`fold`,
-`unavailable`); any other exclusion is the grader's (`application`,
+`unavailable`, which the grader's own reason takes ahead of an earlier
+unavailable stage); any other exclusion is the grader's (`application`,
 `excluded`).
 
 ## Context health

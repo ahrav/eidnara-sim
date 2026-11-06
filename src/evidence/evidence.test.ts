@@ -752,6 +752,23 @@ describe("evidence stages on the host arm", () => {
             status: "unavailable",
             reason: "no fold in the item's range",
         });
+        const unsourced = build({
+            ...host,
+            calls: [searchTurn("TAG_X")],
+            verdict: "excluded",
+            journal: [
+                { kind: "Event", event: "e-0", outcome: "failed" },
+                { kind: "Event", event: "e-2", outcome: "ok" },
+                { kind: "BeginTurn", event: "e-5", wall_ms: BEGIN_WALL },
+                { kind: "EndTurn", event: "e-5", outcome: "ok", prompt_ms: 900 },
+            ],
+        });
+        const both = graded(unsourced, {
+            probe_type: "P13",
+            reason: "no fold in the item's range",
+        });
+        expect(stage(both, "source")?.status).toBe("unavailable");
+        expect(both.attributed.cause).toBe("fold");
     });
 
     test("a rule with no literal leaves its delivery unobserved; an avoid item's is n/a", () => {

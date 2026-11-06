@@ -221,14 +221,22 @@ export function findGroups(groups: string[][], text: string): Array<string | nul
  * carries it, else the line where the whole text's match begins (rule wording can wrap).
  */
 function rankOf(text: string, alts: string[]): number | null {
+    const found = alts.filter((a) => a.length > 0 && carriesLiteral(text, a));
+    if (found.length === 0) return null;
     const lines = text.split("\n");
-    const i = lines.findIndex((l) => alts.some((a) => a.length > 0 && carriesLiteral(l, a)));
+    const i = lines.findIndex((l) => found.some((a) => carriesLiteral(l, a)));
     if (i >= 0) return i + 1;
-    for (let n = 1; n <= lines.length; n++) {
-        const head = lines.slice(0, n).join("\n");
-        if (alts.some((a) => a.length > 0 && carriesLiteral(head, a))) return n;
+    // The wording wraps: the match completes on the first line whose prefix carries it, found by
+    // bisection, since a prefix that carries the literal keeps carrying it as it grows.
+    let lo = 1;
+    let hi = lines.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        const head = lines.slice(0, mid).join("\n");
+        if (found.some((a) => carriesLiteral(head, a))) hi = mid;
+        else lo = mid + 1;
     }
-    return null;
+    return lo;
 }
 
 const callPointer = (c: HeldCall): Pointer => ({ path: "calls.jsonl", at: `seq ${c.seq}` });
@@ -1140,9 +1148,12 @@ export function attribute(
 ): ProbeEvidence["attributed"] {
     const at = (name: StageName) => stages.find((s) => s.stage === name);
     if (o.verdict === "excluded") {
-        // An item set aside because its evidence never existed (a P12 check that never ran)
-        // names that stage; any other exclusion stays the grader's.
-        const missing = stages.find((s) => s.status === "unavailable");
+        // An item set aside because its evidence never existed (a P12 check that never ran, a
+        // P13 range with no fold) names that stage, the grader's own fold reason first; any other
+        // exclusion stays the grader's.
+        const fold = at("fold");
+        const missing =
+            fold?.status === "unavailable" ? fold : stages.find((s) => s.status === "unavailable");
         if (missing)
             return { cause: missing.stage, status: "unavailable", reason: missing.reason ?? "" };
         const app = at("application") as Stage;
