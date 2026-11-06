@@ -1207,9 +1207,9 @@ export function attribute(
 }
 
 /**
- * Every graded probe of every arm, P7 pairwise grades and recorded `P1-control` grades aside: a
- * control's pass meant the agent applied a rule it had no source for, which the stages here
- * read as the opposite.
+ * Every graded probe of every arm, P7 pairwise grades, recorded `P1-control` grades, and P14
+ * session grades aside: a control's pass meant the agent applied a rule it had no source for,
+ * which the stages here read as the opposite, and a P14 item grades a session with no fact.
  */
 export function runEvidence(run: RunData, health: SessionHealth[]): ProbeEvidence[] {
     const probes = new Set(run.scenario.probes.map((p) => p.id));
@@ -1218,6 +1218,7 @@ export function runEvidence(run: RunData, health: SessionHealth[]): ProbeEvidenc
             (g) =>
                 g.against === undefined &&
                 !RECORDED_TYPES.includes(g.probe_type) &&
+                g.probe_type !== "P14" &&
                 probes.has(g.item) &&
                 run.arms.has(g.arm),
         )

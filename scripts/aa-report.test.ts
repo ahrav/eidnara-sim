@@ -416,10 +416,12 @@ describe("aa-report", () => {
             host: [{ event: "e-3", cause: "harness-exit" }],
             "host~aa": [],
         });
-        expect(r?.interrupted_items).toEqual(["p-2"]);
+        // The P14 item k-1 grades the cut turn's whole session, so the cut takes it too.
+        expect(r?.interrupted_items).toEqual(["k-1", "p-2"]);
         // The item leaves the pair on both arms rather than standing unpaired or missing.
         expect(r?.unpaired_items).toEqual(before?.unpaired_items);
-        expect(r?.missing).toEqual(before?.missing);
+        expect(before?.missing).toEqual({ host: 1, "host~aa": 1 });
+        expect(r?.missing).toEqual({ host: 0, "host~aa": 0 });
         const p6 = (r?.metrics as { metric: string; n: number }[]).find(
             (m) => m.metric === "P6.reread_files",
         );
@@ -905,6 +907,29 @@ describe("aa-report", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const [report] = aaReport(dir);
         expect(report?.missing).toEqual({ host: 1, "host~aa": 1 });
+    });
+
+    test("a P14 grade cites its session view, and any other snapshot is refused", () => {
+        const p14 = (arm: string, snapshot: string) => ({
+            item: "k-1",
+            arm,
+            probe_type: "P14",
+            version: 1,
+            snapshot,
+            inputs: [`${snapshot}:calls`],
+            later_attempts_logged: 0,
+            verdict: "pass",
+            metrics: { "P14.post_compaction_correction_count": 0 },
+        });
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        for (const arm of ["host", "host~aa"]) {
+            appendFileSync(join(dir, "grades.jsonl"), line(p14(arm, `${arm}:k-1:s-1`)));
+        }
+        expect(aaReport(dir)[0]?.missing).toEqual({ host: 0, "host~aa": 0 });
+        const stray = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        appendFileSync(join(stray, "grades.jsonl"), line(p14("host", "host:k-1:e-9")));
+        expect(() => aaReport(stray)).toThrow(/is not its session view/);
     });
 
     test("refuses a turn whose session or index differs from its scheduled event's", () => {

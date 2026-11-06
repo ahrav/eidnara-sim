@@ -239,7 +239,8 @@ host arm, through a gateway it starts for the judge. An item whose latest
 grade already cites its snapshot (and, for P7, its opponent) is skipped as
 `already graded` when the same grader made it: each record carries
 `grader`, a digest of the grader's source files, `scripts/grade-run.ts`, and
-the proxy record, classifier, and canonical-JSON modules they read, and a
+the proxy record, classifier, canonical-JSON, retry, call-view, and user-sim
+plan modules they read, and a
 grade from another implementation is made again. The digest covers those
 files alone; a change confined to another module they import leaves it
 unchanged. Grading a run again is therefore free of judge
@@ -274,9 +275,63 @@ It removes any `grade-summary.json` in the run directory when it starts,
 under the run's lease, and writes the same summary there atomically when it
 finishes, so the cost panel prices only a finished pass over the journal as
 it stands; it exits 1 when a judge call failed. The scenario plants no canary
-strings, so it passes the judge none; blinding still refuses arm names. P14 items have no probe turn of their
-own and wait on the user simulator's labels (M6), so it lists them as
-skipped.
+strings, so it passes the judge none; blinding still refuses arm names.
+
+A P14 item has no probe turn of its own. Once its session's `session_end`
+lies in the run's events (the reach `aa-report` reads), grade-run grades it
+for each arm from a session view it builds: one
+`proxy-call` artefact, id `<arm>:<item>:<session>:calls@<SHA-256 of its
+calls>`, in a snapshot `<arm>:<item>:<session>` (`p14SnapshotId`) that no
+capture wrote. A P14 grade stands only while the view it read still hashes
+to its input's digest, so a pass after the session's records or labels
+changed grades it again. A run that reaches a P14 item must hold
+`calls.jsonl`, and each session's records in it must carry increasing `seq`. The view
+holds every `calls.jsonl` record of the session, every component but the
+user simulator's, projected as a capture projects them (`src/run/callviews.ts`)
+with the response text left out, and the arm's delivered `UserTurn` rows of
+the session placed among them at their `BeginTurn` time (`sessionTurns`, the
+placement a capture uses). A P14 item whose session ends past the run's
+events is listed as outside the run, and one whose session holds a turn a
+stop cut, or a turn whose interruption markers break their shape
+(`cutTurns`), is graded `excluded` with reason `session interrupted`, since
+its view lacks what the turn would have sent. The input's digest covers that
+interruption state with the calls. `aa-report` and the
+SIM-P41 witness hold a P14 grade to that snapshot id. The
+user simulator's `pushback` labels come from the seeded behaviour plan
+(`docs/user-sim.md`), so both arms of one seed receive pushback on the same
+turns: in c7 S-101 and M-201 the host and Eidnara arms carry 815 and 1,193
+pushback turns on identical events. A P14 count therefore moves with the
+presence and turn of the session's first fold and the plan, and two arms
+differ on it only through when they fold.
+
+A run whose arms exclude `host` skips each P7 item of a memory arm as
+`P7 host arm in another run`, and a run whose arms are `host` alone skips
+each of its P7 items as `P7 memory arm in another run`; neither reason
+counts as covered, so the cost panel leaves such a run's totals open. `scripts/p7-pair.ts <host run> <memory run>
+<out dir>` grades those items: it opens each run with grade-run's checks
+(`openRun`: manifest inputs, seed order, a complete journal, arm
+capabilities, and every journaled snapshot against its journal entries and
+its session's recorded calls), requires the two runs to agree on tier, seed,
+scenario hash, pre-registration digest, host, qualification, and every
+execution identity field tier-report pooling compares (`manifestIdentity` in
+`src/report/tier.ts`: models, context limit, events, clock distortions, host
+versions, side and user-sim models, scenario provenance, fault schedule,
+tapes, toolchain, the Eidnara and harness revisions and trees, corpus,
+binaries, Bedrock route, tools, price table, and `turns_await_jobs`),
+refuses an out directory inside either run or the eidnara checkout (through
+links on its path) and a judge log with more than one link, requires the host run to hold `host` and the memory run memory arms and no
+`host`, and pairs and judges each item as grade-run does in one run
+(`p7Pairs`, `judgeP7`). Neither run is written. The out directory holds
+`pair.json` (both runs' paths, the SHA-256 of each manifest, journal, and arm
+`snapshots.jsonl`, the arms, and the shared setting),
+`judge-calls.jsonl`, `judgments.jsonl`, `grades.jsonl`, and
+`p7-summary.json`; a later pass refuses an out directory whose `pair.json`
+names other digests or holds result logs without a `pair.json`, and skips a
+pair this grader
+already graded. Its grades carry the grader digest with `scripts/p7-pair.ts`
+added to the files it covers. The tier and A/A reports read each run's own
+`grades.jsonl`; a pairing directory's P7 results are read from its
+`p7-summary.json` and `grades.jsonl`.
 
 ## Graders
 

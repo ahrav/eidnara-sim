@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { GradeRecord } from "../grade/probes";
+import { type GradeRecord, p14SnapshotId } from "../grade/probes";
 import { canonicalJson } from "../prereg/canonical";
 import { TARGET } from "../proxy/inject";
 import { type Entry, eachJsonl, readJsonl } from "../run/journal";
@@ -429,6 +429,8 @@ const CHECKS: Record<string, Check> = {
     "SIM-P41": (runs) => {
         const seen = new Map<string, { n: number; snapshot: unknown }>();
         const bad: string[] = [];
+        // P14 items cite session views, one per item and arm.
+        const views = new Set<string>();
         for (const c of runs) {
             for (const e of journalOf(c).filter((x) => x.kind === "SnapshotArtefacts")) {
                 const key = `${c.g.run.dir}/${e.arm}/${e.item}`;
@@ -454,8 +456,36 @@ const CHECKS: Record<string, Check> = {
                         bad.push(`${a.arm}/${probe} snapshot after a later turn`);
                 }
             }
-            // Every persisted grade, earlier versions included, cites the item's one snapshot.
+            // Every persisted grade, earlier versions included, cites the item's one snapshot; a
+            // P14 grade cites the session view grade-run builds for its item.
+            // A P14 item is reached once its session's session_end lies in the run's events.
+            const ended = new Set(
+                c.g.scenario.events
+                    .slice(0, c.manifest.events)
+                    .filter((e) => e.kind === "session_end")
+                    .map((e) => String(e.session)),
+            );
+            const p14s = new Map(
+                c.g.scenario.probes.filter((p) => p.type === "P14").map((p) => [p.id, p.session]),
+            );
             for (const r of c.grades.length > 0 ? c.grades : c.g.grades) {
+                if (p14s.has(r.item)) {
+                    const session = p14s.get(r.item);
+                    const own =
+                        r.probe_type === "P14" &&
+                        c.g.run.arms.some((a) => a.arm === r.arm) &&
+                        ended.has(String(session));
+                    if (
+                        !own ||
+                        session === undefined ||
+                        r.snapshot !== p14SnapshotId(r.arm, r.item, session)
+                    )
+                        bad.push(
+                            `${r.arm}/${r.item} v${r.version} cites ${r.snapshot}, not its session view`,
+                        );
+                    else views.add(`${c.g.run.dir}/${r.arm}/${r.item}`);
+                    continue;
+                }
                 const s = seen.get(`${c.g.run.dir}/${r.arm}/${r.item}`);
                 if (!s) bad.push(`${r.arm}/${r.item} graded without a journaled snapshot`);
                 else if (s.snapshot !== undefined && s.snapshot !== r.snapshot)
@@ -468,7 +498,7 @@ const CHECKS: Record<string, Check> = {
         }
         bad.unshift(...[...seen].filter(([, s]) => s.n > 1).map(([k]) => `${k} set twice`));
         return outcome(
-            seen.size,
+            seen.size + views.size,
             bad,
             "item snapshots, each set once at the probe's first turn and cited by its grades",
         );

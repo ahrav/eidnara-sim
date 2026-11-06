@@ -185,9 +185,9 @@ and `interrupted`) before its `EndTurn`, so a resume that reads the
 `UserSimRates` before its `EndArm`: the rates over the turns it delivered
 and the rates outside their band. A run cut short of its scenario can leave
 a band and is flagged, and `scripts/pairing-check.ts` fails a run that lacks
-an arm's `UserSimRates`. `scripts/grade-run.ts` skips every P14 item with
-`P14 has no probe turn`: the session-level artefact a P14 grade needs is
-unbuilt, and the SIM-P25 evidence record names the gap.
+an arm's `UserSimRates`. `scripts/grade-run.ts` grades each P14 item from
+a session view of its calls with these labels placed among them
+(`docs/grading.md`).
 
 ## A/A control
 

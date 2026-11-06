@@ -270,6 +270,7 @@ interface Parts {
     used?: object[];
     calls?: object[];
     faults?: object[];
+    probes?: object[];
 }
 
 /** A run from its parts alone; every omitted artefact is empty. */
@@ -316,7 +317,11 @@ function made(p: Parts): GradedRun {
             }) as unknown as ArmLogs,
     );
     const events = [{ id: "e-1", scenario_ms: 10 }, ...(p.events ?? [])];
-    const scenario = { events, faults: p.faults ?? [], probes: [] } as unknown as Scenario;
+    const scenario = {
+        events,
+        faults: p.faults ?? [],
+        probes: p.probes ?? [],
+    } as unknown as Scenario;
     return {
         run: { dir, tier: "S", base_wall_ms: 0, prereg, kinds: new Map(), arms },
         scenario,
@@ -715,6 +720,36 @@ describe("property witness evidence", () => {
                 made({ journal: [probe, snap], grades: [stale, regraded], used: [regraded] }),
             ),
         ).toMatchObject({ status: "violated", detail: expect.stringContaining("v1") });
+    });
+
+    test("SIM-P41 holds a P14 grade to its session view, which has no journaled snapshot", () => {
+        const probes = [{ id: "q-14", type: "P14", session: "s-1" }];
+        const events = [{ id: "e-end", kind: "session_end", session: "s-1", scenario_ms: 20 }];
+        const grade = (snapshot: string) => ({
+            item: "q-14",
+            arm: "eidnara",
+            probe_type: "P14",
+            version: 1,
+            snapshot,
+        });
+        expect(
+            one("P41", made({ probes, events, grades: [grade("eidnara:q-14:s-1")] })).status,
+        ).toBe("witnessed");
+        // A row naming an arm outside the run, or another probe type, is no P14 grade of it.
+        const stray = { ...grade("nobody:q-14:s-1"), arm: "nobody" };
+        expect(one("P41", made({ probes, events, grades: [stray] })).status).toBe("violated");
+        const retyped = { ...grade("eidnara:q-14:s-1"), probe_type: "P5" };
+        expect(one("P41", made({ probes, events, grades: [retyped] })).status).toBe("violated");
+        // A session that ended past the run's events was never graded.
+        expect(one("P41", made({ probes, grades: [grade("eidnara:q-14:s-1")] })).status).toBe(
+            "violated",
+        );
+        expect(
+            one("P41", made({ probes, events, grades: [grade("eidnara:q-14:s-2")] })),
+        ).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("not its session view"),
+        });
     });
 
     test("SIM-P11 reads the journal in seq order and refuses a repeated seq", () => {

@@ -2,8 +2,10 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
     appendFileSync,
     existsSync,
+    linkSync,
     mkdirSync,
     mkdtempSync,
+    readdirSync,
     readFileSync,
     renameSync,
     rmSync,
@@ -11,14 +13,15 @@ import {
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { SimConfig } from "../src/config/config";
 import { loadRun as loadEvidence } from "../src/evidence/load";
 import type { CallView, Snapshot } from "../src/grade/artefacts";
-import { GradeLog } from "../src/grade/probes";
+import { GradeLog, P7_HOST_ELSEWHERE, P7_MEMORY_ELSEWHERE } from "../src/grade/probes";
 import { armProfile } from "../src/hosts/profiles";
 import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
+import type { Upstream } from "../src/proxy/gateway";
 import { tierInput } from "../src/report/observe";
 import { loadGraded, tierReport } from "../src/report/tier";
 import { type Entry, releaseLease, takeLease } from "../src/run/journal";
@@ -26,6 +29,7 @@ import { tierPlan } from "../src/run/tier";
 import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 import { gradeRun, requireCapabilities } from "./grade-run";
+import { pairRuns } from "./p7-pair";
 
 const ROOT = join(import.meta.dir, "..");
 const dirs: string[] = [];
@@ -1479,5 +1483,296 @@ describe("arm capability evidence", () => {
         writeFileSync(join(dir, "grade-summary.json"), "{}\n");
         await expect(gradeRun(dir, null)).rejects.toThrow(/predates the arm capability check/);
         expect(readFileSync(join(dir, "grade-summary.json"), "utf8")).toBe("{}\n");
+    });
+});
+
+describe("P7 across runs and P14 without a probe turn", () => {
+    const p7 = fixture("P7-pass");
+    const pairedRuns = () => {
+        const host = run({ probes: [p7.probe], order: ["host"] });
+        const memory = run({ probes: [p7.probe], order: ["eidnara"] });
+        // A capture names each artefact after its arm, so the pair's two inputs differ.
+        const of = (arm: string): Snapshot => {
+            const s = p7snapshot(p7.probe.id);
+            return { ...s, artefacts: s.artefacts.map((a) => ({ ...a, id: `${arm}:${a.id}` })) };
+        };
+        snapshot(host, "host", of("host"));
+        snapshot(memory, "eidnara", of("eidnara"));
+        const out = join(mkdtempSync(join(tmpdir(), "p7-pair-")), "pair");
+        dirs.push(dirname(out));
+        return { host, memory, out };
+    };
+    /** A judge that finds the reference in both answers, whichever order it reads them in. */
+    const judgeSaysBoth = (): Upstream & { calls: number } => {
+        const up = {
+            calls: 0,
+            async converse() {
+                up.calls++;
+                const message = { role: "assistant", content: [{ text: "both" }] };
+                const usage = { inputTokens: 1, outputTokens: 1 };
+                return { json: { output: { message }, stopReason: "end_turn", usage } };
+            },
+        };
+        return up;
+    };
+
+    test("a run without the host arm leaves its P7 items to the pairing step", async () => {
+        const { memory } = pairedRuns();
+        const summary = await gradeRun(memory, null);
+        expect(summary.skipped).toEqual({ eidnara: { [P7_HOST_ELSEWHERE]: 1 } });
+        const { host } = pairedRuns();
+        expect((await gradeRun(host, null)).skipped).toEqual({
+            host: { [P7_MEMORY_ELSEWHERE]: 1 },
+        });
+    });
+
+    test("a host run and a memory run of one scenario pair their P7 items outside both runs", async () => {
+        const { host, memory, out } = pairedRuns();
+        const before = [host, memory].map((d) => readdirSync(d).sort());
+        const judge = judgeSaysBoth();
+        const summary = await pairRuns(host, memory, out, judge);
+        expect(summary.verdicts).toEqual({
+            "host/P7 vs eidnara": { pass: 1 },
+            "eidnara/P7 vs host": { pass: 1 },
+        });
+        expect(summary.judge_errors).toBe(0);
+        expect(judge.calls).toBe(2);
+        expect(readFileSync(join(out, "judgments.jsonl"), "utf8").trim().split("\n")).toHaveLength(
+            1,
+        );
+        const pair = JSON.parse(readFileSync(join(out, "pair.json"), "utf8"));
+        expect(pair.host_run.arms).toEqual(["host"]);
+        expect(pair.memory_run.arms).toEqual(["eidnara"]);
+        // The runs themselves gain no file.
+        expect([host, memory].map((d) => readdirSync(d).sort())).toEqual(before);
+        // A second pass finds the pair graded and calls no judge.
+        const again = await pairRuns(host, memory, out, judge);
+        expect(again.graded).toBe(0);
+        expect(again.skipped).toEqual({
+            eidnara: { "already graded": 1 },
+            host: { "already graded": 1 },
+        });
+        expect(judge.calls).toBe(2);
+    });
+
+    test("the pairing refuses runs of another setting, arm layout, or state", async () => {
+        const { host, memory, out } = pairedRuns();
+        const otherModel = run({
+            probes: [p7.probe],
+            order: ["eidnara"],
+            models: ["global.anthropic.claude-haiku-5-5"],
+        });
+        await expect(pairRuns(host, otherModel, out, judgeSaysBoth())).rejects.toThrow(
+            "the runs differ in models",
+        );
+        const both = run({ probes: [p7.probe] });
+        await expect(pairRuns(host, both, out, judgeSaysBoth())).rejects.toThrow(
+            "grade-run pairs its P7 items in the run",
+        );
+        await expect(pairRuns(memory, memory, out, judgeSaysBoth())).rejects.toThrow(
+            "has no host arm",
+        );
+        for (const inside of [memory, join(host, "pair")]) {
+            await expect(pairRuns(host, memory, inside, judgeSaysBoth())).rejects.toThrow(
+                "which pairing leaves unwritten",
+            );
+        }
+        const later = run({ probes: [p7.probe], order: ["eidnara"] });
+        const path = join(later, "manifest.json");
+        writeFileSync(
+            path,
+            JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), turns_await_jobs: false }),
+        );
+        await expect(pairRuns(host, later, out, judgeSaysBoth())).rejects.toThrow(
+            "the runs differ in turns_await_jobs",
+        );
+        // Results a pair.json never bound are refused before any is written.
+        const foreign = join(dirname(out), "foreign");
+        mkdirSync(foreign);
+        writeFileSync(join(foreign, "grades.jsonl"), "{}\n");
+        await expect(pairRuns(host, memory, foreign, judgeSaysBoth())).rejects.toThrow(
+            "holds results no pair.json binds",
+        );
+        expect(existsSync(join(foreign, "pair.json"))).toBe(false);
+        // A judge log linked to another file is refused before the judge starts.
+        const linked = join(dirname(out), "linked");
+        mkdirSync(linked);
+        writeFileSync(join(dirname(out), "victim"), "");
+        linkSync(join(dirname(out), "victim"), join(linked, "judgments.jsonl"));
+        await expect(pairRuns(host, memory, linked, judgeSaysBoth())).rejects.toThrow("2 links");
+        expect(readFileSync(join(dirname(out), "victim"), "utf8")).toBe("");
+        await pairRuns(host, memory, out, judgeSaysBoth());
+        // A pairing stays bound to the answers it judged as well as to the journal.
+        const answers = join(memory, "eidnara", "snapshots.jsonl");
+        const recorded = readFileSync(answers, "utf8");
+        const retry = recorded.split("\n")[0]?.replace(/"id":"[^"]+"/, '"id":"later"');
+        appendFileSync(answers, `${retry}\n`);
+        await expect(pairRuns(host, memory, out, judgeSaysBoth())).rejects.toThrow(
+            "pairs other runs or other states of these runs",
+        );
+        writeFileSync(answers, recorded);
+        journalAppend(memory, { kind: "Note", arm: "eidnara", scenario_ms: 0 });
+        await expect(pairRuns(host, memory, out, judgeSaysBoth())).rejects.toThrow(
+            "pairs other runs or other states of these runs",
+        );
+    });
+
+    const p14 = {
+        id: "P14-s",
+        type: "P14",
+        fact: null,
+        project: "mini-redis",
+        text: null,
+        check: { window_from_turn: 0 },
+    } as unknown as Fixture["probe"];
+    /** Session s-1 folds its history, then delivers its one user turn with `label`. */
+    const foldedSession = (label: string, delivered = true) => {
+        const dir = run({ probes: [p14], order: ["eidnara"] });
+        const record = (seq: number, turn: string, component: string, scenario_ms: number) => ({
+            seq,
+            wall_ms: 0,
+            scenario_ms,
+            arm: "eidnara",
+            session: "s-1",
+            turn,
+            component,
+            model: "global.anthropic.claude-opus-5-5",
+            status: 200,
+            error: null,
+            finish_reason: "end_turn",
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            response_text: "ok",
+        });
+        writeFileSync(
+            join(dir, "calls.jsonl"),
+            [record(0, "e-0", "history_summarizer", 500), record(1, "e-1", "agent", 1_000)]
+                .map((r) => `${JSON.stringify(r)}\n`)
+                .join(""),
+        );
+        journalAppend(dir, { kind: "BeginTurn", arm: "eidnara", event: "e-1", scenario_ms: 1_000 });
+        journalAppend(dir, {
+            kind: "UserTurn",
+            arm: "eidnara",
+            event: "e-1",
+            session: "s-1",
+            label,
+            delivered,
+            scenario_ms: 1_000,
+        });
+        return dir;
+    };
+
+    test("P14 grades the session's user turns after its first fold, citing the session view", async () => {
+        const corrected = foldedSession("pushback");
+        await gradeRun(corrected, null);
+        const [fail] = new GradeLog(join(corrected, "grades.jsonl"))
+            .latest()
+            .filter((g) => g.probe_type === "P14");
+        expect(fail?.verdict).toBe("fail");
+        expect(fail?.metrics).toEqual({ "P14.post_compaction_correction_count": 1 });
+        expect(fail?.snapshot).toBe("eidnara:P14-s:s-1");
+        expect(fail?.inputs).toEqual([
+            expect.stringMatching(/^eidnara:P14-s:s-1:calls@[0-9a-f]{64}$/),
+        ]);
+        const quiet = foldedSession("task");
+        await gradeRun(quiet, null);
+        const [pass] = new GradeLog(join(quiet, "grades.jsonl"))
+            .latest()
+            .filter((g) => g.probe_type === "P14");
+        expect(pass?.verdict).toBe("pass");
+        expect(pass?.metrics).toEqual({ "P14.post_compaction_correction_count": 0 });
+        // An unchanged view stands graded.
+        expect((await gradeRun(quiet, null)).skipped).toEqual({ eidnara: { "already graded": 1 } });
+        // A view that changed names another input, so the pass grades it again.
+        const relabelled = readFileSync(join(quiet, "journal.jsonl"), "utf8").replace(
+            '"label":"task"',
+            '"label":"pushback"',
+        );
+        writeFileSync(join(quiet, "journal.jsonl"), relabelled);
+        await gradeRun(quiet, null);
+        const regraded = new GradeLog(join(quiet, "grades.jsonl"))
+            .latest()
+            .filter((g) => g.probe_type === "P14");
+        expect(regraded.map((g) => [g.version, g.verdict])).toEqual([[2, "fail"]]);
+        expect(regraded[0]?.inputs).not.toEqual(pass?.inputs);
+    });
+
+    test("P14 leaves a session with a cut turn out as excluded", async () => {
+        const dir = foldedSession("pushback");
+        const path = join(dir, "journal.jsonl");
+        const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
+        // The turn's Event becomes the cut a stop journals: its begin, the marker, the Event.
+        const cut = { arm: "eidnara", event: "e-1", scenario_ms: 0 };
+        const marked = lines.flatMap((l) => {
+            const e = JSON.parse(l);
+            if (e.kind !== "Event" || e.event !== "e-1") return [l];
+            return [
+                { kind: "BeginTurn", ...cut },
+                { kind: "ItemState", ...cut, state: "failed(interrupted)", cause: "harness-exit" },
+                { ...e, outcome: "failed(interrupted)" },
+            ].map((x) => JSON.stringify(x));
+        });
+        writeFileSync(path, `${marked.join("\n")}\n`);
+        await gradeRun(dir, null);
+        const [grade] = new GradeLog(join(dir, "grades.jsonl"))
+            .latest()
+            .filter((g) => g.probe_type === "P14");
+        expect(grade).toMatchObject({ verdict: "excluded", reason: "session interrupted" });
+        // A turn whose markers break their shape counts as interrupted too.
+        const doubled = foldedSession("pushback");
+        const twice = readFileSync(join(doubled, "journal.jsonl"), "utf8")
+            .split("\n")
+            .filter(Boolean)
+            .flatMap((l) => {
+                const e = JSON.parse(l);
+                if (e.kind !== "Event" || e.event !== "e-1") return [l];
+                const mark = {
+                    kind: "ItemState",
+                    ...cut,
+                    state: "failed(interrupted)",
+                    cause: "x",
+                };
+                return [
+                    { kind: "BeginTurn", ...cut },
+                    mark,
+                    mark,
+                    { ...e, outcome: "failed(interrupted)" },
+                ].map((x) => JSON.stringify(x));
+            });
+        writeFileSync(join(doubled, "journal.jsonl"), `${twice.join("\n")}\n`);
+        await gradeRun(doubled, null);
+        const [invalid] = new GradeLog(join(doubled, "grades.jsonl"))
+            .latest()
+            .filter((g) => g.probe_type === "P14");
+        expect(invalid).toMatchObject({ verdict: "excluded", reason: "session interrupted" });
+    });
+
+    test("P14 sessions need the run's call log, each record at its own position", async () => {
+        const missing = foldedSession("task");
+        rmSync(join(missing, "calls.jsonl"));
+        await expect(gradeRun(missing, null)).rejects.toThrow("holds no calls.jsonl");
+        const shuffled = foldedSession("task");
+        const rows = readFileSync(join(shuffled, "calls.jsonl"), "utf8").trim().split("\n");
+        writeFileSync(join(shuffled, "calls.jsonl"), `${[...rows].reverse().join("\n")}\n`);
+        await expect(gradeRun(shuffled, null)).rejects.toThrow("line 2 is corrupt: seq 0 after 1");
+    });
+
+    test("P14 grades a session that ended in the run, whatever its last turn's delivery", async () => {
+        // An abandon leaves the session's trailing turns undelivered; the session still ended.
+        const abandoned = foldedSession("pushback", false);
+        await gradeRun(abandoned, null);
+        const [grade] = new GradeLog(join(abandoned, "grades.jsonl"))
+            .latest()
+            .filter((g) => g.probe_type === "P14");
+        expect(grade?.verdict).toBe("excluded");
+        expect(grade?.reason).toBe("no labelled user-sim turns");
+        const cut = run({ probes: [p14], order: ["eidnara"], events: 2 });
+        const summary = await gradeRun(cut, null);
+        expect(summary.skipped).toEqual({
+            eidnara: { "probe turn outside the run's 2 events": 1 },
+        });
     });
 });
