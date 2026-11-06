@@ -471,8 +471,10 @@ const invokes = (patterns: string[]) => (x: Command) =>
 const invokesAny = (patterns: string[]) => (x: Command) => patterns.some((p) => invokes([p])(x));
 
 /**
- * The statements an `applies` pattern finds in the files' added lines: each match extended to the
- * end of its line, and over following lines while a bracket it opened stays open (ten lines at most).
+ * The statements an `applies` pattern finds in the files' added lines: each match, from its first
+ * non-blank character, extended to the end of its line, and over following lines while a bracket
+ * it opened stays open (ten lines at most). A leading `\s*` that crosses a blanked comment line
+ * therefore starts the unit at the construct below the comment.
  * Patterns and brackets read the code mask, so a comment or a string literal starts no unit and
  * opens no bracket; the unit is the source text with its comments blanked, so a comment satisfies
  * no rule.
@@ -487,8 +489,10 @@ function unitsOf(files: DiffFile[], patterns: string[]): string[] {
         const starts = new Set<number>();
         for (const p of patterns) {
             const re = pattern(p);
-            for (const m of mask.matchAll(new RegExp(re.source, `${re.flags}g`)))
-                starts.add(m.index);
+            for (const m of mask.matchAll(new RegExp(re.source, `${re.flags}g`))) {
+                const code = m[0].search(/\S/);
+                starts.add(m.index + Math.max(code, 0));
+            }
         }
         const open = (code: string) =>
             (code.match(/[([{]/g)?.length ?? 0) - (code.match(/[)\]}]/g)?.length ?? 0);
@@ -1334,18 +1338,23 @@ function p4(r: ArtefactReader, c: Check): Outcome {
     );
 }
 
-/** A question that asks the user to choose: the answer's last three sentences hold one. */
 const CHOICE = /\b(?:which|either|whether|or|first|order|prefer|rather)\b/i;
 /** A sentence that picks a task after all: `I'll start with`, `let me begin`. */
 const COMMITS =
-    /\bI(?:'ll| will|'m going to| am going to) (?:start|begin|go|do|take|pick|work|tackle)\b|\blet me (?:start|begin)\b/i;
-/** The answer asks the user to choose in its last three sentences and picks nothing after asking. */
+    /\bI(?:'ll| will|'m going to| am going to|'ve decided to| have decided to| decided to) (?:start|begin|go with|do|take|pick|work on|tackle|implement|proceed|build|add)\b(?!\s+(?:with\s+|on\s+)?(?:neither|whichever\s+(?:you|the user))\b)|\bI(?:'m| am) (?:starting|beginning|going with|doing|taking|picking|working on|tackling|implementing|proceeding with)\b(?!\s+(?:with\s+|on\s+)?(?:neither|whichever\s+(?:you|the user))\b)|\bI(?:'ve| have)? (?:choose|pick|chose|picked|chosen|selected|select|decided on|went with|gone with|will go with|am going with)\b(?!\s+(?:neither|whichever\s+(?:you|the user))\b)|\blet me (?:start|begin)\b/i;
+/**
+ * The answer leaves the choice to the user: its last choice question is followed by at most three
+ * statements and any number of questions, and a sentence after its first choice question that
+ * matches `COMMITS` makes the answer a pick.
+ */
 const asksToChoose = (answer: string) => {
     const all = sentences(answer);
-    const asked = all.reduce((at, s, i) => (s.endsWith("?") && CHOICE.test(s) ? i : at), -1);
-    return (
-        asked >= 0 && asked >= all.length - 3 && !all.slice(asked + 1).some((s) => COMMITS.test(s))
-    );
+    const choices = all.flatMap((s, i) => (s.endsWith("?") && CHOICE.test(s) ? [i] : []));
+    const first = choices[0];
+    const last = choices.at(-1);
+    if (first === undefined || last === undefined) return false;
+    const statements = all.slice(last + 1).filter((s) => !s.endsWith("?"));
+    return statements.length <= 3 && !all.slice(first + 1).some((s) => COMMITS.test(s));
 };
 
 /**
