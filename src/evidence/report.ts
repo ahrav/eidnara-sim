@@ -15,6 +15,43 @@ const cell = (v: unknown) =>
         .replace(/\n/g, " ");
 const row = (cells: unknown[]) => `| ${cells.map(cell).join(" | ")} |`;
 
+const share = (n: number, of: number) =>
+    of === 0 ? `${n}` : `${n} (${((100 * n) / of).toFixed(1)}%)`;
+
+type AnswerTotals = Pick<
+    SessionHealth,
+    | "answers_streamed"
+    | "marker_answers_streamed"
+    | "answers_persisted"
+    | "marker_answers_persisted"
+    | "content_filtered_calls"
+    | "content_filtered_turns"
+>;
+
+export function armAnswers(sessions: readonly SessionHealth[]): Map<string, AnswerTotals> {
+    const out = new Map<string, AnswerTotals>();
+    const add = (a: number | null, b: number | null) => (a === null || b === null ? null : a + b);
+    for (const s of sessions) {
+        const t = out.get(s.arm) ?? {
+            answers_streamed: 0,
+            marker_answers_streamed: 0,
+            answers_persisted: 0,
+            marker_answers_persisted: 0,
+            content_filtered_calls: 0,
+            content_filtered_turns: 0,
+        };
+        out.set(s.arm, {
+            answers_streamed: t.answers_streamed + s.answers_streamed,
+            marker_answers_streamed: t.marker_answers_streamed + s.marker_answers_streamed,
+            answers_persisted: add(t.answers_persisted, s.answers_persisted),
+            marker_answers_persisted: add(t.marker_answers_persisted, s.marker_answers_persisted),
+            content_filtered_calls: t.content_filtered_calls + s.content_filtered_calls,
+            content_filtered_turns: t.content_filtered_turns + s.content_filtered_turns,
+        });
+    }
+    return out;
+}
+
 /** Answers whether a turn falls in a flagged stretch, from indexes built once per run. */
 export function flaggedTurns(
     run: RunData,
@@ -219,6 +256,42 @@ export function renderEvidence(runs: RunEvidence[]): string {
         out.push(
             `SIM-P76: ${p76.length - missing.length} of ${p76.length} forced p90 sessions on host-compaction Eidnara arms hold a native_compaction record${missing.length ? `; missing in ${missing.map((x) => `${x.r.name}/${x.s.arm}/${x.s.session}`).join(", ")}` : ""}.`,
         );
+    }
+    out.push(
+        "",
+        "### Answer markers and provider content filtering",
+        "",
+        "Per arm, the turns whose final answer holds an Eidnara marker (a `§<n>§` block tag or an injected block tag): streamed is the provider stream the proxy relayed (`calls.jsonl` `response_text`, which graders read and a live UI may show while streaming); persisted is the final assistant text the host transcript keeps, what the user keeps (Pi only). Content-filtered counts the calls and agent turns the provider ended `content_filtered`.",
+        "",
+        row([
+            "run",
+            "arm",
+            "streamed answers",
+            "with marker",
+            "persisted answers",
+            "with marker",
+            "content_filtered calls",
+            "content_filtered turns",
+        ]),
+        row(["---", "---", "---", "---", "---", "---", "---", "---"]),
+    );
+    for (const r of runs) {
+        for (const [arm, t] of armAnswers(r.sessions)) {
+            out.push(
+                row([
+                    r.name,
+                    arm,
+                    t.answers_streamed,
+                    share(t.marker_answers_streamed, t.answers_streamed),
+                    t.answers_persisted ?? "not read",
+                    t.answers_persisted === null
+                        ? ""
+                        : share(t.marker_answers_persisted ?? 0, t.answers_persisted),
+                    t.content_filtered_calls,
+                    t.content_filtered_turns,
+                ]),
+            );
+        }
     }
     out.push(
         "",

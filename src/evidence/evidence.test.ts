@@ -22,17 +22,18 @@ import { partId, type RequestPart, RequestPartLog, requestParts } from "../proxy
 import type { Entry } from "../run/journal";
 import { holds, scenarioHash } from "../scenario/compile";
 import { loadQualification } from "../scenario/inputs";
-import { sessionHealth } from "./health";
+import { EIDNARA_MARKER, sessionHealth } from "./health";
 import {
     type ArmData,
     type EvidenceScenario,
     loadRun,
     type RunData,
+    readPiAnswers,
     readStore,
     requestRef,
     type StoreObject,
 } from "./load";
-import { armComparison } from "./report";
+import { armAnswers, armComparison } from "./report";
 import {
     bodyText,
     findGroups,
@@ -101,6 +102,7 @@ interface Spec {
     limit?: number;
     capture?: boolean;
     descriptors?: ArmData["descriptors"];
+    answers?: ArmData["answers"];
 }
 
 const BEGIN_WALL = 10_000;
@@ -188,6 +190,7 @@ function build(spec: Spec): RunData {
                     pluginLog: [],
                     objects: spec.objects === undefined ? [] : spec.objects,
                     descriptors: spec.descriptors === undefined ? [] : spec.descriptors,
+                    answers: spec.answers ?? null,
                     captures: [
                         {
                             session: "s-1",
@@ -772,6 +775,94 @@ test("a recorded P1-control grade stays out of the run's evidence", () => {
         grades: run.grades.map((g) => ({ ...g, probe_type: "P1-control" })),
     };
     expect(runEvidence(control, sessionHealth(control))).toEqual([]);
+});
+
+describe("answer markers and content filtering", () => {
+    const agent = (turn: string, text: string, finish = "end_turn") => ({
+        session: "s-2",
+        turn,
+        component: "agent" as Component,
+        response_text: text,
+        finish_reason: finish,
+    });
+
+    test("each turn's final streamed answer and its persisted copy are counted apart", () => {
+        const r = build({
+            arm: "eidnara",
+            calls: [
+                agent("e-5", "\u00a71\u00a7 looking"),
+                agent("e-5", "\u00a7230\u00a7 I reran the tests"),
+                agent("e-6", ""),
+                agent("e-6", "Done, see <project-memory> notes"),
+                agent("e-7", "plain answer"),
+                { ...agent("e-8", ""), finish_reason: "content_filtered" },
+                {
+                    session: "s-2",
+                    turn: null,
+                    component: "history_summarizer" as Component,
+                    finish_reason: "content_filtered",
+                },
+            ],
+            answers: new Map([["s-2", ["I reran the tests", "Done", "plain answer", ""]]]),
+        });
+        const h = sessionHealth(r).find((x) => x.session === "s-2");
+        expect(h).toMatchObject({
+            answers_streamed: 3,
+            marker_answers_streamed: 2,
+            answers_persisted: 3,
+            marker_answers_persisted: 0,
+            content_filtered_calls: 2,
+            content_filtered_turns: 1,
+        });
+        expect(armAnswers(sessionHealth(r)).get("eidnara")).toMatchObject({
+            answers_streamed: 3,
+            marker_answers_streamed: 2,
+        });
+        // A host whose transcript is unread reports no persisted count.
+        const unread = sessionHealth(build({ arm: "eidnara", calls: [agent("e-5", "x")] }));
+        expect(unread.find((x) => x.session === "s-2")?.answers_persisted).toBeNull();
+    });
+
+    test("the marker matches Eidnara's block tags and injected block names alone", () => {
+        for (const text of [
+            "\u00a712\u00a7 hi",
+            "a <session-history-since> b",
+            "</packed-context>",
+        ]) {
+            expect(EIDNARA_MARKER.test(text)).toBe(true);
+        }
+        for (const text of ["\u00a7 section", "<project-memo>", "price \u00a73"]) {
+            expect(EIDNARA_MARKER.test(text)).toBe(false);
+        }
+    });
+
+    test("a Pi session file's turns each answer with their last assistant text", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-pi-answers-"));
+        const project = join(dir, "--work--");
+        mkdirSync(project);
+        const message = (role: string, content: unknown[]) =>
+            JSON.stringify({ type: "message", message: { role, content } });
+        const text = (t: string) => ({ type: "text", text: t });
+        writeFileSync(
+            join(project, "2026-01-01T00-00-00-000Z_sim-s-1.jsonl"),
+            [
+                JSON.stringify({ type: "session" }),
+                message("user", [text("go")]),
+                message("assistant", [text("checking"), { type: "toolCall", name: "bash" }]),
+                message("toolResult", [text("ok")]),
+                message("assistant", [{ type: "thinking", thinking: "" }, text("all done")]),
+                message("user", [text("again")]),
+                message("assistant", [{ type: "toolCall", name: "bash" }]),
+            ].join("\n"),
+        );
+        writeFileSync(
+            join(project, "2026-01-01T01-00-00-000Z_sim-s-1.jsonl"),
+            `${message("user", [text("resumed")])}\n${message("assistant", [text("back")])}\n`,
+        );
+        expect(readPiAnswers(dir)).toEqual(new Map([["s-1", ["all done", "", "back"]]]));
+        expect(readPiAnswers(join(dir, "absent"))).toBeNull();
+        rmSync(dir, { recursive: true });
+    });
 });
 
 describe("context health", () => {

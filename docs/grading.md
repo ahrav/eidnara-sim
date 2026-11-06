@@ -45,7 +45,10 @@ class check, every snapshot's turn and session must be the probe's compiled
 event and session before the first one's outcome is read, a `turn_outcome`
 other than `ok` or `failed` is refused, and a class and
 role present twice in one snapshot is refused as ambiguous. The answer a P8, P8-twin, P9, or P10 grader reads is the last completed agent response
-of the probe turn in the `proxy-call` artefact; a turn whose final completed call has no response text, or with no
+of the probe turn in the `proxy-call` artefact, the streamed provider text the
+proxy relayed, which can differ from the copy the host transcript keeps
+(`docs/evidence.md`: the Pi plugin rewrites a leading `§<n>§` tag out of the
+persisted message); a turn whose final completed call has no response text, or with no
 completed response, refuses the grade.
 
 `GradeLog` appends grades to one JSONL file under an exclusive `<path>.lock` file held across the read, version check, truncation, and write (a lock still held after two seconds is refused by name, so a dead writer's lock is an operator's to remove), validating each record's shape (exactly its type's registered metrics, each of its shape, in agreement with the verdict: harm implies failure for P2, P10, and P11, a pass carries no harm, P11's weight is 1 on a pass, negative on a fail with harm, and 0 on a fail without it, P3's reliance and harm agree, P4's harm equals its collapse, P13's score is the mean of its three parts) before writing it, in full, through a no-follow descriptor to a regular, single-link file; reads open the file the same way, so a linked path is refused before any byte is read. A regrade of an item and arm

@@ -31,7 +31,30 @@ export interface SessionHealth {
      * compacts beside the Eidnara plugin; null on every other session.
      */
     p90_native_compaction: boolean | null;
+    /**
+     * Turns whose final agent reply the proxy streamed with text (`calls.jsonl` `response_text`,
+     * the text graders read and the user simulator receives), and of those the ones holding an
+     * Eidnara marker (`EIDNARA_MARKER`).
+     */
+    answers_streamed: number;
+    marker_answers_streamed: number;
+    /**
+     * The same over each turn's final assistant text as the host transcript persists it, what
+     * the user keeps; null on a host whose transcript this harness does not read.
+     */
+    answers_persisted: number | null;
+    marker_answers_persisted: number | null;
+    /** Calls the provider ended `content_filtered`, and the turns of agent calls so ended. */
+    content_filtered_calls: number;
+    content_filtered_turns: number;
 }
+
+/**
+ * Eidnara's block tag (`§<n>§`, the transform's `tag_prefix`) and the tags of the context blocks
+ * it injects, any of which in an answer is text the agent copied from Eidnara's own framing.
+ */
+export const EIDNARA_MARKER =
+    /§\d+§|<\/?(?:project-memory|session-history|session-history-since|eidnara-search-hint|eidnara-search-auto|packed-context)\b/;
 
 const COMPACTION = new Set(["native_compaction", "history_summarizer"]);
 const TOO_LONG =
@@ -113,9 +136,19 @@ export function sessionHealth(run: RunData): SessionHealth[] {
         let over = 0;
         let tooLong = 0;
         let native = false;
+        let filtered = 0;
+        const filteredTurns = new Set<string>();
+        const finalReply = new Map<string, string>();
         const refusals: HeldCall[] = [];
         let overflowCall: HeldCall | null = null;
         for (const c of sorted) {
+            if (c.finish_reason === "content_filtered") {
+                filtered++;
+                if (c.component === "agent" && c.turn !== null) filteredTurns.add(c.turn);
+            }
+            if (c.component === "agent" && c.turn !== null && c.response_text?.trim()) {
+                finalReply.set(c.turn, c.response_text);
+            }
             if (COMPACTION.has(c.component)) {
                 attempts++;
                 if (c.component === "native_compaction") native = true;
@@ -165,6 +198,9 @@ export function sessionHealth(run: RunData): SessionHealth[] {
                   `${cause_refusal.component} ${cause_refusal.finish_reason ?? "no finish reason"}, ${cause_refusal.output_tokens} output tokens`,
               )
             : first_overflow;
+        const streamed = [...finalReply.values()];
+        const persisted = run.arms.get(arm)?.answers;
+        const kept = persisted ? (persisted.get(session) ?? []).filter((a) => a.trim()) : null;
         out.push({
             schema: "sim-evidence-session/v1",
             arm,
@@ -186,6 +222,14 @@ export function sessionHealth(run: RunData): SessionHealth[] {
                 profile?.plugin === true && profile.host_compaction === true && p90.get(session)
                     ? native
                     : null,
+            answers_streamed: streamed.length,
+            marker_answers_streamed: streamed.filter((a) => EIDNARA_MARKER.test(a)).length,
+            answers_persisted: kept?.length ?? null,
+            marker_answers_persisted: kept
+                ? kept.filter((a) => EIDNARA_MARKER.test(a)).length
+                : null,
+            content_filtered_calls: filtered,
+            content_filtered_turns: filteredTurns.size,
         });
     }
     return out.sort((a, b) => (a.arm + a.session < b.arm + b.session ? -1 : 1));

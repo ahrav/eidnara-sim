@@ -14,7 +14,7 @@ import {
     rebuildRequest,
 } from "../proxy/requests";
 import { CallLog, type HeldCall } from "../run/calllog";
-import { type Entry, readJournal, readJsonl } from "../run/journal";
+import { type Entry, eachLine, readJournal, readJsonl } from "../run/journal";
 import { scenarioHash } from "../scenario/compile";
 import { admittedArms, loadPrereg } from "../scenario/inputs";
 
@@ -117,6 +117,7 @@ export interface ArmData {
     captures: CaptureJob[] | null;
     /** Null when the Kernel store is absent or unreadable. */
     descriptors: SourceDescriptor[] | null;
+    answers: Map<string, string[]> | null;
 }
 
 export interface RunData {
@@ -185,6 +186,56 @@ export function readPiTranscripts(sessionsDir: string): Map<string, TranscriptRe
         }
     };
     walk(sessionsDir, 2);
+    return out;
+}
+
+export function readPiAnswers(sessionsDir: string): Map<string, string[]> | null {
+    const stat = lstatSync(sessionsDir, { throwIfNoEntry: false });
+    if (!stat?.isDirectory()) return null;
+    const files: Array<{ session: string; path: string; name: string }> = [];
+    const walk = (dir: string, depth: number) => {
+        for (const name of readdirSync(dir).sort()) {
+            const path = join(dir, name);
+            const s = lstatSync(path, { throwIfNoEntry: false });
+            if (s?.isDirectory() && depth > 0) walk(path, depth - 1);
+            const session = /_sim-(.+)\.jsonl$/.exec(name)?.[1];
+            if (s?.isFile() && session) files.push({ session, path, name });
+        }
+    };
+    walk(sessionsDir, 2);
+    const out = new Map<string, string[]>();
+    for (const f of files.sort((a, b) => (a.name < b.name ? -1 : 1))) {
+        const answers = out.get(f.session) ?? [];
+        let open = false;
+        let answer = "";
+        const close = () => {
+            if (open) answers.push(answer);
+        };
+        eachLine(f.path, (line) => {
+            if (!line.includes('"role":"user"') && !line.includes('"role":"assistant"')) return;
+            let entry: { type?: unknown; message?: { role?: unknown; content?: unknown } };
+            try {
+                entry = JSON.parse(line.toString("utf8"));
+            } catch {
+                return;
+            }
+            const m = entry.message;
+            if (entry.type !== "message" || !m) return;
+            if (m.role === "user") {
+                close();
+                open = true;
+                answer = "";
+            } else if (m.role === "assistant") {
+                const text = (Array.isArray(m.content) ? m.content : [])
+                    .filter((c: { type?: unknown }) => c?.type === "text")
+                    .map((c: { text?: unknown }) => (typeof c.text === "string" ? c.text : ""))
+                    .join("");
+                if (text.trim() !== "") answer = text;
+            }
+        });
+        close();
+        out.set(f.session, answers);
+    }
     return out;
 }
 
@@ -517,6 +568,10 @@ export function loadRun(dir: string): RunData {
                           dir,
                           readPiTranscripts(join(root, "r", "home", ".pi", "agent", "sessions")),
                       )
+                    : null,
+            answers:
+                manifest.host === "pi"
+                    ? readPiAnswers(join(root, "r", "home", ".pi", "agent", "sessions"))
                     : null,
             pluginLog,
             ...readStore(join(root, "final-store")),
