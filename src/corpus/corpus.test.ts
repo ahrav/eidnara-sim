@@ -232,7 +232,7 @@ describe("committed corpus", () => {
             "fact-bank rust/tool_error[1] rs-ci-paste: the pasted text does not carry the error the check names",
             "fact-bank typescript/plan: expected at least 2 templates",
             "fact-bank typescript/scoped_update[0] ts-scope-quotes out_check: check key quote_style_must is not double or single",
-            "fact-bank typescript/tool_error[0] ts-check-replay: command does not run the committed script scripts/check-quiet_vole.sh",
+            "fact-bank typescript/tool_error[0] ts-check-replay: command does not run the committed script scripts/check-quiet_vole.py",
             "fact-bank typescript/tool_error[0] ts-check-replay: the tool_result text does not carry the error the check names",
             "fact-bank any/framings: expected a non-empty list of distinct non-blank strings",
         ]);

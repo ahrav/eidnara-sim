@@ -13,12 +13,13 @@ the same task earlier in the same workspace.
 
 `src/hosts/driver.ts` clones each project once per arm at reset and applies
 scripted commits between sessions, so the agent's edits persist. Generator
-`sim-scenario/v6` compiles no control item, and
+`sim-scenario/v7` compiles no control item, and
 `src/scenario/compile.test.ts` `no probe of a project asks a P1 task before
 that P1 item, apart from an earlier instance of its line` checks the
-compiled S-101 and M-201 scenarios with the bank's framings stripped: S-101
-has no repeat, and each of M-201's ten repeats is the P1 item of an earlier
-instance of the same line.
+compiled S-101 and M-201 scenarios with the bank's framings stripped: at both
+tiers no P1 task text repeats, since a line's later instance asks its
+template's `probe_variants` entry (`src/scenario/compile.ts` `distinct`),
+and the test's `repeats` count is 0.
 
 ## Failure scenario
 
@@ -39,5 +40,7 @@ A compiled scenario with P1 items and the event order of every probe.
 - Sources examined: the compiled Titan seeds at rr-campaign-3.
 - Findings: at S no P1 line repeats; at M-201 ten P1 items repeat an
   earlier instance's task behind a framing.
-- Missing evidence: a per-instance task in the fact bank.
-- Conclusion: unresolved, needs per-instance probe texts.
+- Findings (sim-scenario/v7): each constraint template carries one
+  `probe_variants` entry and one `out_probe_variants` entry, so the M-201
+  repeats ask a different task; the compile test asserts zero repeats.
+- Conclusion: resolved with answer: a revised line asks a variant task.

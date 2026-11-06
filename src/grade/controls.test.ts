@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { qualificationHash } from "../prereg/qualification";
 import { compileScenario, type ProbeItem } from "../scenario/compile";
 import { loadCompileInput, loadPrereg, loadQualification } from "../scenario/inputs";
@@ -886,22 +890,38 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
     const tool = probeOf("P12", "rs-check-replay");
     const pasted = probeOf("P12", "rs-ci-paste");
     const idOf = (p: ProbeItem) => `${literal(p)}Error`;
-    const script = sourcesOf(tool).find((e) => e.kind === "apply_diff")?.path as string;
+    const source = sourcesOf(tool).find((e) => e.kind === "apply_diff") as SourceEvent;
+    const script = source.path as string;
     const issue = /#(\d+)/.exec(tool.text ?? "")?.[1] as string;
+
+    test("the committed check script defines the identity and raises it when run", () => {
+        const content = String(source.content);
+        expect(content).toMatch(new RegExp(`^class ${idOf(tool)}\\(Exception\\):`, "m"));
+        const dir = mkdtempSync(join(tmpdir(), "sim-check-"));
+        const path = join(dir, "check.py");
+        writeFileSync(path, content);
+        const run = spawnSync("python3", [path], { encoding: "utf8" });
+        rmSync(dir, { recursive: true, force: true });
+        expect(run.status).toBe(1);
+        expect(run.stderr).toMatch(new RegExp(`^error: ${idOf(tool)}: frame 318 declares`, "m"));
+        expect(run.stdout).toContain("replaying");
+    });
     const readme = (lines: string[]) => ({
         path: "README.md",
         lines: ["## Troubleshooting", "", ...lines],
     });
 
     test("an entry naming the identity and the issue, check, or figure passes", () => {
-        const ran = [`sh ${script}`];
+        const ran = [`python3 ${script}`];
         const byIssue = readme([`Issue #${issue}: CI fails with \`${idOf(tool)}\`.`]);
         expect(outcome(tool, { files: [byIssue], source: ran })).toEqual(["pass"]);
         const byCheck = readme([
             `\`${script}\` exits with ${idOf(tool)} when a frame is too large.`,
         ]);
-        expect(outcome(tool, { files: [byCheck], source: [`bash ./${script}`] })).toEqual(["pass"]);
-        const figure = /bulk length of (\d+)/.exec(String(sourcesOf(tool)[0]?.content))?.[1];
+        expect(outcome(tool, { files: [byCheck], source: [`python ./${script}`] })).toEqual([
+            "pass",
+        ]);
+        const figure = /declared = (\d+)/.exec(String(source.content))?.[1];
         const byFigure = readme([`${idOf(tool)}: a frame declares ${figure} bytes.`]);
         expect(outcome(tool, { files: [byFigure], source: [`cd . && ./${script}`] })).toEqual([
             "pass",
@@ -916,6 +936,8 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
             [`cat ${script}`],
             [`sh -n ${script}`],
             [`sh -c 'true' ${script}`],
+            [`python3 -c 'print(1)' ${script}`],
+            [`python3 -m py_compile ${script}`],
         ]) {
             expect(outcome(tool, { files: [entry], source })).toEqual([
                 "excluded",
@@ -923,17 +945,17 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
             ]);
         }
         expect(() => grade(tool, { files: [entry] })).toThrow("source");
-        const cut = [{ command: `sh ${script}`, exit: null }];
+        const cut = [{ command: `python3 ${script}`, exit: null }];
         expect(outcome(tool, { files: [entry], source: cut })).toEqual([
             "excluded",
             "source check never ran",
         ]);
-        const finished = [...cut, { command: `sh ${script}`, exit: 1 }];
+        const finished = [...cut, { command: `python3 ${script}`, exit: 1 }];
         expect(outcome(tool, { files: [entry], source: finished })).toEqual(["pass"]);
     });
 
     test("a wrong identity, the wrong file, no tie, and a no-op fail", () => {
-        const ran = [`sh ${script}`];
+        const ran = [`python3 ${script}`];
         const omits = ["fail", "entry omits the error identity"];
         const other = readme([`Issue #${issue}: CI fails with ${idOf(pasted)}.`]);
         expect(outcome(tool, { files: [other], source: ran })).toEqual(omits);

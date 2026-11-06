@@ -5,7 +5,7 @@ scenario to `runs/scenarios/<tier>-<seed>.json`; a `--embedder local` compile
 defaults to `runs/scenarios/<tier>-<seed>.local.json`, so a stand-in never
 replaces a Titan scenario. The inputs are the seed, the
 tier's pre-registration in `prereg/<tier>.json`, the corpus under `corpus/`,
-and the generator version `sim-scenario/v6`. The same inputs produce the same
+and the generator version `sim-scenario/v7`. The same inputs produce the same
 bytes in any process, and a run reuses a cached `scenario.json` only when its
 top-level `schema`, generator version, pre-registration hash, and corpus
 inputs hash match the current inputs. The compiler scores cue and probe pairs with
@@ -172,7 +172,7 @@ pasted, and a P3 value read from its authoritative file).
 | P9 | never settled | Later session; the answer must abstain |
 | P10 | anchor | Later, unrelated task; the value must not appear |
 | P11 | the P1 fact | A session of the twin project after the conveyance; the check forbids the convention |
-| P12 | tool error | `tool_result`: a session opens with a commit of a check script under `scripts/`, and its first turn asks the agent to run it, so the error reaches the agent as its own tool result; a later session opens with a commit removing the script once "the fix is in", and the probe follows. `pasted`: the user pastes a failure of this project's own test command (`cargo test` or `bun test`) on a branch. Items alternate between the forms; the error identity (`<Word>Error`) is generated per fact, the probe names the failure by its issue number, and the check requires the identity in the file the probe names (`README.md` for Rust, `CONTRIBUTING.md` for TypeScript) |
+| P12 | tool error | `tool_result`: a session opens with a commit of a Python check script under `scripts/` that defines and raises the error class (Check scripts, below), and its first turn asks the agent to run it, so the error reaches the agent as its own tool result; a later session opens with a commit removing the script once "the fix is in", and the probe follows. `pasted`: the user pastes a failure of this project's own test command (`cargo test` or `bun test`) on a branch. Items alternate between the forms; the error identity (`<Word>Error`) is generated per fact, the probe names the failure by its issue number, and the check requires the identity in the file the probe names (`README.md` for Rust, `CONTRIBUTING.md` for TypeScript) |
 | P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe, and `check.turns` gives the turn after the cue and the turn after the probe, so the range holds exactly the folds the probe turn's snapshot can carry. Session rules are placed in scenario order, and a later rule of a template in the project supersedes the earlier one through its `revise` wording |
 | P14 | none | The last third of a forced p90 session, split into one window of at least ten turns per item (`window_from_turn` to `window_to_turn`), measured from user-sim labels; the item's `event` is the session's last user turn, where its snapshot is taken |
 
@@ -245,6 +245,32 @@ Every other turn avoids a session's first turn, extending its session when no
 later slot is free. Every request that carries no conveyance or probe is a
 filler task from the fact bank, or, with probability 0.1, a paste of a corpus
 tool-output sample.
+
+### Repeated lines
+
+When a template repeats in one project, its later instance asks a different
+task under the same rule: the n-th repeat of a task text takes the n-th entry
+of the template's `probe_variants` (`out_probe_variants` for a P2 or a P4
+`out` item), rendered with the instance's values, so the agent must produce
+new work rather than meet the work it did for the earlier instance. The
+constraint templates carry one variant each (M repeats a constraint once),
+the scoped-update and anchor templates four. A repeat past the list keeps
+the task text behind one of the bank's framings, as before. The c7 audit
+(TAXONOMY G8) found 47 Eidnara items graded on an empty turn diff because
+the task had been done for an earlier instance; the variants remove that
+reading for P1, P2, P4, P10, and P11 at S and M.
+
+### Check scripts
+
+A `tool_result` P12 fact commits a Python program, `scripts/check_{token}.py`
+(`check-{token}.py` in the TypeScript repository), that defines the error
+class the check names, replays a fixture, raises that class at the failing
+frame or request, and exits 1 with the error on standard error. The identity
+the agent documents is therefore a type the repository defines and a failure
+the script produces. The compiler refuses a tool_result template whose
+rendered script does not both define (`class X`) and raise (`raise X`) the
+error its `must` pattern names. The c7 audit (TAXONOMY G10) found agents on
+every arm refusing to document an echoed type the code base never defined.
 
 ## Controls
 
@@ -369,15 +395,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `9a894781` | 0.2762 | 0.4982 |
-| S | 102 | `909187ab` | 0.2666 | 0.5229 |
-| M | 201 | `6100c3d5` | 0.3577 | 0.5807 |
-| M | 202 | `f4e10516` | 0.3538 | 0.5807 |
-| M | 203 | `d460e314` | 0.3214 | 0.551 |
-| L | 301 | `a155389b` | 0.324 | 0.5807 |
-| L | 302 | `4dc7794b` | 0.325 | 0.5807 |
-| L | 303 | `1238256b` | 0.3242 | 0.5807 |
-| XL | 401 | `ccead8c6` | 0.3185 | 0.5807 |
+| S | 101 | `59b2b55f` | 0.2768 | 0.4982 |
+| S | 102 | `d21f0363` | 0.2672 | 0.5142 |
+| M | 201 | `c3e8f482` | 0.3552 | 0.5807 |
+| M | 202 | `587b5d14` | 0.3513 | 0.5807 |
+| M | 203 | `e8d5dc93` | 0.3225 | 0.551 |
+| L | 301 | `6627865e` | 0.3247 | 0.5807 |
+| L | 302 | `48ef409e` | 0.3261 | 0.5807 |
+| L | 303 | `4fc9df72` | 0.3254 | 0.5807 |
+| XL | 401 | `a3d03542` | 0.3197 | 0.5807 |
 
 Under qualification Q (revision 3, `e8c1f508`), which adds its P8-twin
 controls, the seeds compile to these scenarios; 103 is its exploratory
@@ -385,19 +411,18 @@ hold-out:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| Q | 101 | `929e4edb` | 0.2762 | 0.4982 |
-| Q | 102 | `d935a927` | 0.2614 | 0.5229 |
-| Q | 103 | `b98217c7` | 0.2706 | 0.5021 |
+| Q | 101 | `13db1685` | 0.2768 | 0.4982 |
+| Q | 102 | `1857ecc3` | 0.262 | 0.5142 |
+| Q | 103 | `c5faf434` | 0.2712 | 0.5021 |
 
 ## Known limits
 
-- A revised line asks its probe text again, behind a framing, in the
-  workspace the agent already changed. A revised decision (P3) or a flipped
-  quote rule asks for different code, but a P4 item on a side whose rule the
-  revision leaves unchanged, a repeated P10 task, and at M and above a
-  revised constraint's P1, P2, and P11 tasks meet work the agent did for the
-  earlier instance. At S each seed carries two such P4 and two such P10
-  items.
+- A revised decision (P3) asks its task again in the workspace the agent
+  already changed, since the new value is the change it asks for. Every other
+  repeated line asks a variant task (below), so an agent that reports the
+  earlier work as already done has met a different request; a line that
+  repeats past its template's variants asks the text again behind a framing,
+  which the L and XL tiers reach for P4 and P10.
 
 - SWE-chat's per-prompt intent labels are gated, so sessions carry no intent
   kind.

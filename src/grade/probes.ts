@@ -1541,12 +1541,14 @@ export const runsScript = (path: string) => (x: Command) =>
         const named = (w: string | undefined) =>
             w !== undefined && (w === path || w === `./${path}` || w.endsWith(`/${path}`));
         if (named(words[0])) return true;
-        if (!/^(?:sh|bash|dash|zsh)$/.test(words[0] ?? "")) return false;
+        const shell = /^(?:sh|bash|dash|zsh)$/.test(words[0] ?? "");
+        const python = /^python3?(?:\.\d+)?$/.test(words[0] ?? "");
+        if (!shell && !python) return false;
         const options = words.slice(1).filter((w) => w.startsWith("-"));
         const operand = words.slice(1).find((w) => !w.startsWith("-"));
-        return (
-            !options.some((o) => /^-[a-z]*[nc]/i.test(o) && !o.startsWith("--")) && named(operand)
-        );
+        // `sh -n` parses and `sh -c`/`python3 -c` runs other text; `-m` runs a module.
+        const only = shell ? /^-[a-z]*[nc]/i : /^-[a-z]*[cm]/i;
+        return !options.some((o) => only.test(o) && !o.startsWith("--")) && named(operand);
     });
 /**
  * The failure evidence a P12 entry can cite: the issue number the probe names, and the paths,
