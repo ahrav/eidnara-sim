@@ -49,6 +49,7 @@ import {
 import {
     evidenceNote,
     probeBlock,
+    projectMemoryBlock,
     type TransformInputs,
     transformDigest,
     transformFor,
@@ -59,7 +60,7 @@ export const REPLAY_SCHEMA = "sim-replay-manifest/v1";
 export const REPLAY_MANIFEST = "replay-manifest.json";
 const ROOT = resolve(import.meta.dir, "../..");
 const CLEAN_WORKTREE = createHash("sha256").digest("hex");
-const NOTE_VARIANTS = new Set(["evidence-note", "oracle-note"]);
+const NOTE_VARIANTS = new Set(["evidence-note", "oracle-note", "memory-block"]);
 
 /**
  * Replay consumes the run's compiled scenario and delivered probe text; its identity check
@@ -279,7 +280,29 @@ function transformInputs(source: ProbeSource): TransformInputs {
             source.scenario.events as unknown as Record<string, unknown>[],
             gt?.sources ?? [],
         ),
+        project_memory: projectMemoryBlock(
+            source.scenario.events as unknown as Record<string, unknown>[],
+            projectSources(source),
+            source.probe.type,
+        ),
     };
+}
+
+/** Project memory is scoped to a single project. */
+export function projectSources(source: ProbeSource): string[] {
+    const sessions = new Map(source.scenario.sessions.map((s) => [s.id, s.project]));
+    const events = new Map(
+        (source.scenario.events as unknown as Record<string, unknown>[]).map((e) => [
+            String(e.id),
+            e,
+        ]),
+    );
+    return (source.probe.ground_truth?.sources ?? []).filter((id) => {
+        const e = events.get(id);
+        const project =
+            typeof e?.project === "string" ? e.project : sessions.get(String(e?.session));
+        return project === source.project;
+    });
 }
 
 const oracleArm = (source: ProbeSource) => deliveryOf(armProfile(source.arm)) === "oracle-context";

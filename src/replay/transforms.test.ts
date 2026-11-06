@@ -5,6 +5,7 @@ import type { ConverseBody } from "../proxy/classify";
 import {
     evidenceNote,
     joinListing,
+    projectMemoryBlock,
     splitListing,
     TRANSFORMS,
     type TransformInputs,
@@ -29,6 +30,8 @@ const inputs = (over: Partial<TransformInputs> = {}): TransformInputs => ({
         "Background from earlier sessions on elysia, quoted as it came up:\n\nMy request now:\n",
     evidence_note:
         "Note from earlier sessions:\n- I wrote: the next step is an onYONDER_BADGER hook.",
+    project_memory:
+        "<project-memory>\n<USER_DIRECTIVES>\nmem_1: User stated: add an onYONDER_BADGER hook.\n</USER_DIRECTIVES>\n</project-memory>",
     ...over,
 });
 
@@ -139,12 +142,15 @@ describe("replay transforms on a recorded agent request", () => {
     });
 
     test("a variant resolves by name or letter, and an unknown one is refused", () => {
-        expect(["a", "b", "c", "d", "e"].map((v) => transformFor(v).id)).toEqual([
+        expect(["a", "b", "c", "c2", "d", "d2", "e", "f"].map((v) => transformFor(v).id)).toEqual([
             "none",
             "evidence-note",
             "drop-competing",
+            "drop-competing-caution",
             "provenance-off",
+            "provenance-notices-off",
             "oracle-note",
+            "memory-block",
         ]);
         expect(() => transformFor("z")).toThrow("unknown replay variant z");
         for (const inherited of ["constructor", "toString", "__proto__"]) {
@@ -167,6 +173,34 @@ describe("evidenceNote", () => {
         { id: "e-2", kind: "apply_diff", path: "notes/a.md", content: "use ```fences```\n" },
         { id: "e-3", kind: "apply_diff", path: "old.md", remove: true },
     ];
+
+    test("projectMemoryBlock renders sources as one category of id-sorted memory lines", () => {
+        const block = projectMemoryBlock(
+            [...events, { id: "e-4", kind: "user_turn", text: "Keep <T> & U." }],
+            ["e-4", "e-2"],
+            "P8",
+        ) as string;
+        const lines = block.split("\n");
+        expect(lines[0]).toBe("<project-memory>");
+        expect(lines[1]).toBe("<CONFIG_VALUES>");
+        expect(lines.slice(-2)).toEqual(["</CONFIG_VALUES>", "</project-memory>"]);
+        const rows = lines
+            .slice(2, -2)
+            .join("\n")
+            .split(/\n(?=mem_)/);
+        expect(rows).toHaveLength(2);
+        expect(rows.map((r) => r.slice(0, 36))).toEqual(rows.map((r) => r.slice(0, 36)).sort());
+        expect(rows).toContainEqual(
+            expect.stringMatching(/^mem_[0-9a-f]{32}: User stated: Keep &lt;T&gt; &amp; U\.$/),
+        );
+        expect(rows).toContainEqual(
+            expect.stringMatching(
+                /^mem_[0-9a-f]{32}: notes\/a\.md was committed with:\n {2}use ```fences```$/,
+            ),
+        );
+        expect(projectMemoryBlock(events, ["e-1"], "P99")).toContain("<PROJECT_RULES>");
+        expect(projectMemoryBlock(events, ["e-9"], "P8")).toBeNull();
+    });
 
     test("quotes each source in scenario order, fencing committed files past their backticks", () => {
         expect(evidenceNote(events, ["e-3", "e-1", "e-2"])).toBe(
@@ -284,5 +318,175 @@ describe("splitListing", () => {
         expect(body.system).toEqual([
             { text: "<project-memory>\n[conventions]\nmem_1: a rule\n</project-memory>" },
         ]);
+    });
+});
+
+describe("caution, notice, and memory-block variants", () => {
+    const withListing = (listing: string) => {
+        const body = recorded();
+        const tool = messages(body)[4]?.content[1]?.toolResult as { content: { text: string }[] };
+        (tool.content[0] as { text: string }).text = listing;
+        return body;
+    };
+
+    test("drop-competing-caution drops unsupported caution items and keeps user statements", () => {
+        const listing = [
+            "Found 3 results:",
+            "",
+            "[1] [memory] id=a",
+            "Assistant reported: We are still waiting on the user to pick a limit.",
+            "",
+            "[2] [memory] id=b",
+            "User stated: ask before you change the limit.",
+            "",
+            "[3] [memory] id=c",
+            "Assistant reported: The cache module lives in src/cache.ts.",
+        ].join("\n");
+        const body = withListing(listing);
+        const gt = { present: [["absent-literal"]], stale: [], absent: [] };
+        const applied = transformFor("c2").apply(body, inputs({ ground_truth: gt }));
+        expect(applied.changed).toBe(true);
+        expect(result(body, 1)).toBe(
+            [
+                "Found 2 results:",
+                "",
+                "[1] [memory] id=b",
+                "User stated: ask before you change the limit.",
+                "",
+                "[2] [memory] id=c",
+                "Assistant reported: The cache module lives in src/cache.ts.",
+            ].join("\n"),
+        );
+        expect((applied.detail.slots as unknown[])[0]).toEqual({
+            slot: "eidnara_search",
+            items: 3,
+            dropped: 1,
+            supporting: false,
+            caution_dropped: 1,
+            caution_sentences: 0,
+        });
+        const plain = withListing(listing);
+        expect(transformFor("c").apply(plain, inputs({ ground_truth: gt })).changed).toBe(false);
+    });
+
+    test("drop-competing-caution strips caution sentences that carry no ground-truth literal", () => {
+        const record = '{"anchor":"a","citation":"c","quote":"q","source":"memory_capture"}';
+        const body = withListing(
+            [
+                "Found 2 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: The limit is 31411. Don't deploy against it yet; it is unconfirmed 31411.",
+                record,
+                "",
+                "[2] [memory] id=b",
+                "Assistant reported: an unrelated note.",
+            ].join("\n"),
+        );
+        const gt = { present: [["31411"]], stale: [], absent: [] };
+        const applied = transformFor("c2").apply(body, inputs({ ground_truth: gt }));
+        expect(result(body, 1)).toBe(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: The limit is 31411. it is unconfirmed 31411.",
+                record,
+                "",
+            ].join("\n"),
+        );
+        expect((applied.detail.slots as Record<string, unknown>[])[0]?.caution_sentences).toBe(1);
+    });
+
+    test("drop-competing-caution matches caution wording at word boundaries", () => {
+        const body = withListing(
+            [
+                "Found 2 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: Mask your API key; complete the task before deployment.",
+                "",
+                "[2] [memory] id=b",
+                "Assistant reported: The limit is still open.",
+            ].join("\n"),
+        );
+        const gt = { present: [["absent-literal"]], stale: [], absent: [] };
+        transformFor("c2").apply(body, inputs({ ground_truth: gt }));
+        expect(result(body, 1)).toBe(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: Mask your API key; complete the task before deployment.",
+                "",
+            ].join("\n"),
+        );
+    });
+
+    test("provenance-notices-off removes notice lines from a result with no hits", () => {
+        const notices = [
+            "\u00a79\u00a7 Memory: the fused search route is unavailable (disabled).",
+            "Memory: Memory freshness cannot be judged because no consumer is registered.",
+            "",
+            'Found 0 results for "alias".',
+        ].join("\n");
+        const body = withListing(notices);
+        const applied = transformFor("d2").apply(body, inputs());
+        expect(applied.changed).toBe(true);
+        expect(result(body, 1)).toBe('\u00a79\u00a7\n\nFound 0 results for "alias".');
+        const d = withListing(notices);
+        expect(transformFor("d").apply(d, inputs()).changed).toBe(false);
+    });
+
+    test("provenance-notices-off also removes the daemon's Memory: notice lines", () => {
+        const body = recorded();
+        const applied = transformFor("d2").apply(body, inputs());
+        expect(applied.detail).toEqual({
+            trust: 6,
+            attribution: 4,
+            records: 4,
+            notices: 2,
+            unparsed: ["eidnara_note"],
+        });
+        const search = result(body, 1);
+        expect(search.startsWith("§4§\n")).toBe(true);
+        expect(search).not.toContain("Memory:");
+        const d = recorded();
+        transformFor("d").apply(d, inputs());
+        expect(result(d, 1)).toContain("Memory: Memory freshness cannot be judged");
+    });
+
+    test("provenance-notices-off leaves Memory: lines outside eidnara_search results", () => {
+        const body = recorded();
+        const note = "<project-note>\n- first\nMemory: a remembered line\n</project-note>";
+        (messages(body)[0]?.content[0] as { text: string }).text = note;
+        transformFor("d2").apply(body, inputs());
+        expect(text(body, 0)).toBe(note);
+        expect(result(body, 1)).not.toContain("Memory:");
+    });
+
+    test("memory-block appends the block to the m0 region and needs one", () => {
+        const body = recorded();
+        const applied = transformFor("f").apply(body, inputs());
+        expect(applied.changed).toBe(true);
+        expect(text(body, 0)).toBe(
+            `<session-history></session-history>\n\n${inputs().project_memory as string}`,
+        );
+        expect(messages(body).slice(1)).toEqual(messages(recorded()).slice(1));
+        const again = transformFor("f").apply(body, inputs());
+        expect(again).toEqual({
+            changed: false,
+            detail: { reason: "m0 region holds a project-memory block" },
+        });
+        const bare = recorded();
+        (messages(bare)[0]?.content[0] as { text: string }).text = "hello";
+        expect(transformFor("f").apply(bare, inputs())).toEqual({
+            changed: false,
+            detail: { reason: "no m0 region" },
+        });
+        expect(transformFor("f").apply(recorded(), inputs({ project_memory: null }))).toEqual({
+            changed: false,
+            detail: { reason: "no sources" },
+        });
     });
 });
