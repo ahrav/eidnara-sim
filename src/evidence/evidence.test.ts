@@ -1044,7 +1044,10 @@ test("a literal counts as a whole value, an identifier by case, and a rule word 
         ["double", "inside src/ws use double-quoted strings"],
         ["trace", "log lines you add use the trace level"],
         ["INFO", "log at INFO in src/cmd"],
-        ["warn", "warn-level logs only"],
+        ["warn", "warn-level logging only"],
+        ["debug", "everywhere else stays at debug"],
+        ["INFO", "tracing::event!(Level::INFO, ..)"],
+        ["warn", 'warn!("bound")'],
     ];
     const missed: [string, string][] = [
         ["tag_x", "use TAG_X"],
@@ -1055,6 +1058,9 @@ test("a literal counts as a whole value, an identifier by case, and a rule word 
         ["trace", "the error traced to the parser"],
         ["error", "an error from the server"],
         ["info", "for more info see the README"],
+        ["error", "the error logs show a timeout"],
+        ["debug", "see the debug log"],
+        ["trace", "these trace lines"],
         ["single", "a single quota"],
         ["double", "the double quotient"],
     ];

@@ -192,8 +192,9 @@ const escaped = (lit: string) => lit.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /**
  * Whether `text` carries the literal `lit` as a value, not as part of another word. A number
  * stands with no digit beside it. A quote-style or log-level word counts only inside its rule's
- * wording (`double quotes`, `double-quoted`, `the info level`, `log at INFO`), case-insensitively,
- * so `single-shot` or `traced` carries nothing. Any other literal is a generated identifier, which
+ * wording (`double quotes`, `double-quoted`, `the info level`, `log at INFO`, `stays at debug`,
+ * `info!(`, `Level::INFO`), case-insensitively, so `single-shot`, `traced`, or `the error logs`
+ * carries nothing. Any other literal is a generated identifier, which
  * the scenario uses as a stem (`OCHRE_IBIS_MAX`, `onYONDER_EGRET`, `AmberKoalaError`): it matches
  * case-sensitively anywhere, so `AMBER_DINGO` is absent from `amber_dingo.ts`.
  */
@@ -205,7 +206,7 @@ export function carriesLiteral(text: string, lit: string): boolean {
         const rule =
             word === "single" || word === "double"
                 ? `(?<![\\w-])${w}[\\s-]+(?:\\w+\\s+)?quot(?:e|es|ed|ing|ation|ations)\\b`
-                : `(?<![\\w-])${w}[\\s-]+(?:level|log|logs|logging|lines?)\\b|\\b(?:level|log|logs|logging|logged)\\s+(?:at|to|as|with|of|is|on)?\\s*(?:the\\s+)?${w}(?![\\w-])`;
+                : `(?<![\\w-])${w}[\\s-]+level\\b|\\b(?:level|at|to|as)\\s+(?:the\\s+)?${w}(?![\\w-])|\\b${w}!\\s*\\(|\\bLevel::${w.toUpperCase()}\\b`;
         return new RegExp(rule, "i").test(text);
     }
     return text.includes(lit);
@@ -352,7 +353,8 @@ function carries(ctx: Context, c: HeldCall, group: string[]): boolean {
     if (!intact) return false;
     return group.some((alt) => {
         if (alt.length === 0) return false;
-        if (alt.includes("\n")) {
+        // Rule wording can span two parts, so a rule word is searched in the rebuilt body.
+        if (alt.includes("\n") || RULE_WORDS.has(alt.toLowerCase())) {
             const b = rebuildRequest(ref, parts);
             return b !== null && carriesLiteral(bodyText(b), alt);
         }
