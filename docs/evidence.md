@@ -42,8 +42,10 @@ A stage finds a literal in text as the grade's evidence names it. A number
 stands with no digit beside it. A quote-style or log-level word (`single`,
 `double`, `trace`, `debug`, `info`, `warn`, `error`) counts only inside its
 rule's wording, case-insensitively: `double quotes`, `double-quoted`, `the
-info level`, `log at INFO`, `warn-level logs`; `single-shot`, `traced`, or
-`an error` carries nothing. Any other literal is a generated identifier
+info level`, `log at INFO`, `warn-level logs`; `single-shot`, `single
+quota`, `traced`, or `an error` carries nothing. A retrieval hit's rank is
+the first line that carries the literal, or, when the wording wraps, the
+line where the match completes. Any other literal is a generated identifier
 that the scenario uses as a stem (`OCHRE_IBIS_MAX`, `onYONDER_EGRET`), and
 it matches case-sensitively anywhere, so `AMBER_DINGO` is absent from
 `amber_dingo.ts`. A probe whose rule is to be applied (`expect` `apply` or

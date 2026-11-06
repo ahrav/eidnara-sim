@@ -204,7 +204,7 @@ export function carriesLiteral(text: string, lit: string): boolean {
         const w = escaped(word);
         const rule =
             word === "single" || word === "double"
-                ? `(?<![\\w-])${w}[\\s-]+(?:\\w+\\s+)?quot`
+                ? `(?<![\\w-])${w}[\\s-]+(?:\\w+\\s+)?quot(?:e|es|ed|ing|ation|ations)\\b`
                 : `(?<![\\w-])${w}[\\s-]+(?:level|log|logs|logging|lines?)\\b|\\b(?:level|log|logs|logging|logged)\\s+(?:at|to|as|with|of|is|on)?\\s*(?:the\\s+)?${w}(?![\\w-])`;
         return new RegExp(rule, "i").test(text);
     }
@@ -216,11 +216,19 @@ export function findGroups(groups: string[][], text: string): Array<string | nul
     return groups.map((g) => g.find((alt) => alt.length > 0 && carriesLiteral(text, alt)) ?? null);
 }
 
-/** The 1-based line of `text` where the first found alternative first appears. */
+/**
+ * The 1-based line of `text` where the first found alternative first appears: the first line that
+ * carries it, else the line where the whole text's match begins (rule wording can wrap).
+ */
 function rankOf(text: string, alts: string[]): number | null {
     const lines = text.split("\n");
     const i = lines.findIndex((l) => alts.some((a) => a.length > 0 && carriesLiteral(l, a)));
-    return i < 0 ? null : i + 1;
+    if (i >= 0) return i + 1;
+    for (let n = 1; n <= lines.length; n++) {
+        const head = lines.slice(0, n).join("\n");
+        if (alts.some((a) => a.length > 0 && carriesLiteral(head, a))) return n;
+    }
+    return null;
 }
 
 const callPointer = (c: HeldCall): Pointer => ({ path: "calls.jsonl", at: `seq ${c.seq}` });

@@ -508,6 +508,24 @@ describe("evidence stages on a memory arm", () => {
         expect(p.attributed.cause).toBe("application");
     });
 
+    test("rule wording that wraps across result lines is retrieved, ranked at its first line", () => {
+        const scenario: EvidenceScenario = {
+            ...SCENARIO,
+            probes: SCENARIO.probes.map((p) => ({
+                ...p,
+                ground_truth: { ...p.ground_truth, present: [["double"]] },
+            })),
+        };
+        const wrapped = searchTurn("1. inside src/ws use double\nquotes for strings");
+        const p = evidence(
+            build({ calls: [SOURCE_READ, CAPTURED, wrapped], scenario, objects: [] }),
+        );
+        expect(stage(p, "retrieval")?.status).toBe("ok");
+        expect(stage(p, "retrieval")?.detail?.ranks).toEqual([
+            { source: "eidnara_search", line: 2 },
+        ]);
+    });
+
     test("a literal in the probe context skips upstream stages and blames application", () => {
         const p = evidence(
             build({ calls: [searchTurn("TAG_X")], journal: [{ kind: "BeginTurn", event: "e-5" }] }),
@@ -1015,6 +1033,8 @@ test("a literal counts as a whole value, an identifier by case, and a rule word 
         ["trace", "the error traced to the parser"],
         ["error", "an error from the server"],
         ["info", "for more info see the README"],
+        ["single", "a single quota"],
+        ["double", "the double quotient"],
     ];
     for (const [lit, text] of carried)
         expect([lit, text, carriesLiteral(text, lit)]).toEqual([lit, text, true]);
