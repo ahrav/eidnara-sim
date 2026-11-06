@@ -79,7 +79,7 @@ function storeDb(path: string): Database {
     db.run(
         "create table memory_capture_jobs (job_id integer, session_id text, commit_seq integer, abandoned_at_ms integer, created_at_ms integer)",
     );
-    db.run("create table scan_batches (scan_batch_id integer, created_at_ms integer)");
+    db.run("create table scan_batches (scan_batch_id integer primary key, created_at_ms integer)");
     db.run("create table notes (id integer, session_id text, content text)");
     db.run("insert into cache_state values ('sim-s-1', x'00'), ('sim-s-2', x'00')");
     db.run(
@@ -87,6 +87,18 @@ function storeDb(path: string): Database {
     );
     db.run("insert into scan_batches values (1, 120), (2, 320)");
     db.run("insert into notes values (1, 'sim-s-1', 'kept'), (2, 'sim-s-2', 'later')");
+    db.run("create table cache_totals (n integer)");
+    db.run("insert into cache_totals values (2)");
+    db.run(
+        "create trigger cache_state_total_delete after delete on cache_state begin update cache_totals set n = n - 1; end",
+    );
+    db.run(
+        "create trigger notes_no_delete before delete on notes when old.content = 'kept' begin select raise(abort, 'notes keep'); end",
+    );
+    db.run(
+        "create table field_scans (scan_id integer primary key, scan_batch_id integer references scan_batches(scan_batch_id))",
+    );
+    db.run("insert into field_scans values (10, 1), (20, 2)");
     return db;
 }
 
@@ -132,13 +144,18 @@ describe("rollbackStore", () => {
         db.close();
     });
 
-    test("drops the named sessions and reopens capture work the probe had pending", () => {
+    test("drops the named sessions, keeps committed capture jobs terminal, and keeps derived rows", () => {
         const root = dataDir();
-        rollbackStore({ dataDir: root, cutoffMs: 250, sessions: ["sim-s-2"] });
+        const fidelity = rollbackStore({ dataDir: root, cutoffMs: 250, sessions: ["sim-s-2"] });
+        expect(fidelity.detail).toMatchObject({
+            capture_jobs_committed_after_probe: 1,
+            memory_store_orphans: { field_scans: 1 },
+        });
         const db = new Database(join(root, "eidnara", "context", "store.db"));
         expect(db.query("select session_id from cache_state").all()).toEqual([
             { session_id: "sim-s-1" },
         ]);
+        expect(db.query("select n from cache_totals").get()).toEqual({ n: 1 });
         expect(
             db
                 .query(
@@ -147,13 +164,15 @@ describe("rollbackStore", () => {
                 .all(),
         ).toEqual([
             { job_id: 1, c: 2, a: null },
-            { job_id: 2, c: null, a: null },
-            { job_id: 3, c: null, a: null },
+            { job_id: 2, c: 3, a: null },
+            { job_id: 3, c: null, a: 260 },
         ]);
         expect(db.query("select scan_batch_id from scan_batches").all()).toEqual([
             { scan_batch_id: 1 },
         ]);
+        expect(db.query("select scan_id from field_scans").all()).toEqual([{ scan_id: 10 }]);
         expect(db.query("select content from notes").all()).toEqual([{ content: "kept" }]);
+        expect(() => db.run("delete from notes")).toThrow("notes keep");
         db.close();
     });
 
@@ -266,13 +285,31 @@ describe("probe-time workspace", () => {
         const base = commit("upstream", 10, "dev@example.com");
         commit("harness", 20, "sim-user@users.noreply.github.com");
         const agent = commit("agent", 30, "agent@example.com");
+        commit("Add late.md", 35, "sim-user@users.noreply.github.com");
         commit("later", 50, "sim-user@users.noreply.github.com");
-        const fidelity = rewindHead(root, 40, base);
+        const baseline = join(tmp(), "baseline.gitconfig");
+        writeFileSync(baseline, "[core]\n\trepositoryformatversion = 0\n");
+        writeFileSync(
+            join(root, ".git", "config"),
+            readFileSync(join(root, ".git", "config"), "utf8") +
+                "[core]\n\tfsmonitor = /bin/false\n",
+        );
+        const before = readFileSync(join(root, ".git", "config"), "utf8");
+        const lateHarness = new Set(["35 Add late.md"]);
+        const fidelity = rewindHead({
+            workspace: root,
+            gitconfig: baseline,
+            keep: (c) => !lateHarness.has(`${c.ct} ${c.subject}`) && c.ct <= 40,
+            base,
+        });
         expect(sh(root, ["rev-parse", "HEAD"])).toBe(agent);
         expect(readFileSync(join(root, "f"), "utf8")).toBe("later");
-        expect(sh(root, ["status", "--short"])).toBe("M f");
+        expect(sh(root, ["-c", "core.fsmonitor=false", "status", "--short"])).toBe("M f");
+        expect(readFileSync(join(root, ".git", "config"), "utf8")).toBe(before);
+        expect(existsSync(join(root, ".git", "logs"))).toBe(false);
+        expect(existsSync(join(root, ".git", "ORIG_HEAD"))).toBe(false);
         expect(fidelity.detail).toMatchObject({
-            dropped: 1,
+            dropped: 2,
             agent_commits_kept: 1,
             other_refs: [],
         });
@@ -280,6 +317,35 @@ describe("probe-time workspace", () => {
 });
 
 describe("truncateSession", () => {
+    test("cuts at the probe message sent at or after the turn began", () => {
+        const from = join(tmp(), "agent");
+        const dir = join(from, "sessions", piSessionDir("/w"));
+        mkdirSync(dir, { recursive: true });
+        const user = (text: string, timestamp: number) => ({
+            type: "message",
+            message: { role: "user", timestamp, content: [{ type: "text", text }] },
+        });
+        const lines = [
+            { type: "session", id: "sim-s-9", cwd: "/w" },
+            user("the probe", 100),
+            user("something else", 200),
+            user("the probe", 300),
+        ];
+        writeFileSync(
+            join(dir, "t_sim-s-9.jsonl"),
+            `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`,
+        );
+        const to = join(tmp(), "agent");
+        const r = truncateSession({
+            fromAgentDir: from,
+            toAgentDir: to,
+            sessionId: "sim-s-9",
+            probeText: "probe",
+            sentFrom: 250,
+        });
+        expect(r.fidelity.detail).toMatchObject({ kept_entries: 3, dropped_entries: 1 });
+    });
+
     function session() {
         const from = join(tmp(), "agent");
         const dir = join(from, "sessions", piSessionDir("/old/w"));

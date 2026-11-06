@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ConverseBody } from "../proxy/classify";
 import {
     evidenceNote,
+    joinListing,
     splitListing,
     TRANSFORMS,
     type TransformInputs,
@@ -85,9 +86,11 @@ describe("replay transforms on a recorded agent request", () => {
         expect(search).not.toContain("ZEPHYR_KOALA_COOKIE_MAX_AGE");
         expect(result(body, 0)).toBe(result(recorded(), 0));
         expect(result(body, 2)).toBe(result(recorded(), 2));
-        expect(applied.detail.slots).toEqual([
-            { slot: "eidnara_search", items: 6, dropped: 5, supporting: true },
-        ]);
+        expect(applied.detail).toEqual({
+            slots: [{ slot: "eidnara_search", items: 6, dropped: 5, supporting: true }],
+            unparsed: ["eidnara_note"],
+        });
+        expect(search).not.toMatch(/\n\n\n/);
     });
 
     test("drop-competing drops only stale hits when no hit supports the ground truth", () => {
@@ -117,7 +120,12 @@ describe("replay transforms on a recorded agent request", () => {
     test("provenance-off removes trust labels, attributions, and provenance records", () => {
         const body = recorded();
         const applied = transformFor("d").apply(body, inputs());
-        expect(applied.detail).toEqual({ trust: 6, attribution: 4, records: 4 });
+        expect(applied.detail).toEqual({
+            trust: 6,
+            attribution: 4,
+            records: 4,
+            unparsed: ["eidnara_note"],
+        });
         const search = result(body, 1);
         expect(search).not.toContain("trust=[");
         expect(search).not.toContain("User stated:");
@@ -139,6 +147,9 @@ describe("replay transforms on a recorded agent request", () => {
             "oracle-note",
         ]);
         expect(() => transformFor("z")).toThrow("unknown replay variant z");
+        for (const inherited of ["constructor", "toString", "__proto__"]) {
+            expect(() => transformFor(inherited)).toThrow("unknown replay variant");
+        }
     });
 
     test("the digest binds the transform and its inputs", () => {
@@ -179,10 +190,79 @@ describe("evidenceNote", () => {
 
 describe("splitListing", () => {
     test("keeps every line in place when rejoined", () => {
-        const t = "head\n\n[1] [memory] a\nbody\n\n[2] [memory] b\nbody";
-        const l = splitListing(t);
-        expect(l.head).toEqual(["head", ""]);
-        expect(l.items.length).toBe(2);
-        expect([...l.head, ...l.items.flat(), ...l.tail].join("\n")).toBe(t);
+        const t = "head\n\n[1] [memory] a\nbody\n\n[2] [memory] b\nbody\n\ntrailer";
+        const segments = splitListing(t);
+        expect(segments.filter((s) => "item" in s)).toEqual([
+            { item: ["[1] [memory] a", "body"] },
+            { item: ["[2] [memory] b", "body"] },
+        ]);
+        expect(joinListing(segments)).toBe(t);
+    });
+
+    test("keeps lines between bullets in place when a fragment is dropped", () => {
+        const body = recorded();
+        const hint = [
+            "<eidnara-search-hint>",
+            "- first fragment about ports",
+            "A line between the fragments.",
+            "- second fragment naming 31411",
+            "Trailing guidance.",
+            "</eidnara-search-hint>",
+        ].join("\n");
+        body.messages = [{ role: "user", content: [{ text: `${PROBE}\n\n${hint}` }] }];
+        const gt = { present: [["31411"]], stale: [], absent: [] };
+        transformFor("c").apply(body, inputs({ ground_truth: gt }));
+        expect(text(body, 0)).toBe(
+            [
+                PROBE,
+                "",
+                "<eidnara-search-hint>",
+                "A line between the fragments.",
+                "- second fragment naming 31411",
+                "Trailing guidance.",
+                "</eidnara-search-hint>",
+            ].join("\n"),
+        );
+    });
+
+    test("keeps text after a numbered listing when its last item is dropped", () => {
+        const body = recorded();
+        const listing = [
+            "Found 2 results:",
+            "",
+            "[1] [memory] id=a",
+            "port 31411",
+            "",
+            "[2] [memory] id=b",
+            "something else",
+            "",
+            "Refine the query for more.",
+        ].join("\n");
+        const tool = messages(body)[4]?.content[1]?.toolResult as { content: { text: string }[] };
+        (tool.content[0] as { text: string }).text = listing;
+        const gt = { present: [["31411"]], stale: [], absent: [] };
+        transformFor("c").apply(body, inputs({ ground_truth: gt }));
+        expect(result(body, 1)).toBe(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                "port 31411",
+                "",
+                "Refine the query for more.",
+            ].join("\n"),
+        );
+    });
+
+    test("records a tagged block whose shape holds no listing as unparsed", () => {
+        const body = recorded();
+        body.system = [
+            { text: "<project-memory>\n[conventions]\nmem_1: a rule\n</project-memory>" },
+        ];
+        const applied = transformFor("c").apply(body, inputs());
+        expect(applied.detail.unparsed).toEqual(["project-memory", "eidnara_note"]);
+        expect(body.system).toEqual([
+            { text: "<project-memory>\n[conventions]\nmem_1: a rule\n</project-memory>" },
+        ]);
     });
 });

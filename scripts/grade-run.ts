@@ -35,7 +35,6 @@ import {
     graderDigest,
     RECORDED_TYPES,
     requireEvidence,
-    type SourceEvent,
     verdictCounts,
 } from "../src/grade/probes";
 import {
@@ -735,8 +734,6 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
         if (!config) throw new Error("P7 judging needs the sim config");
     }
 
-    const sourcesOf = (probe: Scenario["probes"][number]): SourceEvent[] =>
-        sourceEvents(probe, scenario.events);
     const ledgers = new Map<string, LedgerRun[]>();
     /** The arm's tool ledger (`tools.jsonl`), read once, each run with the turn it belongs to. */
     const ledger = (arm: string) => {
@@ -746,7 +743,7 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     };
 
     for (const probe of scenario.probes.filter((p) => p.type !== "P7")) {
-        const sources = sourcesOf(probe);
+        const sources = sourceEvents(probe, scenario.events);
         for (const arm of arms) {
             if (probe.type === "P14") {
                 skip(arm, "P14 has no probe turn");

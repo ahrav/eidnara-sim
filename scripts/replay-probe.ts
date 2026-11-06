@@ -4,7 +4,8 @@ import { type PathMode, replayProbe } from "../src/replay/replay";
 import { runTurn, type TurnSpec } from "../src/replay/turn";
 
 const USAGE = `usage: bun scripts/replay-probe.ts --run <dir> --arm <arm> --item <id> --variant <v> \\
-    --repeats N --out <dir> [--allow-identity a,b] [--path-mode source|replay] [--keep]`;
+    --repeats N --out <dir> [--allow-identity a,b] [--path-mode source|replay] [--keep]
+       bun scripts/replay-probe.ts --turn <repeat>/turn-spec.json   (one prepared turn; replayProbe runs it)`;
 
 function parse(argv: string[]): Record<string, string | true> {
     const out: Record<string, string | true> = {};
@@ -28,6 +29,7 @@ function parse(argv: string[]): Record<string, string | true> {
 if (import.meta.main) {
     const args = parse(process.argv.slice(2));
     if (typeof args.turn === "string") {
+        if (Object.keys(args).length > 1) throw new Error(`--turn takes no other option\n${USAGE}`);
         const spec = JSON.parse(readFileSync(args.turn, "utf8")) as TurnSpec;
         const result = await runTurn(spec);
         process.exit(result.failures.length > 0 ? 1 : 0);

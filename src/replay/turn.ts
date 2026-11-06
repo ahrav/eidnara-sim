@@ -1,8 +1,8 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
-import type { DaemonContext, DaemonStack, HostContext, SimHost } from "../hosts/arms";
+import type { HostContext, SimHost } from "../hosts/arms";
 import { HostDriver } from "../hosts/driver";
 import type { ConverseBody } from "../proxy/classify";
 import { bedrockUpstream, Gateway, type Upstream } from "../proxy/gateway";
@@ -42,7 +42,7 @@ export interface TurnSpec {
 }
 
 export interface Application extends Applied {
-    seq: number;
+    index: number;
     before_sha256: string;
 }
 
@@ -53,21 +53,28 @@ export interface TurnResult {
     first_request: ConverseBody | null;
     failures: string[];
     notes: string[];
-    prompt_scenario_ms: number;
+    prompt_scenario_ms: number | null;
 }
 
 export interface TurnSeams {
     upstream?: Upstream;
     hostFactory?: (ctx: HostContext) => SimHost;
-    daemonFactory?: (ctx: DaemonContext) => DaemonStack;
-    procStart?: (pid: number) => string | null;
 }
 
 const sha = (body: unknown) =>
     new Bun.CryptoHasher("sha256").update(JSON.stringify(body)).digest("hex");
 
+function sameDir(a: string, b: string): boolean {
+    const x = statSync(a, { throwIfNoEntry: false });
+    const y = statSync(b, { throwIfNoEntry: false });
+    return !!x?.isDirectory() && !!y && x.dev === y.dev && x.ino === y.ino;
+}
+
 export async function runTurn(spec: TurnSpec, seams: TurnSeams = {}): Promise<TurnResult> {
-    mkdirSync(spec.out, { recursive: true });
+    const prepared = join(spec.out, spec.arm);
+    if (!sameDir(spec.armDir, prepared)) {
+        throw new Error(`${spec.armDir} is not the prepared arm directory ${prepared}`);
+    }
     const transform = transformFor(spec.variant);
     const scope = {
         arm: spec.arm,
@@ -75,8 +82,10 @@ export async function runTurn(spec: TurnSpec, seams: TurnSeams = {}): Promise<Tu
         turn: null as string | null,
     };
     const applications: Application[] = [];
+    const failures: string[] = [];
+    const notes: string[] = [];
+    const thrown = new Set<unknown>();
     let first: ConverseBody | null = null;
-    let calls = 0;
     let active = 0;
     let quietSince = Date.now();
     const hold = () => {
@@ -104,15 +113,24 @@ export async function runTurn(spec: TurnSpec, seams: TurnSeams = {}): Promise<Tu
         observe: hold,
         transform: (body, component, at) => {
             if (component !== TRANSFORMED || at.turn !== spec.probe.id) return;
+            const index = applications.length;
             const before = sha(body);
             if (first === null) first = structuredClone(body);
-            const applied = transform.apply(body, spec.inputs);
-            applications.push({ seq: calls++, before_sha256: before, ...applied });
+            const copy = structuredClone(body);
+            try {
+                const applied = transform.apply(copy, spec.inputs);
+                for (const key of Object.keys(body)) delete body[key];
+                Object.assign(body, copy);
+                applications.push({ index, before_sha256: before, ...applied });
+            } catch (caught) {
+                thrown.add(caught);
+                applications.push({ index, before_sha256: before, changed: false, detail: {} });
+                failures.push(`transform ${transform.id}: ${(caught as Error).message}`);
+                throw caught;
+            }
         },
     });
     await gateway.start();
-    const failures: string[] = [];
-    const notes: string[] = [];
     const turnIndex = typeof spec.probe.index === "number" ? spec.probe.index : undefined;
     const base = Math.floor(Math.max(0, ...spec.priorCalls.map((c) => c.seq)));
     const callsFor = (): CallView[] => {
@@ -162,30 +180,29 @@ export async function runTurn(spec: TurnSpec, seams: TurnSeams = {}): Promise<Tu
         settle,
         now,
         ...(seams.hostFactory ? { hostFactory: seams.hostFactory } : {}),
-        ...(seams.daemonFactory ? { daemonFactory: seams.daemonFactory } : {}),
-        ...(seams.procStart ? { procStart: seams.procStart } : {}),
     });
     let outcome: Record<string, unknown> = {};
-    let promptMs = 0;
+    let promptMs: number | null = null;
     try {
         await driver.resume(spec.sessionStart);
         scope.turn = spec.probe.id;
         promptMs = now();
         outcome = { ...(await driver.event(spec.probe)) };
         scope.turn = null;
+        if (typeof outcome.failed === "string") notes.push(`turn failed: ${outcome.failed}`);
     } catch (caught) {
         failures.push(`turn: ${(caught as Error).message}`);
     } finally {
         try {
             await driver.stop();
         } catch (caught) {
-            failures.push(`stop: ${(caught as Error).message}`);
+            notes.push(`stop: ${(caught as Error).message}`);
         }
         await gateway.stop();
         records.close();
         requests.close();
     }
-    for (const f of gateway.failures) failures.push(`proxy: ${f.message}`);
+    for (const f of gateway.failures) if (!thrown.has(f)) failures.push(`proxy: ${f.message}`);
     const result: TurnResult = {
         outcome,
         records: records.records,

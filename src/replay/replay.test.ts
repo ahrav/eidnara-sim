@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+    copyFileSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
@@ -17,16 +18,21 @@ import { loadConfig } from "../config/config";
 import type { CallView, Snapshot } from "../grade/artefacts";
 import { gradeItem } from "../grade/probes";
 import type { HostContext, PromptResult, SimHost } from "../hosts/arms";
+import { armProfile } from "../hosts/profiles";
 import type { ConverseBody } from "../proxy/classify";
 import type { Upstream } from "../proxy/gateway";
 import { RecordWriter } from "../proxy/records";
 import { RequestStore } from "../proxy/requests";
 import { PRICE_TABLE } from "../run/price";
 import { projectCall } from "../run/run";
+import { scenarioHash } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import { REPLAY_MANIFEST, replayProbe } from "./replay";
 import { piSessionDir } from "./state";
+import { TRANSFORMS } from "./transforms";
 import { runTurn } from "./turn";
+
+const CLEAN = new Bun.CryptoHasher("sha256").digest("hex");
 
 const ROOT = resolve(import.meta.dir, "../..");
 const tmp = () => realpathSync(mkdtempSync(join(tmpdir(), "sim-replay-")));
@@ -143,7 +149,7 @@ interface Fixture {
     sourceSnapshots: Snapshot[];
 }
 
-async function sourceRun(): Promise<Fixture> {
+async function sourceRun(over: Record<string, unknown> = {}): Promise<Fixture> {
     const root = tmp();
     const run = join(root, "run");
     const recorded = join(root, "recorded");
@@ -161,6 +167,7 @@ async function sourceRun(): Promise<Fixture> {
         GIT_COMMITTER_DATE: date,
     });
     const corpus = git(workspace, ["rev-parse", "HEAD"]);
+    copyFileSync(join(workspace, ".git", "config"), join(armDir, "p.gitconfig"));
     const gitDir = join(armDir, "snapshot.git");
     git(root, ["init", "-q", "--bare", gitDir]);
     const env = {
@@ -231,7 +238,8 @@ async function sourceRun(): Promise<Fixture> {
         projects: [{ id: "p" }],
         faults: [],
     };
-    writeFileSync(join(run, "scenario.json"), JSON.stringify(scenario));
+    const scenarioWithHash = { ...scenario, scenario_hash: scenarioHash(scenario) };
+    writeFileSync(join(run, "scenario.json"), JSON.stringify(scenarioWithHash));
     const sessionDir = join(armDir, "r/home/.pi/agent/sessions", piSessionDir(recordedWorkspace));
     mkdirSync(sessionDir, { recursive: true });
     const msg = (role: string, text: string) => ({
@@ -363,11 +371,17 @@ async function sourceRun(): Promise<Fixture> {
         base_wall_ms: BASE_MS,
         price_table: PRICE_TABLE,
         sim_commit: git(ROOT, ["rev-parse", "HEAD"]),
+        sim_worktree: CLEAN,
+        scenario_hash: scenarioWithHash.scenario_hash,
         eidnara_commit: "e".repeat(40),
         corpus: { p: { commit: corpus, worktree: "w" } },
+        arms: { [ARM]: { profile: armProfile(ARM) } },
         preflight,
+        ...over,
     };
     writeFileSync(join(run, "manifest.json"), JSON.stringify(manifest));
+    const capabilities = { profile: armProfile(ARM), observed: { arm: ARM }, mismatches: [] };
+    writeFileSync(join(armDir, "capabilities.json"), JSON.stringify(capabilities));
     return { run, answers, sourceSnapshots: snapshots };
 }
 
@@ -485,6 +499,43 @@ describe("replayProbe on a fixture run", () => {
         const f = await sourceRun();
         const { out } = await replay(f, "q-a", "a");
         await expect(gradeRun(out, null)).rejects.toThrow("manifest.json");
+    });
+
+    test("a transform that throws leaves the host's body and fails the repeat whatever the grade", async () => {
+        const f = await sourceRun();
+        TRANSFORMS.boom = {
+            id: "boom",
+            alias: "x",
+            summary: "throws after a partial rewrite",
+            apply(body) {
+                body.system = [{ text: "partly rewritten" }];
+                throw new Error("boom");
+            },
+        };
+        try {
+            const { results, upstream } = await replay(f, "q-a", "boom");
+            expect(results.map((r) => r.verdict)).toEqual([
+                "harness-failed",
+                "harness-failed",
+                "harness-failed",
+            ]);
+            expect(results[0]?.grade?.verdict).toBe("pass");
+            expect(results[0]?.reason).toContain("transform boom: boom");
+            expect(upstream.bodies.every((b) => b.system?.[0]?.text !== "partly rewritten")).toBe(
+                true,
+            );
+        } finally {
+            delete TRANSFORMS.boom;
+        }
+    });
+
+    test("a source run recorded from a dirty sim tree is refused unless sim_worktree is allowed", async () => {
+        const f = await sourceRun({ sim_worktree: "d".repeat(64) });
+        await expect(replay(f, "q-a", "a")).rejects.toThrow("sim_worktree");
+        const { results } = await replay(f, "q-a", "a", {
+            allowIdentity: [...ALLOWED, "sim_worktree"],
+        });
+        expect(results.map((r) => r.verdict)).toEqual(["pass", "pass", "pass"]);
     });
 
     test("campaign gateways carry no transform", () => {

@@ -34,10 +34,15 @@ export function plainPath(path: string): string {
 const within = (path: string, dir: string) =>
     path === dir || path.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
 
-export function maskedPaths(runRoot: string): string[] {
-    const candidates = [...new Set(["/tmp", realpathSync(homedir()), runRoot])].sort(
-        (a, b) => a.length - b.length,
-    );
+export function maskedPaths(runRoot: string, extra: readonly string[] = []): string[] {
+    const candidates = [
+        ...new Set([
+            "/tmp",
+            realpathSync(homedir()),
+            runRoot,
+            ...extra.map((p) => realpathSync(p)),
+        ]),
+    ].sort((a, b) => a.length - b.length);
     const masked: string[] = [];
     for (const path of candidates) {
         if (!masked.some((outer) => within(path, outer))) masked.push(path);
@@ -84,10 +89,10 @@ exit 0' sh "$@"
 `;
 }
 
-export function writeLauncher(runRoot: string): string {
+export function writeLauncher(runRoot: string, extraMasked: readonly string[] = []): string {
     const root = realpathSync(runRoot);
     const path = join(root, "sandbox.sh");
-    writeAtomic(path, script(maskedPaths(root)), 0o755);
+    writeAtomic(path, script(maskedPaths(root, extraMasked)), 0o755);
     return path;
 }
 

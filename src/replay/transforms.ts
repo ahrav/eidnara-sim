@@ -121,52 +121,37 @@ function editMemory(body: ConverseBody, edit: (name: string, text: string) => st
     }
 }
 
-/**
- * A memory listing split into a head and items. An item opens at a numbered header such as
- * `[1] [memory] score=0.33 id=...` or at a `- ` bullet, and runs to the next item or a line
- * that leaves the listing.
- */
-interface Listing {
-    head: string[];
-    items: string[][];
-    tail: string[];
-}
+export type Segment = { line: string } | { item: string[] };
 
 const ITEM_HEADER = /^\[\d+\] \[[a-z_-]+\]/;
 const BULLET = /^- /;
 
-export function splitListing(text: string): Listing {
+export function splitListing(text: string): Segment[] {
     const lines = text.split("\n");
-    const head: string[] = [];
-    const items: string[][] = [];
-    const tail: string[] = [];
     const numbered = lines.some((l) => ITEM_HEADER.test(l));
-    const opens = (l: string) => (numbered ? ITEM_HEADER.test(l) : BULLET.test(l));
+    const segments: Segment[] = [];
     let current: string[] | null = null;
     for (const line of lines) {
-        if (opens(line)) {
-            current = [line];
-            items.push(current);
-        } else if (current && (numbered || BULLET.test(line))) {
+        if (numbered ? ITEM_HEADER.test(line) : BULLET.test(line)) {
+            current = numbered ? [line] : null;
+            segments.push({ item: current ?? [line] });
+        } else if (current && line !== "") {
             current.push(line);
-        } else if (current) {
-            // A bullet listing ends at its first line that is not a bullet.
-            tail.push(line);
-            current = null;
-        } else if (items.length > 0) {
-            tail.push(line);
         } else {
-            head.push(line);
+            current = null;
+            segments.push({ line });
         }
     }
-    return { head, items, tail };
+    return segments;
 }
 
-const joinListing = (l: Listing) => [...l.head, ...l.items.flat(), ...l.tail].join("\n");
+export const joinListing = (segments: Segment[]) =>
+    segments.flatMap((s) => ("item" in s ? s.item : [s.line])).join("\n");
+
+const itemsOf = (segments: Segment[]) => segments.flatMap((s) => ("item" in s ? [s.item] : []));
 
 const quoteRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** Case-insensitive, with a number matched as a whole value, as the scenario's exposure checks compare. */
 export function carries(text: string, literal: string): boolean {
     if (literal.length === 0) return false;
     const pattern = /^\d+(?:\.\d+)?$/.test(literal)
@@ -190,30 +175,57 @@ const isStale = (item: string, gt: TransformInputs["ground_truth"]) =>
 function dropCompeting(body: ConverseBody, inputs: TransformInputs): Applied {
     const gt = inputs.ground_truth;
     const slots: Record<string, unknown>[] = [];
+    const unparsed: string[] = [];
     let changed = false;
     editMemory(body, (name, text) => {
-        const listing = splitListing(text);
-        if (listing.items.length === 0) return text;
-        const texts = listing.items.map((i) => i.join("\n"));
+        const segments = splitListing(text);
+        const items = itemsOf(segments);
+        if (items.length === 0) {
+            unparsed.push(name);
+            return text;
+        }
+        const texts = items.map((i) => i.join("\n"));
         const anySupport = texts.some((t) => supports(t, gt));
-        const keep = texts.map((t) => !isStale(t, gt) && (!anySupport || supports(t, gt)));
-        const dropped = keep.filter((k) => !k).length;
-        slots.push({ slot: name, items: texts.length, dropped, supporting: anySupport });
+        const keep = new Map(
+            items.map((item, i) => {
+                const t = texts[i] as string;
+                return [item, !isStale(t, gt) && (!anySupport || supports(t, gt))] as const;
+            }),
+        );
+        const dropped = [...keep.values()].filter((k) => !k).length;
+        slots.push({ slot: name, items: items.length, dropped, supporting: anySupport });
         if (dropped === 0) return text;
         changed = true;
+        const kept: Segment[] = [];
         let n = 0;
-        listing.items = listing.items
-            .filter((_, i) => keep[i])
-            .map(([first, ...rest]) => {
+        let skipBlank = false;
+        for (const s of segments) {
+            if ("item" in s && !keep.get(s.item)) {
+                skipBlank = true;
+                continue;
+            }
+            if ("line" in s && skipBlank && s.line === "") {
+                skipBlank = false;
+                continue;
+            }
+            skipBlank = false;
+            if ("item" in s) {
                 n++;
-                return [(first as string).replace(/^\[\d+\]/, `[${n}]`), ...rest];
-            });
-        listing.head = listing.head.map((l) =>
-            l.replace(/\b\d+( (?:results?|related fragments?)\b)/, `${n}$1`),
+                const [first, ...rest] = s.item;
+                kept.push({ item: [(first as string).replace(/^\[\d+\]/, `[${n}]`), ...rest] });
+            } else {
+                kept.push(s);
+            }
+        }
+        const opening = kept.findIndex((s) => "item" in s);
+        const count = /\b\d+( (?:results?|related fragments?)\b)/;
+        return joinListing(
+            kept.map((s, i) =>
+                "line" in s && i < opening ? { line: s.line.replace(count, `${n}$1`) } : s,
+            ),
         );
-        return joinListing(listing);
     });
-    return { changed, detail: { slots } };
+    return { changed, detail: { slots, unparsed } };
 }
 
 const ATTRIBUTION =
@@ -239,10 +251,14 @@ function isProvenanceLine(line: string): boolean {
 function provenanceOff(body: ConverseBody): Applied {
     let changed = false;
     const counts = { trust: 0, attribution: 0, records: 0 };
-    editMemory(body, (_, text) => {
-        const listing = splitListing(text);
-        if (listing.items.length === 0) return text;
-        listing.items = listing.items.map((item) => {
+    const unparsed: string[] = [];
+    editMemory(body, (name, text) => {
+        const segments = splitListing(text);
+        if (itemsOf(segments).length === 0) {
+            unparsed.push(name);
+            return text;
+        }
+        const scrub = (item: string[]) => {
             const out: string[] = [];
             item.forEach((line, i) => {
                 if (isProvenanceLine(line)) {
@@ -261,12 +277,12 @@ function provenanceOff(body: ConverseBody): Applied {
                 out.push(l);
             });
             return out;
-        });
-        const next = joinListing(listing);
+        };
+        const next = joinListing(segments.map((s) => ("item" in s ? { item: scrub(s.item) } : s)));
         if (next !== text) changed = true;
         return next;
     });
-    return { changed, detail: counts };
+    return { changed, detail: { ...counts, unparsed } };
 }
 
 export const TRANSFORMS: Record<string, ReplayTransform> = {
@@ -315,7 +331,9 @@ export const TRANSFORMS: Record<string, ReplayTransform> = {
 
 /** The transform a variant name or letter selects. */
 export function transformFor(variant: string): ReplayTransform {
-    const found = TRANSFORMS[variant] ?? Object.values(TRANSFORMS).find((t) => t.alias === variant);
+    const found = Object.hasOwn(TRANSFORMS, variant)
+        ? TRANSFORMS[variant]
+        : Object.values(TRANSFORMS).find((t) => t.alias === variant);
     if (!found) {
         const known = Object.values(TRANSFORMS)
             .map((t) => `${t.alias}=${t.id}`)

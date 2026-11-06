@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
     appendFileSync,
@@ -10,10 +9,14 @@ import {
     realpathSync,
     rmdirSync,
     rmSync,
+    statSync,
     writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
+import { requireCapabilities } from "../../scripts/grade-run";
 import type { SimConfig } from "../config/config";
+import { git } from "../git";
 import type { Artefact, CallView, Command, Snapshot } from "../grade/artefacts";
 import { assertArtefactsOnly, GradeRefused } from "../grade/artefacts";
 import { type GradeRecord, gradeItem, graderDigest } from "../grade/probes";
@@ -23,7 +26,6 @@ import { SnapshotRecorder } from "../hosts/snapshot";
 import type { ConverseBody } from "../proxy/classify";
 import { RequestPartLog, rebuildRequest } from "../proxy/requests";
 import { componentCosts } from "../report/cost";
-import { type Entry, readJsonl } from "../run/journal";
 import { oracleBackground } from "../run/oracle-note";
 import { type Preflight, preflight, preflightDrift } from "../run/preflight";
 import { armConfigs, MEASUREMENT_PATHS, runIdentity, simIdentity } from "../run/run";
@@ -31,20 +33,30 @@ import type { ScenarioEvent } from "../run/scheduler";
 import { loadPrereg } from "../scenario/inputs";
 import { daemonCutoffMs, loadProbeSource, type ProbeSource } from "./source";
 import {
+    type Commit,
     checkoutTree,
     copyTree,
     type Fidelity,
     probeTree,
+    requireInside,
     rewindHead,
     rollbackStore,
     truncateSession,
 } from "./state";
-import { evidenceNote, type TransformInputs, transformDigest, transformFor } from "./transforms";
+import {
+    evidenceNote,
+    probeBlock,
+    type TransformInputs,
+    transformDigest,
+    transformFor,
+} from "./transforms";
 import type { TurnResult, TurnSpec } from "./turn";
 
 export const REPLAY_SCHEMA = "sim-replay-manifest/v1";
 export const REPLAY_MANIFEST = "replay-manifest.json";
 const ROOT = resolve(import.meta.dir, "../..");
+const CLEAN_WORKTREE = createHash("sha256").digest("hex");
+const NOTE_VARIANTS = new Set(["evidence-note", "oracle-note"]);
 
 /**
  * Replay consumes the run's compiled scenario and delivered probe text; its identity check
@@ -62,6 +74,14 @@ const UNEXECUTED = new Set([
 export const REPLAY_PATHS = MEASUREMENT_PATHS.filter((p) => !UNEXECUTED.has(p));
 
 export type PathMode = "source" | "replay";
+export type Verdict =
+    | "pass"
+    | "fail"
+    | "excluded"
+    | "refused"
+    | "turn-failed"
+    | "no-snapshot"
+    | "harness-failed";
 
 export interface Mount {
     from: string;
@@ -79,7 +99,7 @@ export interface ReplayOptions {
     allowIdentity?: string[];
     pathMode?: PathMode;
     keep?: boolean;
-    preflight?: (config: SimConfig, root: string) => Promise<Preflight>;
+    preflight?: (config: SimConfig, root: string, masked: string[]) => Promise<Preflight>;
     identity?: (source: ProbeSource) => Record<string, unknown>;
     turn?: (spec: TurnSpec, specPath: string, mount: Mount | null) => Promise<TurnResult>;
     settleQuietMs?: number;
@@ -88,6 +108,7 @@ export interface ReplayOptions {
 
 export interface PrefixComparison {
     identical: boolean;
+    probe_found: { source: boolean; replay: boolean };
     source_sha256: string;
     replay_sha256: string;
     fields: Record<string, boolean>;
@@ -98,10 +119,11 @@ export interface PrefixComparison {
 export interface RepeatResult {
     repeat: number;
     variant: string;
-    verdict: string;
+    verdict: Verdict;
     reason: string;
     grade: GradeRecord | null;
     cost_usd: number;
+    cost_turn_usd: number;
     cost: ReturnType<typeof componentCosts>;
     prompt_ms: number | null;
     agent_calls: number;
@@ -110,7 +132,7 @@ export interface RepeatResult {
     prefix: PrefixComparison | null;
     failures: string[];
     notes: string[];
-    clock_lag_ms: number;
+    clock_lag_ms: number | null;
 }
 
 const sha256 = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
@@ -147,16 +169,16 @@ function jsonDiff(a: unknown, b: unknown, path: string, out: string[], limit = 1
     return out;
 }
 
-export function requestPrefix(body: ConverseBody, probeText: string): ConverseBody {
+export function requestPrefix(
+    body: ConverseBody,
+    probeText: string,
+): { prefix: ConverseBody; found: boolean } {
+    const at = probeBlock(body, probeText);
     const messages = body.messages ?? [];
-    const holdsProbe = (m: (typeof messages)[number] | undefined) =>
-        m?.role === "user" &&
-        (m.content ?? []).some(
-            (b) => typeof b.text === "string" && (b.text as string).includes(probeText),
-        );
-    let at = messages.length - 1;
-    while (at >= 0 && !holdsProbe(messages[at])) at--;
-    return { ...body, messages: messages.slice(0, at + 1) };
+    return {
+        prefix: { ...body, messages: messages.slice(0, at ? at.message + 1 : 0) },
+        found: at !== null,
+    };
 }
 
 export function comparePrefix(
@@ -167,24 +189,28 @@ export function comparePrefix(
     const a = requestPrefix(source, probeText);
     const b = requestPrefix(replay, probeText);
     const fields: Record<string, boolean> = {};
-    for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
-        fields[k] = JSON.stringify(a[k]) === JSON.stringify(b[k]);
+    for (const k of new Set([...Object.keys(a.prefix), ...Object.keys(b.prefix)])) {
+        fields[k] = JSON.stringify(a.prefix[k]) === JSON.stringify(b.prefix[k]);
     }
-    const sa = JSON.stringify(a);
-    const sb = JSON.stringify(b);
+    const sa = JSON.stringify(a.prefix);
+    const sb = JSON.stringify(b.prefix);
     return {
-        identical: sa === sb,
+        identical: a.found && b.found && sa === sb,
+        probe_found: { source: a.found, replay: b.found },
         source_sha256: sha256(sa),
         replay_sha256: sha256(sb),
         fields,
-        messages: { source: a.messages?.length ?? 0, replay: b.messages?.length ?? 0 },
-        differences: jsonDiff(a, b, "", []),
+        messages: {
+            source: a.prefix.messages?.length ?? 0,
+            replay: b.prefix.messages?.length ?? 0,
+        },
+        differences: jsonDiff(a.prefix, b.prefix, "", []),
     };
 }
 
 export function currentIdentity(config: SimConfig, source: ProbeSource): Record<string, unknown> {
     const prereg = loadPrereg(source.manifest.tier as never);
-    const sideModel = source.manifest.side_model ?? config.agent_model;
+    const sideModel = source.manifest.side_model ?? (source.manifest.models[0] as string);
     return {
         ...runIdentity(config, prereg, [source.project]),
         arms: armConfigs([source.arm], sideModel),
@@ -193,12 +219,14 @@ export function currentIdentity(config: SimConfig, source: ProbeSource): Record<
 }
 
 function simPathsChanged(from: string, root: string): string[] | null {
-    const ancestor = spawnSync("git", ["-C", root, "merge-base", "--is-ancestor", from, "HEAD"]);
-    if (ancestor.status !== 0) return null;
-    const r = spawnSync("git", ["-C", root, "diff", "--name-only", from, "--", ...REPLAY_PATHS], {
-        encoding: "utf8",
-    });
-    return r.status === 0 ? r.stdout.split("\n").filter(Boolean) : null;
+    try {
+        git(root, ["merge-base", "--is-ancestor", from, "HEAD"]);
+        return git(root, ["diff", "--name-only", from, "--", ...REPLAY_PATHS])
+            .split("\n")
+            .filter(Boolean);
+    } catch {
+        return null;
+    }
 }
 
 export function identityDrift(
@@ -224,6 +252,7 @@ export function identityDrift(
     const arms = (x: unknown) => (x as Record<string, unknown> | undefined)?.[source.arm];
     if (!same(arms(m.arms), arms(current.arms))) drift.push(`arms.${source.arm}`);
     if (!source.manifest.models.includes(String(current.agent_model))) drift.push("agent_model");
+    if (m.sim_worktree !== CLEAN_WORKTREE) drift.push("sim_worktree");
     const changed = simPathsChanged(String(m.sim_commit), root);
     if (changed === null) drift.push("sim_commit");
     else drift.push(...changed.map((p) => `sim:${p}`));
@@ -247,9 +276,11 @@ function transformInputs(source: ProbeSource): TransformInputs {
     };
 }
 
+const oracleArm = (source: ProbeSource) => deliveryOf(armProfile(source.arm)) === "oracle-context";
+
 function deliveredText(source: ProbeSource): string {
     const text = String(source.event.text ?? "");
-    if (deliveryOf(armProfile(source.arm)) !== "oracle-context") return text;
+    if (!oracleArm(source)) return text;
     return `${oracleBackground(source.scenario, source.probe.id) ?? ""}${text}`;
 }
 
@@ -260,15 +291,58 @@ const corpusCommit = (source: ProbeSource): string =>
         ]?.commit ?? "",
     );
 
-function modelIndex(source: ProbeSource, journal: Entry[]): number {
-    const types = new Map(source.scenario.faults.map((f) => [f.id, f.type]));
-    const fired = journal.filter(
+function sourceFaults(source: ProbeSource): { id: string; type: string }[] {
+    const override = source.manifest.fault_override as { id: string; type: string }[] | null;
+    return override ?? (source.scenario.faults as unknown as { id: string; type: string }[]);
+}
+
+function modelIndex(source: ProbeSource): number {
+    const types = new Map(sourceFaults(source).map((f) => [f.id, f.type]));
+    const fired = source.journal.filter(
         (e) => e.arm === source.arm && e.kind === "FaultFired" && e.seq < source.begin.seq,
     );
     if (fired.some((e) => types.get(String(e.fault)) === "host_upgrade")) {
         throw new Error(`a host_upgrade fired on ${source.arm} before the probe`);
     }
     return fired.filter((e) => types.get(String(e.fault)) === "model_switch").length;
+}
+
+function sessionFaults(source: ProbeSource): Record<string, unknown>[] {
+    const types = new Map(sourceFaults(source).map((f) => [f.id, f.type]));
+    const start = source.journal.find(
+        (e) => e.arm === source.arm && e.kind === "Event" && e.event === source.sessionStart.id,
+    );
+    return source.journal
+        .filter(
+            (e) =>
+                e.arm === source.arm &&
+                e.kind === "FaultFired" &&
+                e.seq <= source.end.seq &&
+                (start === undefined || e.seq >= start.seq - 1),
+        )
+        .map((e) => ({ fault: e.fault, type: types.get(String(e.fault)) ?? null, seq: e.seq }));
+}
+
+function keepCommit(source: ProbeSource): (c: Commit) => boolean {
+    const events = source.scenario.events as unknown as ScenarioEvent[];
+    const at = events.indexOf(source.event);
+    const base = source.manifest.base_wall_ms;
+    const key = (e: ScenarioEvent) =>
+        `${Math.floor((base + e.scenario_ms) / 1000)} ${e.remove === true ? "Remove" : "Add"} ${String(e.path)}`;
+    const applies = events
+        .map((e, i) => ({ e, i }))
+        .filter(({ e }) => e.kind === "apply_diff" && e.project === source.project);
+    const before = new Set(applies.filter(({ i }) => i < at).map(({ e }) => key(e)));
+    const after = new Set(applies.filter(({ i }) => i > at).map(({ e }) => key(e)));
+    const cutoffS = Math.floor((base + source.begin.scenario_ms) / 1000);
+    return (c) => {
+        if (c.email.startsWith("sim-user@")) {
+            const k = `${c.ct} ${c.subject}`;
+            if (before.has(k)) return true;
+            if (after.has(k)) return false;
+        }
+        return c.ct <= cutoffS;
+    };
 }
 
 function commandLog(source: ProbeSource, role: string): Command[] {
@@ -298,11 +372,11 @@ function priorCalls(source: ProbeSource): CallView[] {
 
 function prepareRepeat(o: {
     source: ProbeSource;
-    journal: Entry[];
     armDir: string;
     visibleArmDir: string;
     pathMode: PathMode;
     tree: { id: string; fidelity: Fidelity };
+    model: number;
 }): Record<string, Fidelity> {
     const { source } = o;
     const from = join(source.dir, source.arm);
@@ -319,6 +393,7 @@ function prepareRepeat(o: {
     writeFileSync(join(o.armDir, "commands.jsonl"), commands.join(""));
     const workspace = join(o.armDir, "r", "workspaces", source.project);
     copyTree(join(from, "r", "workspaces", source.project), workspace);
+    requireInside(workspace, o.armDir);
     const recorder = new SnapshotRecorder(o.armDir, source.arm, () => []);
     const copied = recorder.tree(workspace);
     checkoutTree({
@@ -329,10 +404,11 @@ function prepareRepeat(o: {
         scratch: join(o.armDir, "replay-restore.index"),
     });
     const restored = recorder.tree(workspace);
-    const cutoffS = Math.floor((source.manifest.base_wall_ms + source.begin.scenario_ms) / 1000);
     const home = join(o.armDir, "r", "home");
     copyTree(join(from, "r", "home"), home);
-    rmSync(join(home, ".pi", "agent", "sessions"), { recursive: true, force: true });
+    const agentDir = join(home, ".pi", "agent");
+    requireInside(agentDir, o.armDir);
+    rmSync(join(agentDir, "sessions"), { recursive: true, force: true });
     const visibleWorkspace = join(o.visibleArmDir, "r", "workspaces", source.project);
     const fidelity: Record<string, Fidelity> = {
         workspace_tree: o.tree.fidelity,
@@ -341,19 +417,27 @@ function prepareRepeat(o: {
             exact: restored === o.tree.id,
             detail: { copied, restored, target: o.tree.id },
         },
-        workspace_git: rewindHead(workspace, cutoffS, corpusCommit(source)),
+        workspace_git: rewindHead({
+            workspace,
+            gitconfig: join(o.armDir, `${source.project}.gitconfig`),
+            keep: keepCommit(source),
+            base: corpusCommit(source),
+        }),
         transcript: truncateSession({
             fromAgentDir: join(from, "r", "home", ".pi", "agent"),
-            toAgentDir: join(home, ".pi", "agent"),
+            toAgentDir: agentDir,
             sessionId: `sim-${source.event.session}`,
             probeText: deliveredText(source),
+            sentFrom: daemonCutoffMs(source) - 2_000,
             ...(o.pathMode === "replay" ? { cwd: visibleWorkspace } : {}),
         }).fidelity,
     };
     if (armProfile(source.arm).daemon !== null) {
+        const dataDir = join(o.armDir, "s", "d");
         copyTree(join(from, "s"), join(o.armDir, "s"));
+        requireInside(dataDir, o.armDir);
         const store = rollbackStore({
-            dataDir: join(o.armDir, "s", "d"),
+            dataDir,
             cutoffMs: daemonCutoffMs(source),
             sessions: [source.event.session, ...source.laterSessions].map((s) => `sim-${s}`),
         });
@@ -361,7 +445,7 @@ function prepareRepeat(o: {
         fidelity.store = store;
     }
     const armState = {
-        model: modelIndex(source, o.journal),
+        model: o.model,
         upgraded: false,
         second: null,
         second_owed: null,
@@ -383,12 +467,13 @@ function prepareRepeat(o: {
 function gradeRepeat(
     source: ProbeSource,
     armDir: string,
-): { grade: GradeRecord | null; verdict: string; reason: string } {
+): { grade: GradeRecord | null; verdict: Verdict; reason: string } {
     const path = join(armDir, "snapshots.jsonl");
     if (!existsSync(path)) {
         return { grade: null, verdict: "no-snapshot", reason: "the turn left no snapshot" };
     }
-    const row = readJsonl<Snapshot>(path).at(-1) as Snapshot;
+    const rows = readFileSync(path, "utf8").split("\n").filter(Boolean);
+    const row = JSON.parse(rows.at(-1) as string) as Snapshot;
     const prior = source.snapshot.artefacts.filter(
         (a) => a.class === "diff" && a.role === "prior-session",
     );
@@ -430,7 +515,9 @@ function sourceFirstRequest(source: ProbeSource): ConverseBody | null {
 
 const NAMESPACE = [
     "set -e",
-    'mount --bind "$1" "$2"',
+    "PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+    "cd /",
+    '/usr/bin/mount --bind "$1" "$2"',
     "uid=$3; gid=$4; path=$5; user=$6",
     "shift 6",
     'exec /usr/bin/setpriv --reuid "$uid" --regid "$gid" --init-groups -- /usr/bin/env PATH="$path" USER="$user" LOGNAME="$user" "$@"',
@@ -450,6 +537,10 @@ export async function spawnTurn(
               "--preserve-env",
               "unshare",
               "--mount",
+              "--pid",
+              "--fork",
+              "--kill-child",
+              "--mount-proc",
               "--propagation",
               "private",
               "--",
@@ -473,25 +564,163 @@ export async function spawnTurn(
     return json<TurnResult>(result);
 }
 
-function removeCreated(dir: string, stop: string): void {
-    let at = dir;
-    while (at !== stop && at.startsWith(`${stop}/`)) {
-        try {
-            rmdirSync(at);
-        } catch {
-            return;
-        }
-        at = dirname(at);
+function canonical(path: string): string {
+    try {
+        return realpathSync(path);
+    } catch {
+        const parent = dirname(path);
+        return parent === path ? path : join(canonical(parent), basename(path));
     }
 }
 
+const contains = (dir: string, path: string) => path === dir || path.startsWith(`${dir}/`);
+
 function requireOutside(out: string, dirs: string[]): void {
-    for (const inside of dirs) {
-        const rel = relative(inside, out);
-        if (rel === "" || (!rel.startsWith("..") && !rel.startsWith("/"))) {
-            throw new Error(`--out ${out} lies inside ${inside}`);
+    const real = canonical(out);
+    for (const dir of dirs) {
+        if (contains(canonical(dir), real)) throw new Error(`--out ${out} lies inside ${dir}`);
+    }
+}
+
+function claimMountPoint(path: string): { release: () => void } {
+    if (resolve(path) !== path) throw new Error(`recorded arm path ${path} is not normalized`);
+    let existing = path;
+    const missing: string[] = [];
+    while (!existsSync(existing)) {
+        missing.push(existing);
+        existing = dirname(existing);
+    }
+    const owner = statSync(existing);
+    if (!owner.isDirectory() || owner.uid !== process.getuid?.() || existing === "/") {
+        throw new Error(`recorded arm path ${path} lies under ${existing}, owned by another user`);
+    }
+    const lock = join(tmpdir(), `sim-replay-${sha256(path).slice(0, 16)}.lock`);
+    for (let attempt = 0; ; attempt++) {
+        try {
+            writeFileSync(lock, `${process.pid}\n`, { flag: "wx" });
+            break;
+        } catch (caught) {
+            if ((caught as NodeJS.ErrnoException).code !== "EEXIST" || attempt > 0) throw caught;
+            const holder = Number(readFileSync(lock, "utf8"));
+            let alive = false;
+            try {
+                process.kill(holder, 0);
+                alive = true;
+            } catch {
+                alive = false;
+            }
+            if (alive) throw new Error(`replay ${holder} holds ${path} (${lock})`);
+            rmSync(lock, { force: true });
         }
     }
+    mkdirSync(path, { recursive: true });
+    return {
+        release: () => {
+            for (const dir of missing) {
+                try {
+                    rmdirSync(dir);
+                } catch {
+                    break;
+                }
+            }
+            rmSync(lock, { force: true });
+        },
+    };
+}
+
+function refuseUnreplayable(source: ProbeSource, variant: string): void {
+    if (source.manifest.host !== "pi") throw new Error("replay runs Pi arms only");
+    if (source.arm.split("~")[0] === "eidnara-cf") {
+        throw new Error("eidnara-cf grades depend on run-level deletion checks");
+    }
+    if (existsSync(join(source.dir, source.arm, "store.img"))) {
+        throw new Error(`${source.arm} kept its store on a loop image, which replay cannot mount`);
+    }
+    if (variant === "oracle-note" && oracleArm(source)) {
+        throw new Error(`${source.arm} already delivers the oracle note`);
+    }
+    const faulted = source.calls.filter((c) => c.fault_ref !== null && c.fault_ref !== undefined);
+    if (faulted.length > 0) {
+        const refs = [...new Set(faulted.map((c) => c.fault_ref))].join(", ");
+        throw new Error(`the probe turn ran under proxy faults (${refs}), and replay runs none`);
+    }
+    requireCapabilities(
+        source.dir,
+        source.manifest as Parameters<typeof requireCapabilities>[1],
+        [source.arm],
+        source.journal,
+    );
+}
+
+function repeatResult(
+    k: number,
+    variant: string,
+    source: ProbeSource,
+    turn: TurnResult,
+    graded: { grade: GradeRecord | null; verdict: Verdict; reason: string },
+    sourceFirst: ConverseBody | null,
+): RepeatResult {
+    const failures = [...turn.failures];
+    if (NOTE_VARIANTS.has(variant) && !turn.applications.some((a) => a.changed)) {
+        failures.push(`${variant} changed no agent request`);
+    }
+    const rates = source.manifest.price_table.rates as never;
+    const cost = componentCosts(turn.records, rates);
+    const own = componentCosts(
+        turn.records.filter((r) => r.turn === source.event.id),
+        rates,
+    );
+    return {
+        repeat: k,
+        variant,
+        verdict: failures.length > 0 ? "harness-failed" : graded.verdict,
+        reason: [graded.reason, ...failures].filter(Boolean).join(" | "),
+        grade: graded.grade,
+        cost_usd: cost.reduce((s, c) => s + c.usd, 0),
+        cost_turn_usd: own.reduce((s, c) => s + c.usd, 0),
+        cost,
+        prompt_ms: typeof turn.outcome.prompt_ms === "number" ? turn.outcome.prompt_ms : null,
+        agent_calls: turn.records.filter((r) => r.component === "agent").length,
+        requests: turn.records.map((r) => ({
+            seq: r.seq,
+            component: r.component,
+            sha256: r.request?.sha256 ?? null,
+            bytes: r.request?.bytes ?? null,
+        })),
+        transformed: turn.applications.filter((a) => a.changed).length,
+        prefix:
+            sourceFirst && turn.first_request
+                ? comparePrefix(sourceFirst, turn.first_request, String(source.event.text ?? ""))
+                : null,
+        failures,
+        notes: turn.notes ?? [],
+        clock_lag_ms:
+            turn.prompt_scenario_ms === null
+                ? null
+                : turn.prompt_scenario_ms - source.begin.scenario_ms,
+    };
+}
+
+function failedRepeat(k: number, variant: string, caught: unknown): RepeatResult {
+    const reason = caught instanceof Error ? caught.message : String(caught);
+    return {
+        repeat: k,
+        variant,
+        verdict: "harness-failed",
+        reason,
+        grade: null,
+        cost_usd: 0,
+        cost_turn_usd: 0,
+        cost: [],
+        prompt_ms: null,
+        agent_calls: 0,
+        requests: [],
+        transformed: 0,
+        prefix: null,
+        failures: [reason],
+        notes: [],
+        clock_lag_ms: null,
+    };
 }
 
 export async function replayProbe(o: ReplayOptions): Promise<RepeatResult[]> {
@@ -500,17 +729,33 @@ export async function replayProbe(o: ReplayOptions): Promise<RepeatResult[]> {
     }
     const pathMode = o.pathMode ?? "source";
     const source = loadProbeSource(o.run, o.arm, o.item);
-    if (source.manifest.host !== "pi") throw new Error("replay runs Pi arms only");
+    refuseUnreplayable(source, transformFor(o.variant).id);
     const out = resolve(o.out);
     requireOutside(out, [source.dir, source.recordedDir, o.config.eidnara_checkout]);
     if (existsSync(out) && readdirSync(out).length > 0) {
         throw new Error(`--out ${out} is not empty`);
     }
     mkdirSync(out, { recursive: true });
+    const claim = join(out, "replay.lock");
+    writeFileSync(claim, `${process.pid}\n`, { flag: "wx" });
+    try {
+        return await replayInto(o, source, out, pathMode);
+    } finally {
+        rmSync(claim, { force: true });
+    }
+}
+
+async function replayInto(
+    o: ReplayOptions,
+    source: ProbeSource,
+    out: string,
+    pathMode: PathMode,
+): Promise<RepeatResult[]> {
     const transform = transformFor(o.variant);
     const inputs = transformInputs(source);
+    const masked = [source.dir, source.recordedDir].filter((d) => existsSync(d));
+    const checks = await (o.preflight ?? preflight)(o.config, out, masked);
     const current = (o.identity ?? ((s) => currentIdentity(o.config, s)))(source);
-    const checks = await (o.preflight ?? preflight)(o.config, out);
     const drift = identityDrift(source, current);
     const recordedPreflight = source.manifest.preflight as Preflight;
     drift.push(...preflightDrift(recordedPreflight, checks).map((d) => `preflight.${d}`));
@@ -518,7 +763,6 @@ export async function replayProbe(o: ReplayOptions): Promise<RepeatResult[]> {
     const refused = drift.filter(
         (d) => !allowed.has(d) && !allowed.has(d.split(/[.:]/)[0] as string),
     );
-    const journal = readJsonl<Entry>(join(source.dir, "journal.jsonl"));
     const sessions = new Map(source.scenario.sessions.map((s) => [s.id, s.project]));
     const projectOf = (e: ScenarioEvent) =>
         typeof e.project === "string" ? e.project : sessions.get(e.session);
@@ -529,7 +773,7 @@ export async function replayProbe(o: ReplayOptions): Promise<RepeatResult[]> {
     copyTree(join(source.dir, source.arm, "snapshot.git"), probeGit);
     const found = probeTree({
         gitDir: probeGit,
-        journal: journal.filter((e) => e.arm === source.arm),
+        journal: source.journal.filter((e) => e.arm === source.arm),
         events: source.scenario.events as unknown as ScenarioEvent[],
         projectOf,
         project: source.project,
@@ -540,6 +784,7 @@ export async function replayProbe(o: ReplayOptions): Promise<RepeatResult[]> {
     rmSync(probeGit, { recursive: true, force: true });
     const hostRow = checks.hosts.find((h) => h.host === "pi");
     if (!hostRow) throw new Error("preflight reports no Pi host");
+    const model = modelIndex(source);
     const sim = simIdentity();
     const manifest = {
         schema: REPLAY_SCHEMA,
@@ -549,13 +794,19 @@ export async function replayProbe(o: ReplayOptions): Promise<RepeatResult[]> {
             dir: source.dir,
             recorded_dir: source.recordedDir,
             manifest_sha256: sha256(readFileSync(join(source.dir, "manifest.json"))),
+            scenario_hash: source.manifest.scenario_hash,
             tier: source.manifest.tier,
             seed: source.manifest.seed,
             host: source.manifest.host,
             sim_commit: source.manifest.sim_commit,
+            sim_worktree: source.manifest.sim_worktree,
             eidnara_commit: source.manifest.eidnara_commit,
             grade: source.grade
-                ? { verdict: source.grade.verdict, version: source.grade.version }
+                ? {
+                      verdict: source.grade.verdict,
+                      version: source.grade.version,
+                      grader: source.grade.grader ?? null,
+                  }
                 : null,
         },
         arm: source.arm,
@@ -580,6 +831,8 @@ export async function replayProbe(o: ReplayOptions): Promise<RepeatResult[]> {
         grader: graderDigest(),
         identity: { drift, allowed: [...allowed], refused },
         workspace_tree: found,
+        model_index: model,
+        session_faults: sessionFaults(source),
         clock: {
             base_wall_ms: source.manifest.base_wall_ms,
             begin_scenario_ms: source.begin.scenario_ms,
@@ -595,91 +848,63 @@ export async function replayProbe(o: ReplayOptions): Promise<RepeatResult[]> {
     }
     const sourceFirst = sourceFirstRequest(source);
     const prereg = loadPrereg(source.manifest.tier as never);
-    const probeText = String(source.event.text ?? "");
     const results: RepeatResult[] = [];
     for (let k = 1; k <= o.repeats; k++) {
         const repeatDir = join(out, `r${k}`);
         const armDir = join(repeatDir, source.arm);
         const visibleArmDir = pathMode === "source" ? join(source.recordedDir, source.arm) : armDir;
-        const fidelity = prepareRepeat({
-            source,
-            journal,
-            armDir,
-            visibleArmDir,
-            pathMode,
-            tree: { id: found.tree, fidelity: found.fidelity },
-        });
-        writeFileSync(join(repeatDir, "fidelity.json"), `${JSON.stringify(fidelity, null, 2)}\n`);
-        const spec: TurnSpec = {
-            config: o.config,
-            out: repeatDir,
-            armDir: visibleArmDir,
-            arm: source.arm,
-            host: "pi",
-            launcher: checks.launcher,
-            hostVersion: hostRow.version,
-            transcriptPaths: hostRow.transcript_paths,
-            baseMs: source.manifest.base_wall_ms,
-            models: source.manifest.models,
-            contextLimit: source.manifest.context_limit,
-            sideModel: source.manifest.side_model,
-            turnDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
-            project: source.project,
-            corpus: join(ROOT, "corpus", "repos", source.project),
-            sessionStart: source.sessionStart,
-            probe: { ...source.event, text: deliveredText(source) },
-            beginMs: source.begin.scenario_ms,
-            priorCalls: priorCalls(source),
-            variant: transform.id,
-            inputs,
-            settleQuietMs: o.settleQuietMs ?? 5_000,
-            settleMaxMs: o.settleMaxMs ?? 30_000,
-        };
-        const specPath = join(repeatDir, "turn-spec.json");
-        writeFileSync(specPath, `${JSON.stringify(spec)}\n`);
-        let created: string | null = null;
-        let mount: Mount | null = null;
-        if (pathMode === "source") {
-            if (!existsSync(visibleArmDir)) {
-                mkdirSync(visibleArmDir, { recursive: true });
-                created = visibleArmDir;
-            }
-            mount = { from: realpathSync(armDir), to: visibleArmDir };
-        }
-        let turn: TurnResult;
+        let result: RepeatResult;
         try {
-            turn = await (o.turn ?? spawnTurn)(spec, specPath, mount);
-        } finally {
-            if (created) removeCreated(created, dirname(source.recordedDir));
+            const fidelity = prepareRepeat({
+                source,
+                armDir,
+                visibleArmDir,
+                pathMode,
+                tree: { id: found.tree, fidelity: found.fidelity },
+                model,
+            });
+            const record = `${JSON.stringify(fidelity, null, 2)}\n`;
+            writeFileSync(join(repeatDir, "fidelity.json"), record);
+            const spec: TurnSpec = {
+                config: o.config,
+                out: repeatDir,
+                armDir: visibleArmDir,
+                arm: source.arm,
+                host: "pi",
+                launcher: checks.launcher,
+                hostVersion: hostRow.version,
+                transcriptPaths: hostRow.transcript_paths,
+                baseMs: source.manifest.base_wall_ms,
+                models: source.manifest.models,
+                contextLimit: source.manifest.context_limit,
+                sideModel: source.manifest.side_model,
+                turnDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
+                project: source.project,
+                corpus: join(ROOT, "corpus", "repos", source.project),
+                sessionStart: source.sessionStart,
+                probe: { ...source.event, text: deliveredText(source) },
+                beginMs: source.begin.scenario_ms,
+                priorCalls: priorCalls(source),
+                variant: transform.id,
+                inputs,
+                settleQuietMs: o.settleQuietMs ?? 5_000,
+                settleMaxMs: o.settleMaxMs ?? 30_000,
+            };
+            const specPath = join(repeatDir, "turn-spec.json");
+            writeFileSync(specPath, `${JSON.stringify(spec)}\n`);
+            const claim = pathMode === "source" ? claimMountPoint(visibleArmDir) : null;
+            let turn: TurnResult;
+            try {
+                const mount = claim ? { from: realpathSync(armDir), to: visibleArmDir } : null;
+                turn = await (o.turn ?? spawnTurn)(spec, specPath, mount);
+            } finally {
+                claim?.release();
+            }
+            const graded = gradeRepeat(source, armDir);
+            result = repeatResult(k, transform.id, source, turn, graded, sourceFirst);
+        } catch (caught) {
+            result = failedRepeat(k, transform.id, caught);
         }
-        const graded = gradeRepeat(source, armDir);
-        const cost = componentCosts(turn.records, source.manifest.price_table.rates as never);
-        const decided = graded.verdict === "pass" || graded.verdict === "fail";
-        const result: RepeatResult = {
-            repeat: k,
-            variant: transform.id,
-            verdict: turn.failures.length > 0 && !decided ? "harness-failed" : graded.verdict,
-            reason: [graded.reason, ...turn.failures].filter(Boolean).join(" | "),
-            grade: graded.grade,
-            cost_usd: cost.reduce((s, c) => s + c.usd, 0),
-            cost,
-            prompt_ms: typeof turn.outcome.prompt_ms === "number" ? turn.outcome.prompt_ms : null,
-            agent_calls: turn.records.filter((r) => r.component === "agent").length,
-            requests: turn.records.map((r) => ({
-                seq: r.seq,
-                component: r.component,
-                sha256: r.request?.sha256 ?? null,
-                bytes: r.request?.bytes ?? null,
-            })),
-            transformed: turn.applications.filter((a) => a.changed).length,
-            prefix:
-                sourceFirst && turn.first_request
-                    ? comparePrefix(sourceFirst, turn.first_request, probeText)
-                    : null,
-            failures: turn.failures,
-            notes: turn.notes ?? [],
-            clock_lag_ms: turn.prompt_scenario_ms - source.begin.scenario_ms,
-        };
         appendFileSync(join(out, "results.jsonl"), `${JSON.stringify(result)}\n`);
         results.push(result);
         if (!o.keep) {
