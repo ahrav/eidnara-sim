@@ -5,11 +5,10 @@ Evidence status: ACTIVE. Added for c8 item S6, the held-out corpus pair.
 ## Discovery trigger
 
 The c7 diagnosis read transcripts of mini-redis and elysia only, and the
-c8 changes to Eidnara were motivated by those transcripts. The overfit
-guardrails for the c8 comparison (`~/scratch/.simmerge/OVERFIT-GUARDRAILS.md`,
-2026-11-06) require at least one held-out corpus repository pair, in a
-language and project not used so far, with held-out results reported apart
-from the diagnosed ones. A held-out report is valid only when its scenarios
+c8 changes to Eidnara were motivated by those transcripts. The c8 campaign
+plan (item S6, held in the campaign notes outside this tree) requires at
+least one held-out corpus repository pair, in a language and project not
+used so far, with held-out results reported apart from the diagnosed ones. A held-out report is valid only when its scenarios
 hold no diagnosed project and its seeds were never compiled from the
 diagnosed corpus.
 

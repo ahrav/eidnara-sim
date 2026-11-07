@@ -125,8 +125,9 @@ results report a project no earlier diagnosis saw (`docs/scenario.md`,
 Held-out corpus). chi was picked on 2026-11-08, before any scenario compiled
 from it, for a language neither diagnosed pick uses and a suite that builds
 from chi's own code and the Go standard library, so the agent sandbox runs
-it with the `go` toolchain and no module cache. The rejected Go candidates
-need downloaded modules.
+it with the `go` toolchain and no module cache. tidwall/gjson and rs/zerolog
+need downloaded modules; yuin/goldmark is a Markdown parser about five times
+chi's size.
 
 Each twin is one commit on top of the pinned commit. It applies the regex
 renames in `repos.json` and overlays the files in `corpus/twins/<id>/`. Git

@@ -119,7 +119,7 @@ pre-registers. Each id is the slug prefix and opens the `Guarantee:` line.
 | SIM-P80 | [sim-p80-wrong-project-lookup-is-no-answer](#sim-p80-wrong-project-lookup-is-no-answer) | safety | `always` | explicit-config-only | S5 |
 | SIM-P81 | [sim-p81-template-presuppositions-hold-on-pinned-trees](#sim-p81-template-presuppositions-hold-on-pinned-trees) | safety | `always` | default-production | S6 |
 | SIM-P82 | [sim-p82-no-probe-asks-a-p1-task-before-its-item](#sim-p82-no-probe-asks-a-p1-task-before-its-item) | safety | `always` | default-production | S6 |
-| SIM-P83 | [sim-p83-held-out-scenarios-hold-only-the-held-out-split](#sim-p83-held-out-scenarios-hold-only-the-held-out-split) | safety | `always` | explicit-config-only | S6 |
+| SIM-P83 | [sim-p83-held-out-scenarios-hold-only-the-held-out-split](#sim-p83-held-out-scenarios-hold-only-the-held-out-split) | safety | `always` | default-production | S6 |
 | SIM-L01 | [sim-l01-turn-ends-within-turn-deadline](#sim-l01-turn-ends-within-turn-deadline) | liveness | `always` | default-production | M4 |
 | SIM-L02 | [sim-l02-background-job-ends-within-job-deadline](#sim-l02-background-job-ends-within-job-deadline) | liveness | `always` | default-production | M4 |
 | SIM-L03 | [sim-l03-tier-completes-within-wall-budget](#sim-l03-tier-completes-within-wall-budget) | liveness | `always` | default-production | M4 |
@@ -2331,7 +2331,7 @@ Open questions:
 ### sim-p83-held-out-scenarios-hold-only-the-held-out-split
 
 Type: safety
-Reachability: explicit-config-only
+Reachability: default-production
 Status: active
 Exercised: yes - `src/scenario/compile.test.ts` `held-out corpus` compiles
 M-601 under qualification H and M-201 as a tier scenario and checks every
@@ -2349,8 +2349,9 @@ held-out registration that no seed is a tier seed; `always`, because one
 diagnosed project or one shared seed in a held-out report mixes the corpus
 the diagnosis read into the result meant to exclude it.
 Fault/timing angle: none.
-Required faults and enabling state: `--qualification H` on a compile or a
-run.
+Required faults and enabling state: none for the tier half, which every
+default compile reaches; `--qualification H` on a compile or a run for the
+held-out half.
 Confidence: high -
 [evidence](evidence/sim-p83-held-out-scenarios-hold-only-the-held-out-split.md).
 `loadCompileInput` filters `repos.json` by split before it builds the
