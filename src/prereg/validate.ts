@@ -207,6 +207,7 @@ const PREREG_SHAPE: Shape = {
         rates: Object.fromEntries(USER_SIM_RATES.map((r) => [r, unitRate])),
         bands: Object.fromEntries(USER_SIM_RATES.map((r) => [r, { min: unitRate, max: unitRate }])),
         interrupt_after_ms: { min: posInt, max: posInt },
+        window_pushback: literal("reactive"),
     },
     families: new ArrayOf(FAMILY_SHAPE),
 };

@@ -37,12 +37,15 @@ import {
     type Prompt,
     pairingMismatches,
     proxyUserSim,
+    REACTIVE_PUSHBACK,
     type ScriptTurn,
+    sessionRules,
     Tape,
     tapeDigests,
     tapeKey,
     tapeMismatches,
     UserSim,
+    windowAllows,
 } from "./usersim";
 
 const prereg = loadPrereg("S");
@@ -572,6 +575,193 @@ describe("clarify context", () => {
             ],
         });
         expect(ctx(turn("e-1"))).toEqual({ request: "", facts: [] });
+    });
+});
+
+describe("reactive pushback in a P14 window", () => {
+    test("inside a window the pushback follows the agent's last turn, an interrupt keeps its plan label, and outside it the plan stands", async () => {
+        const prompts: Prompt[] = [];
+        const llm: Llm = async (p) => {
+            prompts.push(p);
+            return { text: "Why that change?", stop: "end_turn" };
+        };
+        const root = dir();
+        const pairing = new Pairing(join(root, "pairing.jsonl"), () => "a");
+        const broke: Record<string, boolean> = { "e-2": false, "e-4": true, "e-5": true };
+        const user = new UserSim({
+            seed: 101,
+            plan,
+            tape: new Tape(join(root, "tape.jsonl")),
+            pairing,
+            llm,
+            normalise: normaliser(prereg.divergence_policy.normalisation),
+            keys: ["f-0000"],
+            inWindow: (t) => t.id in broke,
+            brokeRule: (_arm, t) => broke[t.id] === true,
+        });
+        const got: [string, boolean][] = [];
+        for (const t of script) {
+            const d = await user.deliver("a", t, "I read the parser.");
+            got.push([d.label, d.reactive === true]);
+            if (t.id === "e-4") expect(d.text).toBe(`${REACTIVE_PUSHBACK}\n\n${t.text}`);
+        }
+        expect(got).toEqual([
+            ["task", false],
+            ["task", true],
+            ["pushback", false],
+            ["pushback", true],
+            ["interrupt", true],
+        ]);
+        expect(prompts.length).toBe(1);
+        const rows = pairing.records.filter((r) => r.kind === "turn") as { reactive?: true }[];
+        expect(rows.map((r) => r.reactive === true)).toEqual([false, true, false, true, true]);
+    });
+
+    test("two arms with the same reply whose work splits a window decision diverge on record", async () => {
+        const root = dir();
+        const pairing = new Pairing(join(root, "pairing.jsonl"), () => "a");
+        const user = new UserSim({
+            seed: 101,
+            plan,
+            tape: new Tape(join(root, "tape.jsonl")),
+            pairing,
+            llm: async () => ({ text: "Why that change?", stop: "end_turn" }),
+            normalise: normaliser(prereg.divergence_policy.normalisation),
+            keys: ["f-0000"],
+            inWindow: (t) => t.id === "e-2",
+            brokeRule: (arm) => arm === "b",
+        });
+        const turns = script.slice(0, 2) as ScriptTurn[];
+        for (const arm of ["a", "b"]) for (const t of turns) await user.deliver(arm, t, "Done.");
+        const split = pairing.records.filter((r) => r.kind === "divergedAt");
+        expect(split.map((r) => [r.arm, r.event])).toEqual([["b", "e-2"]]);
+    });
+
+    test("a window turn the plan skips is marked too, with no rule read", async () => {
+        const root = dir();
+        const pairing = new Pairing(join(root, "pairing.jsonl"), () => "a");
+        const read: string[] = [];
+        const user = new UserSim({
+            seed: 101,
+            plan: { ...plan, skipped: new Set(["e-2"]) },
+            tape: new Tape(join(root, "tape.jsonl")),
+            pairing,
+            llm: async () => ({ text: "Why?", stop: "end_turn" }),
+            normalise: normaliser(prereg.divergence_policy.normalisation),
+            keys: ["f-0000"],
+            inWindow: () => true,
+            brokeRule: (_arm, t) => {
+                read.push(t.id);
+                return false;
+            },
+        });
+        const d = await user.deliver("a", script[1] as ScriptTurn, "Done.");
+        expect([d.delivered, d.reactive, read]).toEqual([false, true, []]);
+        expect(pairing.records.at(-1)).toMatchObject({ delivered: false, reactive: true });
+    });
+
+    test("the realised pushback rate leaves reactive turns out", () => {
+        const turns = [
+            { session: "s-1", label: "pushback" as Label },
+            { session: "s-1", label: "task" as Label },
+            { session: "s-1", label: "pushback" as Label, reactive: true },
+            { session: "s-1", label: "task" as Label, reactive: true },
+        ];
+        expect(realisedRates(turns, prereg).rates.pushback_per_turn).toBe(0.5);
+    });
+});
+
+describe("window rows in the post-run checks", () => {
+    test("a window relabel needs a role a pushback may precede; a clarify needs a filler", () => {
+        const r = (label: Label) => ({ label, reactive: true as const });
+        const filler = { index: 3, role: "filler" };
+        const status = { index: 3, role: "status" };
+        const first = { index: 0, role: "filler" };
+        expect(windowAllows("task", r("pushback"), filler, true)).toBe(true);
+        expect(windowAllows("task", r("pushback"), status, true)).toBe(false);
+        expect(windowAllows("task", r("pushback"), first, true)).toBe(false);
+        expect(windowAllows("pushback", r("clarify"), filler, true)).toBe(true);
+        expect(windowAllows("task", r("pushback"), filler, false)).toBe(false);
+        expect(windowAllows("interrupt", r("task"), filler, true)).toBe(false);
+    });
+});
+
+describe("session rules in force", () => {
+    const events = [
+        { id: "e-0", kind: "session_start", session: "s-1", project: "svc" },
+        {
+            id: "e-1",
+            kind: "user_turn",
+            session: "s-1",
+            index: 0,
+            role: "conveyance",
+            fact: "f-1",
+            text: "tag",
+        },
+        { id: "e-2", kind: "user_turn", session: "s-1", index: 1, role: "filler", text: "x" },
+        {
+            id: "e-3",
+            kind: "user_turn",
+            session: "s-1",
+            index: 2,
+            role: "conveyance",
+            fact: "f-2",
+            text: "retag",
+        },
+        { id: "e-4", kind: "user_turn", session: "s-1", index: 3, role: "filler", text: "y" },
+        { id: "e-5", kind: "user_turn", session: "s-1", index: 4, role: "filler", text: "z" },
+        {
+            id: "e-6",
+            kind: "user_turn",
+            session: "s-1",
+            index: 5,
+            role: "conveyance",
+            fact: "f-3",
+            text: "lookup",
+        },
+        { id: "e-7", kind: "user_turn", session: "s-1", index: 6, role: "filler", text: "w" },
+    ];
+    const facts = [
+        { id: "f-1", kind: "session_rule", supersedes: null },
+        { id: "f-2", kind: "session_rule", supersedes: "f-1" },
+        { id: "f-3", kind: "lookup", supersedes: null },
+    ];
+    const probes = [
+        {
+            type: "P13",
+            fact: "f-1",
+            session: "s-1",
+            check: { commands_must: ["old"], turns: [1, 3] },
+        },
+        {
+            type: "P13",
+            fact: "f-2",
+            session: "s-1",
+            check: { commands_must: ["new"], turns: [3, 6] },
+        },
+        { type: "P8", fact: "f-3", session: "s-1", check: { answer: "v" } },
+        {
+            type: "P14",
+            fact: null,
+            session: "s-1",
+            check: { window_from_turn: 1, window_to_turn: 2 },
+        },
+        {
+            type: "P14",
+            fact: null,
+            session: "s-1",
+            check: { window_from_turn: 3, window_to_turn: 7 },
+        },
+    ];
+    const rules = sessionRules(events, facts, probes);
+    const turn = (id: string) => events.find((e) => e.id === id) as unknown as ScriptTurn;
+
+    test("outside every window the plan decides; inside, the latest revision's check stands", () => {
+        expect(rules(turn("e-1"))).toBeNull();
+        expect(rules(turn("e-3"))).toBeNull();
+        expect(rules(turn("e-2"))).toEqual([{ commands_must: ["old"] }]);
+        expect(rules(turn("e-4"))).toEqual([{ commands_must: ["new"] }]);
+        expect(rules(turn("e-7"))).toEqual([{ commands_must: ["new"] }]);
     });
 });
 

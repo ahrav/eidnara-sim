@@ -120,6 +120,7 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `user_sim.interrupt_after_ms` | none | extension | The range a hard interrupt's delay after the prompt is drawn from. |
 | `user_sim.interrupt_after_ms.min` | none | extension | The shortest interrupt delay. |
 | `user_sim.interrupt_after_ms.max` | none | extension | The longest interrupt delay. |
+| `user_sim.window_pushback` | none | extension | `reactive`: inside a P14 window the user-sim pushes back only after an agent turn that broke a session rule in force, read with the P13 check (`breaksRule`); elsewhere the seeded plan decides (revision 9). |
 | `bootstrap` | `AnalysisFamily.bootstrap_*` | mapped | |
 | `bootstrap.replicates` | `bootstrap_replicates` | mapped | 2,000 lies inside 40 to 10,000. |
 | `bootstrap.seed` | `bootstrap_seed` | mapped | |
