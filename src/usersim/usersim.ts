@@ -233,7 +233,7 @@ export function tapeMismatches(
             const expected = new Set<string>();
             if (entry.text === "") expected.add("empty");
             if (!NORMAL_STOPS.has(entry.stop)) expected.add(entry.stop);
-            if (namesFact?.(entry.text)) expected.add("fact-token");
+            if (r.label !== "clarify" && namesFact?.(entry.text)) expected.add("fact-token");
             // A classified clarify row delivers the fixed text for its word. A clarify row recorded
             // before classification delivered the model's free text as written; only a check of
             // the run that recorded it (`legacyClarify`) accepts one, since a replay would send
@@ -984,13 +984,17 @@ export class UserSim {
         // A source hit is written to this run's tape too, so the run's tape holds every reply.
         this.o.tape.put({ key, event: t.id, label, digest, ...got });
         const source: "tape" | "live" = taped === undefined ? "live" : "tape";
-        const hits = markerHits(got.text, this.o.keys);
+        // A classification is never delivered, so only a reply the agent reads is held to the
+        // marker and fact checks; the fixed clarify text is checked as delivered text.
+        const read = label === "clarify" ? "" : got.text;
+        const hits = markerHits(read, this.o.keys);
         const cut = NORMAL_STOPS.has(got.stop) ? [] : [got.stop];
         const empty = got.text === "" ? ["empty"] : [];
         // The script conveys each fact once; a reply that repeats one conveys it again.
-        const fact = (this.o.facts ?? []).some((f) => got.text.includes(f)) ? ["fact"] : [];
+        const fact =
+            read !== "" && (this.o.facts ?? []).some((f) => read.includes(f)) ? ["fact"] : [];
         // A reply naming a fact's identity can question, restate, or withdraw that fact.
-        const named = this.namesFact(got.text) ? ["fact-token"] : [];
+        const named = this.namesFact(read) ? ["fact-token"] : [];
         const fixed = label === "clarify" ? clarifyReply(got.text) : got.text;
         const unread = fixed === null && got.text !== "" ? ["unread"] : [];
         const fallback = [...empty, ...cut, ...hits, ...fact, ...named, ...unread];

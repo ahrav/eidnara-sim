@@ -385,6 +385,33 @@ describe("clarify replies on recorded c7 calls", () => {
         expect(tapeMismatches(tape, [row], 101, scripted)).toEqual([`a ${c.turn.id}`]);
     });
 
+    test("a classification whose rationale repeats a fact still delivers its fixed reply", async () => {
+        const c = clarifyCalls.find((x) => x.facts.length > 0) as RecordedClarify;
+        const fact = c.facts[0] as string;
+        const root = dir();
+        const pairing = new Pairing(join(root, "pairing.jsonl"), () => "a");
+        const user = new UserSim({
+            seed: 101,
+            plan: { labels: new Map(), skipped: new Set(), interruptMs: new Map() } as Plan,
+            tape: new Tape(join(root, "tape.jsonl")),
+            pairing,
+            llm: async () => ({ text: `SETTLED - ${fact}`, stop: "end_turn" }),
+            normalise: normaliser(prereg.divergence_policy.normalisation),
+            keys: ["f-0000"],
+            facts: [fact],
+            statements: [fact],
+            clarifyContext: () => ({ request: c.request, facts: c.facts }),
+        });
+        const d = await user.deliver("a", c.turn, c.agent);
+        expect(d.text).toStartWith(CLARIFY_REPLIES.settled);
+        expect(pairing.records.at(-1)).not.toHaveProperty("fallback");
+        const scripted = new Map([[c.turn.id, c.turn.text]]);
+        const named = factMatcher([fact], [fact]);
+        expect(
+            tapeMismatches(join(root, "tape.jsonl"), pairing.records, 101, scripted, named),
+        ).toEqual([]);
+    });
+
     test("a classification that is neither word gets the clarify fallback line and records why", async () => {
         const c = clarifyCalls[0] as RecordedClarify;
         const { user, pairing } = clarifySim(c, [], "Rename the three tests to match the script.");
