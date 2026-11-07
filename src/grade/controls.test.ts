@@ -439,6 +439,7 @@ describe("P2, P5, and P11: a question with no change is deferred, never a pass o
                 doubled,
                 listed,
                 indented,
+                "See [the endpoint](https://example.test/search?). I left it.",
             ]) {
                 expect(outcome(p, { answer })).toEqual(["fail", "no code change"]);
             }
@@ -454,6 +455,9 @@ describe("P2, P5, and P11: a question with no change is deferred, never a pass o
             "*Which side should own it?*",
             "> ```rust\n> // Retry?\n\nShould I proceed?",
             "Use `foo here.\n\nWhich side should own it?\n\nUse `bar`.",
+            "    ```rust\nShould I proceed?",
+            "- Context\n\n    Should I use A?",
+            "[Which side should own it?](https://example.test)",
         ]) {
             expect([wrapped, grade(p2, { answer: wrapped }).reason]).toEqual([wrapped, "deferred"]);
         }

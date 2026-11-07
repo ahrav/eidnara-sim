@@ -1693,22 +1693,24 @@ export const DEFERRED = "deferred";
 export const DEFERRABLE = ["P2", "P5", "P11"];
 
 /**
- * The answer's prose: Markdown code removed. A fence opens on a line of three or more backticks or
- * tildes, after any blockquote or list markers, and closes on a line of the same character, at
- * least as long, with nothing after it but spaces; a fence opened inside a blockquote also ends
- * where the quote ends, and an unclosed fence runs to the end. An indented code block is a run of
- * lines indented four spaces or a tab after a blank line. An inline span is a run of backticks
- * closed by a run of the same length inside one paragraph.
+ * The answer's prose: Markdown code and link destinations removed. A fence opens on a line of three
+ * or more backticks or tildes, indented under four spaces after any blockquote or list markers,
+ * and closes on a line of the same character, at least as long, with nothing after it but
+ * spaces; a fence opened inside a blockquote also ends where the quote ends, and an unclosed fence
+ * runs to the end. An indented code block is a run of lines indented four spaces or a tab after a
+ * blank line, outside a list item, whose continuation lines stay prose. An inline span is a run of
+ * backticks closed by a run of the same length inside one paragraph. A link keeps its label.
  */
 function proseOf(answer: string): string {
     const kept: string[] = [];
     let open: { char: string; length: number; quoted: boolean } | null = null;
     let indented = false;
     let blank = true;
+    let listed = false;
     for (const line of answer.split("\n")) {
         const quoted = /^\s*>/.test(line);
-        const bare = line.replace(/^(?:\s*(?:>|[-*+](?=\s)|\d+[.)](?=\s)))*\s*/, "");
-        const fence = /^(`{3,}|~{3,})(.*)$/.exec(bare);
+        const marked = line.replace(/^(?:\s*(?:>|[-*+](?=\s)|\d+[.)](?=\s)))*/, "");
+        const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(marked.replace(/^\s(?=\s{0,2}[`~])/, ""));
         if (open && open.quoted && !quoted) open = null;
         if (open) {
             const closes =
@@ -1718,17 +1720,21 @@ function proseOf(answer: string): string {
             if (closes) open = null;
             continue;
         }
-        if (fence && !(fence[1]?.[0] === "`" && (fence[2] ?? "").includes("`"))) {
+        const code = /^(?: {4}|\t)/.test(line) && line.trim() !== "";
+        if (fence && !code && !(fence[1]?.[0] === "`" && (fence[2] ?? "").includes("`"))) {
             open = { char: fence[1]?.[0] as string, length: fence[1]?.length ?? 3, quoted };
             continue;
         }
-        const code = /^(?: {4}|\t)/.test(line) && line.trim() !== "";
-        indented = code && (indented || blank);
+        if (line.trim() !== "" && !code) listed = /^\s*(?:[-*+]|\d+[.)])\s/.test(line);
+        indented = code && !listed && (indented || blank);
         blank = line.trim() === "";
         if (!indented) kept.push(line);
     }
     const span = /(`+)(?!`)(?:(?!\n\s*\n)[\s\S])*?[^`]\1(?!`)|(`+)\2/g;
-    return kept.join("\n").replace(span, "code");
+    return kept
+        .join("\n")
+        .replace(span, "code")
+        .replace(/\[([^\]\n]*)\]\([^)\n]*\)/g, "$1");
 }
 
 /**
