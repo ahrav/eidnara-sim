@@ -20,10 +20,14 @@ import {
 } from "../src/usersim/plan";
 import {
     asksQuestion,
+    deliveredScript,
     pairingMismatches,
     readPairing,
+    type ScriptTurn,
+    sessionRules,
     type TurnRecord,
     tapeMismatches,
+    windowAllows,
 } from "../src/usersim/usersim";
 
 const dir = resolve(process.argv[2] ?? "");
@@ -105,6 +109,7 @@ const script = new Map(
         .filter((e) => e.kind === "user_turn")
         .map((e) => [e.id, e as Record<string, unknown>]),
 );
+const windowOf = sessionRules(scenario.events, scenario.facts ?? [], scenario.probes ?? []);
 const verbatim = turns.filter((r) => {
     const role = script.get(r.event)?.role;
     return role === "paste" || role === "probe";
@@ -115,7 +120,9 @@ const altered = verbatim
 // A delivered row sent from the script alone carries the compiled text's hash.
 const scriptAltered = turns
     .filter((r) => r.delivered && r.source === "script" && script.has(r.event))
-    .filter((r) => r.text_sha256 !== sha256Hex(String(script.get(r.event)?.text)))
+    .filter(
+        (r) => r.text_sha256 !== sha256Hex(deliveredScript(r, String(script.get(r.event)?.text))),
+    )
     .map((r) => `${r.arm} ${r.event}`);
 // The paste bytes come from the corpus the scenario was compiled from: the corpus inputs digest
 // the compiler recorded covers the manifest and the samples file, and the samples file is the one
@@ -193,11 +200,14 @@ const undeliveredTurns = turns
     .filter((r) => !interruptedTurns.has(`${r.arm} ${r.event}`))
     .filter((r) => !journalDelivered.has(`${r.arm} ${r.event}`))
     .map((r) => `${r.arm} ${r.event}`);
-// A reactive label's text comes from the tape or a live call; a scripted label's from the script.
+// A reactive label's text comes from the tape or a live call; a scripted label's from the script,
+// and so does a pushback in a P14 window, whose fixed line follows the agent's last turn.
 const REACTIVE = new Set(["pushback", "redirect", "abandon", "clarify"]);
+const generatedLabel = (r: { label: string; reactive?: true }) =>
+    REACTIVE.has(r.label) && !(r.reactive && r.label === "pushback");
 const sourceLabelMismatch = turns
     .filter((r) => r.delivered)
-    .filter((r) => (REACTIVE.has(r.label) ? r.source === "script" : r.source !== "script"))
+    .filter((r) => (generatedLabel(r) ? r.source === "script" : r.source !== "script"))
     .map((r) => `${r.arm} ${r.event}`);
 const prereg = loadPrereg(manifest.tier);
 if (preregistrationHash(prereg) !== manifest.prereg_sha256) {
@@ -296,6 +306,8 @@ const journalPairingMismatch = (manifest.order as string[]).flatMap((arm) => {
             off.add(String(u.event));
         if (u.delivered === true && !row.delivered) off.add(String(u.event));
         if (cut(String(u.event)) && u.delivered !== row.delivered) off.add(String(u.event));
+        // The journal's window marker, which the realised rate reads, is the pairing row's.
+        if ((u.reactive === true) !== (row.reactive === true)) off.add(String(u.event));
         // A recovered UserTurn stands only for a turn a stop cut, whose interrupt never ran.
         if (u.recovered === true && !cut(String(u.event))) off.add(String(u.event));
         if (u.label === "interrupt" && u.interrupted !== true && !cut(String(u.event)))
@@ -435,9 +447,15 @@ const planLabelMismatch = turns
         const planned = plan.skipped.has(r.event)
             ? "abandon"
             : (plan.labels.get(r.event) ?? "task");
-        const clarify =
-            planned === "task" && r.label === "clarify" && script.get(r.event)?.role === "filler";
-        return r.label !== planned && !clarify;
+        const filler = script.get(r.event)?.role === "filler";
+        const clarify = planned === "task" && r.label === "clarify" && filler;
+        const turn = script.get(r.event) as unknown as ScriptTurn | undefined;
+        const inWindow = turn !== undefined && windowOf(turn) !== null;
+        // A row carries the window marker exactly when the compiled scenario places its turn
+        // in a window.
+        if ((r.reactive === true) !== inWindow) return true;
+        const allowed = turn !== undefined && windowAllows(planned, r, turn, inWindow);
+        return r.label !== planned && !clarify && !allowed;
     })
     .map((r) => `${r.arm} ${r.event}`);
 // A clarify row stands where the agent's preceding reply ended with a question; the proxy
@@ -486,6 +504,7 @@ const ratesMismatch = (manifest.order as string[]).filter((arm) => {
     const turns = deliveredTurns(journal, arm).map((e) => ({
         session: String(e.session),
         label: e.label as Label,
+        reactive: e.reactive === true,
     }));
     const expected = realisedRates(turns, prereg);
     const summary = {

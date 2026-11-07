@@ -200,6 +200,11 @@ export interface Preregistration {
         bands: Record<UserSimRate, { min: string; max: string }>;
         /** A hard interrupt aborts the turn this long after the prompt is sent. */
         interrupt_after_ms: { min: number; max: number };
+        /**
+         * Revision 9: inside a P14 window a pushback follows the agent's last turn, sent when that
+         * turn broke a session rule in force and only then; elsewhere the seeded plan decides.
+         */
+        window_pushback: "reactive";
     };
     families: Family[];
     /** S and M only: same-arm pairs under different labels, each run `repeats` times. */

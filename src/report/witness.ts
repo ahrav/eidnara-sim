@@ -296,7 +296,11 @@ const CHECKS: Record<string, Check> = {
                 if (!journaled) continue;
                 const turns = a.journal
                     .filter((e) => e.kind === "UserTurn" && e.delivered === true)
-                    .map((e) => ({ session: String(e.session), label: e.label as Label }));
+                    .map((e) => ({
+                        session: String(e.session),
+                        label: e.label as Label,
+                        reactive: e.reactive === true,
+                    }));
                 n++;
                 const realised = realisedRates(turns, c.g.run.prereg);
                 if (realised.outside.length > 0) bad.push(`${a.arm}: ${realised.outside}`);

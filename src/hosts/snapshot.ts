@@ -501,6 +501,11 @@ export class SnapshotRecorder {
         }
     }
 
+    /** The patch between two trees this recorder wrote, in the form a turn diff artefact holds. */
+    patchBetween(from: string, to: string): string {
+        return this.diff(from, to);
+    }
+
     /** `--text` diffs every file as text, so a NUL byte or a `-diff` attribute hides no added line. */
     private diff(from: string, to: string): string {
         for (const id of [from, to]) {

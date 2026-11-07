@@ -22,7 +22,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { GitBound, git } from "../git";
-import type { CallView } from "../grade/artefacts";
+import type { CallView, Command } from "../grade/artefacts";
 import { captureCountersProblem } from "../run/capabilities";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import {
@@ -109,6 +109,11 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm
      * before a fault takes one down, so each daemon lifetime has a first and a last sample.
      */
     sampleDaemon?: () => void;
+    /**
+     * Sessions whose every user turn the driver snapshots before the prompt, so `lastTurnWork`
+     * can give the user-sim the work of the turn before the one it is about to send.
+     */
+    watchTurns?: (session: string) => boolean;
 }
 
 const GIT_ENV = {
@@ -357,6 +362,11 @@ export class HostDriver implements ArmDriver {
     private sessionProject: string | null = null;
     /** Host-reported tool runs carry the active user turn id, or null between turns and for runs recovered from an earlier turn. */
     private turn: string | null = null;
+    /** Each watched session's last turn this process ran: its workspace, start tree, and tool runs. */
+    private readonly lastTurn = new Map<
+        string,
+        { dir: string; before: string; tools: Command[] }
+    >();
     private transcriptsChecked = false;
     private readonly snapshots: SnapshotRecorder;
     private upgraded = false;
@@ -816,6 +826,23 @@ export class HostDriver implements ArmDriver {
         }
     }
 
+    /**
+     * The work of the session's last watched turn: the patch from its start tree to the workspace
+     * now, and the tool runs the host reported for it. Null when this process ran no watched turn
+     * of the session since its start or resume, or when git runs past its bound.
+     */
+    lastTurnWork(session: string): { patch: string; commands: Command[] } | null {
+        const last = this.lastTurn.get(session);
+        if (!last) return null;
+        try {
+            const patch = this.snapshots.patchBetween(last.before, this.snapshots.tree(last.dir));
+            return { patch, commands: last.tools };
+        } catch (caught) {
+            if (caught instanceof GitBound) return null;
+            throw caught;
+        }
+    }
+
     /** Recorded processes go first: a daemon the killed harness left holds the data directory busy. */
     async reset(): Promise<void> {
         await this.reapStale();
@@ -1104,7 +1131,10 @@ export class HostDriver implements ArmDriver {
         const dir = this.workspaceDir(project);
         let before: string | null = "";
         let beforeFailed = "";
-        if (e.probe) {
+        const session = String(e.session);
+        const watched = this.o.watchTurns?.(session) === true;
+        this.lastTurn.delete(session);
+        if (e.probe || watched) {
             try {
                 before = this.snapshots.tree(dir);
             } catch (caught) {
@@ -1152,6 +1182,7 @@ export class HostDriver implements ArmDriver {
         check();
         const tools = host.drainTools();
         this.turn = null;
+        if (watched && before) this.lastTurn.set(session, { dir, before, tools });
         const outcome: TurnOutcome = {
             prompt_ms,
             ...(result.interrupted ? { user: { interrupted: true } } : {}),

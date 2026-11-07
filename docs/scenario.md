@@ -434,7 +434,7 @@ hold-out:
 
 ## Held-out corpus
 
-Qualification H (`prereg/H.json`, revision 1) compiles tier M scenarios from
+Qualification H (`prereg/H.json`, revision 2) compiles tier M scenarios from
 the `held-out` split of `corpus/repos.json`: chi and chi-twin, a Go project
 no earlier diagnosis read. `--qualification H` on `compile-scenario` or
 `run-tier` selects it; a tier compile and qualification Q compile from the

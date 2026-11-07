@@ -177,6 +177,7 @@ const pairingRow: RowCheck = (row) => {
         ...(row.classified === undefined || row.classified === true
             ? []
             : ["classified is not true"]),
+        ...(row.reactive === undefined || row.reactive === true ? [] : ["reactive is not true"]),
         ...(row.fallback === undefined ||
         (Array.isArray(row.fallback) &&
             row.fallback.length > 0 &&
@@ -469,6 +470,8 @@ export interface TurnRecord {
     fallback?: string[];
     /** A clarify reply chosen by classification (`clarifyPrompt`), as every current one is. */
     classified?: true;
+    /** The turn lies in a P14 window, where a pushback follows the agent's last turn. */
+    reactive?: true;
     /** The corpus item a paste turn delivered, by id and byte length. */
     paste?: { sample_id: string; bytes: number };
 }
@@ -631,7 +634,44 @@ export interface Delivery {
     text: string;
     delivered: boolean;
     interruptMs?: number;
+    /** The turn lies in a P14 window, where a pushback follows the agent's last turn. */
+    reactive?: true;
 }
+
+/**
+ * The pushback a turn in a P14 window carries when the agent's last turn broke a session rule in
+ * force: it points the agent back at the session's rules and restates none of them.
+ */
+export const REACTIVE_PUSHBACK =
+    "That last change goes against a rule I gave you earlier in this session. Check your work against it before moving on.";
+/**
+ * Whether a P14-window row's label stands in for the plan's: a window turn the plan labels `task`
+ * or `pushback` carries whichever the agent's last turn called for, and a filler turn among them
+ * becomes `clarify` when the agent asked a question.
+ */
+export function windowAllows(
+    planned: Label,
+    r: { label: Label; reactive?: true },
+    turn: { index: number; role: string },
+    inWindow: boolean,
+): boolean {
+    const reactive = planned === "task" || planned === "pushback";
+    const eligible = turn.index > 0 && PUSHBACK_ROLES.has(turn.role);
+    return (
+        inWindow &&
+        r.reactive === true &&
+        reactive &&
+        ((eligible && (r.label === "task" || r.label === "pushback")) ||
+            (r.label === "clarify" && turn.role === "filler"))
+    );
+}
+
+/** The text a row delivered from the script carries: a window pushback puts its line ahead. */
+export const deliveredScript = (r: { label: Label; reactive?: true }, text: string): string =>
+    r.reactive && r.label === "pushback" ? `${REACTIVE_PUSHBACK}\n\n${text}` : text;
+
+/** Roles a pushback may precede, from the second turn of a session on. */
+const PUSHBACK_ROLES = new Set(["filler", "conveyance", "update", "reversal"]);
 
 const ASKS: Partial<Record<Label, string>> = {
     pushback:
@@ -714,6 +754,64 @@ export function clarifyReply(text: string): string | null {
         : word === "OPEN"
           ? CLARIFY_REPLIES.open
           : null;
+}
+
+/**
+ * Each turn's reactive scope from the compiled scenario: inside a P14 window of its session
+ * (`window_from_turn` to before `window_to_turn`), the checks of the session rules conveyed in the
+ * session before the turn, the latest revision of each line in force; outside every window, null.
+ * A rule's check is its P13 item's check without the item's turn range.
+ */
+export function sessionRules(
+    events: readonly Record<string, unknown>[],
+    facts: readonly { id: string; kind: string; supersedes: string | null }[],
+    probes: readonly { type: string; fact: string | null; session: string; check: unknown }[],
+): (t: ScriptTurn) => Record<string, unknown>[] | null {
+    const windows = probes
+        .filter((p) => p.type === "P14")
+        .map((p) => ({
+            session: p.session,
+            ...(p.check as { window_from_turn: number; window_to_turn: number }),
+        }));
+    const rules = new Set(facts.filter((f) => f.kind === "session_rule").map((f) => f.id));
+    const supersedes = new Map(facts.map((f) => [f.id, f.supersedes]));
+    const checks = new Map<string, Record<string, unknown>>(
+        probes
+            .filter((p) => p.type === "P13" && p.fact !== null)
+            .map((p) => {
+                const { turns: _, ...check } = (p.check ?? {}) as Record<string, unknown>;
+                return [p.fact as string, check] as const;
+            }),
+    );
+    const at = new Map(events.map((e, i) => [e.id as string, i]));
+    const conveyed = events.flatMap((e, i) =>
+        e.kind === "user_turn" &&
+        typeof e.fact === "string" &&
+        rules.has(e.fact) &&
+        FACT_ROLES.has(e.role as string)
+            ? [{ i, session: e.session, fact: e.fact }]
+            : [],
+    );
+    return (t) => {
+        const open = windows.some(
+            (w) =>
+                w.session === t.session &&
+                t.index >= w.window_from_turn &&
+                t.index < w.window_to_turn,
+        );
+        if (!open) return null;
+        const before = at.get(t.id) ?? -1;
+        const ids = conveyed
+            .filter((c) => c.session === t.session && c.i < before)
+            .map((c) => c.fact);
+        const replaced = new Set(ids.map((id) => supersedes.get(id)));
+        return ids
+            .filter((id) => !replaced.has(id))
+            .flatMap((id) => {
+                const check = checks.get(id);
+                return check ? [check] : [];
+            });
+    };
 }
 
 /**
@@ -812,6 +910,10 @@ export interface UserSimOptions {
     statements?: readonly string[];
     /** What the user told the agent before a turn, which a `clarify` classification reads. */
     clarifyContext?: (t: ScriptTurn) => ClarifyContext;
+    /** Whether a turn lies inside a P14 window, where pushback is reactive. */
+    inWindow?: (t: ScriptTurn) => boolean;
+    /** Whether the agent's last turn on `arm` broke a session rule in force (`breaksRule`). */
+    brokeRule?: (arm: string, t: ScriptTurn) => boolean;
 }
 
 const IDENTIFIER = /[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+|\b\d{5}\b/g;
@@ -882,7 +984,18 @@ export class UserSim {
         // the cut still get different digests.
         const cut = whole !== sha256Hex(agent.text);
         const normalised = this.o.normalise(agent.text);
-        const digest = sha256Hex(cut ? `${normalised}\n${whole}` : normalised);
+        // Inside a P14 window the agent's work decides a pushback, so the decision joins the
+        // digest: two arms whose replies match but whose work splits the decision diverge here.
+        let label = plan.labels.get(t.id) ?? "task";
+        const reactive = this.o.inWindow?.(t) === true;
+        const eligible =
+            t.index > 0 && PUSHBACK_ROLES.has(t.role) && (label === "task" || label === "pushback");
+        const sent = !plan.skipped.has(t.id);
+        const broke = reactive && eligible && sent ? this.o.brokeRule?.(arm, t) === true : null;
+        const decided = broke === null ? "" : `\nwindow:${broke ? "broke" : "kept"}`;
+        const digest = sha256Hex(
+            cut ? `${normalised}\n${whole}${decided}` : `${normalised}${decided}`,
+        );
         const end = cut ? (agent.tail ?? agent.text) : agent.text;
         const prev = t.index === 0 ? undefined : pairing.last(arm, t.session, t.index);
         const chain = prev ? `${prev.prefix_sha256}\n${prev.text_sha256}` : "";
@@ -923,21 +1036,34 @@ export class UserSim {
                 label: "abandon",
                 delivered: false,
                 source: "script",
+                ...(reactive ? { reactive: true as const } : {}),
             });
-            return { label: "abandon", text: "", delivered: false };
+            return {
+                label: "abandon",
+                text: "",
+                delivered: false,
+                ...(reactive ? { reactive: true as const } : {}),
+            };
         }
-        let label = plan.labels.get(t.id) ?? "task";
+        // Inside a P14 window a pushback follows the agent's last turn: it comes when that turn
+        // broke a session rule in force and only then, so the window's post-fold correction count
+        // measures the agent.
+        if (broke !== null) label = broke ? "pushback" : "task";
         if (label === "task" && t.role === "filler" && asksQuestion(end)) label = "clarify";
         const reply =
-            ASKS[label] || label === "clarify"
-                ? await this.reply(t, label, context, digest, end)
-                : null;
+            reactive && label === "pushback"
+                ? null
+                : ASKS[label] || label === "clarify"
+                  ? await this.reply(t, label, context, digest, end)
+                  : null;
         const text =
-            reply === null
-                ? t.text
-                : label === "abandon"
-                  ? reply.text
-                  : `${reply.text}\n\n${t.text}`;
+            reactive && label === "pushback"
+                ? `${REACTIVE_PUSHBACK}\n\n${t.text}`
+                : reply === null
+                  ? t.text
+                  : label === "abandon"
+                    ? reply.text
+                    : `${reply.text}\n\n${t.text}`;
         const hits = markerHits(text, this.o.keys);
         if (hits.length > 0)
             throw new HarnessFailure(`${t.id}: delivered text carries markers ${hits.join(", ")}`);
@@ -954,6 +1080,7 @@ export class UserSim {
             ...(reply?.fallback ? { fallback: reply.fallback } : {}),
             ...(reply && label === "clarify" ? { classified: true as const } : {}),
             ...(t.paste ? { paste: t.paste } : {}),
+            ...(reactive ? { reactive: true as const } : {}),
         });
         const interruptMs = plan.interruptMs.get(t.id);
         return {
@@ -961,6 +1088,7 @@ export class UserSim {
             text,
             delivered: true,
             ...(interruptMs === undefined ? {} : { interruptMs }),
+            ...(reactive ? { reactive: true as const } : {}),
         };
     }
 

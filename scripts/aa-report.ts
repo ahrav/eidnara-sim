@@ -34,10 +34,14 @@ import {
     realisedRates,
 } from "../src/usersim/plan";
 import {
+    deliveredScript,
     pairingMismatches,
     readPairing,
+    type ScriptTurn,
+    sessionRules,
     type TurnRecord,
     tapeDigests,
+    windowAllows,
 } from "../src/usersim/usersim";
 
 /** A percentile interval over fewer clusters than this undercovers, so it decides nothing. */
@@ -247,6 +251,7 @@ function report(dir: string) {
     }
     const pairing = readPairing(join(dir, "pairing.jsonl"), order);
     // Each pairing row names a scheduled event and sits at that event's session and index.
+    const windowOf = sessionRules(scenario.events, scenario.facts ?? [], scenario.probes ?? []);
     const turnOf = new Map(
         prefix
             .filter((e) => e.kind === "user_turn")
@@ -331,7 +336,7 @@ function report(dir: string) {
         const e = turnOf.get(r.event) as { role?: string; text?: unknown } | undefined;
         const verbatim = e?.role === "probe" || e?.role === "paste" || r.source === "script";
         if (!e || !verbatim || !r.delivered) continue;
-        if (r.text_sha256 !== sha256Hex(String(e.text))) {
+        if (r.text_sha256 !== sha256Hex(deliveredScript(r, String(e.text)))) {
             throw new Error(
                 `${dir}/pairing.jsonl: ${r.arm} ${r.event} differs from the compiled text`,
             );
@@ -379,7 +384,8 @@ function report(dir: string) {
                 if (r.kind !== "turn" || r.arm !== a) continue;
                 const mine = users.filter((e) => String(e.event) === r.event);
                 const cut = interrupted.has(`${a}/${r.event}`);
-                if (r.delivered && REACTIVE.has(r.label) === (r.source === "script")) {
+                const generated = REACTIVE.has(r.label) && !(r.reactive && r.label === "pushback");
+                if (r.delivered && generated === (r.source === "script")) {
                     throw new Error(
                         `${dir}: ${a} ${r.event} label ${r.label} disagrees with source ${r.source}`,
                     );
@@ -563,7 +569,10 @@ function report(dir: string) {
             : (plan.labels.get(r.event) ?? "task");
         const e = turnOf.get(r.event) as { role?: string } | undefined;
         const clarify = planned === "task" && r.label === "clarify" && e?.role === "filler";
-        if (r.label !== planned && !clarify) {
+        const turn = turnOf.get(r.event) as unknown as ScriptTurn | undefined;
+        const inWindow = turn !== undefined && windowOf(turn) !== null;
+        const allowed = turn !== undefined && windowAllows(planned, r, turn, inWindow);
+        if ((r.reactive === true) !== inWindow || (r.label !== planned && !clarify && !allowed)) {
             throw new Error(
                 `${dir}/pairing.jsonl: ${r.arm} ${r.event} carries label ${r.label}; the seeded plan assigned ${planned}`,
             );
@@ -597,6 +606,7 @@ function report(dir: string) {
             deliveredTurns(entries, arm).map((e) => ({
                 session: String(e.session),
                 label: e.label as Label,
+                reactive: e.reactive === true,
             })),
             prereg,
         );
