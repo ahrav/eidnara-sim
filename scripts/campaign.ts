@@ -12,19 +12,24 @@ import { basename, join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { writeAtomic } from "../src/run/atomic";
 import {
+    admitted,
     alertKey,
     alerts,
     type CampaignSpec,
     decide,
     finalizeArgv,
+    groupKey,
     lastErrorIn,
     launchArgv,
+    noSpend,
     openLog,
     parseCampaign,
     type RunProgress,
     type RunRecord,
+    readSpend,
     runDir,
     runProgress,
+    type Spend,
     STALL_LIMIT,
 } from "../src/run/campaign";
 import { leaseHeld, releaseLease, takeLease } from "../src/run/journal";
@@ -334,14 +339,51 @@ const live = (name: string) => {
 };
 const empty = (now: number) => runProgress(join(spec.out, ".no-run"), now);
 
-function step(run: CampaignSpec["runs"][number], record: RunRecord, now: number): RunProgress {
-    const dir = runDir(spec, run.name);
+/** A run began once it launched or left a run directory with a journal or manifest behind. */
+const begun = (name: string, record: RunRecord) =>
+    record.launches > 0 ||
+    live(name) ||
+    existsSync(join(runDir(spec, name), "journal.jsonl")) ||
+    existsSync(join(runDir(spec, name), "manifest.json"));
+const OPEN_STATES = new Set<RunRecord["state"]>(["pending", "running"]);
+/**
+ * A run is running while its child lives or its plain run directory's lease is held; a linked
+ * directory is never read. A lease that cannot be read throws in a step, which records the
+ * failure, and counts as held for admission, so the run keeps its slot meanwhile.
+ */
+const running = (name: string, strict = true) => {
+    if (live(name)) return true;
+    const dir = runDir(spec, name);
+    try {
+        if (!lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) return false;
+        return leaseHeld(dir);
+    } catch (caught) {
+        if (strict) throw caught;
+        return true;
+    }
+};
+const TERMINAL = new Set<RunRecord["state"]>(["finalized", "gave-up"]);
+
+/** The run's progress, read only from a plain run directory. */
+function observe(name: string, now: number): RunProgress {
+    const dir = runDir(spec, name);
     if (lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) {
         throw new Error(`${dir} is a link; a run directory must be a plain directory`);
     }
-    const progress = runProgress(dir, now);
-    const running = live(run.name) || (existsSync(dir) && leaseHeld(dir));
-    if (record.state === "running" && !running) {
+    return runProgress(dir, now);
+}
+
+function step(
+    run: CampaignSpec["runs"][number],
+    record: RunRecord,
+    now: number,
+    mayStart: boolean,
+    observed: RunProgress | Error,
+): RunProgress {
+    if (observed instanceof Error) throw observed;
+    const progress = observed;
+    const isRunning = running(run.name);
+    if (record.state === "running" && !isRunning) {
         record.last_error = lastErrorIn(logOf(run.name)) ?? record.last_error;
         record.stalled =
             progress.measured_events === record.progress_at_launch ? record.stalled + 1 : 0;
@@ -352,12 +394,12 @@ function step(run: CampaignSpec["runs"][number], record: RunRecord, now: number)
     const decision = decide(
         record,
         progress,
-        running,
+        isRunning,
         spec.max_resumes,
         now,
         spec.relaunch_backoff_ms,
     );
-    if (decision.action === "launch") launch(run, record, progress);
+    if (decision.action === "launch" && mayStart) launch(run, record, progress);
     if (decision.action === "finalize") {
         finalize(run.name, record).catch((caught) => {
             record.state = "finalized";
@@ -369,24 +411,63 @@ function step(run: CampaignSpec["runs"][number], record: RunRecord, now: number)
         record.gave_up_reason = decision.reason;
         say(`${run.name} GAVE UP: ${decision.reason}`, true);
     }
-    if (decision.action === "wait" && running) record.state = "running";
+    if (decision.action === "wait" && isRunning) record.state = "running";
     return progress;
 }
 
 let raised = new Set<string>();
+const spends = new Map<string, Spend>(spec.runs.map((r) => [r.name, noSpend()]));
+const groupOf = new Map(spec.runs.map((r) => [r.name, r.group ?? null]));
+const cents = (usd: number) => Math.round(usd * 100) / 100;
 for (;;) {
     const now = Date.now();
     const rows: { record: RunRecord; progress: RunProgress }[] = [];
+    // Progress is read before admission, so a run that reached EndRun since the last poll frees its
+    // slot now, and a run whose process or lease is live holds one whatever its record says.
+    const observed = new Map<string, RunProgress | Error>();
+    for (const run of spec.runs) {
+        try {
+            observed.set(run.name, observe(run.name, now));
+        } catch (caught) {
+            observed.set(run.name, caught as Error);
+        }
+    }
+    // A finalized or given-up run neither holds a slot nor waits for one, unless it still runs.
+    const candidates = spec.runs.filter(
+        (run) =>
+            !TERMINAL.has((records.get(run.name) as RunRecord).state) || running(run.name, false),
+    );
+    const slots = candidates.map((run) => {
+        const record = records.get(run.name) as RunRecord;
+        const began = begun(run.name, record);
+        const progress = observed.get(run.name);
+        const ended = progress !== undefined && !(progress instanceof Error) && progress.ended;
+        return {
+            name: run.name,
+            group: groupKey(run),
+            begun: began,
+            holding:
+                began && (running(run.name, false) || (!ended && OPEN_STATES.has(record.state))),
+        };
+    });
+    const allowed = admitted(spec.max_concurrent, slots);
     for (const run of spec.runs) {
         const record = records.get(run.name) as RunRecord;
         try {
-            rows.push({ record, progress: step(run, record, now) });
+            const progress = step(
+                run,
+                record,
+                now,
+                allowed.has(run.name),
+                observed.get(run.name) ?? empty(now),
+            );
+            rows.push({ record, progress });
             record.step_failures = 0;
         } catch (caught) {
             record.last_error = `supervisor: ${(caught as Error).message}`;
             record.step_failures++;
             say(`ALERT run ${run.name}: supervisor step failed: ${record.last_error}`, true);
-            if (record.step_failures >= STALL_LIMIT && !live(run.name)) {
+            if (record.step_failures >= STALL_LIMIT && !running(run.name, false)) {
                 record.state = "gave-up";
                 record.gave_up_reason = `${record.step_failures} supervisor steps in a row failed; last: ${record.last_error}`;
                 say(`${run.name} GAVE UP: ${record.gave_up_reason}`, true);
@@ -394,7 +475,20 @@ for (;;) {
             rows.push({ record, progress: empty(now) });
         }
     }
-    const raisedNow = alerts(spec, rows, now);
+    const spendErrors: string[] = [];
+    for (const run of spec.runs) {
+        const path = join(runDir(spec, run.name), "calls.jsonl");
+        try {
+            // A linked run directory is refused by its step, and its records count for nothing.
+            if (lstatSync(runDir(spec, run.name), { throwIfNoEntry: false })?.isSymbolicLink())
+                continue;
+            spends.set(run.name, readSpend(path, spends.get(run.name) ?? noSpend(), spec.prices));
+        } catch (caught) {
+            spendErrors.push(`run ${run.name} spend read failed: ${(caught as Error).message}`);
+        }
+    }
+    const spendUsd = [...spends.values()].reduce((sum, x) => sum + x.usd, 0);
+    const raisedNow = [...alerts(spec, rows, now, undefined, spendUsd), ...spendErrors];
     for (const a of raisedNow) if (!raised.has(alertKey(a))) say(`ALERT ${a}`, true);
     raised = new Set(raisedNow.map(alertKey));
     let persisted = true;
@@ -406,9 +500,27 @@ for (;;) {
                     schema: "sim-campaign-status/v1",
                     updated_at: new Date(now).toISOString(),
                     alerts: raisedNow,
+                    spend_usd: cents(spendUsd),
+                    spend_cap_usd: spec.spend_cap_usd,
+                    max_concurrent: spec.max_concurrent,
+                    slots_held: candidates.filter((run) => {
+                        const record = records.get(run.name) as RunRecord;
+                        return (
+                            running(run.name, false) ||
+                            (OPEN_STATES.has(record.state) && begun(run.name, record))
+                        );
+                    }).length,
                     runs: rows.map(({ record, progress }) => ({
                         ...record,
                         ...progress,
+                        group: groupOf.get(record.name),
+                        spend_usd: cents(spends.get(record.name)?.usd ?? 0),
+                        spend_calls: spends.get(record.name)?.calls ?? 0,
+                        spend_by_component: Object.fromEntries(
+                            Object.entries(spends.get(record.name)?.by_component ?? {}).map(
+                                ([k, v]) => [k, cents(v)],
+                            ),
+                        ),
                         eta_at:
                             progress.eta_ms === null || record.state !== "running"
                                 ? null

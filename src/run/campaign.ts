@@ -9,13 +9,22 @@ import {
     statfsSync,
 } from "node:fs";
 import { join } from "node:path";
+import { sameSet } from "../prereg/validate";
 import { interruptions } from "./interruptions";
 import { type Entry, readJournal } from "./journal";
+import { PRICE_TABLE, type Price } from "./price";
+
+/** USD per million tokens, by token class. */
+export type Prices = Price;
+
+/** The rates every run's manifest records (`PRICE_TABLE`), which c7's cost analysis charged. */
+export const C7_PRICES: Prices = PRICE_TABLE.rates;
 
 export interface CampaignSpec {
     schema: "sim-campaign/v1";
     out: string;
-    runs: { name: string; args: string[] }[];
+    /** `group` names the runs that launch together; a run without one is its own group. */
+    runs: { name: string; args: string[]; group?: string }[];
     args: string[];
     max_resumes: number;
     poll_ms: number;
@@ -30,6 +39,11 @@ export interface CampaignSpec {
      * or null; the supervisor's own checkout must be at it.
      */
     sim_upgrade: string | null;
+    /** The most runs that may hold a launch slot at once, or null for no limit. */
+    max_concurrent: number | null;
+    prices: Prices;
+    /** The total spend past which the supervisor raises an alert, or null for none. */
+    spend_cap_usd: number | null;
 }
 
 export const DEFAULT_RUN = ["bun", "scripts/run-tier.ts"];
@@ -66,6 +80,9 @@ export function parseCampaign(raw: unknown): CampaignSpec {
             problems.push(`run name ${JSON.stringify(r?.name)} is not a unique plain name`);
         } else names.add(r.name);
         if (!strings(r?.args)) problems.push(`run ${r?.name} args are not strings`);
+        if (r?.group !== undefined && !(typeof r.group === "string" && NAME.test(r.group))) {
+            problems.push(`run ${r?.name} group is not a plain name`);
+        }
         for (const flag of ["--out", "--sim-upgrade"]) {
             if ((r?.args ?? []).includes(flag))
                 problems.push(`run ${r?.name} names its own ${flag}`);
@@ -103,6 +120,37 @@ export function parseCampaign(raw: unknown): CampaignSpec {
     if (o?.finalize_timeout_ms !== undefined && !((o.finalize_timeout_ms as number) > 0)) {
         problems.push("finalize_timeout_ms is not positive");
     }
+    const max = o?.max_concurrent;
+    if (max != null && !(Number.isSafeInteger(max) && max > 0)) {
+        problems.push("max_concurrent is not a positive integer");
+    } else if (max != null) {
+        const sizes = new Map<string, number>();
+        for (const r of o?.runs ?? []) {
+            if (r?.group === undefined) continue;
+            sizes.set(r.group, (sizes.get(r.group) ?? 0) + 1);
+        }
+        for (const [g, n] of sizes) {
+            if (n > max) problems.push(`group ${g} has ${n} runs, more than max_concurrent ${max}`);
+        }
+    }
+    const prices = o?.prices as Record<string, unknown> | undefined;
+    if (
+        prices !== undefined &&
+        !(
+            typeof prices === "object" &&
+            prices !== null &&
+            sameSet(Object.keys(prices), ["cache_read", "cache_write", "input", "output"]) &&
+            Object.values(prices).every(
+                (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
+            )
+        )
+    ) {
+        problems.push("prices needs non-negative input, output, cache_read, and cache_write");
+    }
+    const cap = o?.spend_cap_usd;
+    if (cap != null && !(typeof cap === "number" && Number.isFinite(cap) && cap > 0)) {
+        problems.push("spend_cap_usd is not a positive number");
+    }
     const upgrade = o?.sim_upgrade;
     if (upgrade != null && !(typeof upgrade === "string" && /^[0-9a-f]{40}$/.test(upgrade))) {
         problems.push("sim_upgrade is not a full commit hash");
@@ -123,10 +171,157 @@ export function parseCampaign(raw: unknown): CampaignSpec {
         finalize_timeout_ms: spec.finalize_timeout_ms ?? 6 * 3600_000,
         relaunch_backoff_ms: spec.relaunch_backoff_ms ?? 60_000,
         sim_upgrade: spec.sim_upgrade ?? null,
+        max_concurrent: spec.max_concurrent ?? null,
+        prices: spec.prices ?? C7_PRICES,
+        spend_cap_usd: spec.spend_cap_usd ?? null,
     };
 }
 
+/** What the supervisor knows of a run when it decides which runs may start. */
+export interface Slot {
+    name: string;
+    group: string;
+    /** The run launched before or left a run directory behind. */
+    begun: boolean;
+    /** The run holds a slot: it began and has neither ended nor been given up. */
+    holding: boolean;
+}
+
+/**
+ * The runs that may launch this poll. A group with a run that began keeps every run and reserves
+ * a slot for each run of it that has not launched; the other groups start whole, in campaign
+ * order, while the slots held and reserved plus the group fit in `max_concurrent`, and the first
+ * group that does not fit holds back every later one.
+ */
+export function admitted(max: number | null, slots: readonly Slot[]): Set<string> {
+    if (max === null) return new Set(slots.map((s) => s.name));
+    const groups = new Map<string, Slot[]>();
+    for (const s of slots) groups.set(s.group, [...(groups.get(s.group) ?? []), s]);
+    const out = new Set<string>();
+    const begun = [...groups.values()].filter((members) => members.some((m) => m.begun));
+    // Every begun group keeps all its runs, and its runs still to launch hold their slots before
+    // any fresh group is weighed.
+    let held =
+        slots.filter((s) => s.holding).length +
+        begun.reduce((n, members) => n + members.filter((m) => !m.begun).length, 0);
+    for (const members of begun) for (const m of members) out.add(m.name);
+    let blocked = false;
+    for (const members of groups.values()) {
+        if (begun.includes(members)) continue;
+        if (blocked || held + members.length > max) {
+            blocked = true;
+            continue;
+        }
+        held += members.length;
+        for (const m of members) out.add(m.name);
+    }
+    return out;
+}
+
+/**
+ * A run's spend so far, read from its `calls.jsonl` up to `offset`. `ino` and `head` (the file's
+ * first bytes, up to `HEAD_BYTES`) identify the file, so a replacement is read from its start.
+ */
+export interface Spend {
+    offset: number;
+    ino: number | null;
+    head: string;
+    usd: number;
+    calls: number;
+    by_component: Record<string, number>;
+}
+
+export const noSpend = (): Spend => ({
+    offset: 0,
+    ino: null,
+    head: "",
+    usd: 0,
+    calls: 0,
+    by_component: {},
+});
+
+const HEAD_BYTES = 256;
+
+const tokens = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
+
+/** The USD cost of one call record at `prices`. */
+export function callUsd(c: Record<string, unknown>, prices: Prices): number {
+    return (
+        (tokens(c.input_tokens) * prices.input +
+            tokens(c.output_tokens) * prices.output +
+            tokens(c.cache_read_tokens) * prices.cache_read +
+            tokens(c.cache_write_tokens) * prices.cache_write) /
+        1e6
+    );
+}
+
+/**
+ * Adds the call records appended to `path` since `prev` to its spend. Only complete lines count,
+ * so a record still being written is read on a later poll, and a line that is not a JSON object
+ * is passed over. A file that shrank or was replaced is read again from its start; an absent file
+ * has spent nothing, and any other open failure is thrown.
+ */
+export function readSpend(path: string, prev: Spend, prices: Prices): Spend {
+    let fd: number;
+    try {
+        fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    } catch (caught) {
+        if ((caught as NodeJS.ErrnoException).code === "ENOENT") return prev;
+        throw caught;
+    }
+    try {
+        const st = fstatSync(fd);
+        if (!st.isFile()) throw new Error(`${path} is not a regular file`);
+        const first = Buffer.alloc(Math.min(HEAD_BYTES, st.size));
+        const got = first.length > 0 ? readSync(fd, first, 0, first.length, 0) : 0;
+        const head = first.subarray(0, got).toString("latin1");
+        const same = st.ino === prev.ino && st.size >= prev.offset && head.startsWith(prev.head);
+        const spend = same
+            ? { ...prev, head, by_component: { ...prev.by_component } }
+            : { ...noSpend(), ino: st.ino, head };
+        if (spend.offset >= st.size) return spend;
+        const chunk = Buffer.alloc(Math.min(1 << 20, st.size - spend.offset));
+        let carry = Buffer.alloc(0);
+        let at = spend.offset;
+        while (at < st.size) {
+            const n = readSync(fd, chunk, 0, Math.min(chunk.length, st.size - at), at);
+            if (n <= 0) break;
+            at += n;
+            let data = Buffer.concat([carry, chunk.subarray(0, n)]);
+            let nl = data.indexOf(0x0a);
+            while (nl >= 0) {
+                const line = data.subarray(0, nl).toString("utf8");
+                spend.offset += nl + 1;
+                data = data.subarray(nl + 1);
+                nl = data.indexOf(0x0a);
+                let c: unknown;
+                try {
+                    c = JSON.parse(line);
+                } catch {
+                    continue;
+                }
+                if (c === null || typeof c !== "object" || Array.isArray(c)) continue;
+                const record = c as Record<string, unknown>;
+                const usd = callUsd(record, prices);
+                const component =
+                    typeof record.component === "string" ? record.component : "unknown";
+                spend.usd += usd;
+                spend.calls++;
+                spend.by_component[component] = (spend.by_component[component] ?? 0) + usd;
+            }
+            carry = Buffer.from(data);
+        }
+        return spend;
+    } finally {
+        closeSync(fd);
+    }
+}
+
 export const runDir = (spec: CampaignSpec, name: string) => join(spec.out, name);
+
+/** A run's admission group: its named group, or itself alone, which no named group can share. */
+export const groupKey = (run: { name: string; group?: string }) =>
+    run.group === undefined ? `run:${run.name}` : `group:${run.group}`;
 
 /**
  * A run's command line. A resume adds `--sim-upgrade <sim_upgrade>` when the campaign names one;
@@ -299,8 +494,12 @@ export function alerts(
     runs: { record: RunRecord; progress: RunProgress }[],
     now: number,
     inodes: (path: string) => number | null = inodeUse,
+    spendUsd = 0,
 ): string[] {
     const out: string[] = [];
+    if (spec.spend_cap_usd !== null && spendUsd > spec.spend_cap_usd) {
+        out.push(`campaign spend $${spendUsd.toFixed(2)} passes the $${spec.spend_cap_usd} cap`);
+    }
     for (const { record, progress } of runs) {
         if (record.state === "gave-up") {
             out.push(`run ${record.name} GAVE UP: ${record.gave_up_reason}`);
@@ -327,10 +526,13 @@ export function alerts(
 
 /**
  * Alerts compared without the numbers that change between polls (a silence's minutes, an inode
- * percentage), so a growing count raises one alert, not one per poll.
+ * percentage, the spend), so a growing count raises one alert, not one per poll.
  */
 export const alertKey = (alert: string) =>
-    alert.replace(/for \d+ min$/, "for # min").replace(/inode use [\d.]+%/, "inode use #%");
+    alert
+        .replace(/for \d+ min$/, "for # min")
+        .replace(/inode use [\d.]+%/, "inode use #%")
+        .replace(/^campaign spend \$[\d.]+/, "campaign spend $#");
 
 /** The last `error:` line within the last `tail` bytes of a log. */
 export function lastErrorIn(path: string, tail = 64 * 1024): string | null {

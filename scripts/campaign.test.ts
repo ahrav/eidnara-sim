@@ -1,23 +1,31 @@
 import { expect, test } from "bun:test";
 import {
+    appendFileSync,
     existsSync,
     linkSync,
     mkdirSync,
     mkdtempSync,
     readdirSync,
     readFileSync,
+    rmSync,
     symlinkSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+    admitted,
     alertKey,
     alerts,
+    C7_PRICES,
+    callUsd,
     decide,
+    groupKey,
+    noSpend,
     openLog,
     parseCampaign,
     type RunRecord,
+    readSpend,
     runProgress,
 } from "../src/run/campaign";
 import { Journal } from "../src/run/journal";
@@ -303,6 +311,241 @@ test("a campaign file that lets a run pick its own --out, or repeats a name, is 
     expect(() =>
         parseCampaign({ ...base, runs: [{ name: "r", args: [] }], finalize_commands: [[]] }),
     ).toThrow("finalize_commands is not a list of non-empty string lists");
+});
+
+const SLOW_RUN = `
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { Journal } from "${ROOT}/src/run/journal";
+const out = process.argv[process.argv.indexOf("--out") + 1];
+mkdirSync(out, { recursive: true });
+writeFileSync(join(out, "manifest.json"), JSON.stringify({ events: 1, order: ["a"] }));
+const started = Date.now();
+const call = { component: "agent", input_tokens: 1_000_000, output_tokens: 40_000, cache_read_tokens: 0, cache_write_tokens: 0 };
+appendFileSync(join(out, "calls.jsonl"), JSON.stringify(call) + "\\n");
+await Bun.sleep(400);
+const j = new Journal(join(out, "journal.jsonl"));
+j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-0", outcome: "ok" });
+j.append({ kind: "EndRun", arm: null, scenario_ms: 0 });
+writeFileSync(join(out, "times.json"), JSON.stringify({ started, ended: Date.now() }));
+`;
+
+test("max_concurrent starts each group whole, in campaign order, and the status sums each run's spend", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
+    const fake = join(dir, "slow-run.ts");
+    writeFileSync(fake, SLOW_RUN);
+    const out = join(dir, "runs");
+    const spec = {
+        schema: "sim-campaign/v1",
+        out,
+        poll_ms: 50,
+        inode_paths: [],
+        run_command: ["bun", fake],
+        finalize_commands: [["bun", "-e", "process.exit(0)"]],
+        max_concurrent: 2,
+        spend_cap_usd: 10,
+        runs: [
+            { name: "a1", args: [], group: "a" },
+            { name: "a2", args: [], group: "a" },
+            { name: "b1", args: [], group: "b" },
+            { name: "c1", args: [], group: "c" },
+            { name: "c2", args: [], group: "c" },
+        ],
+    };
+    writeFileSync(join(dir, "campaign.json"), JSON.stringify(spec));
+    const r = Bun.spawnSync([process.execPath, "scripts/campaign.ts", join(dir, "campaign.json")], {
+        cwd: ROOT,
+        timeout: 60_000,
+    });
+    expect(r.exitCode).toBe(0);
+    const times = Object.fromEntries(
+        spec.runs.map(({ name }) => [
+            name,
+            JSON.parse(readFileSync(join(out, name, "times.json"), "utf8")) as {
+                started: number;
+                ended: number;
+            },
+        ]),
+    );
+    const t = (n: string) => times[n] as { started: number; ended: number };
+    // A group's runs launch in one poll, and a later group waits for the slots it needs.
+    expect(Math.abs(t("a1").started - t("a2").started)).toBeLessThan(300);
+    expect(Math.abs(t("c1").started - t("c2").started)).toBeLessThan(300);
+    expect(t("b1").started).toBeGreaterThanOrEqual(Math.min(t("a1").ended, t("a2").ended));
+    expect(t("c1").started).toBeGreaterThanOrEqual(t("b1").ended);
+    const status = JSON.parse(readFileSync(join(out, "campaign-status.json"), "utf8"));
+    // Each run spent 1M input and 40k output tokens: $5 + $1 at c7's prices.
+    expect(status.spend_usd).toBe(30);
+    expect(status.max_concurrent).toBe(2);
+    expect(status.runs.find((x: { name: string }) => x.name === "b1")).toMatchObject({
+        group: "b",
+        spend_usd: 6,
+        spend_calls: 1,
+        spend_by_component: { agent: 6 },
+    });
+    expect(status.alerts).toContain("campaign spend $30.00 passes the $10 cap");
+});
+
+test("a run given up before it launched frees the queue for the groups after it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
+    const fake = join(dir, "slow-run.ts");
+    writeFileSync(fake, SLOW_RUN);
+    const out = join(dir, "runs");
+    mkdirSync(out);
+    // A plain file where the run directory belongs fails every step of that run.
+    writeFileSync(join(out, "x"), "not a directory\n");
+    const spec = {
+        schema: "sim-campaign/v1",
+        out,
+        poll_ms: 50,
+        inode_paths: [],
+        run_command: ["bun", fake],
+        finalize_commands: [["bun", "-e", "process.exit(0)"]],
+        max_concurrent: 1,
+        runs: [
+            { name: "x", args: [] },
+            { name: "y", args: [] },
+        ],
+    };
+    writeFileSync(join(dir, "campaign.json"), JSON.stringify(spec));
+    const r = Bun.spawnSync([process.execPath, "scripts/campaign.ts", join(dir, "campaign.json")], {
+        cwd: ROOT,
+        timeout: 60_000,
+    });
+    expect(r.exitCode).toBe(1);
+    const status = JSON.parse(readFileSync(join(out, "campaign-status.json"), "utf8"));
+    expect(status.runs.find((x: { name: string }) => x.name === "x").state).toBe("gave-up");
+    expect(status.runs.find((x: { name: string }) => x.name === "y").state).toBe("finalized");
+});
+
+test("admission holds a group back until all its runs fit, and never splits one", () => {
+    const slot = (name: string, group: string, begun = false, holding = begun) => ({
+        name,
+        group,
+        begun,
+        holding,
+    });
+    const fresh = [slot("a1", "a"), slot("a2", "a"), slot("b1", "b"), slot("c1", "c")];
+    expect([...admitted(null, fresh)]).toEqual(["a1", "a2", "b1", "c1"]);
+    expect([...admitted(3, fresh)]).toEqual(["a1", "a2", "b1"]);
+    expect([...admitted(2, fresh)]).toEqual(["a1", "a2"]);
+    // A begun group keeps all its runs, and its open runs fill the slots a later group needs.
+    const running = [
+        slot("a1", "a", true),
+        slot("a2", "a", true),
+        slot("b1", "b"),
+        slot("c1", "c"),
+    ];
+    expect([...admitted(3, running)]).toEqual(["a1", "a2", "b1"]);
+    // A run that ended holds no slot, and the first group that does not fit holds back the rest.
+    const ended = [
+        slot("a1", "a", true, false),
+        slot("a2", "a", true, true),
+        slot("b1", "b"),
+        slot("b2", "b"),
+        slot("c1", "c"),
+    ];
+    expect([...admitted(2, ended)]).toEqual(["a1", "a2"]);
+    expect([...admitted(3, ended)]).toEqual(["a1", "a2", "b1", "b2"]);
+    // A group that began only in part reserves a slot for each of its runs still to launch.
+    const partial = [slot("a1", "a", true), slot("a2", "a"), slot("b1", "b")];
+    expect([...admitted(2, partial)]).toEqual(["a1", "a2"]);
+    expect([...admitted(3, partial)]).toEqual(["a1", "a2", "b1"]);
+    // Its reservations count even when a fresh group comes first in campaign order.
+    const later = [slot("a1", "a"), slot("b1", "b", true), slot("b2", "b")];
+    expect([...admitted(2, later)]).toEqual(["b1", "b2"]);
+});
+
+test("spend reads only complete call records, and starts over on a shrunk or replaced file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
+    const path = join(dir, "calls.jsonl");
+    const rec = (component: string, input: number, output: number, cr = 0, cw = 0) =>
+        JSON.stringify({
+            component,
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_tokens: cr,
+            cache_write_tokens: cw,
+        });
+    expect(readSpend(path, noSpend(), C7_PRICES)).toEqual(noSpend());
+    writeFileSync(path, `${rec("agent", 2_000_000, 0)}\n${rec("user-sim", 0, 0, 1_000_000, 0)}`);
+    const first = readSpend(path, noSpend(), C7_PRICES);
+    expect(first).toMatchObject({ usd: 10, calls: 1, by_component: { agent: 10 } });
+    appendFileSync(path, `\n${rec("memory_capture", 0, 0, 0, 1_000_000)}\nnot json\n`);
+    const second = readSpend(path, first, C7_PRICES);
+    expect(second.usd).toBeCloseTo(10 + 0.5 + 6.25, 9);
+    expect(second.calls).toBe(3);
+    expect(second.by_component).toEqual({ agent: 10, "user-sim": 0.5, memory_capture: 6.25 });
+    expect(readSpend(path, second, C7_PRICES)).toEqual(second);
+    writeFileSync(path, `${rec("agent", 0, 40_000)}\n`);
+    expect(readSpend(path, second, C7_PRICES)).toMatchObject({ usd: 1, calls: 1 });
+    expect(callUsd({ input_tokens: -5, output_tokens: "x" }, C7_PRICES)).toBe(0);
+    // A file replaced by one whose first bytes differ is read from its start, even when it is
+    // larger than the old offset and reuses the inode.
+    const before = readSpend(path, noSpend(), C7_PRICES);
+    rmSync(path);
+    writeFileSync(
+        path,
+        `${rec("memory_capture", 0, 0, 0, 1_000_000)}\n${rec("agent", 0, 40_000)}\n`,
+    );
+    expect(readSpend(path, before, C7_PRICES)).toMatchObject({
+        usd: 7.25,
+        calls: 2,
+        by_component: { memory_capture: 6.25, agent: 1 },
+    });
+    // A complete line that is JSON but not an object is passed over, and later records count.
+    writeFileSync(path, `null\n[1]\n${rec("agent", 0, 40_000)}\n`);
+    expect(readSpend(path, noSpend(), C7_PRICES)).toMatchObject({ usd: 1, calls: 1 });
+    // Only an absent file has spent nothing; a file that cannot be opened is an error.
+    const linked = join(dir, "linked.jsonl");
+    symlinkSync(path, linked);
+    expect(() => readSpend(linked, noSpend(), C7_PRICES)).toThrow();
+});
+
+test("a campaign file with a group larger than max_concurrent, bad prices, or a bad cap is refused", () => {
+    const base = { schema: "sim-campaign/v1", out: "/x" };
+    const runs = [
+        { name: "r1", args: [], group: "g" },
+        { name: "r2", args: [], group: "g" },
+    ];
+    expect(() => parseCampaign({ ...base, runs, max_concurrent: 1 })).toThrow(
+        "group g has 2 runs, more than max_concurrent 1",
+    );
+    expect(() => parseCampaign({ ...base, runs, max_concurrent: 0 })).toThrow(
+        "max_concurrent is not a positive integer",
+    );
+    expect(() => parseCampaign({ ...base, runs, prices: { input: 5 } })).toThrow("prices needs");
+    const custom = { input: 1, output: 2, cache_read: 0, cache_write: 3 };
+    expect(parseCampaign({ ...base, runs, prices: custom }).prices).toEqual(custom);
+    expect(() => parseCampaign({ ...base, runs, prices: { ...custom, output: -1 } })).toThrow(
+        "prices needs",
+    );
+    expect(() =>
+        parseCampaign({
+            ...base,
+            runs,
+            prices: { "cache_read,cache_write": 1, input: 1, output: 1 },
+        }),
+    ).toThrow("prices needs");
+    expect(() => parseCampaign({ ...base, runs, spend_cap_usd: -1 })).toThrow(
+        "spend_cap_usd is not a positive number",
+    );
+    expect(() =>
+        parseCampaign({ ...base, runs: [{ name: "r", args: [], group: "../g" }] }),
+    ).toThrow("group is not a plain name");
+    // A run without a group is its own group, even when another run's group shares its name.
+    const shared = [
+        { name: "foo", args: [] },
+        { name: "bar", args: [], group: "foo" },
+    ];
+    expect(parseCampaign({ ...base, runs: shared, max_concurrent: 1 }).max_concurrent).toBe(1);
+    expect(groupKey({ name: "foo" })).not.toBe(groupKey({ name: "bar", group: "foo" }));
+    expect(parseCampaign({ ...base, runs })).toMatchObject({
+        max_concurrent: null,
+        prices: C7_PRICES,
+        spend_cap_usd: null,
+    });
 });
 
 test("a supervisor log is opened only as a plain file, never through a link", () => {
