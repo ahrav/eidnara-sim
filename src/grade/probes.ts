@@ -146,9 +146,10 @@ const CARGO =
 /** `bun`, `npm`, or `pnpm` with the global options the three accept ahead of the subcommand. */
 const PM =
     "(?:bun|npm|pnpm)(?: (?:-[sqrw]|--silent|--quiet|--bun|--offline|--prefer-offline|--workspace-root|--loglevel[= ]\\S+|--cwd[= ]\\S+|--dir[= ]\\S+|-C ?\\S+|--prefix[= ]\\S+|--filter[= ]\\S+|--config[= ]\\S+|--env-file[= ]\\S+))*";
-const TESTS = new RegExp(`^(${CARGO} (test|t)|${PM} (run )?test)\\b`);
+const GO = "go(?: -C ?\\S+)?";
+const TESTS = new RegExp(`^(${CARGO} (test|t)|${PM} (run )?test|${GO} test)\\b`);
 const QUIET = new RegExp(
-    `^\\s*(${CARGO} (build|check|test|b|c|t)|${PM} (install|i|ci|(run )?(test|build))|git (status|log|diff)|ls|pwd)\\b[^&|;\`$()\\n]*$`,
+    `^\\s*(${CARGO} (build|check|test|b|c|t)|${PM} (install|i|ci|(run )?(test|build))|${GO} (build|test|vet)|git (status|log|diff)|ls|pwd)\\b[^&|;\`$()\\n]*$`,
 );
 const FOLDS = ["history_summarizer", "native_compaction"];
 const USER_SIM_LABELS = [

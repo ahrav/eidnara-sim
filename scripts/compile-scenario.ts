@@ -118,7 +118,7 @@ mkdirSync(dirname(out), { recursive: true });
 const { aws_profile, region } = config.bedrock;
 const embedder = local ? hashEmbedder : bedrockEmbedder(aws_profile, region, cache);
 const scenario = await compileScenario({
-    ...loadCompileInput(seed, tier as Tier, embedder, local),
+    ...loadCompileInput(seed, tier as Tier, embedder, local, qualification?.corpus),
     ...(qualification
         ? {
               qualification: {

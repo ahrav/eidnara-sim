@@ -1410,6 +1410,720 @@
             }
         ]
     },
+    "go": {
+        "constraint": [
+            {
+                "id": "go-ctx-key-name",
+                "requires": [
+                    {
+                        "path": "middleware/basic_auth.go",
+                        "pattern": "func BasicAuth\\("
+                    },
+                    {
+                        "path": "middleware/realip.go",
+                        "pattern": "func RealIP\\("
+                    },
+                    {
+                        "path": "mux.go",
+                        "pattern": "func \\(mx \\*\\w+\\) ServeHTTP\\("
+                    },
+                    {
+                        "path": "middleware/request_id.go",
+                        "pattern": "context\\.WithValue\\(ctx, RequestIDKey"
+                    }
+                ],
+                "statement": "every key you hand to context.WithValue under middleware/ is a variable whose name starts with {Alt}, for example {Alt}TenantKey",
+                "probe": "Make BasicAuth put the authenticated username on the request context so handlers further down can read it.",
+                "out_probe": "Have the router put the time a request arrived on its context, so handlers can work out their own latency.",
+                "example": {
+                    "path": "middleware/{token}.go",
+                    "content": "package middleware\n\nimport \"context\"\n\ntype tenantKeyType struct{}\n\n// {Alt}TenantKey holds the tenant id a request carries.\nvar {Alt}TenantKey = tenantKeyType{}\n\nfunc withTenant(ctx context.Context, id string) context.Context {\n\treturn context.WithValue(ctx, {Alt}TenantKey, id)\n}\n"
+                },
+                "check": {
+                    "scope": "middleware/",
+                    "must": [
+                        "context\\.WithValue\\(\\s*[^,\\n]+,\\s*(?:\\w+\\.)?{Alt}\\w*"
+                    ],
+                    "applies": [
+                        "\\bcontext\\.WithValue\\s*\\("
+                    ]
+                },
+                "revise": "keys passed to context.WithValue under middleware/ no longer start with {old_Alt}; name them with the {Alt} prefix instead, for example {Alt}TenantKey",
+                "probe_variants": [
+                    "Make RealIP also keep the name of the header it took the client address from on the request context."
+                ],
+                "out_probe_variants": [
+                    "Let the router record on the request context which mounted subrouter handled the request."
+                ]
+            },
+            {
+                "id": "go-http-error-prefix",
+                "requires": [
+                    {
+                        "path": "middleware/content_type.go",
+                        "pattern": "w\\.WriteHeader\\(http\\.StatusUnsupportedMediaType\\)"
+                    },
+                    {
+                        "path": "middleware/request_size.go",
+                        "pattern": "http\\.MaxBytesReader\\("
+                    },
+                    {
+                        "path": "mux.go",
+                        "pattern": "func methodNotAllowedHandler\\("
+                    },
+                    {
+                        "path": "mux.go",
+                        "pattern": "func \\(mx \\*\\w+\\) NotFoundHandler\\("
+                    }
+                ],
+                "statement": "each http.Error call you add under middleware/ passes a message literal that begins with \"{token}: \"",
+                "probe": "Make AllowContentType explain its 415 reply with a short plain-text body.",
+                "out_probe": "Give the router's default 405 handler a plain-text body saying which methods the route accepts.",
+                "example": {
+                    "path": "middleware/{token}.go",
+                    "content": "package middleware\n\nimport \"net/http\"\n\nfunc requireTenant(w http.ResponseWriter, r *http.Request) bool {\n\tif r.Header.Get(\"X-Tenant\") == \"\" {\n\t\thttp.Error(w, \"{token}: tenant header missing\", http.StatusBadRequest)\n\t\treturn false\n\t}\n\treturn true\n}\n"
+                },
+                "check": {
+                    "scope": "middleware/",
+                    "must": [
+                        "http\\.Error\\(\\s*\\w+,\\s*(?:fmt\\.Sprintf\\(\\s*)?\"{token}: "
+                    ],
+                    "applies": [
+                        "\\bhttp\\.Error\\s*\\("
+                    ]
+                },
+                "revise": "the \"{old_token}: \" lead-in for http.Error messages under middleware/ is gone; those messages begin with \"{token}: \" now",
+                "probe_variants": [
+                    "Make RequestSize answer an oversized body with a short plain-text reason before the handler runs."
+                ],
+                "out_probe_variants": [
+                    "Make the router's fallback 404 reply name the path it failed to route."
+                ]
+            },
+            {
+                "id": "go-test-func-prefix",
+                "requires": [
+                    {
+                        "path": "middleware/nocache.go",
+                        "pattern": "func NoCache\\("
+                    },
+                    {
+                        "path": "middleware/content_type.go",
+                        "pattern": "func SetHeader\\("
+                    },
+                    {
+                        "path": "chain.go",
+                        "pattern": "func Chain\\("
+                    },
+                    {
+                        "path": "context.go",
+                        "pattern": "func RouteContext\\("
+                    }
+                ],
+                "statement": "test functions you add under middleware/ are named Test{Alt}<Subject>, for example Test{Alt}Heartbeat",
+                "probe": "Add a test showing that NoCache sets an Expires header of the Unix epoch.",
+                "out_probe": "Add a root-package test showing that Chain wraps middlewares in the order it was given them.",
+                "example": {
+                    "path": "middleware/{token}_test.go",
+                    "content": "package middleware\n\nimport \"testing\"\n\nfunc Test{Alt}Heartbeat(t *testing.T) {\n\tt.Parallel()\n}\n"
+                },
+                "check": {
+                    "scope": "middleware/",
+                    "must": [
+                        "\\bfunc\\s+Test{Alt}\\w*\\s*\\("
+                    ],
+                    "applies": [
+                        "^func\\s+Test\\w*\\s*\\("
+                    ]
+                },
+                "revise": "new middleware/ test functions drop the Test{old_Alt} lead-in and are named Test{Alt}<Subject>, for example Test{Alt}Heartbeat",
+                "probe_variants": [
+                    "Add a test showing that SetHeader puts its header on every response it wraps."
+                ],
+                "out_probe_variants": [
+                    "Add a root-package test showing that RouteContext returns nil for a request no router has seen."
+                ]
+            },
+            {
+                "id": "go-mux-sentinel-name",
+                "requires": [
+                    {
+                        "path": "mux.go",
+                        "pattern": "attempting to Mount\\(\\) a handler on an existing path"
+                    },
+                    {
+                        "path": "mux.go",
+                        "pattern": "routing pattern must begin with '/'"
+                    },
+                    {
+                        "path": "middleware/throttle.go",
+                        "pattern": "Throttle expects limit > 0"
+                    },
+                    {
+                        "path": "middleware/compress.go",
+                        "pattern": "func \\(c \\*Compressor\\) SetEncoder\\("
+                    }
+                ],
+                "statement": "error values you declare in mux.go are named Err{Alt}<Reason>, for example Err{Alt}PatternEmpty",
+                "probe": "Add a TryMount method on the router that reports a conflicting mount as an error value callers can compare against, instead of panicking.",
+                "out_probe": "Give the Compressor a way to report an unknown encoding name as an error value callers can compare against.",
+                "check": {
+                    "scope": "mux.go",
+                    "must": [
+                        "\\bErr{Alt}\\w*\\s*="
+                    ],
+                    "applies": [
+                        "^\\s*(?:var\\s+)?\\w+\\s*=\\s*(?:errors\\.New|fmt\\.Errorf)\\s*\\("
+                    ]
+                },
+                "revise": "error values declared in mux.go leave the Err{old_Alt} naming behind; call them Err{Alt}<Reason> now, for example Err{Alt}PatternEmpty",
+                "probe_variants": [
+                    "Add a router method that registers a route and returns an error value instead of panicking when the pattern lacks its leading slash."
+                ],
+                "out_probe_variants": [
+                    "Offer a ThrottleWithOpts variant that returns an error value for a limit below one instead of panicking."
+                ]
+            },
+            {
+                "id": "go-log-tag",
+                "requires": [
+                    {
+                        "path": "middleware/throttle.go",
+                        "pattern": "http\\.Error\\(w, errCapacityExceeded, t\\.statusCode\\)"
+                    },
+                    {
+                        "path": "middleware/timeout.go",
+                        "pattern": "http\\.StatusGatewayTimeout"
+                    },
+                    {
+                        "path": "mux.go",
+                        "pattern": "func \\(mx \\*\\w+\\) routeHTTP\\("
+                    },
+                    {
+                        "path": "middleware/logger.go",
+                        "pattern": "type LogFormatter interface"
+                    }
+                ],
+                "statement": "lines you log with the standard log package under middleware/ open with the tag \"[{token}] \"",
+                "probe": "Log a line whenever Throttle turns a request away because every slot and backlog place is taken.",
+                "out_probe": "Log a line from the router whenever it falls back to its not-found handler.",
+                "example": {
+                    "path": "middleware/{token}.go",
+                    "content": "package middleware\n\nimport \"log\"\n\nfunc noteSlowTenant(id string) {\n\tlog.Printf(\"[{token}] tenant %s over its budget\", id)\n}\n"
+                },
+                "check": {
+                    "scope": "middleware/",
+                    "must": [
+                        "log\\.(?:Printf|Println|Print)\\(\\s*\"\\[{token}\\] "
+                    ],
+                    "applies": [
+                        "\\blog\\.(?:Printf|Println|Print)\\s*\\("
+                    ]
+                },
+                "revise": "the \"[{old_token}] \" tag on middleware/ log lines is replaced; open them with \"[{token}] \" from now on",
+                "probe_variants": [
+                    "Log a line when Timeout answers 504 because the deadline passed."
+                ],
+                "out_probe_variants": [
+                    "Log a line from the router when a request's method has no handler on a matched route."
+                ]
+            }
+        ],
+        "decision": [
+            {
+                "id": "go-backlog-wait",
+                "requires": [
+                    {
+                        "path": "middleware/throttle.go",
+                        "pattern": "defaultBacklogTimeout = time\\.Second \\* 60"
+                    }
+                ],
+                "statement": "Throttle holds a queued request for {value} milliseconds by default before giving up on it",
+                "probe": "Change how long the concurrency limiter keeps a waiting request by default to the length we agreed.",
+                "authority": {
+                    "path": "middleware/backlog_default.go",
+                    "content": "package middleware\n\n// How long Throttle keeps a queued request by default, in milliseconds.\nconst {TOKEN}_BACKLOG_MS = {value2}\n"
+                },
+                "check": {
+                    "must": [
+                        "(?<!\\d){value2}(?!\\d)|{TOKEN}_BACKLOG_MS"
+                    ],
+                    "must_not": [
+                        "(?<!\\d){value}(?!\\d)"
+                    ]
+                },
+                "revise": "the default queue wait for Throttle is open again; until we settle it, a queued request waits {value} milliseconds"
+            },
+            {
+                "id": "go-request-id-start",
+                "requires": [
+                    {
+                        "path": "middleware/request_id.go",
+                        "pattern": "var reqid atomic\\.Uint64"
+                    },
+                    {
+                        "path": "middleware/request_id.go",
+                        "pattern": "func NextRequestID\\(\\) uint64"
+                    }
+                ],
+                "statement": "generated request IDs count up from {value}",
+                "probe": "Seed the atomic counter behind NextRequestID with the agreed figure instead of zero.",
+                "authority": {
+                    "path": "middleware/request_id_base.go",
+                    "content": "package middleware\n\n// The first number RequestID hands out.\nconst {TOKEN}_REQUEST_ID_BASE = {value2}\n"
+                },
+                "check": {
+                    "must": [
+                        "(?<!\\d){value2}(?!\\d)|{TOKEN}_REQUEST_ID_BASE"
+                    ],
+                    "must_not": [
+                        "(?<!\\d){value}(?!\\d)"
+                    ]
+                },
+                "revise": "we are revisiting where generated request IDs start; until that is settled they count up from {value}"
+            }
+        ],
+        "plan": [
+            {
+                "id": "go-plan-throttler-field",
+                "requires": [
+                    {
+                        "path": "middleware/throttle.go",
+                        "pattern": "type throttler struct"
+                    }
+                ],
+                "task": "adding a {token}_waiting counter field to the throttler struct in middleware/throttle.go",
+                "probe": "Pick the work back up from where our last session ended.",
+                "check": {
+                    "must": [
+                        "{token}_waiting"
+                    ]
+                }
+            },
+            {
+                "id": "go-plan-node-field",
+                "requires": [
+                    {
+                        "path": "tree.go",
+                        "pattern": "type node struct"
+                    }
+                ],
+                "task": "adding a {token}_hits field to the node struct in tree.go",
+                "probe": "Resume the change that was still open last time.",
+                "check": {
+                    "must": [
+                        "{token}_hits"
+                    ]
+                }
+            }
+        ],
+        "rationale": [
+            {
+                "id": "go-why-context-pool",
+                "requires": [
+                    {
+                        "path": "mux.go",
+                        "pattern": "pool \\*sync\\.Pool"
+                    },
+                    {
+                        "path": "mux.go",
+                        "pattern": "mx\\.pool\\.Get\\(\\)"
+                    }
+                ],
+                "statement": "ServeHTTP reuses routing contexts through a sync.Pool because the {codename} benchmark found a fresh allocation per request dominating garbage-collector time",
+                "probe": "Remind me what made us recycle the per-request route state in the top-level handler?",
+                "check": {
+                    "judge": "The {codename} benchmark found a fresh allocation per request dominating garbage-collector time."
+                },
+                "revise": "a correction on the routing-context pool in ServeHTTP: the {codename} benchmark, not {old_codename}, is the one that found per-request allocation dominating garbage-collector time"
+            },
+            {
+                "id": "go-why-backlog-channel",
+                "requires": [
+                    {
+                        "path": "middleware/throttle.go",
+                        "pattern": "backlogTokens\\s+chan token"
+                    }
+                ],
+                "statement": "Throttle keeps a separate backlog channel beside its processing tokens because the {codename} soak run showed waiting requests piling up without bound when only the limit existed",
+                "probe": "What's the story behind the second buffered queue in the concurrency limiter?",
+                "check": {
+                    "judge": "The {codename} soak run showed waiting requests piling up without bound when only the processing limit existed."
+                },
+                "revise": "I had the source of Throttle's backlog channel wrong: the {codename} soak run, not {old_codename}, showed waiting requests piling up without bound"
+            }
+        ],
+        "rejected": [
+            {
+                "id": "go-no-sleep-retry",
+                "requires": [
+                    {
+                        "path": "middleware/throttle.go",
+                        "pattern": "http\\.Error\\(w, errCapacityExceeded, t\\.statusCode\\)"
+                    }
+                ],
+                "statement": "retrying a turned-away request with time.Sleep inside the handler was tried and backed out because it held goroutines long after clients disconnected",
+                "probe": "When Throttle has no free slot, have the request wait briefly and try once more before it is rejected.",
+                "check": {
+                    "must_not": [
+                        "\\btime\\.Sleep\\s*\\("
+                    ]
+                }
+            },
+            {
+                "id": "go-no-route-mutex",
+                "requires": [
+                    {
+                        "path": "tree.go",
+                        "pattern": "func \\(n \\*node\\) InsertRoute\\("
+                    },
+                    {
+                        "path": "mux.go",
+                        "pattern": "all middlewares must be defined before routes"
+                    }
+                ],
+                "statement": "guarding the routing tree with a sync.RWMutex was tried and reverted because every lookup then contended on the lock under load",
+                "probe": "Let callers add routes to a router that is already serving traffic.",
+                "check": {
+                    "must_not": [
+                        "\\bsync\\.(?:RW)?Mutex\\b"
+                    ]
+                }
+            },
+            {
+                "id": "go-no-reflect-handlers",
+                "requires": [
+                    {
+                        "path": "mux.go",
+                        "pattern": "func \\(mx \\*\\w+\\) HandleFunc\\("
+                    }
+                ],
+                "statement": "adapting handler signatures with the reflect package was tried and dropped because it defeated inlining and showed up in every CPU profile",
+                "probe": "Let routes register handlers that return an error, and have the router turn that error into a response.",
+                "check": {
+                    "must_not": [
+                        "\\breflect\\.",
+                        "\"reflect\""
+                    ]
+                }
+            },
+            {
+                "id": "go-no-init-stack",
+                "requires": [
+                    {
+                        "path": "chi.go",
+                        "pattern": "func NewRouter\\(\\) \\*\\w+"
+                    },
+                    {
+                        "path": "middleware/recoverer.go",
+                        "pattern": "func Recoverer\\("
+                    }
+                ],
+                "statement": "installing default middlewares from an init function was tried and backed out because import order changed which stack a router started with",
+                "probe": "Make every router NewRouter returns start with RequestID and Recoverer already in its stack.",
+                "check": {
+                    "must_not": [
+                        "^\\s*func\\s+init\\s*\\(\\s*\\)"
+                    ]
+                }
+            },
+            {
+                "id": "go-no-timeout-goroutine",
+                "requires": [
+                    {
+                        "path": "middleware/timeout.go",
+                        "pattern": "context\\.WithTimeout\\(r\\.Context\\(\\), timeout\\)"
+                    }
+                ],
+                "statement": "running the wrapped handler on its own goroutine to enforce the deadline was tried and reverted because slow handlers kept writing after the response had gone",
+                "probe": "Make Timeout answer 504 the moment the deadline passes, even when the handler ignores its context.",
+                "check": {
+                    "must_not": [
+                        "\\bgo\\s+func\\b",
+                        "\\bgo\\s+\\w+(?:\\.\\w+)*\\s*\\("
+                    ]
+                }
+            },
+            {
+                "id": "go-no-readall-size",
+                "requires": [
+                    {
+                        "path": "middleware/request_size.go",
+                        "pattern": "func RequestSize\\(bytes int64\\)"
+                    }
+                ],
+                "statement": "reading the body with io.ReadAll to measure it was tried and backed out because it buffered the whole body before the size cap applied",
+                "probe": "Make RequestSize report the body's real length in a response header when the body fits under the cap.",
+                "check": {
+                    "must_not": [
+                        "\\b(?:io|ioutil)\\.ReadAll\\s*\\("
+                    ]
+                }
+            },
+            {
+                "id": "go-no-unsafe-path",
+                "requires": [
+                    {
+                        "path": "tree.go",
+                        "pattern": "func \\(n \\*node\\) findRoute\\("
+                    }
+                ],
+                "statement": "converting request paths with unsafe pointer casts was tried and dropped because the race detector flagged shared byte buffers",
+                "probe": "Speed up route lookups for requests with very long paths.",
+                "check": {
+                    "must_not": [
+                        "\\bunsafe\\.",
+                        "\"unsafe\""
+                    ]
+                }
+            },
+            {
+                "id": "go-no-math-rand-id",
+                "requires": [
+                    {
+                        "path": "middleware/request_id.go",
+                        "pattern": "\"crypto/rand\""
+                    }
+                ],
+                "statement": "drawing request ID suffixes from math/rand was tried and reverted because two hosts produced colliding sequences",
+                "probe": "Make RequestID add a short random suffix to each ID it generates.",
+                "check": {
+                    "must_not": [
+                        "\"math/rand(?:/v2)?\""
+                    ]
+                }
+            },
+            {
+                "id": "go-no-raw-header-map",
+                "requires": [
+                    {
+                        "path": "mux.go",
+                        "pattern": "func \\(mx \\*\\w+\\) routeHTTP\\("
+                    },
+                    {
+                        "path": "context.go",
+                        "pattern": "func \\(x \\*Context\\) RoutePattern\\(\\)"
+                    }
+                ],
+                "statement": "setting response headers by indexing w.Header() directly was tried and dropped because it skipped key canonicalisation and broke later lookups",
+                "probe": "Add a response header carrying the matched route pattern on every request the router serves.",
+                "check": {
+                    "must_not": [
+                        "\\.Header\\(\\)\\s*\\["
+                    ]
+                }
+            },
+            {
+                "id": "go-no-background-ctx",
+                "requires": [
+                    {
+                        "path": "middleware/heartbeat.go",
+                        "pattern": "func Heartbeat\\(endpoint string\\)"
+                    }
+                ],
+                "statement": "starting middleware side work from context.Background was tried and backed out because it ignored the client's cancellation",
+                "probe": "Make Heartbeat check a dependency, with a short time limit, before it answers.",
+                "check": {
+                    "must_not": [
+                        "\\bcontext\\.(?:Background|TODO)\\s*\\(\\s*\\)"
+                    ]
+                }
+            },
+            {
+                "id": "go-no-exit-config",
+                "requires": [
+                    {
+                        "path": "middleware/compress.go",
+                        "pattern": "func NewCompressor\\(level int"
+                    }
+                ],
+                "statement": "stopping the process with log.Fatal or os.Exit on bad middleware settings was tried and reverted because it skipped the host server's deferred cleanup",
+                "probe": "Make Compress refuse, at setup time, a compression level that gzip does not support.",
+                "check": {
+                    "must_not": [
+                        "\\bos\\.Exit\\s*\\(",
+                        "\\blog\\.Fatal(?:f|ln)?\\s*\\("
+                    ]
+                }
+            },
+            {
+                "id": "go-no-global-router-map",
+                "requires": [
+                    {
+                        "path": "mux.go",
+                        "pattern": "func \\(mx \\*\\w+\\) Mount\\("
+                    }
+                ],
+                "statement": "a package-level map of named routers was tried and backed out because mounted subrouters in different tests saw each other's entries",
+                "probe": "Let handlers look up a mounted subrouter by a name given when it was mounted.",
+                "check": {
+                    "must_not": [
+                        "^var\\s+\\w+\\s*=\\s*(?:make\\(\\s*)?map\\[",
+                        "^var\\s+\\w+\\s+map\\[",
+                        "\\bsync\\.Map\\b"
+                    ]
+                }
+            }
+        ],
+        "scoped_update": [
+            {
+                "id": "go-scope-refusal-status",
+                "requires": [
+                    {
+                        "path": "middleware/content_type.go",
+                        "pattern": "func AllowContentType\\("
+                    },
+                    {
+                        "path": "middleware/content_charset.go",
+                        "pattern": "func ContentCharset\\("
+                    },
+                    {
+                        "path": "middleware/content_encoding.go",
+                        "pattern": "func AllowContentEncoding\\("
+                    },
+                    {
+                        "path": "middleware/request_size.go",
+                        "pattern": "func RequestSize\\("
+                    },
+                    {
+                        "path": "middleware/basic_auth.go",
+                        "pattern": "func BasicAuth\\("
+                    },
+                    {
+                        "path": "mux.go",
+                        "pattern": "func \\(mx \\*\\w+\\) routeHTTP\\("
+                    }
+                ],
+                "statement": "requests that new code refuses get a 400 Bad Request status",
+                "update": "inside middleware/ only, refused requests get {status} (http.{name}) instead",
+                "probe": "Make AllowContentType turn away a request whose body is empty.",
+                "out_probe": "Make the router turn away a request whose path holds a doubled slash.",
+                "check": {
+                    "scope": "middleware/",
+                    "must": [
+                        "http\\.{name}\\b|\\b{code}\\b"
+                    ],
+                    "must_not": [
+                        "http\\.StatusBadRequest\\b|\\b400\\b"
+                    ],
+                    "applies": [
+                        "\\bhttp\\.Error\\s*\\(|\\.WriteHeader\\s*\\("
+                    ]
+                },
+                "out_check": {
+                    "must": [
+                        "http\\.StatusBadRequest\\b|\\b400\\b"
+                    ],
+                    "must_not": [
+                        "http\\.{name}\\b|\\b{code}\\b"
+                    ],
+                    "applies": [
+                        "\\bhttp\\.Error\\s*\\(|\\.WriteHeader\\s*\\("
+                    ]
+                },
+                "variants": [
+                    {
+                        "status": "403 Forbidden",
+                        "name": "StatusForbidden",
+                        "code": "403"
+                    },
+                    {
+                        "status": "409 Conflict",
+                        "name": "StatusConflict",
+                        "code": "409"
+                    },
+                    {
+                        "status": "422 Unprocessable Entity",
+                        "name": "StatusUnprocessableEntity",
+                        "code": "422"
+                    },
+                    {
+                        "status": "428 Precondition Required",
+                        "name": "StatusPreconditionRequired",
+                        "code": "428"
+                    }
+                ],
+                "revise": "the middleware/ refusal status moves again: requests refused there get {status} (http.{name}) now, not {old_status}, and code elsewhere keeps 400 Bad Request",
+                "probe_variants": [
+                    "Make ContentCharset turn away a request whose charset parameter is blank.",
+                    "Make AllowContentEncoding turn away a request that lists more than one encoding.",
+                    "Make RequestSize turn away a request that sends no Content-Length header.",
+                    "Make BasicAuth turn away a request whose username holds a colon."
+                ],
+                "out_probe_variants": [
+                    "Make the router turn away a request whose path holds an encoded NUL byte.",
+                    "Make the router turn away a request whose path runs past 2048 bytes.",
+                    "Make the router turn away a request with an empty Host header.",
+                    "Make the router turn away a request whose path holds a dot-dot segment."
+                ]
+            }
+        ],
+        "filler": [
+            "Run go vet on the middleware package and tell me what it reports.",
+            "Explain how a request reaches a handler mounted two subrouters deep.",
+            "Walk me through what Recoverer prints when a handler panics.",
+            "Tidy the doc comments in middleware/nocache.go so each header in the list says why it is there.",
+            "Check whether the compress middleware still handles a response that sets no Content-Type."
+        ],
+        "tool_error": [
+            {
+                "id": "go-route-replay",
+                "requires": [
+                    {
+                        "path": "CONTRIBUTING.md",
+                        "pattern": "."
+                    },
+                    {
+                        "path": "tree.go",
+                        "pattern": "func \\(n \\*node\\) FindRoute\\("
+                    }
+                ],
+                "form": "tool_result",
+                "statement": "the {token} route replay stops with {Alt}Error",
+                "script": {
+                    "path": "scripts/check_{token}.py",
+                    "content": "#!/usr/bin/env python3\n\"\"\"Replays recorded request paths from the {token} capture against the route table.\"\"\"\nimport sys\n\nCAPTURED = 240\nROUTES = [\"/articles/:id\", \"/articles/search\", \"/users/:id/posts\"]\n\n\nclass {Alt}Error(Exception):\n    \"\"\"A captured path that reached the service matches no registered route.\"\"\"\n\n\ndef match(path):\n    parts = path.strip(\"/\").split(\"/\")\n    for route in ROUTES:\n        want = route.strip(\"/\").split(\"/\")\n        if len(want) == len(parts) and all(w.startswith(\":\") or w == p for w, p in zip(want, parts)):\n            return route\n    return None\n\n\ndef replay():\n    print(\"replaying %d captured paths from {token}\" % CAPTURED)\n    for n in range(1, CAPTURED + 1):\n        path = \"/articles/%d/comments\" % {value} if n == 177 else \"/users/%d/posts\" % n\n        if match(path) is None:\n            raise {Alt}Error(\"captured request %d (%s) matches no route\" % (n, path))\n\n\nif __name__ == \"__main__\":\n    try:\n        replay()\n    except {Alt}Error as e:\n        print(\"error: {Alt}Error: %s\" % e, file=sys.stderr)\n        sys.exit(1)\n"
+                },
+                "command": "From the repo root, run `python3 scripts/check_{token}.py` and tell me what it prints; it reproduces issue #{value2}.",
+                "revise": "The {old_token} script is gone and issue #{value2} has a fresh repro: run `python3 scripts/check_{token}.py` and tell me what it prints.",
+                "probe": "Issue #{value2} came back: CI failed the same way once the fix merged. Add an entry to CONTRIBUTING.md under a troubleshooting heading that names the exact error type it raised.",
+                "check": {
+                    "must": [
+                        "\\b{Alt}Error\\b"
+                    ],
+                    "paths_must": [
+                        "^CONTRIBUTING\\.md$"
+                    ]
+                }
+            },
+            {
+                "id": "go-test-paste",
+                "requires": [
+                    {
+                        "path": "CONTRIBUTING.md",
+                        "pattern": "."
+                    },
+                    {
+                        "path": "middleware/throttle_test.go",
+                        "pattern": "func TestThrottle\\w*\\("
+                    }
+                ],
+                "form": "pasted",
+                "statement": "the {token} branch's throttle test fails with {Alt}Error",
+                "paste": "My branch for issue #{value2} fails in CI:\n```\n$ go test ./middleware -run Throttle\n--- FAIL: TestThrottle{Alt}Backlog (0.31s)\n    throttle_test.go:248: backlog request 7: {Alt}Error: slot {value} released twice\nFAIL\nFAIL\tgithub.com/go-chi/chi/v5/middleware\t0.412s\nFAIL\n```",
+                "revise": "Issue #{value2} failed on my branch again, with a different slot:\n```\n$ go test ./middleware -run Throttle\n--- FAIL: TestThrottle{Alt}Backlog (0.29s)\n    throttle_test.go:248: backlog request 3: {Alt}Error: slot {value} released twice\nFAIL\nFAIL\tgithub.com/go-chi/chi/v5/middleware\t0.388s\nFAIL\n```",
+                "probe": "Issue #{value2} is open again and failing the way that output showed. Add an entry to CONTRIBUTING.md under a troubleshooting heading that names the exact error type it raised.",
+                "check": {
+                    "must": [
+                        "\\b{Alt}Error\\b"
+                    ],
+                    "paths_must": [
+                        "^CONTRIBUTING\\.md$"
+                    ]
+                }
+            }
+        ]
+    },
     "any": {
         "lookup": [
             {

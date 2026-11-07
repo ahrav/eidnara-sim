@@ -14,29 +14,22 @@ const KINDS = [
     "session_rule",
 ];
 const SCHEMA = "sim-fact-bank/v4";
-const LANGUAGES = ["rust", "typescript", "any"];
+const LANGUAGES = ["rust", "typescript", "go", "any"];
 /** Kinds every language object carries; `any` holds the kinds without a language-specific template set. */
+const LANGUAGE_KINDS = [
+    "constraint",
+    "decision",
+    "plan",
+    "rationale",
+    "rejected",
+    "scoped_update",
+    "tool_error",
+    "filler",
+];
 const REQUIRED_KINDS: Record<string, string[]> = {
-    rust: [
-        "constraint",
-        "decision",
-        "plan",
-        "rationale",
-        "rejected",
-        "scoped_update",
-        "tool_error",
-        "filler",
-    ],
-    typescript: [
-        "constraint",
-        "decision",
-        "plan",
-        "rationale",
-        "rejected",
-        "scoped_update",
-        "tool_error",
-        "filler",
-    ],
+    rust: LANGUAGE_KINDS,
+    typescript: LANGUAGE_KINDS,
+    go: LANGUAGE_KINDS,
     any: ["lookup", "never_settled", "anchor", "session_rule", "framings"],
 };
 /** Lists of plain strings a language object may carry beside its fact kinds. */

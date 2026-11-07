@@ -12,7 +12,7 @@ export interface Requirement {
 
 export interface PinnedTree {
     id: string;
-    lang: "rust" | "typescript";
+    lang: "rust" | "typescript" | "go";
     dir: string;
     commit: string;
 }
@@ -23,6 +23,7 @@ export type ReadAt = (tree: PinnedTree, path: string) => string | null;
 export const LANG_OF_ROLE: Record<RepoSpec["role"], PinnedTree["lang"]> = {
     "rust-service": "rust",
     "typescript-package": "typescript",
+    "go-package": "go",
 };
 
 export function pinnedTrees(repos: RepoSpec[]): PinnedTree[] {

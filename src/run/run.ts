@@ -891,7 +891,7 @@ export async function loadScenario(
         const embedder = bedrockEmbedder(aws_profile, region, cache);
         const q = qualificationOf(o);
         const input = {
-            ...loadCompileInput(o.seed, o.tier, embedder),
+            ...loadCompileInput(o.seed, o.tier, embedder, false, q?.corpus),
             ...(items === undefined ? {} : { items }),
             ...(q ? { qualification: { sha256: qualificationHash(q), controls: q.controls } } : {}),
         };

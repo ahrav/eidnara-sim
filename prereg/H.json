@@ -1,0 +1,30 @@
+{
+    "schema": "sim-qualification/v1",
+    "id": "H",
+    "revision": 1,
+    "frozen": true,
+    "tier": "M",
+    "tier_preregistration_sha256": "5023a7b1cf2cdb045f476970b334cf114b85ea73b00715b30ef84dcebb6aaed4",
+    "corpus": "held-out",
+    "seeds": [601, 602, 603, 604, 605, 606, 607, 608, 609, 611],
+    "hosts": ["pi", "opencode"],
+    "arms": {
+        "run": ["host", "eidnara"],
+        "order_by_seed": [
+            ["host", "eidnara"],
+            ["eidnara", "host"],
+            ["host", "eidnara"],
+            ["eidnara", "host"],
+            ["host", "eidnara"],
+            ["eidnara", "host"],
+            ["host", "eidnara"],
+            ["eidnara", "host"],
+            ["host", "eidnara"],
+            ["eidnara", "host"]
+        ]
+    },
+    "contrasts": [["eidnara", "host"]],
+    "controls": ["wrong-project-lookup"],
+    "no_source_control": "host",
+    "claim": "descriptive"
+}

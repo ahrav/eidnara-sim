@@ -53,7 +53,7 @@ export type Bank = Record<string, Record<string, Template[] | string[]>>;
 
 export interface Project {
     id: string;
-    lang: "rust" | "typescript";
+    lang: "rust" | "typescript" | "go";
     twin_of: string | null;
 }
 

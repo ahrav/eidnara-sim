@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { REPOS_DIR, repoDir, summarize } from "./repos";
+import { loadRepos, REPOS_DIR, repoDir, summarize } from "./repos";
+import { CORPUS_DIR } from "./sources";
 
 test("repoDir accepts a plain name and rejects ids that leave corpus/repos", () => {
     expect(repoDir("mini-redis")).toBe(join(REPOS_DIR, "mini-redis"));
@@ -55,4 +57,34 @@ test("summarize changes when the fail count changes with the same failing names"
     const run = (fails: number) =>
         summarize(["(fail) a > b [1.00ms]", ` ${10 - fails} pass`, ` ${fails} fail`].join("\n"));
     expect(run(1)).not.toEqual(run(2));
+});
+
+test("summarize keeps go test package verdicts and failing tests without timings", () => {
+    const out = [
+        "ok  \tgithub.com/go-chi/chi/v5\t2.734s",
+        "--- FAIL: TestThrottleBacklog (0.31s)",
+        "    throttle_test.go:248: slot released twice",
+        "FAIL",
+        "FAIL\tgithub.com/go-chi/chi/v5/middleware\t0.412s",
+        "ok  \tgithub.com/go-chi/chi/v5/other\t(cached)",
+    ].join("\n");
+    expect(summarize(out)).toEqual([
+        "--- FAIL: TestThrottleBacklog",
+        "FAIL github.com/go-chi/chi/v5/middleware",
+        "ok github.com/go-chi/chi/v5",
+        "ok github.com/go-chi/chi/v5/other",
+    ]);
+});
+
+test("a repository outside the two corpus splits is refused", () => {
+    const raw = JSON.parse(readFileSync(join(CORPUS_DIR, "repos.json"), "utf8"));
+    expect(loadRepos(JSON.stringify(raw)).map((r) => [r.id, r.split])).toEqual([
+        ["mini-redis", "diagnosed"],
+        ["elysia", "diagnosed"],
+        ["chi", "held-out"],
+    ]);
+    raw.repos[2].split = "fresh";
+    expect(() => loadRepos(JSON.stringify(raw))).toThrow(
+        "repos.json: chi: split must be diagnosed or held-out",
+    );
 });

@@ -327,10 +327,14 @@ export function checkCorpus(): CorpusReport {
         const copy = statSync(join(REPOS_DIR, `${repo.id}.LICENSE`), { throwIfNoEntry: false });
         need(copy?.isFile() === true && copy.size > 0, `${repo.id}: license copy missing or empty`);
     }
-    const roles = new Set(repos.map((r) => r.role));
+    const roles = new Set(repos.filter((r) => r.split === "diagnosed").map((r) => r.role));
     need(
         roles.has("rust-service") && roles.has("typescript-package"),
-        "repos: need one rust-service and one typescript-package",
+        "repos: the diagnosed split needs one rust-service and one typescript-package",
+    );
+    need(
+        repos.some((r) => r.split === "held-out"),
+        "repos: the held-out split needs a repository",
     );
     return { problems, percentiles };
 }

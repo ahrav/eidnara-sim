@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { loadDistributions } from "../corpus/distributions";
 import { parseJsonl } from "../corpus/entries";
 import { checkPresuppositions, LANG_OF_ROLE } from "../corpus/presuppositions";
-import { loadRepos, type RepoSpec } from "../corpus/repos";
+import { loadRepos, type RepoSpec, type Split } from "../corpus/repos";
 import { CORPUS_DIR } from "../corpus/sources";
 import { sha256Hex } from "../prereg/canonical";
 import {
@@ -208,12 +208,15 @@ export function loadCompileInput(
     tier: Tier,
     embedder: Embedder,
     standIn = false,
+    split: Split = "diagnosed",
 ): CompileInput {
     verifyCorpus();
     const prereg = loadPrereg(tier);
     if (standIn) prereg.scenario.cue_probe_similarity.embedding_model = embedder.model;
     const texts = readCorpusInputs();
-    const repos = loadRepos(texts["repos.json"]);
+    const all = loadRepos(texts["repos.json"]);
+    const repos = all.filter((r) => r.split === split);
+    if (repos.length === 0) throw new Error(`repos.json: no ${split} repository`);
     const bank = parseText(texts["fact-bank.json"], join(CORPUS_DIR, "fact-bank.json")) as Bank;
     // A stand-in compile runs where the corpus checkouts may be absent, such as CI.
     checkPresuppositions(bank, repos, !standIn);
@@ -224,6 +227,11 @@ export function loadCompileInput(
             { id: r.twin.id, lang, twin_of: r.id },
         ];
     });
+    // Scaling items by repository count preserves the tier's average item load per repository
+    // across splits.
+    const bases = (s: Split) => all.filter((r) => r.split === s).length;
+    const items =
+        (prereg.stopping_rule.paired_items_per_probe_type * bases(split)) / bases("diagnosed");
     return {
         seed,
         prereg,
@@ -233,5 +241,6 @@ export function loadCompileInput(
         pastes: parseJsonl(texts["tool-outputs/samples.jsonl"]) as CompileInput["pastes"],
         corpusInputsSha256: corpusInputsSha256(texts),
         embedder,
+        ...(split === "diagnosed" ? {} : { items }),
     };
 }

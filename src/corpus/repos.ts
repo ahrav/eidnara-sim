@@ -30,7 +30,8 @@ export interface TwinSpec {
 
 export interface RepoSpec {
     id: string;
-    role: "rust-service" | "typescript-package";
+    role: "rust-service" | "typescript-package" | "go-package";
+    split: Split;
     url: string;
     commit: string;
     license: string;
@@ -42,7 +43,9 @@ export interface RepoSpec {
 }
 
 const SHA = /^[0-9a-f]{40}$/;
-const ROLES = new Set<RepoSpec["role"]>(["rust-service", "typescript-package"]);
+const ROLES = new Set<RepoSpec["role"]>(["rust-service", "typescript-package", "go-package"]);
+export const SPLITS = ["diagnosed", "held-out"] as const;
+export type Split = (typeof SPLITS)[number];
 
 function httpsHost(url: string): boolean {
     try {
@@ -68,6 +71,9 @@ export function loadRepos(text = readFileSync(join(CORPUS_DIR, "repos.json"), "u
     for (const repo of repos) {
         if (!SHA.test(repo.commit)) throw new Error(`repos.json: ${repo.id}: commit is not a SHA`);
         if (!ROLES.has(repo.role)) throw new Error(`repos.json: ${repo.id}: role ${repo.role}`);
+        if (!SPLITS.includes(repo.split)) {
+            throw new Error(`repos.json: ${repo.id}: split must be ${SPLITS.join(" or ")}`);
+        }
         if (typeof repo.url !== "string" || !httpsHost(repo.url)) {
             throw new Error(`repos.json: ${repo.id}: url must be an https URL with a host`);
         }
@@ -206,9 +212,12 @@ export function summarize(output: string): string[] {
     const fails = new Set<string>();
     for (const raw of output.split("\n")) {
         const line = raw.replace(ANSI, "").trim();
+        const pkg = /^(ok|FAIL)\s+(\S+)\s/.exec(`${line} `);
         if (/^test result:/.test(line)) results.push(line.replace(/; finished in .*$/, ""));
         else if (/^\(fail\) /.test(line)) fails.add(line.replace(/ \[[\d.]+m?s\]$/, ""));
         else if (/^\d+ (pass|fail|skip)$/.test(line)) results.push(line);
+        else if (pkg) results.push(`${pkg[1]} ${pkg[2]}`);
+        else if (/^--- FAIL: /.test(line)) fails.add(line.replace(/ \([\d.]+s\)$/, ""));
     }
     return [...results, ...fails].sort();
 }
