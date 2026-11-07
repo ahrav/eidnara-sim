@@ -4,6 +4,7 @@
  * descriptive contrasts only.
  */
 
+import { SPLITS, type Split } from "../corpus/repos";
 import { armProfile, capabilityGaps, deliveryOf, isArmName } from "../hosts/profiles";
 import { canonicalJson, sha256Hex } from "./canonical";
 import { HOSTS, type Preregistration, TIERS, type Tier } from "./schema";
@@ -21,7 +22,7 @@ import {
 } from "./validate";
 
 export const QUALIFICATION_SCHEMA = "sim-qualification/v1";
-export const QUALIFICATIONS = ["Q"] as const;
+export const QUALIFICATIONS = ["Q", "H"] as const;
 /**
  * Control items a qualification adds to its scenarios. `wrong-project-lookup` asks each P8 lookup
  * again in the twin project (`P8-twin`), where the right answer is that the value belongs to the
@@ -77,6 +78,11 @@ export interface Qualification {
      * receives no memory between sessions, so its pass rate on an item is the item's base rate.
      */
     no_source_control?: string;
+    /**
+     * `corpus` selects the registration's corpus split and defaults to `diagnosed`. A `held-out`
+     * registration's seeds lie outside the tier's seeds; a `diagnosed` one's lie inside them.
+     */
+    corpus?: Split;
     claim: "descriptive";
 }
 
@@ -115,11 +121,13 @@ const SECTIONS: Record<string, Shape> = {
  */
 export function validateQualification(value: unknown, tier: Preregistration): string[] {
     const errors: string[] = [];
-    checkShape(value, SHAPE, "", errors, [...Object.keys(SECTIONS), "no_source_control"]);
+    checkShape(value, SHAPE, "", errors, [...Object.keys(SECTIONS), "no_source_control", "corpus"]);
     for (const [field, shape] of Object.entries(SECTIONS)) {
         const v = (value as Record<string, unknown> | null)?.[field];
         if (v !== undefined) checkShape(v, shape, field, errors);
     }
+    const split = (value as Record<string, unknown> | null)?.corpus;
+    if (split !== undefined) checkShape({ corpus: split }, { corpus: oneOf(SPLITS) }, "", errors);
     if (errors.length > 0) return errors;
     // SAFETY: checkShape found no error, so value has every field SHAPE declares.
     const q = value as Qualification;
@@ -130,8 +138,18 @@ export function validateQualification(value: unknown, tier: Preregistration): st
             `tier_preregistration_sha256: prereg/${tier.tier}.json hashes to ${digest}; revise the qualification`,
         );
     }
-    for (const seed of q.seeds.filter((s) => !tier.seeds.includes(s))) {
-        errors.push(`seeds: ${seed} is not a ${tier.tier} seed`);
+    const heldOut = q.corpus === "held-out";
+    for (const seed of q.seeds.filter((s) => tier.seeds.includes(s) === heldOut)) {
+        errors.push(
+            heldOut
+                ? `seeds: ${seed} is a ${tier.tier} seed, which compiles from the diagnosed corpus`
+                : `seeds: ${seed} is not a ${tier.tier} seed`,
+        );
+    }
+    for (const seed of q.holdout?.seeds.filter((s) => heldOut && tier.seeds.includes(s)) ?? []) {
+        errors.push(
+            `holdout.seeds: ${seed} is a ${tier.tier} seed, which compiles from the diagnosed corpus`,
+        );
     }
     for (const host of q.hosts.filter((h) => !tier.hosts.includes(h))) {
         errors.push(`hosts: ${tier.tier} runs no ${host} host`);

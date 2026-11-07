@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { table } from "../corpus/distributions";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
+import { qualificationHash } from "../prereg/qualification";
 import { TIERS } from "../prereg/schema";
 import { Rng } from "../rng";
 import {
@@ -40,11 +41,24 @@ import {
     scheduleFaults,
     validateFault,
 } from "./faults";
-import { CONSUMED_FILES, langOf, loadCompileInput, loadPrereg, verifyCorpus } from "./inputs";
+import {
+    CONSUMED_FILES,
+    langOf,
+    loadCompileInput,
+    loadPrereg,
+    loadQualification,
+    registeredCompileInput,
+    verifyCorpus,
+} from "./inputs";
 import { bm25Ratio, type Embedder, hashEmbedder } from "./similarity";
 import { Tokens } from "./tokens";
 
 const ROOT = join(import.meta.dir, "..", "..");
+const TEST_COMMAND: Record<string, string> = {
+    rust: "cargo test",
+    typescript: "bun test",
+    go: "go test",
+};
 const inputS = (seed: number): CompileInput => loadCompileInput(seed, "S", hashEmbedder, true);
 type TurnEvent = {
     id: string;
@@ -94,7 +108,7 @@ describe("SIM-P01: deterministic compile across processes", () => {
             expect(body.manifest).toMatchObject({
                 seed,
                 tier,
-                generator_version: "sim-scenario/v9",
+                generator_version: "sim-scenario/v10",
             });
         }, 180_000);
     }
@@ -837,7 +851,7 @@ describe("compiled S scenario", async () => {
             } else {
                 const paste = sources.find((e) => e?.kind === "user_turn");
                 expect(textOf(paste ?? {})).toContain(`${identity}Error`);
-                expect(textOf(paste ?? {})).toContain(lang === "rust" ? "cargo test" : "bun test");
+                expect(textOf(paste ?? {})).toContain(TEST_COMMAND[lang ?? ""] ?? "no command");
                 expect(textOf(paste ?? {})).not.toContain("Traceback");
             }
         }
@@ -1296,7 +1310,7 @@ describe("fact bank checks", () => {
         for (const t of templates("scoped_update")) {
             expect({ id: t.id, scope: (t.check as { scope?: string }).scope }).toEqual({
                 id: t.id,
-                scope: expect.stringMatching(/^src\//),
+                scope: expect.stringMatching(/^[a-z][\w/-]*\/$/),
             });
             expect((t.out_check as { scope?: string })?.scope).toBeUndefined();
         }
@@ -1785,10 +1799,48 @@ describe("input loading", () => {
         expect(() => loadPrereg("S", dir)).toThrow(/prereg\/S\.json names tier M/);
     });
 
-    test("a repository role outside the two known roles is refused", () => {
+    test("a repository role outside the three known roles is refused", () => {
         expect(langOf("rust-service")).toBe("rust");
         expect(langOf("typescript-package")).toBe("typescript");
+        expect(langOf("go-package")).toBe("go");
         expect(() => langOf("python-service")).toThrow(/role python-service/);
+    });
+});
+
+describe("held-out corpus", () => {
+    const H = loadQualification("H");
+    const compileH = (seed: number) =>
+        compileScenario(registeredCompileInput(seed, H.tier, hashEmbedder, true, H));
+    const used = (s: Scenario) =>
+        new Set([
+            ...s.sessions.map((x) => x.project),
+            ...s.facts.map((f) => f.project),
+            ...s.probes.map((p) => p.project),
+        ]);
+
+    test("an H scenario holds only the held-out pair, at the tier's per-repository item load", async () => {
+        const tier = await compileScenario(loadCompileInput(201, "M", hashEmbedder, true));
+        const held = await compileH(H.seeds[0] as number);
+        expect(held.manifest.qualification_sha256).toBe(qualificationHash(H));
+        expect(held.projects.map((p) => p.id)).toEqual(["chi", "chi-twin"]);
+        expect([...used(held)].sort()).toEqual(["chi", "chi-twin"]);
+        expect(tier.projects.map((p) => p.id)).toEqual([
+            "mini-redis",
+            "mini-redis-twin",
+            "elysia",
+            "elysia-twin",
+        ]);
+        expect([...used(tier)].some((p) => p.startsWith("chi"))).toBe(false);
+        expect(held.manifest.probes_per_type * 2).toBe(tier.manifest.probes_per_type);
+        expect(held.sessions.filter((x) => x.project === "chi")).toHaveLength(
+            tier.sessions.filter((x) => x.project === "mini-redis").length,
+        );
+        const types = new Set(held.probes.map((p) => p.type));
+        expect(types.has("P8-twin")).toBe(true);
+        for (const p of held.probes.filter((x) => x.type === "P12")) {
+            const f = held.facts.find((x) => x.id === p.fact);
+            expect(f?.template.startsWith("go-")).toBe(true);
+        }
     });
 });
 

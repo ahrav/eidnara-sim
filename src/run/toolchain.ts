@@ -20,6 +20,7 @@ export const TOOLCHAIN_PROBES: [string, string][] = [
     ["rustdoc", 'exec "${RUSTDOC:-rustdoc}" --version'],
     ["bun", "exec bun --version"],
     ["python3", "exec python3 --version"],
+    ["go", "exec go version"],
 ];
 
 export const SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin";
@@ -106,6 +107,7 @@ const VERSION: Record<string, RegExp> = {
     rustdoc: /^rustdoc \d+\.\d+/,
     bun: /^\d+\.\d+\.\d+/,
     python3: /^Python 3\.\d+/,
+    go: /^go version go1\.\d+/,
 };
 
 export function versionLine(tool: string, out: string): string {

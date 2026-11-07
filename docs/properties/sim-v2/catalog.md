@@ -14,7 +14,7 @@ verify against when they were written.
 Stable ids: `SIM-P01` to `SIM-P77` carry the spec's proposed records,
 `SIM-P78` to `SIM-P80` the Workstream A S5 delivery-mode and control records,
 `SIM-P81` and `SIM-P82` the fact-bank presupposition and P1 no-pre-emption
-records,
+records, `SIM-P83` the held-out corpus split record,
 and
 `SIM-L01` to `SIM-L03` carry the liveness bounds OQ-6 asked for and M0
 pre-registers. Each id is the slug prefix and opens the `Guarantee:` line.
@@ -119,6 +119,7 @@ pre-registers. Each id is the slug prefix and opens the `Guarantee:` line.
 | SIM-P80 | [sim-p80-wrong-project-lookup-is-no-answer](#sim-p80-wrong-project-lookup-is-no-answer) | safety | `always` | explicit-config-only | S5 |
 | SIM-P81 | [sim-p81-template-presuppositions-hold-on-pinned-trees](#sim-p81-template-presuppositions-hold-on-pinned-trees) | safety | `always` | default-production | S6 |
 | SIM-P82 | [sim-p82-no-probe-asks-a-p1-task-before-its-item](#sim-p82-no-probe-asks-a-p1-task-before-its-item) | safety | `always` | default-production | S6 |
+| SIM-P83 | [sim-p83-held-out-scenarios-hold-only-the-held-out-split](#sim-p83-held-out-scenarios-hold-only-the-held-out-split) | safety | `always` | default-production | S6 |
 | SIM-L01 | [sim-l01-turn-ends-within-turn-deadline](#sim-l01-turn-ends-within-turn-deadline) | liveness | `always` | default-production | M4 |
 | SIM-L02 | [sim-l02-background-job-ends-within-job-deadline](#sim-l02-background-job-ends-within-job-deadline) | liveness | `always` | default-production | M4 |
 | SIM-L03 | [sim-l03-tier-completes-within-wall-budget](#sim-l03-tier-completes-within-wall-budget) | liveness | `always` | default-production | M4 |
@@ -2267,13 +2268,13 @@ Reachability: default-production
 Status: active
 Exercised: yes - `src/corpus/presuppositions.test.ts` refuses a missing file,
 a pattern miss, a miss in the twin alone, and a template without
-requirements, and checks the committed bank against the four pinned corpus
+requirements, and checks the committed bank against the six pinned corpus
 checkouts when they are present; every Titan compile of the registered seeds
 ran the check
-Guarantee: SIM-P81: Every Rust and TypeScript fact-bank template's `requires`
+Guarantee: SIM-P81: Every Rust, TypeScript, and Go fact-bank template's `requires`
 entries hold in the base and twin corpus checkouts of its language at their
 pinned commits, so each task names code the agent's workspace holds.
-Check: `always` - for every Rust and TypeScript template and every base and
+Check: `always` - for every Rust, TypeScript, and Go template and every base and
 twin corpus checkout of its language, each `requires` path exists at the
 pinned commit and its content matches the pattern (multiline) before a
 Titan or run compile succeeds; `always`, because one template that names an
@@ -2326,6 +2327,44 @@ Impact: a P1 item measures the earlier attempt instead of the rule.
 Open questions:
 - A line that repeats past its template's `probe_variants` (L and XL for
   P4 and P10) re-asks the task behind a framing and meets the earlier work.
+
+### sim-p83-held-out-scenarios-hold-only-the-held-out-split
+
+Type: safety
+Reachability: default-production
+Status: active
+Exercised: yes - `src/scenario/compile.test.ts` `held-out corpus` compiles
+M-601 under qualification H and M-201 as a tier scenario and checks every
+project, session, fact, and probe of each; `src/prereg/qualification.test.ts`
+refuses a held-out registration naming a tier seed; the Titan compiles of
+H's ten seeds and the M-601 smoke run reached the surface
+Guarantee: SIM-P83: A scenario compiled under a registration whose `corpus`
+is `held-out` holds only the `held-out` repositories of `corpus/repos.json`
+and their twins, a tier scenario holds only the `diagnosed` ones, and a
+held-out registration's seeds lie outside its tier's seeds.
+Check: `always` - for every compiled scenario, assert that every entry of
+`projects` and every session, fact, and probe project belongs to the split
+its registration names (`diagnosed` for a tier scenario), and for every
+held-out registration that no seed is a tier seed; `always`, because one
+diagnosed project or one shared seed in a held-out report mixes the corpus
+the diagnosis read into the result meant to exclude it.
+Fault/timing angle: none.
+Required faults and enabling state: none for the tier half, which every
+default compile reaches; `--qualification H` on a compile or a run for the
+held-out half.
+Confidence: high -
+[evidence](evidence/sim-p83-held-out-scenarios-hold-only-the-held-out-split.md).
+`loadCompileInput` filters `repos.json` by split before it builds the
+project list, and the test checks both splits' compiled scenarios.
+Existing check: `loadCompileInput` in `src/scenario/inputs.ts`, the seed rule
+in `validateQualification`, and the `held-out corpus` compile test
+(unaudited).
+Impact: a held-out result carries items from mini-redis or elysia, and a gain
+tuned to the diagnosed corpus reads as a held-out gain.
+Open questions:
+- The held-out split holds one Go repository, so a held-out result speaks
+  for one project and one language. Unresolved, needs a second held-out
+  pair for a cross-project claim.
 
 ## Liveness
 

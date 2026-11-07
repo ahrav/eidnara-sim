@@ -109,12 +109,25 @@ compiler does not read.
 ## Repositories
 
 `corpus/repos.json` records the selection criteria, the candidates
-considered, and two picks, each with a near-twin:
+considered, and three picks, each with a near-twin, in two splits. Each
+repository's `split` is `diagnosed` or `held-out`:
 
-| Repository | Role | Commit | License | Offline test outcome |
-|---|---|---|---|---|
-| tokio-rs/mini-redis | Rust service | `3d93b42b` | MIT | exit 0, 25 tests pass |
-| elysiajs/elysia | TypeScript package | `e037eca7` | MIT | exit 1, 1,610 pass, 4 fixed failures |
+| Repository | Role | Split | Commit | License | Offline test outcome |
+|---|---|---|---|---|---|
+| tokio-rs/mini-redis | Rust service | diagnosed | `3d93b42b` | MIT | exit 0, 25 tests pass |
+| elysiajs/elysia | TypeScript package | diagnosed | `e037eca7` | MIT | exit 1, 1,610 pass, 4 fixed failures |
+| go-chi/chi | Go package | held-out | `9f8adb1a` | MIT | exit 0, both packages pass |
+
+The c7 diagnosis read transcripts of the diagnosed split only. Tier scenarios
+compile from the diagnosed split; a registration whose `corpus` is
+`held-out`, qualification H, compiles from the held-out split alone, so its
+results report a project no earlier diagnosis saw (`docs/scenario.md`,
+Held-out corpus). chi was picked on 2026-11-07, before any scenario compiled
+from it, for a language neither diagnosed pick uses and a suite that builds
+from chi's own code and the Go standard library, so the agent sandbox runs
+it with the `go` toolchain and no module cache. tidwall/gjson and rs/zerolog
+need downloaded modules; yuin/goldmark is a Markdown parser about five times
+chi's size.
 
 Each twin is one commit on top of the pinned commit. It applies the regex
 renames in `repos.json` and overlays the files in `corpus/twins/<id>/`. Git
@@ -126,7 +139,10 @@ reproduces.
 `KeyspaceDropGuard` across the source, sets rustfmt `max_width = 80`, and adds
 `clippy::unwrap_used = "warn"` to `Cargo.toml`. `elysia-twin` switches
 prettier to two-space indent, semicolons, and double quotes and makes eslint
-report `prefer-const` and `eqeqeq`. Each twin's `CONVENTIONS.md` also states
+report `prefer-const` and `eqeqeq`. `chi-twin` renames `Mux` to `Dispatcher`
+and `NewMux` to `NewDispatcher` across the Go source and adds a
+`.golangci.yml` that enables `lll` at 100 columns, `errorlint`, `godot`, and
+`gofmt -s`. Each twin's `CONVENTIONS.md` also states
 naming and error-handling rules for new and changed code; those rules exist
 as text, and existing upstream code keeps its own style.
 
@@ -144,8 +160,11 @@ copied to `corpus/repos/<id>.LICENSE`, which git tracks.
 | `bun run corpus:repos` | Clones each repository, rebuilds its twin, and runs both suites offline |
 
 `corpus:repos` runs each suite under `unshare -rn` with only loopback up, after
-a prepare step (`cargo fetch --locked` or `bun install --frozen-lockfile
---ignore-scripts`) that downloads dependencies. The twin must reproduce its
+a prepare step (`cargo fetch --locked`, `bun install --frozen-lockfile
+--ignore-scripts`, or `go mod download`) that downloads dependencies. An
+outcome is the exit code and the suite's result lines without timings: Cargo's
+`test result:` lines, bun's counts and failing names, and `go test`'s
+per-package `ok` and `FAIL` lines and failing test names. The twin must reproduce its
 base repository's outcome. The command fails when a twin SHA or a test
 outcome differs from `repos.json`; `--record` writes each twin SHA and each
 base outcome instead. The prepare and test steps run upstream code as the

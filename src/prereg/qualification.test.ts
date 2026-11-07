@@ -169,3 +169,33 @@ test("A/A seeds and pairs, hold-out seeds and orders, and the ranking gate are c
         `ranking_gate.items: expected ${RANKING_GATE_ITEMS.join(", ")}`,
     ]);
 });
+
+test("H binds the current M pre-registration and runs fresh seeds on the held-out corpus", () => {
+    const M = loadPrereg("M");
+    const H = loadQualification("H");
+    expect(validateQualification(H, M)).toEqual([]);
+    expect(H.tier_preregistration_sha256).toBe(preregistrationHash(M));
+    expect(H.corpus).toBe("held-out");
+    expect(H.seeds.filter((s) => M.seeds.includes(s))).toEqual([]);
+    expect(Q.corpus).toBeUndefined();
+    const editH = (patch: (q: Record<string, unknown>) => void) => {
+        const q = structuredClone(H) as unknown as Record<string, unknown>;
+        patch(q);
+        return validateQualification(q, M);
+    };
+    expect(editH((q) => (q.seeds = [601, 201]))).toContain(
+        "seeds: 201 is a M seed, which compiles from the diagnosed corpus",
+    );
+    expect(editH((q) => (q.corpus = "fresh"))[0]).toMatch(
+        /^corpus: expected one of diagnosed, held-out/,
+    );
+    expect(edit((q) => (q.corpus = "held-out"))).toContain(
+        "seeds: 101 is a S seed, which compiles from the diagnosed corpus",
+    );
+    expect(edit((q) => (q.corpus = "diagnosed"))).toEqual([]);
+    expect(
+        editH((q) => {
+            q.holdout = { seeds: [201], arms: ["host"], order_by_seed: [["host"]], pooled: false };
+        }),
+    ).toEqual(["holdout.seeds: 201 is a M seed, which compiles from the diagnosed corpus"]);
+});

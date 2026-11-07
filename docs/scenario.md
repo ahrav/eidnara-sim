@@ -5,7 +5,7 @@ scenario to `runs/scenarios/<tier>-<seed>.json`; a `--embedder local` compile
 defaults to `runs/scenarios/<tier>-<seed>.local.json`, so a stand-in never
 replaces a Titan scenario. The inputs are the seed, the
 tier's pre-registration in `prereg/<tier>.json`, the corpus under `corpus/`,
-and the generator version `sim-scenario/v9`. The same inputs produce the same
+and the generator version `sim-scenario/v10`. The same inputs produce the same
 bytes in any process, and a run reuses a cached `scenario.json` only when its
 top-level `schema`, generator version, pre-registration hash, and corpus
 inputs hash match the current inputs. The compiler scores cue and probe pairs with
@@ -21,9 +21,10 @@ other token, an `--embedder` value other than `local`, or a non-integer seed
 exits with the usage line, and a Titan compile accepts only a seed the tier's
 pre-registration lists (`--embedder local` compiles any seed, which the tests
 use). `--qualification Q` compiles under `prereg/Q.json` with its control
-items, as a qualification run does, to
+items and corpus split, as a qualification run does, to
 `runs/scenarios/<tier>-<seed>-Q.json`, and a Titan compile there accepts the
-registration's seeds and hold-out seeds. An `--out` path, its directory, or its sibling `embeddings.jsonl` that resolves
+registration's seeds and hold-out seeds; `--qualification H` compiles the
+held-out corpus (Held-out corpus, below). An `--out` path, its directory, or its sibling `embeddings.jsonl` that resolves
 inside `eidnara_checkout` is refused before any directory is created, as is an
 `--out` that names the cache file itself, and an `embeddings.jsonl` that is a
 hard link. The scenario is written to a random same-directory temporary name,
@@ -37,7 +38,7 @@ The scenario file is canonical JSON with these sections:
 | Section | Contents |
 |---|---|
 | `manifest` | Seed, tier, generator and random-schema versions, one sha256 over the bytes of every corpus file the compiler parsed (`manifest.json`, `fact-bank.json`, `repos.json`, `distributions.json`, and `tool-outputs/samples.jsonl`, read once), the sha256 of the pre-registration, the embedding model, the similarity thresholds, the gap scale factors, and the probe count per type |
-| `projects` | Each repository in `corpus/repos.json` and its twin |
+| `projects` | Each repository of the compiled corpus split in `corpus/repos.json` and its twin |
 | `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, `basis`, `line`, `revision`, `supersedes`, statement, the cue texts that carry it, and for P12 facts the `form` (`tool_result` or `pasted`) |
 | `probes` | Probe items P1 to P14 with project, session, user text, the grading check, the event that delivers it, and, for every probe with user text, its `ground_truth`. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` and `commands_must_not` over the command log, an optional `scope` (a directory prefix or one file path) that limits the diff-channel keys to files under it (on a P4 `out` item, to the files outside it), `applies` (regexes for the constructs a constraint governs, each of which must carry the `must` patterns), `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, `clarify` for a P6 item whose right response is a question (patterns the final answer must all carry), `side` (`in` or `out`) for P4, `turns` for P13, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
@@ -94,7 +95,7 @@ harness word lists.
 
 ### Presuppositions
 
-Every Rust and TypeScript template lists in `requires` the constructs its
+Every Rust, TypeScript, and Go template lists in `requires` the constructs its
 tasks presuppose: a project path and a regular expression the file must match
 (multiline, so `^` and `$` anchor lines). `src/corpus/presuppositions.ts`
 reads each file with `git cat-file blob <commit>:<path>` in every corpus
@@ -103,8 +104,9 @@ checkout of the template's language, base and twin, at the commits
 Titan compile and a run's compile refuse the bank when a checkout is missing
 (run `bun run corpus:repos`), a checkout's HEAD differs from its pinned
 commit (a run clones HEAD), or a requirement fails, naming the template,
-tree, path, and pattern; an `--embedder local` compile checks when all four
-checkouts are present. `bun run corpus:repos` checks the same requirements
+tree, path, and pattern. A compile checks the checkouts of the corpus split
+it compiles, and an `--embedder local` compile checks when all of them are
+present. `bun run corpus:repos` checks the same requirements
 after it clones, and the corpus checker refuses a language template without
 a non-empty `requires` list of fixed project paths and valid patterns.
 The check proves each named construct exists in each pinned tree. Whether a
@@ -172,7 +174,7 @@ pasted, and a P3 value read from its authoritative file).
 | P9 | never settled | Later session; the answer must abstain |
 | P10 | anchor | Later, unrelated task; the value must not appear |
 | P11 | the P1 fact | A session of the twin project after the conveyance; the check forbids the convention |
-| P12 | tool error | `tool_result`: a session opens with a commit of a Python check script under `scripts/` that defines and raises the error class (Check scripts, below), and its first turn asks the agent to run it, so the error reaches the agent as its own tool result; a later session opens with a commit removing the script once "the fix is in", and the probe follows. `pasted`: the user pastes a failure of this project's own test command (`cargo test` or `bun test`) on a branch. Items alternate between the forms; the error identity (`<Word>Error`) is generated per fact, the probe names the failure by its issue number, and the check requires the identity in the file the probe names (`README.md` for Rust, `CONTRIBUTING.md` for TypeScript) |
+| P12 | tool error | `tool_result`: a session opens with a commit of a Python check script under `scripts/` that defines and raises the error class (Check scripts, below), and its first turn asks the agent to run it, so the error reaches the agent as its own tool result; a later session opens with a commit removing the script once "the fix is in", and the probe follows. `pasted`: the user pastes a failure of this project's own test command (`cargo test`, `bun test`, or `go test`) on a branch. Items alternate between the forms; the error identity (`<Word>Error`) is generated per fact, the probe names the failure by its issue number, and the check requires the identity in the file the probe names (`README.md` for Rust, `CONTRIBUTING.md` for TypeScript and Go) |
 | P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe, and `check.turns` gives the turn after the cue and the turn after the probe, so the range holds exactly the folds the probe turn's snapshot can carry. Session rules are placed in scenario order, and a later rule of a template in the project supersedes the earlier one through its `revise` wording |
 | P14 | none | The last third of a forced p90 session, split into one window of at least ten turns per item (`window_from_turn` to `window_to_turn`), measured from user-sim labels; the item's `event` is the session's last user turn, where its snapshot is taken |
 
@@ -237,7 +239,8 @@ the session whose first turn points at it:
   committed path carries a fresh token) and asks the agent to look it over
   without stating the fact. A constraint template whose scope is a directory names an example
   path inside that scope (`src/cmd/{token}.rs`, `src/adapter/{token}.ts`,
-  `tests/{token}.rs`, `test/{codename}.{token}.test.ts`); every other template
+  `tests/{token}.rs`, `test/{codename}.{token}.test.ts`, `middleware/{token}.go`,
+  `middleware/{token}_test.go`); every other template
   adds `notes/{token}.md`, a note that states the fact's current state;
 - a tool-error conveyance of a constraint or decision commits
   `scripts/check_{token}.sh`, which prints the rule as an error and exits 1,
@@ -409,25 +412,65 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `93b644b0` | 0.2768 | 0.4982 |
-| S | 102 | `0360dde5` | 0.2672 | 0.5142 |
-| M | 201 | `268da2f6` | 0.3552 | 0.5807 |
-| M | 202 | `525349c2` | 0.3513 | 0.5807 |
-| M | 203 | `bbfab139` | 0.3225 | 0.551 |
-| L | 301 | `edae782b` | 0.3247 | 0.5807 |
-| L | 302 | `7f5995ed` | 0.3261 | 0.5807 |
-| L | 303 | `d772527e` | 0.3254 | 0.5807 |
-| XL | 401 | `2818a049` | 0.3197 | 0.5807 |
+| S | 101 | `8324549c` | 0.2825 | 0.5125 |
+| S | 102 | `ec9e1d00` | 0.2738 | 0.5195 |
+| M | 201 | `5f026e97` | 0.359 | 0.5807 |
+| M | 202 | `e6b33140` | 0.354 | 0.5807 |
+| M | 203 | `d7a39906` | 0.3259 | 0.551 |
+| L | 301 | `7ca48348` | 0.3281 | 0.5807 |
+| L | 302 | `eb529cc3` | 0.3297 | 0.5807 |
+| L | 303 | `3539c404` | 0.3287 | 0.5807 |
+| XL | 401 | `9bb15a0a` | 0.3231 | 0.5807 |
 
-Under qualification Q (revision 3, `e8c1f508`), which adds its P8-twin
+Under qualification Q (revision 4, `5b9e8f5d`), which adds its P8-twin
 controls, the seeds compile to these scenarios; 103 is its exploratory
 hold-out:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| Q | 101 | `c5df98e1` | 0.2768 | 0.4982 |
-| Q | 102 | `78c245c0` | 0.262 | 0.5142 |
-| Q | 103 | `0d36bf38` | 0.2712 | 0.5021 |
+| Q | 101 | `e77715ba` | 0.2825 | 0.5125 |
+| Q | 102 | `f8ba5d66` | 0.2684 | 0.5195 |
+| Q | 103 | `c8252071` | 0.2767 | 0.5021 |
+
+## Held-out corpus
+
+Qualification H (`prereg/H.json`, revision 1) compiles tier M scenarios from
+the `held-out` split of `corpus/repos.json`: chi and chi-twin, a Go project
+no earlier diagnosis read. `--qualification H` on `compile-scenario` or
+`run-tier` selects it; a tier compile and qualification Q compile from the
+`diagnosed` split, mini-redis, elysia, and their twins, so a seed's report
+names its split through the registration its manifest records. H's seeds
+lie outside the tier's, and the validator refuses a held-out registration
+that names a tier seed (SIM-P83).
+
+A held-out scenario keeps the tier's load per base repository: chi has the
+120 sessions a tier M base repository has, chi-twin 30, and each probe type
+issues 10 items, the tier's 120 paired items scaled by one held-out base
+repository over two diagnosed ones and divided over the tier's seeds and
+hosts. The count is per scenario: it holds the per-repository density of a
+tier M scenario fixed, and a campaign's pooled item count is that density
+times the scenarios it runs, as it is for a diagnosed campaign that runs
+more seeds than the tier registers. H adds the `wrong-project-lookup` control, so P8-twin asks chi's
+lookups in chi-twin. Every Go template's `requires` holds in chi and
+chi-twin at their pinned commits.
+
+H registers seeds 601 to 609 and 611. Seed 610 refuses at placement: no
+chi-twin session falls after one P8 conveyance inside its window, so its
+P8-twin control has no session. The registered seeds compile within the
+thresholds under Titan:
+
+| Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
+|---|---|---|---|---|
+| H | 601 | `1bd35a49` | 0.2991 | 0.5913 |
+| H | 602 | `0f42f116` | 0.3001 | 0.5913 |
+| H | 603 | `c030d64b` | 0.2946 | 0.5913 |
+| H | 604 | `9a38493c` | 0.3028 | 0.5991 |
+| H | 605 | `62f4bf19` | 0.3021 | 0.5913 |
+| H | 606 | `1129946d` | 0.2998 | 0.5913 |
+| H | 607 | `f583750f` | 0.3053 | 0.5913 |
+| H | 608 | `21a5c9d2` | 0.307 | 0.5913 |
+| H | 609 | `30daa169` | 0.3012 | 0.5913 |
+| H | 611 | `2ada06ba` | 0.3063 | 0.5913 |
 
 ## Known limits
 

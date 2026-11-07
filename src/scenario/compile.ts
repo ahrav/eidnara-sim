@@ -9,7 +9,7 @@ import { scheduleFaults, validateFault } from "./faults";
 import { bm25Ratio, cosine, type Embedder, round4 } from "./similarity";
 import { Tokens } from "./tokens";
 
-export const GENERATOR_VERSION = "sim-scenario/v9";
+export const GENERATOR_VERSION = "sim-scenario/v10";
 
 export const MANNER_WEIGHTS = {
     correction: 0.35,
@@ -58,7 +58,7 @@ export type Bank = Record<string, Record<string, Template[] | string[]>>;
 
 export interface Project {
     id: string;
-    lang: "rust" | "typescript";
+    lang: "rust" | "typescript" | "go";
     twin_of: string | null;
 }
 
