@@ -193,4 +193,9 @@ test("H binds the current M pre-registration and runs fresh seeds on the held-ou
         "seeds: 101 is a S seed, which compiles from the diagnosed corpus",
     );
     expect(edit((q) => (q.corpus = "diagnosed"))).toEqual([]);
+    expect(
+        editH((q) => {
+            q.holdout = { seeds: [201], arms: ["host"], order_by_seed: [["host"]], pooled: false };
+        }),
+    ).toEqual(["holdout.seeds: 201 is a M seed, which compiles from the diagnosed corpus"]);
 });

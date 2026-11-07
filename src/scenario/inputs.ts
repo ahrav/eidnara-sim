@@ -243,3 +243,20 @@ export function loadCompileInput(
         items,
     };
 }
+
+/**
+ * The compile input of a run or compile under `qualification`: its corpus split and its digest
+ * and controls, or the tier scenario's input without one.
+ */
+export function registeredCompileInput(
+    seed: number,
+    tier: Tier,
+    embedder: Embedder,
+    standIn: boolean,
+    qualification: Qualification | null,
+): CompileInput {
+    const input = loadCompileInput(seed, tier, embedder, standIn, qualification?.corpus);
+    if (!qualification) return input;
+    const { controls } = qualification;
+    return { ...input, qualification: { sha256: qualificationHash(qualification), controls } };
+}

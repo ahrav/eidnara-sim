@@ -45,9 +45,9 @@ import {
 import { type FaultEpisode, type FaultType, SEAMS, validateFault } from "../scenario/faults";
 import {
     corpusInputsSha256,
-    loadCompileInput,
     loadPrereg,
     loadQualification,
+    registeredCompileInput,
 } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
 import {
@@ -889,11 +889,9 @@ export async function loadScenario(
         mkdirSync(dirname(cache), { recursive: true });
         requirePlainCache(cache, o.config.eidnara_checkout);
         const embedder = bedrockEmbedder(aws_profile, region, cache);
-        const q = qualificationOf(o);
         const input = {
-            ...loadCompileInput(o.seed, o.tier, embedder, false, q?.corpus),
+            ...registeredCompileInput(o.seed, o.tier, embedder, false, qualificationOf(o)),
             ...(items === undefined ? {} : { items }),
-            ...(q ? { qualification: { sha256: qualificationHash(q), controls: q.controls } } : {}),
         };
         const compiled = await compileScenario(input);
         writeAtomic(path, `${canonicalJson(compiled)}\n`);

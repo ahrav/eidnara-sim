@@ -128,7 +128,7 @@ outside the tier's seeds for a diagnosed registration or inside them for a
 held-out one, a host the tier does not run, an arm without a profile or with a capability
 gap, an order that is not a permutation of the run arms, and a contrast
 between arms of one delivery mode; an A/A seed outside `seeds` or a pair
-that is not one run arm twice; a hold-out seed inside `seeds`, a hold-out arm
+that is not one run arm twice; a hold-out seed inside `seeds` (or, for a held-out registration, inside the tier's seeds), a hold-out arm
 outside the run arms, or a hold-out order that does not permute
 `holdout.arms`; and a ranking gate whose order is not one run arm per mode in
 that order or whose items differ from `RANKING_GATE_ITEMS`; and a

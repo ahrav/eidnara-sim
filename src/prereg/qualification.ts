@@ -146,6 +146,11 @@ export function validateQualification(value: unknown, tier: Preregistration): st
                 : `seeds: ${seed} is not a ${tier.tier} seed`,
         );
     }
+    for (const seed of q.holdout?.seeds.filter((s) => heldOut && tier.seeds.includes(s)) ?? []) {
+        errors.push(
+            `holdout.seeds: ${seed} is a ${tier.tier} seed, which compiles from the diagnosed corpus`,
+        );
+    }
     for (const host of q.hosts.filter((h) => !tier.hosts.includes(h))) {
         errors.push(`hosts: ${tier.tier} runs no ${host} host`);
     }

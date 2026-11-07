@@ -45,6 +45,7 @@ import {
     loadCompileInput,
     loadPrereg,
     loadQualification,
+    registeredCompileInput,
     verifyCorpus,
 } from "./inputs";
 import { bm25Ratio, type Embedder, hashEmbedder } from "./similarity";
@@ -1719,10 +1720,7 @@ describe("input loading", () => {
 describe("held-out corpus", () => {
     const H = loadQualification("H");
     const compileH = (seed: number) =>
-        compileScenario({
-            ...loadCompileInput(seed, H.tier, hashEmbedder, true, H.corpus),
-            qualification: { sha256: qualificationHash(H), controls: H.controls },
-        });
+        compileScenario(registeredCompileInput(seed, H.tier, hashEmbedder, true, H));
     const used = (s: Scenario) =>
         new Set([
             ...s.sessions.map((x) => x.project),
@@ -1733,6 +1731,7 @@ describe("held-out corpus", () => {
     test("an H scenario holds only the held-out pair, at the tier's per-repository item load", async () => {
         const tier = await compileScenario(loadCompileInput(201, "M", hashEmbedder, true));
         const held = await compileH(H.seeds[0] as number);
+        expect(held.manifest.qualification_sha256).toBe(qualificationHash(H));
         expect(held.projects.map((p) => p.id)).toEqual(["chi", "chi-twin"]);
         expect([...used(held)].sort()).toEqual(["chi", "chi-twin"]);
         expect(tier.projects.map((p) => p.id)).toEqual([

@@ -12,10 +12,9 @@ import {
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { canonicalJson } from "../src/prereg/canonical";
-import { qualificationHash } from "../src/prereg/qualification";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { compileScenario } from "../src/scenario/compile";
-import { loadCompileInput, loadPrereg, loadQualification } from "../src/scenario/inputs";
+import { loadPrereg, loadQualification, registeredCompileInput } from "../src/scenario/inputs";
 import { bedrockEmbedder, hashEmbedder } from "../src/scenario/similarity";
 
 const FLAGS = ["tier", "seed", "embedder", "out", "qualification"];
@@ -117,17 +116,9 @@ if (!local && !registered.includes(seed)) {
 mkdirSync(dirname(out), { recursive: true });
 const { aws_profile, region } = config.bedrock;
 const embedder = local ? hashEmbedder : bedrockEmbedder(aws_profile, region, cache);
-const scenario = await compileScenario({
-    ...loadCompileInput(seed, tier as Tier, embedder, local, qualification?.corpus),
-    ...(qualification
-        ? {
-              qualification: {
-                  sha256: qualificationHash(qualification),
-                  controls: qualification.controls,
-              },
-          }
-        : {}),
-});
+const scenario = await compileScenario(
+    registeredCompileInput(seed, tier as Tier, embedder, local, qualification ?? null),
+);
 const partial = `${out}.${randomBytes(6).toString("hex")}.tmp`;
 try {
     writeFileSync(partial, `${canonicalJson(scenario)}\n`, { flag: "wx" });
