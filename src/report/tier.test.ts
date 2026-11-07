@@ -598,6 +598,27 @@ describe("tier report", () => {
         expect(report.observed.reverted_memory_edits).toEqual([0]);
     });
 
+    test("an item excluded on one arm inside the asymmetric stratum stays out of the exclusion list", () => {
+        const g = asymmetricFixture((host) =>
+            host.journal.push({
+                kind: "FaultObserved",
+                arm: "host",
+                fault: "f1",
+                type: "provider_500",
+                evidence: {},
+                scenario_ms: 0,
+                seq: 9_000,
+                wall_ms: 0,
+            } as Entry),
+        );
+        const graded = g.grades.find((r) => r.item === "q-0" && r.arm === "eidnara");
+        if (!graded) throw new Error("fixture lacks q-0");
+        Object.assign(graded, { verdict: "excluded", reason: "deferred", metrics: {} });
+        const report = tierReport(prereg, [g], boundary);
+        expect(report.verdict.asymmetric_stratum).toEqual(["pi/101/q-0", "pi/101/q-p8-0"]);
+        expect(report.verdict.excluded.map((e) => e.id)).not.toContain("pi/101/q-0");
+    });
+
     test("the rendered observed rate comes from the pairs the verdict kept", () => {
         const g = asymmetricFixture((host) =>
             host.journal.push({
