@@ -422,8 +422,11 @@ describe("P2, P5, and P11: a question with no change is deferred, never a pass o
         const inline = "Replace `.unwrap()` with `?` when you get to it.";
         const open = "```\nmatch frame?\n";
         const tilde = "~~~rust\nlet n = conn.read_frame().await?\n~~~\nI left it.";
+        const quoted = "> ```rust\n> let n = conn.read_frame().await?\n> ```\nI left it.";
+        const long = "````md\n```not-a-close\nlet n = f()?;\n````\nI left it.";
+        const doubled = "Here is ``conn.read()? then unwrap``. I left it.";
         for (const p of [p2, p5, p11]) {
-            for (const answer of [told, code, inline, open, tilde]) {
+            for (const answer of [told, code, inline, open, tilde, quoted, long, doubled]) {
                 expect(outcome(p, { answer })).toEqual(["fail", "no code change"]);
             }
         }
