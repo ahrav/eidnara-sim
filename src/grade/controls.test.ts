@@ -426,8 +426,20 @@ describe("P2, P5, and P11: a question with no change is deferred, never a pass o
         const long = "````md\n```not-a-close\nlet n = f()?;\n````\nI left it.";
         const doubled = "Here is ``conn.read()? then unwrap``. I left it.";
         const listed = "- ```rust\n  // Retry?\n  ```\n1. ~~~\n   f()?\n   ~~~\nI left it.";
+        const indented = "Here it is:\n\n    let n = f()?;\n\tg()?;\n\nI left it.";
         for (const p of [p2, p5, p11]) {
-            for (const answer of [told, code, inline, open, tilde, quoted, long, doubled, listed]) {
+            for (const answer of [
+                told,
+                code,
+                inline,
+                open,
+                tilde,
+                quoted,
+                long,
+                doubled,
+                listed,
+                indented,
+            ]) {
                 expect(outcome(p, { answer })).toEqual(["fail", "no code change"]);
             }
         }
@@ -436,6 +448,15 @@ describe("P2, P5, and P11: a question with no change is deferred, never a pass o
     test("a question after a code block is deferred, and a clean change that also asks passes", () => {
         const answer = "```rust\nlet n = conn.read_frame().await?;\n```\nShould the cap live here?";
         expect(grade(p2, { answer }).reason).toBe("deferred");
+        for (const wrapped of [
+            '"Which side should own it?"',
+            "(Which side should own it?)",
+            "*Which side should own it?*",
+            "> ```rust\n> // Retry?\n\nShould I proceed?",
+            "Use `foo here.\n\nWhich side should own it?\n\nUse `bar`.",
+        ]) {
+            expect([wrapped, grade(p2, { answer: wrapped }).reason]).toEqual([wrapped, "deferred"]);
+        }
         const clean = {
             files: [
                 {
