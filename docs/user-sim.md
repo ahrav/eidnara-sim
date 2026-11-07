@@ -54,7 +54,28 @@ the compiled cue and probe text reach the agent unchanged. A conveyance
 keeps its compiled text after any pushback, so each ledger fact is conveyed
 once in its compiled manner, by the script text alone. At delivery, a `task` filler turn whose
 agent reply ended with a question becomes `clarify`, and the reply answers
-it. Over the whole S seed 101 scenario the plan gives pushback 45.7%,
+it from what the user already told the agent and nothing more. The model
+call classifies the question (`clarifyPrompt`): its prompt quotes the request
+the agent was working on (the session's previous script turn), the
+statements of the ledger facts conveyed to the project before the turn (a
+conveyance, update, or reversal turn or a committed diff, a revision
+replacing its predecessor; `clarifyContexts`), and the agent's reply, and the
+model answers `SETTLED` or `OPEN`. The delivered reply is fixed text for that
+word (`CLARIFY_REPLIES`): `You already have what you need for that, so go
+ahead and proceed.` when the request or a conveyed fact settles the question,
+and `I have no preference on that; use your judgement.` when neither does.
+The compiled scenario scripts no clarify answers, so an open question always
+gets the second. A classification whose first word is neither falls back to
+the second with the cause `unread`. A clarify turn therefore conveys no
+detail the scenario did not: under the free-text reply it replaced, the 350
+recorded c7 clarify calls (the S and M runs, apart from the M-201 and
+M-203 host runs, whose call logs exceed 3 GB) answered with new specifics,
+chose between the agent's options, and in some disowned work the user had
+asked for (`I haven't settled on a value yet, so don't change the test
+expectations to 58899`, M-201 eidnara seq 9743). Classified with this prompt,
+29 of the 350 are `SETTLED` and 321 `OPEN`
+(`tests/fixtures/usersim/c7-clarify.json` keeps eleven of them, both arms
+and both answers). Over the whole S seed 101 scenario the plan gives pushback 45.7%,
 interrupt 4.5%, and redirect and abandon 6% of 50 sessions, inside every
 band.
 
