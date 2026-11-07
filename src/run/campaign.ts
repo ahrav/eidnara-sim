@@ -9,6 +9,7 @@ import {
     statfsSync,
 } from "node:fs";
 import { join } from "node:path";
+import { sameSet } from "../prereg/validate";
 import { interruptions } from "./interruptions";
 import { type Entry, readJournal } from "./journal";
 import { PRICE_TABLE, type Price } from "./price";
@@ -138,7 +139,7 @@ export function parseCampaign(raw: unknown): CampaignSpec {
         !(
             typeof prices === "object" &&
             prices !== null &&
-            Object.keys(prices).sort().join() === "cache_read,cache_write,input,output" &&
+            sameSet(Object.keys(prices), ["cache_read", "cache_write", "input", "output"]) &&
             Object.values(prices).every(
                 (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
             )
@@ -197,15 +198,16 @@ export function admitted(max: number | null, slots: readonly Slot[]): Set<string
     const groups = new Map<string, Slot[]>();
     for (const s of slots) groups.set(s.group, [...(groups.get(s.group) ?? []), s]);
     const out = new Set<string>();
-    let held = slots.filter((s) => s.holding).length;
+    const begun = [...groups.values()].filter((members) => members.some((m) => m.begun));
+    // Every begun group keeps all its runs, and its runs still to launch hold their slots before
+    // any fresh group is weighed.
+    let held =
+        slots.filter((s) => s.holding).length +
+        begun.reduce((n, members) => n + members.filter((m) => !m.begun).length, 0);
+    for (const members of begun) for (const m of members) out.add(m.name);
     let blocked = false;
     for (const members of groups.values()) {
-        if (members.some((m) => m.begun)) {
-            // Members of a begun group that have not launched yet keep their reserved slots.
-            held += members.filter((m) => !m.begun).length;
-            for (const m of members) out.add(m.name);
-            continue;
-        }
+        if (begun.includes(members)) continue;
         if (blocked || held + members.length > max) {
             blocked = true;
             continue;
@@ -216,16 +218,29 @@ export function admitted(max: number | null, slots: readonly Slot[]): Set<string
     return out;
 }
 
-/** A run's spend so far, read from its `calls.jsonl` up to `offset`. */
+/**
+ * A run's spend so far, read from its `calls.jsonl` up to `offset`. `ino` and `head` (the file's
+ * first bytes, up to `HEAD_BYTES`) identify the file, so a replacement is read from its start.
+ */
 export interface Spend {
     offset: number;
     ino: number | null;
+    head: string;
     usd: number;
     calls: number;
     by_component: Record<string, number>;
 }
 
-export const noSpend = (): Spend => ({ offset: 0, ino: null, usd: 0, calls: 0, by_component: {} });
+export const noSpend = (): Spend => ({
+    offset: 0,
+    ino: null,
+    head: "",
+    usd: 0,
+    calls: 0,
+    by_component: {},
+});
+
+const HEAD_BYTES = 256;
 
 const tokens = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
 
@@ -257,10 +272,13 @@ export function readSpend(path: string, prev: Spend, prices: Prices): Spend {
     try {
         const st = fstatSync(fd);
         if (!st.isFile()) throw new Error(`${path} is not a regular file`);
-        const spend =
-            st.ino !== prev.ino || st.size < prev.offset
-                ? { ...noSpend(), ino: st.ino }
-                : { ...prev, by_component: { ...prev.by_component } };
+        const first = Buffer.alloc(Math.min(HEAD_BYTES, st.size));
+        const got = first.length > 0 ? readSync(fd, first, 0, first.length, 0) : 0;
+        const head = first.subarray(0, got).toString("latin1");
+        const same = st.ino === prev.ino && st.size >= prev.offset && head.startsWith(prev.head);
+        const spend = same
+            ? { ...prev, head, by_component: { ...prev.by_component } }
+            : { ...noSpend(), ino: st.ino, head };
         if (spend.offset >= st.size) return spend;
         const chunk = Buffer.alloc(Math.min(1 << 20, st.size - spend.offset));
         let carry = Buffer.alloc(0);

@@ -354,15 +354,15 @@ const OPEN_STATES = new Set<RunRecord["state"]>(["pending", "running"]);
 const running = (name: string, strict = true) => {
     if (live(name)) return true;
     const dir = runDir(spec, name);
-    const st = lstatSync(dir, { throwIfNoEntry: false });
-    if (!st?.isDirectory()) return false;
     try {
+        if (!lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) return false;
         return leaseHeld(dir);
     } catch (caught) {
         if (strict) throw caught;
         return true;
     }
 };
+const TERMINAL = new Set<RunRecord["state"]>(["finalized", "gave-up"]);
 
 /** The run's progress, read only from a plain run directory. */
 function observe(name: string, now: number): RunProgress {
@@ -432,7 +432,12 @@ for (;;) {
             observed.set(run.name, caught as Error);
         }
     }
-    const slots = spec.runs.map((run) => {
+    // A finalized or given-up run neither holds a slot nor waits for one, unless it still runs.
+    const candidates = spec.runs.filter(
+        (run) =>
+            !TERMINAL.has((records.get(run.name) as RunRecord).state) || running(run.name, false),
+    );
+    const slots = candidates.map((run) => {
         const record = records.get(run.name) as RunRecord;
         const began = begun(run.name, record);
         const progress = observed.get(run.name);
@@ -470,19 +475,20 @@ for (;;) {
             rows.push({ record, progress: empty(now) });
         }
     }
+    const spendErrors: string[] = [];
     for (const run of spec.runs) {
         const path = join(runDir(spec, run.name), "calls.jsonl");
-        // A linked run directory is refused by its step, and its records count for nothing.
-        if (lstatSync(runDir(spec, run.name), { throwIfNoEntry: false })?.isSymbolicLink())
-            continue;
         try {
+            // A linked run directory is refused by its step, and its records count for nothing.
+            if (lstatSync(runDir(spec, run.name), { throwIfNoEntry: false })?.isSymbolicLink())
+                continue;
             spends.set(run.name, readSpend(path, spends.get(run.name) ?? noSpend(), spec.prices));
         } catch (caught) {
-            say(`ALERT run ${run.name}: spend read failed: ${(caught as Error).message}`, true);
+            spendErrors.push(`run ${run.name} spend read failed: ${(caught as Error).message}`);
         }
     }
     const spendUsd = [...spends.values()].reduce((sum, x) => sum + x.usd, 0);
-    const raisedNow = alerts(spec, rows, now, undefined, spendUsd);
+    const raisedNow = [...alerts(spec, rows, now, undefined, spendUsd), ...spendErrors];
     for (const a of raisedNow) if (!raised.has(alertKey(a))) say(`ALERT ${a}`, true);
     raised = new Set(raisedNow.map(alertKey));
     let persisted = true;
@@ -497,7 +503,13 @@ for (;;) {
                     spend_usd: cents(spendUsd),
                     spend_cap_usd: spec.spend_cap_usd,
                     max_concurrent: spec.max_concurrent,
-                    slots_held: slots.filter((x) => x.holding).length,
+                    slots_held: candidates.filter((run) => {
+                        const record = records.get(run.name) as RunRecord;
+                        return (
+                            running(run.name, false) ||
+                            (OPEN_STATES.has(record.state) && begun(run.name, record))
+                        );
+                    }).length,
                     runs: rows.map(({ record, progress }) => ({
                         ...record,
                         ...progress,

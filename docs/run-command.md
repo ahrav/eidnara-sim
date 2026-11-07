@@ -429,8 +429,10 @@ the last poll frees its slot at once. The supervisor starts groups whole and
 in campaign order: a group launches in one poll once the slots held plus
 the group's runs fit in `max_concurrent`, and the first group that does not
 fit holds back every later one. A group whose run began keeps all its runs
-and reserves a slot for each one that has not launched, so its resumes and
-late members never wait behind a later group. A group larger than
+and reserves a slot for each one that has not launched, counted before any
+fresh group is weighed, so its resumes and late members never wait behind
+another group. A finalized or given-up run that no longer runs takes no
+part in admission. A group larger than
 `max_concurrent` is refused. Without `max_concurrent` every run launches at
 once.
 
@@ -472,9 +474,10 @@ field keeps every record. Every `poll_ms` the supervisor:
   6.25 by default, charged to every component and model); a complete line
   that is not a JSON object counts for nothing. The supervisor reads each
   file from where the last poll stopped, and from its start after a restart
-  or when the file shrank or was replaced. A linked run directory's records
-  are not read, and a call log that exists but cannot be opened as a plain
-  file raises an alert;
+  or when the file shrank or was replaced (another inode, or first bytes
+  that differ). A linked run directory's records are not read, and a call
+  log that exists but cannot be opened as a plain file is a current alert
+  until a read succeeds;
 - raises an alert for a run that gave up, a running run whose journal gained
   no entry for `stale_ms` (45 minutes by default, past the 20-minute job
   deadline), a failed finalize step, each `inode_paths` filesystem whose

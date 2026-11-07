@@ -7,6 +7,7 @@ import {
     mkdtempSync,
     readdirSync,
     readFileSync,
+    rmSync,
     symlinkSync,
     writeFileSync,
 } from "node:fs";
@@ -386,6 +387,38 @@ test("max_concurrent starts each group whole, in campaign order, and the status 
     expect(status.alerts).toContain("campaign spend $30.00 passes the $10 cap");
 });
 
+test("a run given up before it launched frees the queue for the groups after it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
+    const fake = join(dir, "slow-run.ts");
+    writeFileSync(fake, SLOW_RUN);
+    const out = join(dir, "runs");
+    mkdirSync(out);
+    // A plain file where the run directory belongs fails every step of that run.
+    writeFileSync(join(out, "x"), "not a directory\n");
+    const spec = {
+        schema: "sim-campaign/v1",
+        out,
+        poll_ms: 50,
+        inode_paths: [],
+        run_command: ["bun", fake],
+        finalize_commands: [["bun", "-e", "process.exit(0)"]],
+        max_concurrent: 1,
+        runs: [
+            { name: "x", args: [] },
+            { name: "y", args: [] },
+        ],
+    };
+    writeFileSync(join(dir, "campaign.json"), JSON.stringify(spec));
+    const r = Bun.spawnSync([process.execPath, "scripts/campaign.ts", join(dir, "campaign.json")], {
+        cwd: ROOT,
+        timeout: 60_000,
+    });
+    expect(r.exitCode).toBe(1);
+    const status = JSON.parse(readFileSync(join(out, "campaign-status.json"), "utf8"));
+    expect(status.runs.find((x: { name: string }) => x.name === "x").state).toBe("gave-up");
+    expect(status.runs.find((x: { name: string }) => x.name === "y").state).toBe("finalized");
+});
+
 test("admission holds a group back until all its runs fit, and never splits one", () => {
     const slot = (name: string, group: string, begun = false, holding = begun) => ({
         name,
@@ -419,6 +452,9 @@ test("admission holds a group back until all its runs fit, and never splits one"
     const partial = [slot("a1", "a", true), slot("a2", "a"), slot("b1", "b")];
     expect([...admitted(2, partial)]).toEqual(["a1", "a2"]);
     expect([...admitted(3, partial)]).toEqual(["a1", "a2", "b1"]);
+    // Its reservations count even when a fresh group comes first in campaign order.
+    const later = [slot("a1", "a"), slot("b1", "b", true), slot("b2", "b")];
+    expect([...admitted(2, later)]).toEqual(["b1", "b2"]);
 });
 
 test("spend reads only complete call records, and starts over on a shrunk or replaced file", () => {
@@ -445,6 +481,19 @@ test("spend reads only complete call records, and starts over on a shrunk or rep
     writeFileSync(path, `${rec("agent", 0, 40_000)}\n`);
     expect(readSpend(path, second, C7_PRICES)).toMatchObject({ usd: 1, calls: 1 });
     expect(callUsd({ input_tokens: -5, output_tokens: "x" }, C7_PRICES)).toBe(0);
+    // A file replaced by one whose first bytes differ is read from its start, even when it is
+    // larger than the old offset and reuses the inode.
+    const before = readSpend(path, noSpend(), C7_PRICES);
+    rmSync(path);
+    writeFileSync(
+        path,
+        `${rec("memory_capture", 0, 0, 0, 1_000_000)}\n${rec("agent", 0, 40_000)}\n`,
+    );
+    expect(readSpend(path, before, C7_PRICES)).toMatchObject({
+        usd: 7.25,
+        calls: 2,
+        by_component: { memory_capture: 6.25, agent: 1 },
+    });
     // A complete line that is JSON but not an object is passed over, and later records count.
     writeFileSync(path, `null\n[1]\n${rec("agent", 0, 40_000)}\n`);
     expect(readSpend(path, noSpend(), C7_PRICES)).toMatchObject({ usd: 1, calls: 1 });
@@ -467,6 +516,18 @@ test("a campaign file with a group larger than max_concurrent, bad prices, or a 
         "max_concurrent is not a positive integer",
     );
     expect(() => parseCampaign({ ...base, runs, prices: { input: 5 } })).toThrow("prices needs");
+    const custom = { input: 1, output: 2, cache_read: 0, cache_write: 3 };
+    expect(parseCampaign({ ...base, runs, prices: custom }).prices).toEqual(custom);
+    expect(() => parseCampaign({ ...base, runs, prices: { ...custom, output: -1 } })).toThrow(
+        "prices needs",
+    );
+    expect(() =>
+        parseCampaign({
+            ...base,
+            runs,
+            prices: { "cache_read,cache_write": 1, input: 1, output: 1 },
+        }),
+    ).toThrow("prices needs");
     expect(() => parseCampaign({ ...base, runs, spend_cap_usd: -1 })).toThrow(
         "spend_cap_usd is not a positive number",
     );
