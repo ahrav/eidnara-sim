@@ -12,6 +12,7 @@ import { basename, join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { writeAtomic } from "../src/run/atomic";
 import {
+    admitted,
     alertKey,
     alerts,
     type CampaignSpec,
@@ -19,12 +20,15 @@ import {
     finalizeArgv,
     lastErrorIn,
     launchArgv,
+    noSpend,
     openLog,
     parseCampaign,
     type RunProgress,
     type RunRecord,
+    readSpend,
     runDir,
     runProgress,
+    type Spend,
     STALL_LIMIT,
 } from "../src/run/campaign";
 import { leaseHeld, releaseLease, takeLease } from "../src/run/journal";
@@ -334,7 +338,20 @@ const live = (name: string) => {
 };
 const empty = (now: number) => runProgress(join(spec.out, ".no-run"), now);
 
-function step(run: CampaignSpec["runs"][number], record: RunRecord, now: number): RunProgress {
+/** A run began once it launched or left a run directory with a journal or manifest behind. */
+const begun = (name: string, record: RunRecord) =>
+    record.launches > 0 ||
+    live(name) ||
+    existsSync(join(runDir(spec, name), "journal.jsonl")) ||
+    existsSync(join(runDir(spec, name), "manifest.json"));
+const OPEN_STATES = new Set<RunRecord["state"]>(["pending", "running"]);
+
+function step(
+    run: CampaignSpec["runs"][number],
+    record: RunRecord,
+    now: number,
+    mayStart: boolean,
+): RunProgress {
     const dir = runDir(spec, run.name);
     if (lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) {
         throw new Error(`${dir} is a link; a run directory must be a plain directory`);
@@ -357,7 +374,7 @@ function step(run: CampaignSpec["runs"][number], record: RunRecord, now: number)
         now,
         spec.relaunch_backoff_ms,
     );
-    if (decision.action === "launch") launch(run, record, progress);
+    if (decision.action === "launch" && mayStart) launch(run, record, progress);
     if (decision.action === "finalize") {
         finalize(run.name, record).catch((caught) => {
             record.state = "finalized";
@@ -374,13 +391,27 @@ function step(run: CampaignSpec["runs"][number], record: RunRecord, now: number)
 }
 
 let raised = new Set<string>();
+const spends = new Map<string, Spend>(spec.runs.map((r) => [r.name, noSpend()]));
+const groupOf = new Map(spec.runs.map((r) => [r.name, r.group ?? r.name]));
+const cents = (usd: number) => Math.round(usd * 100) / 100;
 for (;;) {
     const now = Date.now();
     const rows: { record: RunRecord; progress: RunProgress }[] = [];
+    const slots = spec.runs.map((run) => {
+        const record = records.get(run.name) as RunRecord;
+        const began = begun(run.name, record);
+        return {
+            name: run.name,
+            group: run.group ?? run.name,
+            begun: began,
+            holding: began && OPEN_STATES.has(record.state),
+        };
+    });
+    const allowed = admitted(spec.max_concurrent, slots);
     for (const run of spec.runs) {
         const record = records.get(run.name) as RunRecord;
         try {
-            rows.push({ record, progress: step(run, record, now) });
+            rows.push({ record, progress: step(run, record, now, allowed.has(run.name)) });
             record.step_failures = 0;
         } catch (caught) {
             record.last_error = `supervisor: ${(caught as Error).message}`;
@@ -394,7 +425,16 @@ for (;;) {
             rows.push({ record, progress: empty(now) });
         }
     }
-    const raisedNow = alerts(spec, rows, now);
+    for (const run of spec.runs) {
+        const path = join(runDir(spec, run.name), "calls.jsonl");
+        try {
+            spends.set(run.name, readSpend(path, spends.get(run.name) ?? noSpend(), spec.prices));
+        } catch (caught) {
+            say(`ALERT run ${run.name}: spend read failed: ${(caught as Error).message}`, true);
+        }
+    }
+    const spendUsd = [...spends.values()].reduce((sum, x) => sum + x.usd, 0);
+    const raisedNow = alerts(spec, rows, now, undefined, spendUsd);
     for (const a of raisedNow) if (!raised.has(alertKey(a))) say(`ALERT ${a}`, true);
     raised = new Set(raisedNow.map(alertKey));
     let persisted = true;
@@ -406,9 +446,21 @@ for (;;) {
                     schema: "sim-campaign-status/v1",
                     updated_at: new Date(now).toISOString(),
                     alerts: raisedNow,
+                    spend_usd: cents(spendUsd),
+                    spend_cap_usd: spec.spend_cap_usd,
+                    max_concurrent: spec.max_concurrent,
+                    slots_held: slots.filter((x) => x.holding).length,
                     runs: rows.map(({ record, progress }) => ({
                         ...record,
                         ...progress,
+                        group: groupOf.get(record.name),
+                        spend_usd: cents(spends.get(record.name)?.usd ?? 0),
+                        spend_calls: spends.get(record.name)?.calls ?? 0,
+                        spend_by_component: Object.fromEntries(
+                            Object.entries(spends.get(record.name)?.by_component ?? {}).map(
+                                ([k, v]) => [k, cents(v)],
+                            ),
+                        ),
                         eta_at:
                             progress.eta_ms === null || record.state !== "running"
                                 ? null
