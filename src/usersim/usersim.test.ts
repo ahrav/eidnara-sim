@@ -26,6 +26,7 @@ import {
     agentReplyOf,
     checkTapeSources,
     factMatcher,
+    identityStatements,
     type Llm,
     normaliser,
     Pairing,
@@ -250,6 +251,27 @@ describe("behaviour plan", () => {
         const first = delivered(recorded.turns.slice(0, 12), plan);
         const r = realisedRates(first, prereg);
         expect(r.outside.length).toBeGreaterThan(0);
+    });
+});
+
+describe("fact identities", () => {
+    test("a plan's repository code stays open to replies while its generated token stays a fact", () => {
+        const facts = [
+            {
+                kind: "plan",
+                statement:
+                    "when we pick this back up, the next step is adding a brisk_otter_count field in src/connection.rs that counts the frames read_frame has returned",
+            },
+            { kind: "rejected", statement: "we ruled out spawn_blocking for the snapshot write" },
+        ];
+        const named = factMatcher(
+            identityStatements(facts),
+            facts.map((f) => f.statement),
+        );
+        expect(named("Your read_frame change drops buffered bytes.")).toBe(false);
+        expect(named("Drop the brisk_otter_count field.")).toBe(true);
+        expect(named("Is BRISK_OTTER really needed?")).toBe(true);
+        expect(named("Why not spawn_blocking here?")).toBe(true);
     });
 });
 

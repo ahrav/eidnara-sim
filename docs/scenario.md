@@ -5,7 +5,7 @@ scenario to `runs/scenarios/<tier>-<seed>.json`; a `--embedder local` compile
 defaults to `runs/scenarios/<tier>-<seed>.local.json`, so a stand-in never
 replaces a Titan scenario. The inputs are the seed, the
 tier's pre-registration in `prereg/<tier>.json`, the corpus under `corpus/`,
-and the generator version `sim-scenario/v9`. The same inputs produce the same
+and the generator version `sim-scenario/v10`. The same inputs produce the same
 bytes in any process, and a run reuses a cached `scenario.json` only when its
 top-level `schema`, generator version, pre-registration hash, and corpus
 inputs hash match the current inputs. The compiler scores cue and probe pairs with
@@ -87,7 +87,7 @@ pre-registered seeds end between 0.2 and 1.2 days past it.
 
 Each probe type gets `paired_items_per_probe_type / (seeds * hosts)` items;
 the pre-registration validator requires that division to be exact. Facts come
-from the templates in `corpus/fact-bank.json` (`sim-fact-bank/v5`), filled
+from the templates in `corpus/fact-bank.json` (`sim-fact-bank/v6`), filled
 with generated tokens: `adjective_noun` words in lower, upper, and Pascal
 case, five-digit numbers from 10000 to 65535 (so a figure a template states
 as a port is a valid TCP port), and `adjective-noun-NN` codenames, from the v1
@@ -181,7 +181,13 @@ pasted, and a P3 value read from its authoritative file).
 ### Plans (P6)
 
 Each project's P6 facts get one window each, so plans run one after another.
-A plan template is a `task`; a fact states one task (`resume`) or two tasks
+A plan template is a `task` and a `target`: a project path and a literal
+symbol in that file (`read_frame` in `src/connection.rs`, `onRequest` in
+`src/index.ts`). The task names both and the behaviour the step adds, so
+an agent that recalls the plan can resume it from the repository; the
+fact-bank gate refuses a task that leaves either unnamed, and the
+presupposition check refuses a bank whose target symbol a pinned tree of
+the language lacks. A fact states one task (`resume`) or two tasks
 with no order (`clarify`) when `(slot + project index + seed) mod 3` is 2,
 where `slot` counts the project's P6 facts. A resume item in an odd slot is
 revised before its probe ("Change of plan for
@@ -406,15 +412,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `08b0938d` | 0.2768 | 0.5125 |
-| S | 102 | `f77d91ed` | 0.2672 | 0.5195 |
-| M | 201 | `6c9fa0c2` | 0.3552 | 0.5807 |
-| M | 202 | `ac73b878` | 0.3513 | 0.5807 |
-| M | 203 | `2d871673` | 0.3225 | 0.551 |
-| L | 301 | `d713d6fb` | 0.3247 | 0.5807 |
-| L | 302 | `3ec7589b` | 0.3261 | 0.5807 |
-| L | 303 | `6eb66906` | 0.3254 | 0.5807 |
-| XL | 401 | `5e0e9b9b` | 0.3197 | 0.5807 |
+| S | 101 | `e477c8f0` | 0.2825 | 0.5125 |
+| S | 102 | `01c3d524` | 0.2738 | 0.5195 |
+| M | 201 | `a77c9b72` | 0.359 | 0.5807 |
+| M | 202 | `b7dd0f19` | 0.354 | 0.5807 |
+| M | 203 | `f8a66c24` | 0.3259 | 0.551 |
+| L | 301 | `4fd3cfc3` | 0.3281 | 0.5807 |
+| L | 302 | `f337255b` | 0.3297 | 0.5807 |
+| L | 303 | `85ffab3b` | 0.3287 | 0.5807 |
+| XL | 401 | `558be1f9` | 0.3231 | 0.5807 |
 
 Under qualification Q (revision 3, `e8c1f508`), which adds its P8-twin
 controls, the seeds compile to these scenarios; 103 is its exploratory
@@ -422,9 +428,9 @@ hold-out:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| Q | 101 | `ce0c8841` | 0.2768 | 0.5125 |
-| Q | 102 | `e3c07de8` | 0.262 | 0.5195 |
-| Q | 103 | `746f2c2d` | 0.2712 | 0.5021 |
+| Q | 101 | `f4685927` | 0.2825 | 0.5125 |
+| Q | 102 | `9c9b9357` | 0.2684 | 0.5195 |
+| Q | 103 | `181613de` | 0.2767 | 0.5021 |
 
 ## Held-out corpus
 
@@ -452,16 +458,16 @@ thresholds under Titan:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| H | 601 | `d2073d81` | 0.323 | 0.5913 |
-| H | 602 | `bff11aed` | 0.3266 | 0.5913 |
-| H | 603 | `ef980d36` | 0.3224 | 0.5913 |
-| H | 604 | `667bd1b3` | 0.3267 | 0.5991 |
-| H | 605 | `cef14178` | 0.3304 | 0.5913 |
-| H | 606 | `2c4f3ed3` | 0.3278 | 0.5913 |
-| H | 607 | `5d4907d1` | 0.3316 | 0.5913 |
-| H | 608 | `02532636` | 0.3338 | 0.5913 |
-| H | 609 | `378a7542` | 0.3291 | 0.5913 |
-| H | 611 | `58afba94` | 0.3356 | 0.5913 |
+| H | 601 | `d12bf681` | 0.2991 | 0.5913 |
+| H | 602 | `4594037c` | 0.3001 | 0.5913 |
+| H | 603 | `d0c22058` | 0.2946 | 0.5913 |
+| H | 604 | `3dcf70da` | 0.3028 | 0.5991 |
+| H | 605 | `b8e887a1` | 0.3021 | 0.5913 |
+| H | 606 | `98f24f7c` | 0.2998 | 0.5913 |
+| H | 607 | `458b99ff` | 0.3053 | 0.5913 |
+| H | 608 | `5832af60` | 0.307 | 0.5913 |
+| H | 609 | `1d7c2d4f` | 0.3012 | 0.5913 |
+| H | 611 | `08503433` | 0.3063 | 0.5913 |
 
 ## Known limits
 

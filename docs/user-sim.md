@@ -130,7 +130,10 @@ word's letters, lowercased, contain the pair, so `[ember_magpie]`,
 and two separate words such as `quiet hare` do not. A cue also carries the
 pasted tool output and surrounding wording of its conveyance, so its other
 identifiers, such as `RUST_BACKTRACE` and `key_len` in a pasted failure,
-stay ordinary words. The identity check covers every ledger fact of the
+stay ordinary words. A plan statement names the repository code its next
+step changes (`read_frame`, `from_frame`), so its identifiers stay ordinary
+words too (`identityStatements`), and the plan's generated token stays an
+identity through the pairs of its statement and cues. The identity check covers every ledger fact of the
 scenario, conveyed or not: a reply that names a conveyed fact can question,
 restate, or withdraw it, and one that names a fact before its conveyance turn
 conveys it outside its compiled manner. Over the c7 S runs (seeds 101 to 103,

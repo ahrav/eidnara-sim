@@ -13,7 +13,7 @@ const KINDS = [
     "tool_error",
     "session_rule",
 ];
-const SCHEMA = "sim-fact-bank/v5";
+const SCHEMA = "sim-fact-bank/v6";
 const LANGUAGE_KINDS = [
     "constraint",
     "decision",
@@ -432,6 +432,7 @@ function renderedProblems(where: string, kind: string, t: Json, vars: Vars): str
     }
     if (kind === "tool_error") problems.push(...toolErrorProblems(where, t, check, vars));
     if (kind === "lookup") problems.push(...conceptProblems(where, t));
+    if (kind === "plan") problems.push(...targetProblems(where, t));
     problems.push(...checkProblems(where, t.check, kind, vars));
     if ("out_check" in t)
         problems.push(...checkProblems(`${where} out_check`, t.out_check, kind, vars));
@@ -440,6 +441,31 @@ function renderedProblems(where: string, kind: string, t: Json, vars: Vars): str
 
 const oldOf = (vars: Vars): Vars =>
     Object.fromEntries(Object.entries(vars).map(([k, v]) => [`old_${k}`, v]));
+
+/**
+ * A plan template's `target` is the code its next step changes: a fixed project path and a literal
+ * symbol in that file. The task names both, so a resumed plan points at a file and a symbol the
+ * repository holds; `src/corpus/presuppositions.ts` checks the symbol at every pinned tree.
+ */
+function targetProblems(where: string, t: Json): string[] {
+    const target = t.target;
+    if (!isObject(target) || typeof target.path !== "string" || typeof target.symbol !== "string") {
+        return [`${where}: target needs path and symbol`];
+    }
+    const problems: string[] = [];
+    if (/\{\w+\}/.test(target.path) || !projectRelative(target.path, {})) {
+        problems.push(`${where}: target path is not a fixed project path`);
+    }
+    if (target.symbol.trim() === "" || /\{\w+\}/.test(target.symbol)) {
+        problems.push(`${where}: target symbol is not a fixed literal`);
+    }
+    for (const field of ["path", "symbol"] as const) {
+        if (typeof t.task === "string" && !t.task.includes(target[field] as string)) {
+            problems.push(`${where}: task does not name the target ${field} ${target[field]}`);
+        }
+    }
+    return problems;
+}
 
 /** A concept is one word of letters, digits, and hyphens, so it reads literally in a pattern. */
 export const CONCEPT = /^[A-Za-z][A-Za-z0-9-]*$/;

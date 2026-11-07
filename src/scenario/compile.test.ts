@@ -108,7 +108,7 @@ describe("SIM-P01: deterministic compile across processes", () => {
             expect(body.manifest).toMatchObject({
                 seed,
                 tier,
-                generator_version: "sim-scenario/v9",
+                generator_version: "sim-scenario/v10",
             });
         }, 180_000);
     }
