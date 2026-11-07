@@ -125,7 +125,10 @@ describe("committed corpus", () => {
             statement: "the local port is {value}",
             revise: "the local port moved from {old_value} to {value}",
             probe: "Is {value} the metrics port?",
+            probe_variants: ["Which port does my scraper read?", "Is {value2} the metrics port?"],
         });
+        const { revise: _, ...unrevised } = bank.any.lookup[1];
+        broken.any.lookup.push({ ...unrevised, id: "lookup-port-3" });
         expect(bankProblems(broken)).toEqual([
             "fact-bank any/lookup[0] lookup-staging-alias: concept is not one word",
             "fact-bank any/lookup[1] lookup-port: probe does not name the concept metrics",
@@ -133,6 +136,9 @@ describe("committed corpus", () => {
             "fact-bank any/lookup[3] lookup-port-2: statement does not name the concept metrics",
             "fact-bank any/lookup[3] lookup-port-2: revise does not name the concept metrics",
             "fact-bank any/lookup[3] lookup-port-2: probe names a placeholder",
+            "fact-bank any/lookup[3] lookup-port-2: probe_variants[0] does not name the concept metrics",
+            "fact-bank any/lookup[3] lookup-port-2: probe_variants[1] names a placeholder",
+            "fact-bank any/lookup[4] lookup-port-3: revise missing",
         ]);
     });
 

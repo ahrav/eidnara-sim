@@ -463,14 +463,23 @@ function conceptProblems(where: string, t: Json): string[] {
         return [`${where}: concept is not one word`];
     }
     const problems: string[] = [];
+    if (typeof t.revise !== "string" || t.revise.trim() === "") {
+        problems.push(`${where}: revise missing`);
+    }
     for (const field of ["statement", "revise", "probe"]) {
         const text = t[field];
         if (typeof text === "string" && !namesConcept(text, concept)) {
             problems.push(`${where}: ${field} does not name the concept ${concept}`);
         }
     }
-    if (typeof t.probe === "string" && /\{\w+\}/.test(t.probe)) {
-        problems.push(`${where}: probe names a placeholder`);
+    const variants = Array.isArray(t.probe_variants) ? t.probe_variants : [];
+    for (const [i, text] of [t.probe, ...variants].entries()) {
+        const field = i === 0 ? "probe" : `probe_variants[${i - 1}]`;
+        if (typeof text !== "string") continue;
+        if (i > 0 && !namesConcept(text, concept)) {
+            problems.push(`${where}: ${field} does not name the concept ${concept}`);
+        }
+        if (/\{\w+\}/.test(text)) problems.push(`${where}: ${field} names a placeholder`);
     }
     return problems;
 }

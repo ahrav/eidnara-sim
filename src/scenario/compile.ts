@@ -1683,7 +1683,10 @@ export function proveLookupNamesConcept(probes: ProbeItem[], facts: Fact[], bank
             throw new Error(`${p.id}: "${unnamed}" does not name the concept ${concept}`);
         }
         const truth = p.ground_truth;
+        const answers = p.check as { answer?: string; answer_must_not?: string[] };
         const values = [
+            ...[answers.answer ?? []].flat(),
+            ...(answers.answer_must_not ?? []),
             ...(truth?.present.flat() ?? []),
             ...(truth?.absent ?? []),
             ...(truth?.stale ?? []),

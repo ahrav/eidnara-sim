@@ -1681,6 +1681,10 @@ describe("P8 concept anchor", () => {
         expect(() => proveLookupNamesConcept([revised], [fact], bank)).toThrow(
             /states the value 31234/,
         );
+        const literal = { ...probe("Is blue the metrics color?"), check: { answer: "blue" } };
+        expect(() => proveLookupNamesConcept([literal], [fact], bank)).toThrow(
+            /states the value blue/,
+        );
     });
 
     test("a cue that leaves the concept unnamed is refused", () => {
