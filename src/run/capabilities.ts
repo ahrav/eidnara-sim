@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import {
     closeSync,
     constants,
+    existsSync,
     fstatSync,
     lstatSync,
     openSync,
@@ -11,6 +12,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { bodyText, injectedBlocks } from "../evidence/stages";
+import { payloadManifest } from "../hosts/arms";
 import {
     type ArmProfile,
     AUDITED_EIDNARA,
@@ -65,6 +67,35 @@ export interface ArmObservation {
     delivery?: DeliveryObservation | null;
     /** The arm's source capture evidence; absent on observations recorded before it was read. */
     source_capture?: SourceCaptureObservation;
+    /** The user statements in the arm's final store; absent on observations recorded before it was read. */
+    statements?: StatementObservation;
+    /** The daemon starts in the arm's `daemon.log`; absent on observations recorded before it was read. */
+    daemon_routes?: DaemonRouteObservation;
+}
+
+/**
+ * The committed user statements (`stm_*` decisions whose commit the log holds) in
+ * `final-store/kernel.sqlite`, with the sessions their capture rationale names and the count of
+ * those whose payload names none; null when the store is absent, and an `error` when its
+ * decisions cannot be read.
+ */
+export type StatementObservation = {
+    count: number;
+    sessions: string[];
+    unattributed: number;
+    /** Why the store's decisions could not be read, or null. */
+    error: string | null;
+} | null;
+
+/**
+ * The daemon generations `daemon.log` records: ready records, and the fixture's production search
+ * route lines with the embedding models they name.
+ */
+export interface DaemonRouteObservation {
+    ready: number;
+    /** Ready generations whose route line followed their ready record. */
+    production: number;
+    models: string[];
 }
 
 /**
@@ -110,6 +141,21 @@ export interface DeliveryObservation {
     unreadable: number;
     injected_blocks: number;
     notes: { expected: number; delivered: number; missing: string[]; misplaced: number[] };
+    /** Agent requests carrying a `<project-memory>` block; absent on observations recorded before it was read. */
+    memory_blocks?: number;
+    /** Sessions with an agent request; absent on observations recorded before it was read. */
+    sessions?: number;
+    /**
+     * Whether some agent request came after a user statement was captured, in another session
+     * than the capture's, so a later session's `<project-memory>` block owes it; absent on
+     * observations recorded before it was read.
+     */
+    memory_due?: boolean;
+    /**
+     * Of the requests that owe a block (another session's, of the statement's project, started
+     * after the capture ended), those carrying a `<project-memory>` block.
+     */
+    due_blocks?: number;
 }
 
 /** The text blocks of the body's user messages, where a prompt prefix lands. */
@@ -125,10 +171,13 @@ const userTexts = (body: ConverseBody) =>
 const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
 
 export function observeDelivery(
-    calls: readonly Pick<CallRecord, "seq" | "component" | "session" | "turn" | "request">[],
+    calls: readonly (Pick<CallRecord, "seq" | "component" | "session" | "turn" | "request"> &
+        Partial<Pick<CallRecord, "started_wall_ms" | "wall_ms" | "status">>)[],
     parts: PartLookup,
     notes: readonly ExpectedNote[],
     eventIndex: ReadonlyMap<string, number>,
+    statementSessions: readonly (string | null)[] | null = null,
+    projectOf: ReadonlyMap<string, string> = new Map(),
 ): DeliveryObservation {
     const out: DeliveryObservation = {
         requests: 0,
@@ -140,12 +189,30 @@ export function observeDelivery(
             missing: [],
             misplaced: [],
         },
+        memory_blocks: 0,
+        sessions: 0,
+        memory_due: false,
+        due_blocks: 0,
     };
     const delivered = new Set<string>();
     const index = (event: string | null) => eventIndex.get(event ?? "") ?? -1;
     const backgrounds = [...new Set(notes.map((n) => n.background))];
+    const agentCalls: { started: number; session: string | null; block: boolean }[] = [];
+    const lastCapture = new Map<string, number>();
+    const lastCall = new Map<string, number>();
+    let memoryBlocks = 0;
     for (const call of calls) {
+        const session = call.session ?? null;
+        const ended = call.wall_ms ?? call.seq;
+        if (session !== null) lastCall.set(session, Math.max(lastCall.get(session) ?? -1, ended));
+        // Only a capture call the provider answered can have produced a statement.
+        const answered = call.status === undefined || call.status === 200;
+        if (call.component === "memory_capture" && session !== null && answered) {
+            lastCapture.set(session, Math.max(lastCapture.get(session) ?? -1, ended));
+        }
         if (call.component !== "agent" || !call.request) continue;
+        const agent = { started: call.started_wall_ms ?? call.seq, session, block: false };
+        agentCalls.push(agent);
         const body = rebuildRequest(call.request, parts);
         if (!body) {
             out.unreadable++;
@@ -154,6 +221,14 @@ export function observeDelivery(
         out.requests++;
         const text = bodyText(body);
         if (injectedBlocks(text).length > 0) out.injected_blocks++;
+        const given = bodyText({
+            system: body.system,
+            messages: (body.messages ?? []).filter((m) => m?.role === "user"),
+        });
+        if (injectedBlocks(given).some((b) => b.tag === "project-memory")) {
+            memoryBlocks++;
+            agent.block = true;
+        }
         const users = userTexts(body);
         const prompt = [...users].reverse().find((t) => t.length > 0) ?? "";
         for (const n of notes) {
@@ -186,7 +261,53 @@ export function observeDelivery(
     }
     out.notes.delivered = delivered.size;
     out.notes.missing = notes.filter((n) => n.owed && !delivered.has(n.event)).map((n) => n.event);
+    out.memory_blocks = memoryBlocks;
+    out.sessions = new Set(agentCalls.map((c) => c.session)).size;
+    const owed = owingRequests(agentCalls, lastCapture, lastCall, statementSessions, projectOf);
+    out.memory_due = owed.length > 0;
+    out.due_blocks = owed.filter((c) => c.block).length;
     return out;
+}
+
+/**
+ * Pi names each Eidnara session `sim-<session>`, so a statement's capture session maps onto the
+ * run's session; a name without the prefix (OpenCode's own session ids) maps onto none, and then
+ * every session that made a capture call stands as the possible capture session.
+ */
+const simSession = (name: string) => (name.startsWith("sim-") ? name.slice(4) : null);
+
+/**
+ * The agent requests that owe a statement's `<project-memory>` block: each started, in another
+ * session of the same project, after the last capture call of a session that captured a user
+ * statement had ended. The current session's statements stay out of its own block. A statement
+ * whose session is unknown (null) or maps onto no run session adds every session that made a
+ * capture call as a possible capture session; a session with no known project matches any.
+ */
+function owingRequests<C extends { started: number; session: string | null }>(
+    agentCalls: readonly C[],
+    lastCapture: ReadonlyMap<string, number>,
+    lastCall: ReadonlyMap<string, number>,
+    statementSessions: readonly (string | null)[] | null,
+    projectOf: ReadonlyMap<string, string>,
+): C[] {
+    if (!statementSessions || statementSessions.length === 0) return [];
+    const mapped = statementSessions.map((s) => (s === null ? null : simSession(s)));
+    const sessions = new Set(mapped.filter((m) => m !== null) as string[]);
+    if (mapped.some((m) => m === null)) for (const s of lastCapture.keys()) sessions.add(s);
+    const sameProject = (a: string, b: string | null) => {
+        const pa = projectOf.get(a);
+        const pb = b === null ? undefined : projectOf.get(b);
+        return pa === undefined || pb === undefined || pa === pb;
+    };
+    const owed = new Set<C>();
+    for (const s of sessions) {
+        const after = lastCapture.get(s) ?? lastCall.get(s);
+        if (after === undefined) continue;
+        for (const c of agentCalls) {
+            if (c.session !== s && c.started > after && sameProject(s, c.session)) owed.add(c);
+        }
+    }
+    return [...owed];
 }
 
 /** Delivery evidence that contradicts the profile; an arm without the observation passes. */
@@ -447,6 +568,73 @@ export function readDescriptors(
     }
 }
 
+/**
+ * The accepted user statements of a final Kernel store: `stm_*` decisions, each naming its capture
+ * session in the rationale of its JSON payload. Null when the store is absent or unreadable.
+ */
+export function readStatements(kernelPath: string): StatementObservation {
+    if (!lstatSync(kernelPath, { throwIfNoEntry: false })?.isFile()) return null;
+    let db: Database | null = null;
+    try {
+        db = new Database(kernelPath, { readonly: true });
+        const rows = db
+            .query(
+                `select decision_payload as p from decisions
+                 where object_id glob 'stm_*'
+                   and created_commit_seq in (select commit_seq from commit_log)`,
+            )
+            .all() as { p: Uint8Array | string }[];
+        const sessions = new Set<string>();
+        let unattributed = 0;
+        for (const { p } of rows) {
+            const text = typeof p === "string" ? p : new TextDecoder().decode(p);
+            let session: unknown = null;
+            try {
+                session = JSON.parse(String(JSON.parse(text)?.rationale ?? "null"))?.session;
+            } catch {
+                session = null;
+            }
+            if (typeof session === "string") sessions.add(session);
+            else unattributed++;
+        }
+        return { count: rows.length, sessions: [...sessions].sort(), unattributed, error: null };
+    } catch (caught) {
+        const error = (caught as Error).message;
+        return { count: 0, sessions: [], unattributed: 0, error };
+    } finally {
+        db?.close();
+    }
+}
+
+const ROUTE_LINE = /direct_host_fixture: search route production, embedding model ([^,\s]+)/;
+
+/**
+ * Reads `daemon.log` in order. `DaemonStack` appends each start's captured stdout, which holds the
+ * ready record, before its captured stderr, which holds the fixture's route line, so a generation
+ * opens at its ready record and counts as production when a route line follows before the next
+ * ready record. `models` lists the embedding models every route line names.
+ */
+export function readDaemonRoutes(path: string): DaemonRouteObservation {
+    const out: DaemonRouteObservation = { ready: 0, production: 0, models: [] };
+    const models = new Set<string>();
+    let open = false;
+    eachLine(path, (line) => {
+        if (line.startsWith("{") && line.includes('"status":"ready"')) {
+            out.ready++;
+            open = true;
+            return;
+        }
+        const route = ROUTE_LINE.exec(line);
+        if (route) {
+            models.add(route[1] as string);
+            if (open) out.production++;
+            open = false;
+        }
+    });
+    out.models = [...models].sort();
+    return out;
+}
+
 /** Counters every `metrics.source_capture` block carries (Eidnara docs/host-wire-protocol.md 7.9). */
 const CAPTURE_COUNTERS = ["admitted", "completed"];
 
@@ -528,6 +716,8 @@ export function observeArm(
             ...readDescriptors(join(armRoot, "..", "final-store", "kernel.sqlite")),
             ...readCaptureCounters(join(armRoot, "..", "source-capture.json")),
         },
+        statements: readStatements(join(armRoot, "..", "final-store", "kernel.sqlite")),
+        daemon_routes: readDaemonRoutes(join(armRoot, "..", "daemon.log")),
     };
 }
 
@@ -598,7 +788,8 @@ export function armMismatches(o: ArmObservation): string[] {
             );
         }
     }
-    out.push(...captureMismatches(profile, o));
+    out.push(...captureMismatches(profile, o), ...memoryMismatches(profile, o));
+    out.push(...routeMismatches(profile, o));
     if (o.search) {
         if (profile.search !== "legacy-scan" && o.search.legacy_scan.length > 0) {
             const reasons = [...new Set(o.search.legacy_scan)].join(", ");
@@ -611,6 +802,85 @@ export function armMismatches(o: ArmObservation): string[] {
                 `${o.search.fused} eidnara_search results came from the fused route, but the arm declares ${profile.search}`,
             );
         }
+    }
+    return out;
+}
+
+/**
+ * Once a user statement captured in one session meets an agent request of a later session, an
+ * automatic arm must have carried a `<project-memory>` block and an explicit-search arm must have
+ * called `eidnara_search`. An Eidnara arm whose agent worked in two sessions must also show its
+ * capture calls in the proxy records, since every side call goes through the proxy.
+ */
+function memoryMismatches(profile: ArmProfile, o: ArmObservation): string[] {
+    const d = o.delivery;
+    if (!d || d.memory_due === undefined) return [];
+    const out: string[] = [];
+    if (o.statements?.error && (o.components.agent ?? 0) > 0) {
+        out.push(`the final store's user statements cannot be read: ${o.statements.error}`);
+    }
+    const mode = deliveryOf(profile);
+    const statements = o.statements?.count ?? 0;
+    if (d.memory_due && mode === "automatic" && (d.due_blocks ?? d.memory_blocks) === 0) {
+        out.push(
+            `the final store holds ${statements} user statements captured before later sessions' agent requests, but none of those requests carried a <project-memory> block`,
+        );
+    }
+    const searches = o.search
+        ? o.search.legacy_scan.length + o.search.fused + o.search.errored
+        : null;
+    if (d.memory_due && mode === "explicit-search" && searches === 0) {
+        out.push(
+            `the final store holds ${statements} user statements captured before later sessions' agent requests, but the agent never called eidnara_search on an arm that declares explicit search`,
+        );
+    }
+    if ((d.sessions ?? 0) >= 2 && (o.components.memory_capture ?? 0) === 0) {
+        out.push(
+            `agent requests in ${d.sessions} sessions and no memory_capture call in the proxy records`,
+        );
+    }
+    return out;
+}
+
+/**
+ * Every daemon start of a fused-route arm logs the fixture's production search route over the
+ * embedding model the arm requires; a daemon of any other arm logs none.
+ */
+function routeMismatches(profile: ArmProfile, o: ArmObservation): string[] {
+    const r = o.daemon_routes;
+    if (!r || profile.daemon === null) return [];
+    if (profile.search !== "fused") {
+        return r.models.length > 0
+            ? [
+                  `the daemon logged the production search route (${r.models.join(", ")}), but the arm declares ${profile.search}`,
+              ]
+            : [];
+    }
+    const out: string[] = [];
+    if ((o.components.agent ?? 0) > 0 && r.ready === 0) {
+        out.push(
+            "daemon.log records no ready daemon, so the production search route is unverified",
+        );
+    }
+    if (r.production < r.ready) {
+        out.push(
+            `${r.ready - r.production} of ${r.ready} daemon starts logged no production search route`,
+        );
+    }
+    const wanted = profile.requires.embeddings;
+    const other = r.models.filter((m) => m !== wanted);
+    if (other.length > 0) {
+        out.push(
+            `the production search route ran embedding model ${other.join(", ")}, but the arm requires ${wanted}`,
+        );
+    }
+    if (
+        o.search &&
+        o.search.fused === 0 &&
+        o.search.legacy_scan.length === 0 &&
+        o.search.errored > 0
+    ) {
+        out.push(`all ${o.search.errored} eidnara_search results errored on the fused route`);
     }
     return out;
 }
@@ -670,6 +940,12 @@ export function requireAuditedVariants(
     if (git(["cat-file", "-e", `${audited}^{commit}`]).exitCode !== 0) {
         throw new Error(
             `${checkout} lacks commit ${audited}, whose source the daemon capabilities in src/hosts/profiles.ts were read from`,
+        );
+    }
+    const manifest = payloadManifest(checkout);
+    if (variants.includes("direct-host-fixture-fused") && !existsSync(manifest)) {
+        throw new Error(
+            `direct-host-fixture-fused loads the payload's embedding lane, and ${manifest} is absent; build the development payload (bun run payload:dev) in the build clone`,
         );
     }
     for (const variant of variants) {

@@ -205,6 +205,10 @@ export function requireSeedOrder(
 }
 const modelRef = (model: string) => `amazon-bedrock/${model}`;
 
+/** The build clone's development payload manifest, whose embedding lane the fused fixture loads. */
+export const payloadManifest = (checkout: string) =>
+    join(checkout, "packages/host-linux-x64-gnu/payload-manifest.json");
+
 export function piModels(ctx: Pick<HostContext, "model" | "sideModel">): string[] {
     return [...new Set([ctx.model, ...(ctx.sideModel ? [ctx.sideModel] : [])])];
 }
@@ -213,7 +217,7 @@ export function piModels(ctx: Pick<HostContext, "model" | "sideModel">): string[
  * The user-tier `eidnara.jsonc` an Eidnara arm writes. `compaction.enabled` is the arm's
  * `eidnara_compaction`; with it false the plugin keeps its knowledge layer (memory, injection,
  * notes, search) and leaves the context window to the host. An arm that delivers through explicit
- * search alone turns the auto-search hint off.
+ * search alone turns the auto-search hint and the automatic memory injection off.
  */
 export function eidnaraUserConfig(
     connectionFile: string,
@@ -234,19 +238,21 @@ export function eidnaraUserConfig(
             auto_promote: true,
             auto_capture: true,
             auto_search: { enabled: deliveryOf(ARM_PROFILES[arm]) === "automatic" },
+            auto_inject: { enabled: deliveryOf(ARM_PROFILES[arm]) === "automatic" },
             git_commit_indexing: { enabled: false },
         },
         source_capture: { enabled: ARM_PROFILES[arm].source_capture },
     };
 }
 
-/** The daemon configuration the hermetic host stack hands `direct_host_fixture`. */
 /**
- * The daemon's own user tier. `source_capture.enabled` is user-only, so the daemon reads its
- * consent here; the plugin's user tier carries the same value, as one user-tier file would.
+ * The daemon's own user tier, which the hermetic host stack hands `direct_host_fixture`.
+ * `source_capture.enabled` and `memory.auto_inject.enabled` are user-only, so the daemon reads
+ * them here; the plugin's user tier carries the same values, as one user-tier file would.
  */
 export const fixtureDaemonConfig = (model: string, arm: ArmName): Record<string, unknown> => ({
     history_summarizer: { module_model: modelRef(model) },
+    memory: { auto_inject: { enabled: deliveryOf(ARM_PROFILES[arm]) === "automatic" } },
     source_capture: { enabled: ARM_PROFILES[arm].source_capture },
 });
 
@@ -316,6 +322,9 @@ export class DaemonStack {
             harnessRuntime,
             credentialSource: DUMMY_AWS,
             daemonConfig: fixtureDaemonConfig(this.ctx.model, armBase(this.ctx.arm)),
+            ...(ARM_PROFILES[armBase(this.ctx.arm)].daemon === "direct-host-fixture-fused"
+                ? { productionSearchManifest: payloadManifest(config.eidnara_checkout) }
+                : {}),
             daemonEnv: faketimeEnv(this.ctx.offsetFile),
         });
         this.connectionFile = this.stack.connectionFile;

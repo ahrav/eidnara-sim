@@ -19,7 +19,13 @@ import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
 import { breaksRule, type Check } from "../grade/probes";
-import { armBase, CONTROL_LABEL, eidnaraUserConfig, fixtureDaemonConfig } from "../hosts/arms";
+import {
+    armBase,
+    CONTROL_LABEL,
+    eidnaraUserConfig,
+    fixtureDaemonConfig,
+    payloadManifest,
+} from "../hosts/arms";
 import { driverSupports, HostDriver } from "../hosts/driver";
 import {
     type ArmProfile,
@@ -1398,6 +1404,8 @@ function binaryDigests(config: SimConfig): Record<string, string> {
         // The plugin builds are ignored outputs, so the checkout's worktree digest omits them.
         pi_plugin: join(config.eidnara_checkout, "packages/pi-plugin/dist"),
         opencode_plugin: join(config.eidnara_checkout, "packages/opencode-plugin/dist"),
+        // The fused fixture verifies each payload file against this manifest's digests.
+        payload_manifest: payloadManifest(config.eidnara_checkout),
         ...(config.upgrade?.opencode_binary
             ? { opencode_upgrade: config.upgrade.opencode_binary }
             : {}),
@@ -1406,7 +1414,10 @@ function binaryDigests(config: SimConfig): Record<string, string> {
     return Object.fromEntries(
         Object.entries(files).map(([name, path]) => {
             const optional =
-                name.startsWith("opencode_sdk") || name.endsWith("_plugin") || name === "faketime";
+                name.startsWith("opencode_sdk") ||
+                name.endsWith("_plugin") ||
+                name === "faketime" ||
+                name === "payload_manifest";
             if (optional && !existsSync(path)) return [name, "absent"];
             if (statSync(path).isDirectory()) return [name, directoryDigest(realpathSync(path))];
             return [name, createHash("sha256").update(readFileSync(path)).digest("hex")];
@@ -2301,6 +2312,7 @@ async function runArms(
     });
     const scriptedById = new Map(scripted.map((t) => [t.id, t]));
     const eventOrder = new Map(allEvents.map((e, i) => [e.id, i]));
+    const projectOf = new Map(scenario.sessions.map((x) => [x.id, x.project]));
     const oracle = (arm: string) => deliveryOf(armProfile(arm)) === "oracle-context";
     const backgrounds = manifest.order.some(oracle)
         ? oracleBackgrounds(scenario, [
@@ -2374,8 +2386,7 @@ async function runArms(
     const verifyArm = (arm: string, armRoot: string) => {
         if (unchecked.has(arm)) requireBoots(arm, armRoot);
         const observed = observeArm(arm, o.host, armRoot, components.get(arm) ?? {});
-        const mode = deliveryOf(armProfile(arm));
-        if (manifest.order.some(oracle) || mode === "explicit-search") {
+        if (manifest.order.some(oracle) || armProfile(arm).plugin) {
             // A recovered row says what the user-sim decided; the host may or may not have the turn.
             const turns = journal.entries.filter(
                 (t) => t.kind === "UserTurn" && t.arm === arm && t.delivered === true,
@@ -2392,16 +2403,34 @@ async function runArms(
                 : [];
             const parts = new RequestPartLog(join(o.out, "requests.jsonl"));
             try {
-                const armCalls: Pick<
+                const armCalls: (Pick<
                     CallRecord,
                     "seq" | "component" | "session" | "turn" | "request"
-                >[] = [];
+                > &
+                    Partial<Pick<CallRecord, "started_wall_ms" | "wall_ms" | "status">>)[] = [];
                 eachJsonl<CallRecord>(callsPath, (c) => {
-                    if (c.arm !== arm || c.component !== "agent" || !c.request) return;
-                    const { seq, component, session, turn, request } = c;
-                    armCalls.push({ seq, component, session, turn, request });
+                    if (c.arm !== arm) return;
+                    const { seq, component, session, turn, request, started_wall_ms, wall_ms } = c;
+                    const times = { started_wall_ms, wall_ms, status: c.status };
+                    if (component === "memory_capture") {
+                        armCalls.push({ seq, component, session, turn, ...times });
+                    } else if (component === "agent" && request) {
+                        armCalls.push({ seq, component, session, turn, request, ...times });
+                    }
                 });
-                observed.delivery = observeDelivery(armCalls, parts, notes, eventOrder);
+                const statements = observed.statements;
+                // A statement whose payload names no session stands for any capturing session.
+                const sessions = statements
+                    ? [...statements.sessions, ...Array(statements.unattributed).fill(null)]
+                    : null;
+                observed.delivery = observeDelivery(
+                    armCalls,
+                    parts,
+                    notes,
+                    eventOrder,
+                    sessions,
+                    projectOf,
+                );
             } finally {
                 parts.close();
             }

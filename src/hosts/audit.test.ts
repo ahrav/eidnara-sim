@@ -48,6 +48,10 @@ const VARIANT: VariantRecord = {
     side_calls: "proxy",
     memory_injection: "always-on",
     source_capture: true,
+    user_statement_delivery: true,
+    whole_small_tool_outputs: true,
+    failure_lines_captured: true,
+    stream_tags_stripped: true,
     evidence: "test",
     sources: ["fixture.rs", "config.rs"],
     probes: [

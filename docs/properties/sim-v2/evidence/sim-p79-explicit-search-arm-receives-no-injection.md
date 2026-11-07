@@ -1,6 +1,7 @@
 # sim-p79-explicit-search-arm-receives-no-injection
 
-Evidence status: Workstream A S5 record; the arm is refused before preflight.
+Evidence status: Workstream A S5 record; the arm is admitted at Eidnara
+`1f2867036` and has not run a measured campaign.
 
 ## Discovery trigger
 
@@ -23,17 +24,27 @@ serves the memory source of Pi's `eidnara_search`
 (`packages/pi-plugin/src/tools/eidnara-search.ts`), so it removes the tools'
 data too.
 
-`src/hosts/profiles.ts` records `memory_injection: "always-on"` for both
-daemon variants with that reading and its sources (audited by
-`requireAuditedVariants`), and declares `eidnara-search` with
-`requires.memory_injection: "switchable"`, so `capabilityGaps` refuses it.
-`armOrder` refuses it before the manifest, and the qualification validator
-refuses a registration that lists it. The arm writes
-`memory.auto_search.enabled=false` (`src/hosts/arms.ts`).
+Eidnara at `1f2867036` (read-only, `eval/c8`) adds the user-tier key
+`/memory/auto_inject/enabled` (`crates/daemon/src/config.rs`, default true,
+ignored in the project tier). The transform injects m0 memory only while
+`memory_enabled && memory_auto_inject` holds
+(`crates/daemon/src/transform.rs`), and `compose_m0` drops the
+project-memory and user-profile blocks when `inject_memory` is false
+(`crates/daemon/src/m0_compose.rs`). `memory.enabled` stays on, so the kernel
+memory client keeps serving `eidnara_search`.
+
+`src/hosts/profiles.ts` records `memory_injection: "switchable"` for every
+daemon variant with probes on those three sources (audited by
+`requireAuditedVariants`), so `capabilityGaps` admits `eidnara-search`. The
+arm writes `memory.auto_search.enabled=false` and
+`memory.auto_inject.enabled=false` into the plugin's user tier and the
+daemon's (`src/hosts/arms.ts`).
 
 `deliveryMismatches` fails an explicit-search arm whose agent request
-carries a plugin block or cannot be rebuilt; `src/run/delivery.test.ts`
-covers a `<project-memory>` block.
+carries a plugin block or cannot be rebuilt; `memoryMismatches` fails one
+whose final store holds a user statement due in a later session while its
+transcripts hold no `eidnara_search` result. `src/run/delivery.test.ts`
+covers a `<project-memory>` block and the due rule.
 
 ## Failure scenario
 
@@ -47,16 +58,15 @@ None.
 
 ## What a test must construct
 
-An Eidnara build with the switch, a revised `memory_injection` reading, and
-a run of `eidnara-search` that reaches a probe with a stored memory.
+A run of `eidnara-search` on the audited build that reaches a session after
+a captured user statement.
 
 ## Investigation log
 
 ### Q: Which Eidnara switch should drop the block?
-- Sources examined: `crates/daemon/src/config.rs`, `m0_compose.rs`,
-  `packages/opencode-plugin/src/config/schema/eidnara.ts`,
-  `packages/pi-plugin/src/tools/eidnara-search.ts`.
-- Findings: no existing key; the block and the search source share
-  `memory.enabled`.
-- Missing evidence: an Eidnara design decision.
-- Conclusion: needs human input.
+- Sources examined: `crates/daemon/src/config.rs`, `transform.rs`,
+  `m0_compose.rs` at `1f2867036`.
+- Findings: `/memory/auto_inject/enabled`, read from the user tier only,
+  drops both memory blocks while `memory.enabled` keeps the search source.
+- Missing evidence: a measured run of the arm.
+- Conclusion: resolved by Eidnara PR #1203.

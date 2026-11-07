@@ -76,6 +76,9 @@ function captured(
     );
     db.run("create table commit_log(commit_seq integer primary key)");
     db.run("insert into commit_log values (1), (7)");
+    db.run(
+        "create table decisions(object_id text, decision_payload blob, created_commit_seq integer)",
+    );
     for (const [i, c] of classes.entries()) {
         db.run("insert into object_registry values (?, 'observation', ?, 1, ?)", [
             `srcdesc:${c}${i}:1`,
@@ -178,11 +181,130 @@ test("search results are checked against the route the arm declares", () => {
     ]);
     const legacyOnly = observeArm("eidnara", "pi", armRoot([PI_ON, PASS], [LEGACY]), {});
     expect(armMismatches(legacyOnly)).toEqual([]);
-    const hybrid = observeArm("eidnara-hybrid", "pi", captured(searched(), []), { agent: 1 });
+    const hybridRoot = captured(searched());
+    daemonLog(hybridRoot, [READY, ROUTE]);
+    const hybrid = observeArm("eidnara-hybrid", "pi", hybridRoot, { agent: 1 });
     expect(armMismatches(hybrid)).toEqual([
         "1 eidnara_search results came from the legacy snapshot scan (disabled), but the arm declares the fused route",
     ]);
     expect(observeArm("eidnara", "opencode", root, { agent: 1 }).search).toBeNull();
+});
+
+const READY = '{"catalog":["context","local_embeddings"],"model_workers":8,"status":"ready"}';
+const ROUTE =
+    "direct_host_fixture: search route production, embedding model gte-modernbert-base-f32, payload /p/payload-manifest.json, admission from fixture records";
+const daemonLog = (root: string, lines: string[]) =>
+    writeFileSync(join(root, "..", "daemon.log"), `${lines.join("\n")}\n`);
+
+test("every daemon start of the fused arm logs the production route over its embedding model", () => {
+    const root = captured(armRoot([PI_ON, PASS], [FUSED]));
+    daemonLog(root, [READY, ROUTE, "eidnara-pass-timing session=sim-s-0000", READY, ROUTE]);
+    const hybrid = observeArm("eidnara-hybrid", "pi", root, { agent: 1 });
+    expect(hybrid.daemon_routes).toEqual({
+        ready: 2,
+        production: 2,
+        models: ["gte-modernbert-base-f32"],
+    });
+    expect(armMismatches(hybrid)).toEqual([]);
+    daemonLog(root, [READY, ROUTE, READY, ROUTE.replace("gte-modernbert-base-f32", "other-f32")]);
+    expect(armMismatches(observeArm("eidnara-hybrid", "pi", root, { agent: 1 }))).toEqual([
+        "the production search route ran embedding model other-f32, but the arm requires gte-modernbert-base-f32",
+    ]);
+    daemonLog(root, [READY, ROUTE, READY]);
+    expect(armMismatches(observeArm("eidnara-hybrid", "pi", root, { agent: 1 }))).toEqual([
+        "1 of 2 daemon starts logged no production search route",
+    ]);
+    // Two route lines after one ready record stand for that generation alone.
+    daemonLog(root, [READY, ROUTE, ROUTE, READY]);
+    expect(armMismatches(observeArm("eidnara-hybrid", "pi", root, { agent: 1 }))).toEqual([
+        "1 of 2 daemon starts logged no production search route",
+    ]);
+    daemonLog(root, []);
+    expect(armMismatches(observeArm("eidnara-hybrid", "pi", root, { agent: 1 }))).toEqual([
+        "daemon.log records no ready daemon, so the production search route is unverified",
+    ]);
+    const legacy = captured(armRoot([PI_ON, PASS]));
+    daemonLog(legacy, [READY, ROUTE]);
+    expect(armMismatches(observeArm("eidnara", "pi", legacy, { agent: 1 }))).toEqual([
+        "the daemon logged the production search route (gte-modernbert-base-f32), but the arm declares legacy-scan",
+    ]);
+    const errored = captured(armRoot([PI_ON, PASS], ["Error: the memory search route refused"]));
+    daemonLog(errored, [READY, ROUTE]);
+    expect(armMismatches(observeArm("eidnara-hybrid", "pi", errored, { agent: 1 }))).toEqual([
+        "all 1 eidnara_search results errored on the fused route",
+    ]);
+});
+
+test("delivery evidence must match the statements the final store holds", () => {
+    const root = captured(armRoot([PI_ON, PASS]));
+    const db = new Database(join(root, "..", "final-store", "kernel.sqlite"));
+
+    const payload = (session: string) =>
+        new TextEncoder().encode(
+            JSON.stringify({
+                summary: "User stated: Use tabs.",
+                rationale: JSON.stringify({ session }),
+            }),
+        );
+    db.run("insert into decisions values ('stm_e', ?, 99)", [payload("sim-s-0002")]);
+    db.run(
+        "insert into decisions values ('stm_a', ?, 1), ('stm_b', ?, 1), ('stm_c', ?, 7), ('mem_d', ?, 1)",
+        [
+            payload("sim-s-0001"),
+            payload("sim-s-0001"),
+            new TextEncoder().encode("not json"),
+            payload("sim-s-0009"),
+        ],
+    );
+    db.close();
+    const observe = (arm: string, components: Record<string, number>) =>
+        observeArm(arm, "pi", root, components);
+    // stm_e's commit is absent from the log, so a partial store left it behind.
+    expect(observe("eidnara", {}).statements).toEqual({
+        count: 3,
+        sessions: ["sim-s-0001"],
+        unattributed: 1,
+        error: null,
+    });
+    const delivery = (memory_blocks: number, memory_due = true, due_blocks = memory_blocks) => ({
+        requests: 3,
+        unreadable: 0,
+        injected_blocks: memory_blocks,
+        notes: { expected: 0, delivered: 0, missing: [], misplaced: [] },
+        memory_blocks,
+        sessions: 2,
+        memory_due,
+        due_blocks,
+    });
+    const auto = observe("eidnara", { agent: 3, memory_capture: 1 });
+    auto.delivery = delivery(0);
+    expect(armMismatches(auto)).toEqual([
+        "the final store holds 3 user statements captured before later sessions' agent requests, but none of those requests carried a <project-memory> block",
+    ]);
+    auto.delivery = delivery(1);
+    expect(armMismatches(auto)).toEqual([]);
+    // A block only before the statement came due proves nothing about its delivery.
+    auto.delivery = delivery(1, true, 0);
+    expect(armMismatches(auto)).toHaveLength(1);
+    auto.delivery = delivery(0, false);
+    expect(armMismatches(auto)).toEqual([]);
+    const explicit = observe("eidnara-search", { agent: 3, memory_capture: 1 });
+    explicit.delivery = delivery(0);
+    expect(armMismatches(explicit)).toEqual([
+        "the final store holds 3 user statements captured before later sessions' agent requests, but the agent never called eidnara_search on an arm that declares explicit search",
+    ]);
+    const broken = captured(armRoot([PI_ON, PASS]));
+    const unreadable = observeArm("eidnara", "pi", broken, { agent: 3, memory_capture: 1 });
+    unreadable.statements = { count: 0, sessions: [], unattributed: 0, error: "no such table" };
+    unreadable.delivery = delivery(1, false);
+    expect(armMismatches(unreadable)).toEqual([
+        "the final store's user statements cannot be read: no such table",
+    ]);
+    const silent = observe("eidnara", { agent: 3 });
+    silent.delivery = delivery(1);
+    expect(armMismatches(silent)).toEqual([
+        "agent requests in 2 sessions and no memory_capture call in the proxy records",
+    ]);
 });
 
 test("the capability check reads the counter total over an arm's daemon generations", () => {

@@ -18,12 +18,27 @@ test("every pre-registered arm has a profile its daemon variant satisfies", () =
     expect(capabilityGaps("eidnara~aa")).toEqual([]);
 });
 
-test("production-hybrid is refused for its side calls alone, naming the production source", () => {
-    const gaps = capabilityGaps("eidnara-hybrid");
-    expect(gaps).toHaveLength(1);
-    expect(gaps[0]).toMatch(
-        /^eidnara-hybrid \(production-hybrid\) needs side_calls=proxy, but production-payload provides direct-bedrock: .*QUALIFIED_HARNESS_CLOSURES/,
-    );
+test("the c8 comparison arms run without a gap, and a variant that lacks a declared capability is named", () => {
+    for (const arm of ["host", "eidnara", "eidnara-hybrid", "eidnara-search"]) {
+        expect(capabilityGaps(arm)).toEqual([]);
+    }
+    expect(armProfile("eidnara-hybrid")).toMatchObject({
+        daemon: "direct-host-fixture-fused",
+        search: "fused",
+        requires: { side_calls: "proxy", embeddings: "gte-modernbert-base-f32" },
+    });
+    const fixture = DAEMON_VARIANTS["direct-host-fixture"];
+    const saved = fixture.memory_injection;
+    fixture.memory_injection = "always-on";
+    try {
+        const gaps = capabilityGaps("eidnara-search");
+        expect(gaps).toHaveLength(1);
+        expect(gaps[0]).toMatch(
+            /^eidnara-search \(explicit-search-only\) needs memory_injection=switchable, but direct-host-fixture provides always-on: crates\/daemon\/src\/transform\.rs .*memory_auto_inject/,
+        );
+    } finally {
+        fixture.memory_injection = saved;
+    }
 });
 
 test("the four roles map onto the arms the spec defines", () => {
@@ -38,14 +53,6 @@ test("the four roles map onto the arms the spec defines", () => {
     });
     expect(armProfile("eidnara-hybrid").search).toBe("fused");
     expect(() => armProfile("eidnara-x")).toThrow(/no profile/);
-});
-
-test("explicit-search-only is refused for its memory injection alone, naming the daemon source", () => {
-    const gaps = capabilityGaps("eidnara-search");
-    expect(gaps).toHaveLength(1);
-    expect(gaps[0]).toMatch(
-        /^eidnara-search \(explicit-search-only\) needs memory_injection=switchable, but direct-host-fixture provides always-on: crates\/daemon\/src\/m0_compose\.rs .*memory\.enabled=false disables/,
-    );
 });
 
 test("each delivery mode has its arm, and the oracle control runs no Eidnara", () => {
@@ -80,11 +87,11 @@ test("the oracle control is exempt from daemon and plugin evidence as the host a
     }
 });
 
-test("source capture is consented on the fallback-search arms alone, and every capability has a source probe", () => {
+test("source capture is consented on every arm the c8 comparison contrasts with eidnara, and every capability has a source probe", () => {
     const capturing = Object.entries(ARM_PROFILES)
         .filter(([, p]) => p.source_capture)
         .map(([arm]) => arm);
-    expect(capturing).toEqual(["eidnara", "eidnara-cf"]);
+    expect(capturing).toEqual(["eidnara", "eidnara-cf", "eidnara-hybrid", "eidnara-search"]);
     for (const arm of capturing) expect(armProfile(arm).requires.source_capture).toBe(true);
     for (const [variant, record] of Object.entries(DAEMON_VARIANTS)) {
         const covered = new Set<string>(record.probes.map((p) => p.capability));

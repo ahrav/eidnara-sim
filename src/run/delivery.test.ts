@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { armProfile } from "../hosts/profiles";
+import { armProfile, DAEMON_VARIANTS } from "../hosts/profiles";
 import { qualificationHash } from "../prereg/qualification";
 import type { ConverseBody } from "../proxy/classify";
 import type { CallRecord } from "../proxy/records";
@@ -243,6 +243,81 @@ describe("delivery check", () => {
         expect(check("eidnara", [injected], [])).toEqual([]);
     });
 
+    test("a statement captured in one session owes a later session's project-memory block", () => {
+        const capture = (session: string) => {
+            seq += 1;
+            return { seq, component: "memory_capture", session, turn: "e-1" } as ReturnType<
+                typeof call
+            >;
+        };
+        const block = "<project-memory>\n- User stated: Use port 4321.\n</project-memory>";
+        const first = call("s-1", "e-1", "Use port 4321.");
+        const captured = capture("s-1");
+        const later = call("s-2", "e-3", "Which port?", block);
+        const due = observeDelivery([first, captured, later], parts(), [], order, ["sim-s-1"]);
+        expect(due).toMatchObject({
+            memory_blocks: 1,
+            sessions: 2,
+            memory_due: true,
+            due_blocks: 1,
+        });
+        // A later session of another project owes nothing: the statement belongs to its project.
+        const projects = new Map([
+            ["s-1", "mini-redis"],
+            ["s-2", "elysia"],
+        ]);
+        const elsewhere = observeDelivery(
+            [first, captured, later],
+            parts(),
+            [],
+            order,
+            ["sim-s-1"],
+            projects,
+        );
+        expect(elsewhere.memory_due).toBe(false);
+        // Only the capture's own session followed it, so no block is owed yet.
+        const same = observeDelivery(
+            [first, captured, call("s-1", "e-2", "Which port?")],
+            parts(),
+            [],
+            order,
+            ["sim-s-1"],
+        );
+        expect(same).toMatchObject({ memory_blocks: 0, sessions: 1, memory_due: false });
+        // A request of a later session that came before the capture owes nothing either.
+        const early = observeDelivery(
+            [first, call("s-2", "e-3", "Which port?"), capture("s-1")],
+            parts(),
+            [],
+            order,
+            ["sim-s-1"],
+        );
+        expect(early.memory_due).toBe(false);
+        // OpenCode's own session ids map onto no run session, so any capturing session stands, as
+        // for a statement whose session is unknown.
+        const opencode = observeDelivery([first, captured, later], parts(), [], order, ["ses_x"]);
+        expect(opencode.memory_due).toBe(true);
+        const unknown = observeDelivery([first, captured, later], parts(), [], order, [null]);
+        expect(unknown.memory_due).toBe(true);
+        // Records are sequenced at completion: a request that started before the capture ended
+        // owes nothing, even when it ended after it.
+        const overlap = observeDelivery(
+            [
+                { ...first, started_wall_ms: 0, wall_ms: 10 },
+                { ...call("s-2", "e-3", "Which port?"), started_wall_ms: 15, wall_ms: 40 },
+                { ...capture("s-1"), started_wall_ms: 12, wall_ms: 20 },
+            ].sort((a, b) => a.wall_ms - b.wall_ms),
+            parts(),
+            [],
+            order,
+            ["sim-s-1"],
+        );
+        expect(overlap.memory_due).toBe(false);
+        expect(observeDelivery([first, captured, later], parts(), [], order, []).memory_due).toBe(
+            false,
+        );
+    });
+
     test("a body that cannot be rebuilt leaves oracle and explicit-search delivery unproven", () => {
         const broken = { ...call("s-1", "e-2", "Which alias?") };
         broken.request = { ...(broken.request as NonNullable<typeof broken.request>), bytes: 1 };
@@ -285,9 +360,16 @@ describe("arm order under a qualification", () => {
 
     test("an unregistered arm, a refused arm, a foreign host, and a tier mismatch are refused", () => {
         expect(() => at(101, ["eidnara-kl"])).toThrow(/arms not in the qualification Q order/);
-        expect(() => at(101, ["eidnara-search"])).toThrow(
-            /arm capability refused: eidnara-search \(explicit-search-only\) needs memory_injection=switchable/,
-        );
+        expect(() => at(101, ["eidnara-search"])).toThrow(/arms not in the qualification Q order/);
+        const fixture = DAEMON_VARIANTS["direct-host-fixture"];
+        fixture.memory_injection = "always-on";
+        try {
+            expect(() => at(101, ["eidnara-search"])).toThrow(
+                /arm capability refused: eidnara-search \(explicit-search-only\) needs memory_injection=switchable/,
+            );
+        } finally {
+            fixture.memory_injection = "switchable";
+        }
         expect(() => at(101, ["host~aa"])).toThrow(/arms not in the qualification Q order/);
         expect(() => at(103, ["host-oracle"])).toThrow(/arms not in the qualification Q order/);
         expect(() => at(103, ["eidnara~aa"])).toThrow(/arms not in the qualification Q order/);
