@@ -346,9 +346,22 @@ const begun = (name: string, record: RunRecord) =>
     existsSync(join(runDir(spec, name), "journal.jsonl")) ||
     existsSync(join(runDir(spec, name), "manifest.json"));
 const OPEN_STATES = new Set<RunRecord["state"]>(["pending", "running"]);
-const running = (name: string) => {
+/**
+ * A run is running while its child lives or its plain run directory's lease is held; a linked
+ * directory is never read. A lease that cannot be read throws in a step, which records the
+ * failure, and counts as held for admission, so the run keeps its slot meanwhile.
+ */
+const running = (name: string, strict = true) => {
+    if (live(name)) return true;
     const dir = runDir(spec, name);
-    return live(name) || (existsSync(dir) && leaseHeld(dir));
+    const st = lstatSync(dir, { throwIfNoEntry: false });
+    if (!st?.isDirectory()) return false;
+    try {
+        return leaseHeld(dir);
+    } catch (caught) {
+        if (strict) throw caught;
+        return true;
+    }
 };
 
 /** The run's progress, read only from a plain run directory. */
@@ -428,7 +441,8 @@ for (;;) {
             name: run.name,
             group: groupKey(run),
             begun: began,
-            holding: began && (running(run.name) || (!ended && OPEN_STATES.has(record.state))),
+            holding:
+                began && (running(run.name, false) || (!ended && OPEN_STATES.has(record.state))),
         };
     });
     const allowed = admitted(spec.max_concurrent, slots);
@@ -448,7 +462,7 @@ for (;;) {
             record.last_error = `supervisor: ${(caught as Error).message}`;
             record.step_failures++;
             say(`ALERT run ${run.name}: supervisor step failed: ${record.last_error}`, true);
-            if (record.step_failures >= STALL_LIMIT && !running(run.name)) {
+            if (record.step_failures >= STALL_LIMIT && !running(run.name, false)) {
                 record.state = "gave-up";
                 record.gave_up_reason = `${record.step_failures} supervisor steps in a row failed; last: ${record.last_error}`;
                 say(`${run.name} GAVE UP: ${record.gave_up_reason}`, true);

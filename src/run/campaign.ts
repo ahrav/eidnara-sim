@@ -11,17 +11,13 @@ import {
 import { join } from "node:path";
 import { interruptions } from "./interruptions";
 import { type Entry, readJournal } from "./journal";
+import { PRICE_TABLE, type Price } from "./price";
 
-/** List prices in USD per million tokens, by token class. */
-export interface Prices {
-    input: number;
-    output: number;
-    cache_read: number;
-    cache_write: number;
-}
+/** USD per million tokens, by token class. */
+export type Prices = Price;
 
-/** The prices c7's cost analysis charged every call record (`c7/final/analysis_cost.py`). */
-export const C7_PRICES: Prices = { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 };
+/** The rates every run's manifest records (`PRICE_TABLE`), which c7's cost analysis charged. */
+export const C7_PRICES: Prices = PRICE_TABLE.rates;
 
 export interface CampaignSpec {
     schema: "sim-campaign/v1";
@@ -265,7 +261,8 @@ export function readSpend(path: string, prev: Spend, prices: Prices): Spend {
             st.ino !== prev.ino || st.size < prev.offset
                 ? { ...noSpend(), ino: st.ino }
                 : { ...prev, by_component: { ...prev.by_component } };
-        const chunk = Buffer.alloc(1 << 20);
+        if (spend.offset >= st.size) return spend;
+        const chunk = Buffer.alloc(Math.min(1 << 20, st.size - spend.offset));
         let carry = Buffer.alloc(0);
         let at = spend.offset;
         while (at < st.size) {
