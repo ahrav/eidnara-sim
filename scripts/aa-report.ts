@@ -597,6 +597,7 @@ function report(dir: string) {
             deliveredTurns(entries, arm).map((e) => ({
                 session: String(e.session),
                 label: e.label as Label,
+                reactive: e.reactive === true,
             })),
             prereg,
         );

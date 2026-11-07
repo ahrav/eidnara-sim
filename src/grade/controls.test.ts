@@ -9,7 +9,7 @@ import { loadCompileInput, loadPrereg, loadQualification } from "../scenario/inp
 import { hashEmbedder } from "../scenario/similarity";
 import type { Artefact, CallView, Snapshot } from "./artefacts";
 import { GradeRefused } from "./artefacts";
-import { type GradeRecord, gradeItem, type SourceEvent } from "./probes";
+import { breaksRule, type Check, type GradeRecord, gradeItem, type SourceEvent } from "./probes";
 
 const rules = loadPrereg("S").grading;
 const scenario = await compileScenario(loadCompileInput(101, "S", hashEmbedder, true));
@@ -489,6 +489,38 @@ describe("P2, P5, and P11: a question with no change is deferred, never a pass o
             "fail",
             "reused the rejected approach",
         ]);
+    });
+});
+
+describe("breaksRule: a session rule the user-sim reads after a fold", () => {
+    const strip = (p: ProbeItem) => {
+        const { turns: _, ...check } = p.check as Record<string, unknown>;
+        return check as Check;
+    };
+    const commitRule = probeOf("P13", "session-commit-tag");
+    const headerRule = probeOf("P13", "session-file-header");
+    const tag = literal(commitRule);
+    const header = (headerRule.check as { first_line_must: string[] }).first_line_must[0]?.slice(
+        1,
+    ) as string;
+    const run = (command: string) => ({ command, exit: 0, scenario_ms: 0 });
+
+    test("a commit without the session's tag breaks the rule, a tagged one or no commit does not", () => {
+        const c = strip(commitRule);
+        expect(breaksRule("", [run('git commit -m "add f"')], c)).toBe(true);
+        expect(breaksRule("", [run(`git commit -m "[${tag}] add f"`)], c)).toBe(false);
+        expect(breaksRule("", [run("cargo test")], c)).toBe(false);
+        expect(breaksRule("", [], c)).toBe(false);
+    });
+
+    test("a created file without the header breaks the rule; a headed file or an edit does not", () => {
+        const c = strip(headerRule);
+        const file = (lines: string[], created: boolean) =>
+            patchOf([{ path: "src/gilded.rs", lines, created }]);
+        expect(breaksRule(file(["pub fn placeholder() {}"], true), [], c)).toBe(true);
+        expect(breaksRule(file([header, "pub fn placeholder() {}"], true), [], c)).toBe(false);
+        expect(breaksRule(file(["let x = 1;"], false), [], c)).toBe(false);
+        expect(breaksRule("", [run('git commit -m "no tag"')], c)).toBe(false);
     });
 });
 

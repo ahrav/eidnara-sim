@@ -49,6 +49,32 @@ stream, so every arm of one seed gets the same plan. Each label is one of
 | `interrupt` | delivered turn | filler turns | The task, then a hard abort through the host's abort path after a delay drawn from `user_sim.interrupt_after_ms` |
 | `pushback` | delivered turn | filler, conveyance, update, and reversal turns after the first | A challenge to the agent's last reply, then the script text |
 
+Inside a P14 window (`window_from_turn` to before `window_to_turn` of a
+forced p90 session), pushback is reactive (pre-registration revision 9,
+`user_sim.window_pushback`). A window turn the plan labels `task` or
+`pushback`, and that a pushback may precede (a filler, conveyance, update, or
+reversal turn after the session's first), carries a pushback when the
+agent's previous turn broke a session rule in force, and is a plain `task`
+otherwise. The rules in force are the session rules conveyed in the session
+before the turn, the latest revision of each (`sessionRules`), so applying a
+superseded revision breaks the current one; each is read with its P13
+item's check (`breaksRule` in `src/grade/probes.ts`): a forbidden pattern in
+the turn's diff or commands, or a created file whose first line misses a
+`first_line_must` rule. The driver snapshots every turn of a windowed session
+(`watchTurns`), and `lastTurnWork` gives the patch from that turn's start tree
+to the workspace and the tool runs the host reported. A reactive pushback is
+the fixed line `That last change goes against a rule I gave you earlier in
+this session. Check your work against it before moving on.` ahead of the
+script text, so it restates no rule; it makes no model call. The journal and
+the pairing log mark the turn `reactive`, and the realised pushback rate
+counts only the other turns, since a reactive turn is no draw from the
+seeded rate. A resumed harness holds no snapshot of the turn before its
+first, so that one turn gets no reactive pushback. Windows lie in the last
+third of their session, and P14 counts only the window turns after the
+session's first fold, so every pushback P14 counts follows an agent turn that
+broke a rule. Outside the windows the plan decides, so the arms' pushback
+exposure there stays the same whatever their fold timing.
+
 Probe turns stay `task` and are never skipped, interrupted, or prefixed, so
 the compiled cue and probe text reach the agent unchanged. A conveyance
 keeps its compiled text after any pushback, so each ledger fact is conveyed

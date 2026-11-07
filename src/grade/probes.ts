@@ -151,7 +151,7 @@ const TESTS = new RegExp(`^(${CARGO} (test|t)|${PM} (run )?test|${GO} test)\\b`)
 const QUIET = new RegExp(
     `^\\s*(${CARGO} (build|check|test|b|c|t)|${PM} (install|i|ci|(run )?(test|build))|${GO} (build|test|vet)|git (status|log|diff)|ls|pwd)\\b[^&|;\`$()\\n]*$`,
 );
-const FOLDS = ["history_summarizer", "native_compaction"];
+export const FOLDS = ["history_summarizer", "native_compaction"];
 const USER_SIM_LABELS = [
     "task",
     "pushback",
@@ -1736,6 +1736,32 @@ function proseOf(answer: string): string {
         .join("\n")
         .replace(span, "code")
         .replace(/\[([^\]\n]*)\]\([^)\n]*\)/g, "$1");
+}
+
+/**
+ * Whether a turn's work breaks a session rule's check, read as a P13 grade reads it: a forbidden
+ * pattern occurs (`broken`), or the turn created a file and a `first_line_must` rule fails on it.
+ * A turn that did nothing the rule governs breaks nothing. The user-sim reads this after a fold to
+ * decide a reactive pushback (`docs/user-sim.md`).
+ */
+export function breaksRule(patch: string, commands: Command[], check: Check): boolean {
+    const reader = new ArtefactReader({
+        id: "turn",
+        item: "turn",
+        arm: "",
+        session: "",
+        turn: "",
+        turn_outcome: "ok",
+        artefacts: [{ id: "turn:diff", class: "diff", role: "turn", patch }],
+    });
+    const w = workFor(reader, check, commands);
+    if (broken(w, check)) return true;
+    const firstLines = check.first_line_must;
+    return (
+        firstLines !== undefined &&
+        w.files.some((f) => f.created) &&
+        !held(w, { first_line_must: firstLines })
+    );
 }
 
 /**

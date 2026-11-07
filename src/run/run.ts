@@ -18,6 +18,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
+import { breaksRule, type Check } from "../grade/probes";
 import { armBase, CONTROL_LABEL, eidnaraUserConfig, fixtureDaemonConfig } from "../hosts/arms";
 import { driverSupports, HostDriver } from "../hosts/driver";
 import {
@@ -68,6 +69,7 @@ import {
     normaliser,
     Pairing,
     proxyUserSim,
+    sessionRules,
     Tape,
     tapeDigests,
     UserSim,
@@ -2135,6 +2137,7 @@ async function runArms(
             const turns = userTurns(arm).map((e) => ({
                 session: String(e.session),
                 label: e.label as Label,
+                reactive: e.reactive === true,
             }));
             return realisedRates(turns, prereg);
         },
@@ -2146,7 +2149,12 @@ async function runArms(
                 (x) => x.kind === "turn" && x.arm === arm && x.event === event,
             );
             return r?.kind === "turn"
-                ? { session: r.session, label: r.label, delivered: r.delivered }
+                ? {
+                      session: r.session,
+                      label: r.label,
+                      delivered: r.delivered,
+                      ...(r.reactive ? { reactive: true } : {}),
+                  }
                 : undefined;
         },
         stopped: () => stop.reason,
@@ -2251,6 +2259,9 @@ async function runArms(
     if (!sameJson(tapeDigests(manifest.tapes), manifest.tape_sha256)) {
         throw new HarnessFailure("replay sources changed since the manifest hashed them");
     }
+    const rulesInForce = sessionRules(scenario.events, scenario.facts, scenario.probes);
+    const hostDrivers = new Map<string, HostDriver>();
+    const windowed = new Set(scenario.probes.filter((p) => p.type === "P14").map((p) => p.session));
     const userSim = new UserSim({
         seed,
         plan: behaviourPlan(scripted, prereg, seed, pinned),
@@ -2281,6 +2292,12 @@ async function runArms(
         facts: scenario.facts.flatMap((f) => [f.statement, ...f.cues]),
         statements: identityStatements(scenario.facts),
         clarifyContext: clarifyContexts(scenario.events, scenario.facts),
+        brokeRule: (arm, t) => {
+            const checks = rulesInForce(t);
+            if (checks === null) return null;
+            const work = checks.length > 0 ? hostDrivers.get(arm)?.lastTurnWork(t.session) : null;
+            return !!work && checks.some((c) => breaksRule(work.patch, work.commands, c as Check));
+        },
     });
     const scriptedById = new Map(scripted.map((t) => [t.id, t]));
     const eventOrder = new Map(allEvents.map((e, i) => [e.id, i]));
@@ -2438,6 +2455,7 @@ async function runArms(
                 return withUserTurns(calls, turns, arm, session);
             },
             settle: () => scheduler.quiesceJobs(),
+            watchTurns: (session) => windowed.has(session),
             now,
         });
         let cpuJob: (() => void) | null = null;
@@ -2467,6 +2485,7 @@ async function runArms(
         samplers.set(arm, sampler);
         cleanup.push(() => driver.stop());
         cleanup.push(() => sampler.stop());
+        hostDrivers.set(arm, driver);
         drivers[arm] = {
             reset: () =>
                 tracked(async () => {
@@ -2524,7 +2543,12 @@ async function runArms(
                         const opened = Date.now();
                         const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
                         guard();
-                        const user = { session: e.session, label: d.label, delivered: d.delivered };
+                        const user = {
+                            session: e.session,
+                            label: d.label,
+                            delivered: d.delivered,
+                            ...(d.reactive ? { reactive: true } : {}),
+                        };
                         if (!d.delivered) return { user };
                         // An oracle arm's probe turn carries its sources ahead of the user's text;
                         // the pairing log already holds the text the user-sim delivered.

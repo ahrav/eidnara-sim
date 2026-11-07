@@ -1,7 +1,7 @@
 {
     "schema": "sim-prereg/v1",
     "tier": "L",
-    "revision": 8,
+    "revision": 9,
     "frozen": true,
     "arms": {
         "default": "eidnara",
@@ -131,6 +131,7 @@
     "user_sim": {
         "model": "global.anthropic.claude-haiku-5-5",
         "max_tokens": 1000,
+        "window_pushback": "reactive",
         "rates": {
             "pushback_per_turn": "0.457",
             "interrupt_per_turn": "0.045",

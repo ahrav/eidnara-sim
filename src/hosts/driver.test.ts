@@ -785,6 +785,33 @@ describe("HostDriver lifecycle", () => {
         expect(plain.exits).toEqual([]);
     });
 
+    test("a watched session's last turn gives its patch and tool runs; another session gives none", async () => {
+        const { driver, hosts } = fixture(
+            "host",
+            { p: gitRepo() },
+            {
+                watchTurns: (session) => session === "s-0",
+            },
+        );
+        await driver.reset();
+        await driver.event(ev("session_start", { session: "s-0" }));
+        const host = hosts.at(-1) as FakeHost;
+        const dir = driver.workspace("p");
+        host.onPrompt = () => {
+            writeFileSync(join(dir, "made.rs"), "pub fn made() {}\n");
+            host.tools.push({ command: 'git commit -m "made"', exit: 0, scenario_ms: 0 });
+        };
+        expect(driver.lastTurnWork("s-0")).toBeNull();
+        await driver.event(ev("user_turn", { id: "e-1", session: "s-0", text: "go" }));
+        const work = driver.lastTurnWork("s-0");
+        expect(work?.patch).toContain("+pub fn made() {}");
+        expect(work?.commands.map((c) => c.command)).toEqual(['git commit -m "made"']);
+        host.onPrompt = () => undefined;
+        await driver.event(ev("user_turn", { id: "e-2", session: "s-0", text: "go" }));
+        expect(driver.lastTurnWork("s-0")?.patch).toBe("");
+        expect(driver.lastTurnWork("s-9")).toBeNull();
+    });
+
     test("a daemon gone while a probe turn settles and snapshots is reported with that turn", async () => {
         const { driver, exits } = fixture("host", { p: gitRepo() });
         const daemon = fakeDaemon(PID + 10);

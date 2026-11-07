@@ -219,16 +219,21 @@ export interface RealisedRates {
     outside: UserSimRate[];
 }
 
-/** Rates over the turns a run delivered, with those outside the pre-registered bands named. */
+/**
+ * Rates over the turns a run delivered, with those outside the pre-registered bands named. A turn
+ * whose pushback followed the agent's last turn after a fold (`reactive`) is no draw from the
+ * seeded pushback rate, so the pushback rate counts the other turns alone.
+ */
 export function realisedRates(
-    delivered: { session: string; label: Label }[],
+    delivered: { session: string; label: Label; reactive?: boolean }[],
     prereg: Preregistration,
 ): RealisedRates {
     const sessions = new Set(delivered.map((t) => t.session)).size;
     const count = (label: Label) => delivered.filter((t) => t.label === label).length;
     const per = (n: number, d: number) => (d === 0 ? 0 : n / d);
+    const seeded = delivered.filter((t) => t.reactive !== true);
     const rates: Record<UserSimRate, number> = {
-        pushback_per_turn: per(count("pushback"), delivered.length),
+        pushback_per_turn: per(seeded.filter((t) => t.label === "pushback").length, seeded.length),
         interrupt_per_turn: per(count("interrupt"), delivered.length),
         redirect_per_session: per(count("redirect"), sessions),
         abandon_per_session: per(count("abandon"), sessions),

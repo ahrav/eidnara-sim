@@ -300,13 +300,15 @@ stop cut, or a turn whose interruption markers break their shape
 (`cutTurns`), is graded `excluded` with reason `session interrupted`, since
 its view lacks what the turn would have sent. The input's digest covers that
 interruption state with the calls. `aa-report` and the
-SIM-P41 witness hold a P14 grade to that snapshot id. The
-user simulator's `pushback` labels come from the seeded behaviour plan
-(`docs/user-sim.md`), so both arms of one seed receive pushback on the same
-turns: in c7 S-101 and M-201 the host and Eidnara arms carry 815 and 1,193
-pushback turns on identical events. A P14 count therefore moves with the
-presence and turn of the session's first fold and the plan, and two arms
-differ on it only through when they fold.
+SIM-P41 witness hold a P14 grade to that snapshot id. Inside a P14 window the user simulator's `pushback` label is reactive
+(pre-registration revision 9, `user_sim.window_pushback`): a window turn
+carries a pushback when the agent's previous turn broke a session rule in
+force and only then (`docs/user-sim.md`), so the count measures how often the
+agent breaks a conveyed session rule after the fold. Under revision 8 and
+earlier the labels came from the seeded behaviour plan, so both arms of one
+seed received pushback on the same turns (in c7 S-101 and M-201 the host and
+Eidnara arms carry 815 and 1,193 pushback turns on identical events), and a
+P14 count moved only with the presence and turn of the session's first fold.
 
 A run whose arms exclude `host` skips each P7 item of a memory arm as
 `P7 host arm in another run`, and a run whose arms are `host` alone skips

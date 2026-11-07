@@ -486,6 +486,7 @@ const ratesMismatch = (manifest.order as string[]).filter((arm) => {
     const turns = deliveredTurns(journal, arm).map((e) => ({
         session: String(e.session),
         label: e.label as Label,
+        reactive: e.reactive === true,
     }));
     const expected = realisedRates(turns, prereg);
     const summary = {

@@ -116,7 +116,9 @@ generator `sim-scenario/v5`. Those asked the P1 task in the same workspace
 before the rule was conveyed, and agent edits persist across sessions, so on
 every arm the agent had done the P1 task before its P1 probe. Revision 4
 re-pins the S digest after tier revision 8, which registers the deferred
-outcome for P2, P5, and P11 (`docs/grading.md`, Rule revision 8).
+outcome for P2, P5, and P11 (`docs/grading.md`, Rule revision 8). Revision 5
+re-pins it after tier revision 9, which makes pushback inside a P14 window
+reactive (`docs/user-sim.md`).
 
 `--qualification H` runs the held-out registration `prereg/H.json`
 (revision 1). It binds tier M, selects the `held-out` corpus split, runs
