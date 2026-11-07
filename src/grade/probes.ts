@@ -1694,7 +1694,7 @@ export const DEFERRABLE = ["P2", "P5", "P11"];
 
 /**
  * The answer's prose: Markdown code removed. A fence opens on a line of three or more backticks or
- * tildes, after any blockquote markers, and closes on a line of the same character, at least as
+ * tildes, after any blockquote or list markers, and closes on a line of the same character, at least as
  * long, with nothing after it but spaces; an unclosed fence runs to the end. An inline span is a
  * run of backticks closed by a run of the same length.
  */
@@ -1702,7 +1702,7 @@ function proseOf(answer: string): string {
     const kept: string[] = [];
     let open: { char: string; length: number } | null = null;
     for (const line of answer.split("\n")) {
-        const bare = line.replace(/^(?:\s*>)*\s*/, "");
+        const bare = line.replace(/^(?:\s*(?:>|[-*+](?=\s)|\d+[.)](?=\s)))*\s*/, "");
         const fence = /^(`{3,}|~{3,})(.*)$/.exec(bare);
         if (open) {
             const closes =
