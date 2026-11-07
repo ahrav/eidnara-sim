@@ -402,6 +402,33 @@ function asymmetricFixture(record: (host: ArmLogs) => void): GradedRun {
 }
 
 describe("tier report", () => {
+    test("deferred harm items show in the accuracy cell and as a per-arm rate", () => {
+        const report = tierReport(prereg, [fixture()], boundary);
+        const base = { probe_type: "P2", version: 1, snapshot: "s", inputs: ["i"] };
+        const graded = (arm: string, item: string, verdict: string, reason?: string) =>
+            ({
+                ...base,
+                arm,
+                item,
+                verdict,
+                metrics: {},
+                ...(reason ? { reason } : {}),
+                later_attempts_logged: 0,
+            }) as GradeRecord;
+        report.grades = [
+            graded("eidnara", "q-1", "excluded", "deferred"),
+            graded("eidnara", "q-2", "pass"),
+            graded("eidnara", "q-3", "excluded", "session interrupted"),
+            graded("host", "q-1", "fail", "no code change"),
+            graded("host", "q-2", "pass"),
+        ];
+        const text = renderTier(report);
+        expect(text).toContain("| P2 | eidnara | 1/2 | 0.50 |");
+        expect(text).toContain("| P2 | host | 0/2 | 0.00 |");
+        expect(text).toContain("1/3 (f0 e1 d1)");
+        expect(text).toContain("1/2 (f1 e0 d0)");
+    });
+
     test("an A/A fixture renders every panel with the pre-registration, and its falsification set shows zero effect", () => {
         const g = fixture();
         const report = tierReport(prereg, [g], boundary);
@@ -569,6 +596,27 @@ describe("tier report", () => {
             ?.metrics.find((m) => m.metric === "reverted_memory_edits");
         expect([metric?.verdict, metric?.passed]).toEqual(["within-bound", true]);
         expect(report.observed.reverted_memory_edits).toEqual([0]);
+    });
+
+    test("an item excluded on one arm inside the asymmetric stratum stays out of the exclusion list", () => {
+        const g = asymmetricFixture((host) =>
+            host.journal.push({
+                kind: "FaultObserved",
+                arm: "host",
+                fault: "f1",
+                type: "provider_500",
+                evidence: {},
+                scenario_ms: 0,
+                seq: 9_000,
+                wall_ms: 0,
+            } as Entry),
+        );
+        const graded = g.grades.find((r) => r.item === "q-0" && r.arm === "eidnara");
+        if (!graded) throw new Error("fixture lacks q-0");
+        Object.assign(graded, { verdict: "excluded", reason: "deferred", metrics: {} });
+        const report = tierReport(prereg, [g], boundary);
+        expect(report.verdict.asymmetric_stratum).toEqual(["pi/101/q-0", "pi/101/q-p8-0"]);
+        expect(report.verdict.excluded.map((e) => e.id)).not.toContain("pi/101/q-0");
     });
 
     test("the rendered observed rate comes from the pairs the verdict kept", () => {

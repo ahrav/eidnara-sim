@@ -4,7 +4,7 @@
     "revision": 1,
     "frozen": true,
     "tier": "M",
-    "tier_preregistration_sha256": "5023a7b1cf2cdb045f476970b334cf114b85ea73b00715b30ef84dcebb6aaed4",
+    "tier_preregistration_sha256": "d1acd2aea88605962c3d926c11ef8f436f4be16de20e3cfa5152e8dff7adc914",
     "corpus": "held-out",
     "seeds": [601, 602, 603, 604, 605, 606, 607, 608, 609, 611],
     "hosts": ["pi", "opencode"],

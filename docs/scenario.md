@@ -412,25 +412,25 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `e477c8f0` | 0.2825 | 0.5125 |
-| S | 102 | `01c3d524` | 0.2738 | 0.5195 |
-| M | 201 | `a77c9b72` | 0.359 | 0.5807 |
-| M | 202 | `b7dd0f19` | 0.354 | 0.5807 |
-| M | 203 | `f8a66c24` | 0.3259 | 0.551 |
-| L | 301 | `4fd3cfc3` | 0.3281 | 0.5807 |
-| L | 302 | `f337255b` | 0.3297 | 0.5807 |
-| L | 303 | `85ffab3b` | 0.3287 | 0.5807 |
-| XL | 401 | `558be1f9` | 0.3231 | 0.5807 |
+| S | 101 | `8324549c` | 0.2825 | 0.5125 |
+| S | 102 | `ec9e1d00` | 0.2738 | 0.5195 |
+| M | 201 | `5f026e97` | 0.359 | 0.5807 |
+| M | 202 | `e6b33140` | 0.354 | 0.5807 |
+| M | 203 | `d7a39906` | 0.3259 | 0.551 |
+| L | 301 | `7ca48348` | 0.3281 | 0.5807 |
+| L | 302 | `eb529cc3` | 0.3297 | 0.5807 |
+| L | 303 | `3539c404` | 0.3287 | 0.5807 |
+| XL | 401 | `9bb15a0a` | 0.3231 | 0.5807 |
 
-Under qualification Q (revision 3, `e8c1f508`), which adds its P8-twin
+Under qualification Q (revision 4, `5b9e8f5d`), which adds its P8-twin
 controls, the seeds compile to these scenarios; 103 is its exploratory
 hold-out:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| Q | 101 | `f4685927` | 0.2825 | 0.5125 |
-| Q | 102 | `9c9b9357` | 0.2684 | 0.5195 |
-| Q | 103 | `181613de` | 0.2767 | 0.5021 |
+| Q | 101 | `e77715ba` | 0.2825 | 0.5125 |
+| Q | 102 | `f8ba5d66` | 0.2684 | 0.5195 |
+| Q | 103 | `c8252071` | 0.2767 | 0.5021 |
 
 ## Held-out corpus
 
@@ -447,7 +447,10 @@ A held-out scenario keeps the tier's load per base repository: chi has the
 120 sessions a tier M base repository has, chi-twin 30, and each probe type
 issues 10 items, the tier's 120 paired items scaled by one held-out base
 repository over two diagnosed ones and divided over the tier's seeds and
-hosts. H adds the `wrong-project-lookup` control, so P8-twin asks chi's
+hosts. The count is per scenario: it holds the per-repository density of a
+tier M scenario fixed, and a campaign's pooled item count is that density
+times the scenarios it runs, as it is for a diagnosed campaign that runs
+more seeds than the tier registers. H adds the `wrong-project-lookup` control, so P8-twin asks chi's
 lookups in chi-twin. Every Go template's `requires` holds in chi and
 chi-twin at their pinned commits.
 
@@ -458,16 +461,16 @@ thresholds under Titan:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| H | 601 | `d12bf681` | 0.2991 | 0.5913 |
-| H | 602 | `4594037c` | 0.3001 | 0.5913 |
-| H | 603 | `d0c22058` | 0.2946 | 0.5913 |
-| H | 604 | `3dcf70da` | 0.3028 | 0.5991 |
-| H | 605 | `b8e887a1` | 0.3021 | 0.5913 |
-| H | 606 | `98f24f7c` | 0.2998 | 0.5913 |
-| H | 607 | `458b99ff` | 0.3053 | 0.5913 |
-| H | 608 | `5832af60` | 0.307 | 0.5913 |
-| H | 609 | `1d7c2d4f` | 0.3012 | 0.5913 |
-| H | 611 | `08503433` | 0.3063 | 0.5913 |
+| H | 601 | `1bd35a49` | 0.2991 | 0.5913 |
+| H | 602 | `0f42f116` | 0.3001 | 0.5913 |
+| H | 603 | `c030d64b` | 0.2946 | 0.5913 |
+| H | 604 | `9a38493c` | 0.3028 | 0.5991 |
+| H | 605 | `62f4bf19` | 0.3021 | 0.5913 |
+| H | 606 | `1129946d` | 0.2998 | 0.5913 |
+| H | 607 | `f583750f` | 0.3053 | 0.5913 |
+| H | 608 | `21a5c9d2` | 0.307 | 0.5913 |
+| H | 609 | `30daa169` | 0.3012 | 0.5913 |
+| H | 611 | `2ada06ba` | 0.3063 | 0.5913 |
 
 ## Known limits
 

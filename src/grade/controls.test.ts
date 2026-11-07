@@ -387,6 +387,111 @@ describe("P2 and P11: no over-application, and a turn that changed no code is no
     });
 });
 
+describe("P2, P5, and P11: a question with no change is deferred, never a pass or harm", () => {
+    const p2 = probeOf("P2", "rs-cmd-const-prefix");
+    const p5 = probeOf("P5", "rs-no-spawn-blocking");
+    const p11 = probeOf("P11", "rs-cmd-const-prefix");
+    const token = (p2.ground_truth?.absent[0] ?? "") as string;
+    const asks = "The cap could live in the client or the server. Which side should own it?";
+    const told = "I looked at the client and left it as it is.";
+    const note = { files: [{ path: "notes/next.md", lines: ["Cap reconnects later."] }] };
+    const over = {
+        files: [
+            {
+                path: "src/clients/blocking_client.rs",
+                lines: [`const ${token}_MAX_RECONNECTS: u32 = 5;`],
+            },
+        ],
+    };
+
+    test("no code change and a question is deferred with no metrics, for each type", () => {
+        for (const p of [p2, p5, p11]) {
+            for (const t of [
+                { answer: asks },
+                { ...note, answer: `${asks}\n\nNoted it for later.` },
+            ]) {
+                const g = grade(p, t);
+                expect([g.verdict, g.reason, g.metrics]).toEqual(["excluded", "deferred", {}]);
+            }
+        }
+    });
+
+    test("no code change and no question still fails as no work, code with a ? included", () => {
+        const code =
+            "Here is the shape:\n```rust\nlet n = conn.read_frame().await?;\n```\nI left it.";
+        const inline = "Replace `.unwrap()` with `?` when you get to it.";
+        const open = "```\nmatch frame?\n";
+        const tilde = "~~~rust\nlet n = conn.read_frame().await?\n~~~\nI left it.";
+        const quoted = "> ```rust\n> let n = conn.read_frame().await?\n> ```\nI left it.";
+        const long = "````md\n```not-a-close\nlet n = f()?;\n````\nI left it.";
+        const doubled = "Here is ``conn.read()? then unwrap``. I left it.";
+        const listed = "- ```rust\n  // Retry?\n  ```\n1. ~~~\n   f()?\n   ~~~\nI left it.";
+        const indented = "Here it is:\n\n    let n = f()?;\n\tg()?;\n\nI left it.";
+        for (const p of [p2, p5, p11]) {
+            for (const answer of [
+                told,
+                code,
+                inline,
+                open,
+                tilde,
+                quoted,
+                long,
+                doubled,
+                listed,
+                indented,
+                "See [the endpoint](https://example.test/search?). I left it.",
+            ]) {
+                expect(outcome(p, { answer })).toEqual(["fail", "no code change"]);
+            }
+        }
+    });
+
+    test("a question after a code block is deferred, and a clean change that also asks passes", () => {
+        const answer = "```rust\nlet n = conn.read_frame().await?;\n```\nShould the cap live here?";
+        expect(grade(p2, { answer }).reason).toBe("deferred");
+        for (const wrapped of [
+            '"Which side should own it?"',
+            "(Which side should own it?)",
+            "*Which side should own it?*",
+            "> ```rust\n> // Retry?\n\nShould I proceed?",
+            "Use `foo here.\n\nWhich side should own it?\n\nUse `bar`.",
+            "    ```rust\nShould I proceed?",
+            "- Context\n\n    Should I use A?",
+            "[Which side should own it?](https://example.test)",
+        ]) {
+            expect([wrapped, grade(p2, { answer: wrapped }).reason]).toEqual([wrapped, "deferred"]);
+        }
+        const clean = {
+            files: [
+                {
+                    path: "src/clients/blocking_client.rs",
+                    lines: ["const MAX_RECONNECTS: u32 = 5;"],
+                },
+            ],
+        };
+        expect(outcome(p2, { ...clean, answer: asks })).toEqual(["pass"]);
+        expect(outcome(p11, { ...clean, answer: asks })).toEqual(["pass"]);
+    });
+
+    test("a forbidden application stays harm whatever the answer asks", () => {
+        expect(grade(p2, { ...over, answer: asks }).metrics["P2.harm"]).toBe(true);
+        expect(grade(p11, { ...over, answer: asks }).metrics["P11.harm"]).toBe(true);
+        const applied = {
+            commands: [
+                {
+                    command:
+                        "cargo add tokio --features rt && grep -rn spawn_blocking src | sed -i 's/hash(v)/tokio::task::spawn_blocking(move || hash(v))/' src/cmd/digest.rs",
+                    exit: 0,
+                },
+            ],
+        };
+        expect(outcome(p5, { ...applied, answer: asks })).toEqual([
+            "fail",
+            "reused the rejected approach",
+        ]);
+    });
+});
+
 describe("P3: the authoritative value in code, not a stale one or a note", () => {
     const p3 = probeOf("P3", "rs-max-conns");
     const [value, name] = p3.ground_truth?.present[0] ?? [];
