@@ -325,7 +325,14 @@ const scriptedText = new Map(
         .map((e) => [e.id, String((e as { text?: unknown }).text ?? "")]),
 );
 const tapeMissing = existsSync(join(dir, "tape.jsonl"))
-    ? tapeMismatches(join(dir, "tape.jsonl"), records, manifest.seed as number, scriptedText)
+    ? tapeMismatches(
+          join(dir, "tape.jsonl"),
+          records,
+          manifest.seed as number,
+          scriptedText,
+          undefined,
+          true,
+      )
     : turns.filter((r) => r.source === "tape").map((r) => `${r.arm} ${r.event}`);
 // Every arm-scoped row names an arm the manifest ran.
 const unknownArms = [

@@ -54,7 +54,36 @@ the compiled cue and probe text reach the agent unchanged. A conveyance
 keeps its compiled text after any pushback, so each ledger fact is conveyed
 once in its compiled manner, by the script text alone. At delivery, a `task` filler turn whose
 agent reply ended with a question becomes `clarify`, and the reply answers
-it. Over the whole S seed 101 scenario the plan gives pushback 45.7%,
+it from what the user already told the agent and nothing more. The model
+call classifies the question (`clarifyPrompt`): its prompt quotes the request
+the agent was working on (the session's previous script turn), what the user
+said about each fact of the project before the turn (`clarifyContexts`: a
+conveyance turn or a committed diff gives the fact's statement, a reversal
+turn its own decoy text until the true conveyance replaces it, and an update
+or status turn adds its own text; a revision replaces its predecessor), and
+the agent's reply, and the model answers `SETTLED` when those already answer
+the question and `OPEN` otherwise, including when the agent offers options,
+proposes extra work, or asks for a preference. The delivered reply is fixed
+text for that word (`CLARIFY_REPLIES`): `What I've already told you covers
+that; go by it and carry on.` or `I have no preference on that; use your
+judgement.`. The compiled scenario scripts no clarify answers, so an open
+question always gets the second. A classification whose first word is
+neither falls back to the clarify line `Use your best judgement on that.`
+with the cause `unread`, and an empty one with `empty`. A clarify turn
+therefore conveys only detail the scenario conveyed, and the settled reply
+points back at it. Under the free-text reply it replaced, the 350 recorded
+c7 clarify calls (the S and M runs, apart from the M-201 and M-203 host runs,
+whose call logs exceed 3 GB) answered with new specifics, chose between the
+agent's options, and in some disowned work the user had asked for (`I haven't
+settled on a value yet, so don't change the test expectations to 58899`,
+M-201 eidnara seq 9743). Classified with this prompt, 9 of the 350 are
+`SETTLED` and 341 `OPEN` (`tests/fixtures/usersim/c7-clarify.json` keeps
+eleven of them across the host, eidnara, and oracle arms). Every clarify row
+the user-sim now writes carries `classified: true`. A clarify row without it
+was recorded before classification and delivered the model's free text, so
+`pairing-check` checks it as that text and still certifies those runs, while
+a replay source holding one is refused, since a replay would send the fixed
+text in its place. Over the whole S seed 101 scenario the plan gives pushback 45.7%,
 interrupt 4.5%, and redirect and abandon 6% of 50 sessions, inside every
 band.
 

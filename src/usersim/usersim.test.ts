@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sha256Hex } from "../prereg/canonical";
 import { loadPrereg } from "../scenario/inputs";
 import {
     beganAt,
@@ -24,7 +25,9 @@ import {
 } from "./plan";
 import {
     agentReplyOf,
+    CLARIFY_REPLIES,
     checkTapeSources,
+    clarifyContexts,
     factMatcher,
     identityStatements,
     type Llm,
@@ -37,6 +40,8 @@ import {
     type ScriptTurn,
     Tape,
     tapeDigests,
+    tapeKey,
+    tapeMismatches,
     UserSim,
 } from "./usersim";
 
@@ -251,6 +256,322 @@ describe("behaviour plan", () => {
         const first = delivered(recorded.turns.slice(0, 12), plan);
         const r = realisedRates(first, prereg);
         expect(r.outside.length).toBeGreaterThan(0);
+    });
+});
+
+interface RecordedClarify {
+    run: string;
+    seq: number;
+    turn: ScriptTurn;
+    request: string;
+    facts: string[];
+    agent: string;
+    old_reply: string;
+    classified: string;
+}
+const clarifyCalls = (
+    JSON.parse(
+        readFileSync(join(import.meta.dir, "../../tests/fixtures/usersim/c7-clarify.json"), "utf8"),
+    ) as { calls: RecordedClarify[] }
+).calls;
+
+describe("clarify replies on recorded c7 calls", () => {
+    const clarifySim = (c: RecordedClarify, prompts: Prompt[], answer = c.classified) => {
+        const root = dir();
+        const pairing = new Pairing(join(root, "pairing.jsonl"), () => "a");
+        const user = new UserSim({
+            seed: 101,
+            plan: { labels: new Map(), skipped: new Set(), interruptMs: new Map() } as Plan,
+            tape: new Tape(join(root, "tape.jsonl")),
+            pairing,
+            llm: async (p) => {
+                prompts.push(p);
+                return { text: answer, stop: "end_turn" };
+            },
+            normalise: normaliser(prereg.divergence_policy.normalisation),
+            keys: ["f-0000"],
+            clarifyContext: () => ({ request: c.request, facts: c.facts }),
+        });
+        return { user, pairing };
+    };
+
+    test("the recorded calls cover both answers across the host, eidnara, and oracle arms, and every recorded reply was free text", () => {
+        const word = (c: RecordedClarify) => c.classified.split(/\s+/)[0];
+        expect(new Set(clarifyCalls.map((c) => `${c.run.split("-").at(-1)} ${word(c)}`))).toEqual(
+            new Set(["eidnara SETTLED", "eidnara OPEN", "host SETTLED", "oracle OPEN"]),
+        );
+        for (const c of clarifyCalls) {
+            expect(Object.values(CLARIFY_REPLIES)).not.toContain(c.old_reply);
+        }
+    });
+
+    test("each recorded question gets the fixed reply for its classification and none of the recorded specifics", async () => {
+        for (const c of clarifyCalls) {
+            const prompts: Prompt[] = [];
+            const { user, pairing } = clarifySim(c, prompts);
+            const d = await user.deliver("a", c.turn, c.agent);
+            const fixed = c.classified.startsWith("SETTLED")
+                ? CLARIFY_REPLIES.settled
+                : CLARIFY_REPLIES.open;
+            expect([c.seq, d.label, d.text]).toEqual([
+                c.seq,
+                "clarify",
+                `${fixed}\n\n${c.turn.text}`,
+            ]);
+            expect(pairing.records.at(-1)).not.toHaveProperty("fallback");
+            const prompt = prompts[0] as Prompt;
+            expect(prompt.system).toContain("Output exactly one word, SETTLED or OPEN.");
+            expect(prompt.user).toContain(c.request);
+            for (const f of c.facts) expect(prompt.user).toContain(f);
+            expect(prompt.user).toContain(c.agent.slice(-200));
+        }
+    });
+
+    test("a recorded tape replays each classification and an unread one; a pre-classification reply passes only its own run's check", async () => {
+        const c = clarifyCalls[0] as RecordedClarify;
+        const scripted = new Map([[c.turn.id, c.turn.text]]);
+        for (const answer of ["SETTLED", "OPEN", "Rename the three tests."]) {
+            const root = dir();
+            const { user, pairing } = (() => {
+                const pairing = new Pairing(join(root, "pairing.jsonl"), () => "a");
+                const user = new UserSim({
+                    seed: 101,
+                    plan: { labels: new Map(), skipped: new Set(), interruptMs: new Map() } as Plan,
+                    tape: new Tape(join(root, "tape.jsonl")),
+                    pairing,
+                    llm: async () => ({ text: answer, stop: "end_turn" }),
+                    normalise: normaliser(prereg.divergence_policy.normalisation),
+                    keys: ["f-0000"],
+                    clarifyContext: () => ({ request: c.request, facts: c.facts }),
+                });
+                return { user, pairing };
+            })();
+            await user.deliver("a", c.turn, c.agent);
+            const rows = pairing.records;
+            const tape = join(root, "tape.jsonl");
+            expect([answer, tapeMismatches(tape, rows, 101, scripted)]).toEqual([answer, []]);
+            const entry = JSON.parse(readFileSync(tape, "utf8").trim());
+            writeFileSync(
+                tape,
+                `${JSON.stringify({ ...entry, text: answer === "OPEN" ? "SETTLED" : "OPEN" })}\n`,
+            );
+            expect(tapeMismatches(tape, rows, 101, scripted)).toEqual([
+                "a e-recorded".replace("e-recorded", c.turn.id),
+            ]);
+        }
+        const root = dir();
+        const tape = join(root, "tape.jsonl");
+        const free = "Open the config file and rename those three tests to match.";
+        const row = {
+            kind: "turn",
+            arm: "a",
+            session: c.turn.session,
+            event: c.turn.id,
+            index: c.turn.index,
+            label: "clarify",
+            delivered: true,
+            digest: "d",
+            context_sha256: "ctx",
+            prefix_sha256: "p",
+            text_sha256: sha256Hex(`${free}\n\n${c.turn.text}`),
+            source: "live",
+        } as PairingRecord;
+        const key = tapeKey(101, c.turn.id, "clarify", "ctx", c.turn.text);
+        writeFileSync(
+            tape,
+            `${JSON.stringify({ key, event: c.turn.id, label: "clarify", digest: "d", text: free, stop: "end_turn" })}\n`,
+        );
+        expect(tapeMismatches(tape, [row], 101, scripted, undefined, true)).toEqual([]);
+        expect(tapeMismatches(tape, [row], 101, scripted)).toEqual([`a ${c.turn.id}`]);
+    });
+
+    test("a classification whose rationale repeats a fact still delivers its fixed reply", async () => {
+        const c = clarifyCalls.find((x) => x.facts.length > 0) as RecordedClarify;
+        const fact = c.facts[0] as string;
+        const root = dir();
+        const pairing = new Pairing(join(root, "pairing.jsonl"), () => "a");
+        const user = new UserSim({
+            seed: 101,
+            plan: { labels: new Map(), skipped: new Set(), interruptMs: new Map() } as Plan,
+            tape: new Tape(join(root, "tape.jsonl")),
+            pairing,
+            llm: async () => ({ text: `SETTLED - ${fact}`, stop: "end_turn" }),
+            normalise: normaliser(prereg.divergence_policy.normalisation),
+            keys: ["f-0000"],
+            facts: [fact],
+            statements: [fact],
+            clarifyContext: () => ({ request: c.request, facts: c.facts }),
+        });
+        const d = await user.deliver("a", c.turn, c.agent);
+        expect(d.text).toStartWith(CLARIFY_REPLIES.settled);
+        expect(pairing.records.at(-1)).not.toHaveProperty("fallback");
+        const scripted = new Map([[c.turn.id, c.turn.text]]);
+        const named = factMatcher([fact], [fact]);
+        expect(
+            tapeMismatches(join(root, "tape.jsonl"), pairing.records, 101, scripted, named),
+        ).toEqual([]);
+        const stale = pairing.records.map((r) =>
+            r.kind === "turn"
+                ? {
+                      ...r,
+                      fallback: ["fact"],
+                      text_sha256: sha256Hex(`Use your best judgement on that.\n\n${c.turn.text}`),
+                  }
+                : r,
+        );
+        expect(tapeMismatches(join(root, "tape.jsonl"), stale, 101, scripted, named)).toEqual([
+            `a ${c.turn.id}`,
+        ]);
+    });
+
+    test("a classification that is neither word gets the clarify fallback line and records why", async () => {
+        const c = clarifyCalls[0] as RecordedClarify;
+        const { user, pairing } = clarifySim(c, [], "Rename the three tests to match the script.");
+        const d = await user.deliver("a", c.turn, c.agent);
+        expect(d.text).toStartWith("Use your best judgement on that.");
+        expect((pairing.records.at(-1) as { fallback?: string[] }).fallback).toEqual(["unread"]);
+    });
+});
+
+describe("clarify context", () => {
+    const events = [
+        { id: "e-0", kind: "session_start", session: "s-1", project: "svc" },
+        {
+            id: "e-1",
+            kind: "user_turn",
+            session: "s-1",
+            index: 0,
+            role: "reversal",
+            fact: "f-1",
+            text: "For the record, the metrics port is 11111.",
+        },
+        {
+            id: "e-2",
+            kind: "apply_diff",
+            session: "s-1",
+            project: "svc",
+            fact: "f-2",
+            path: "notes/a.md",
+        },
+        {
+            id: "e-3",
+            kind: "user_turn",
+            session: "s-1",
+            index: 1,
+            role: "filler",
+            text: "Add a ping test.",
+        },
+        {
+            id: "e-4",
+            kind: "user_turn",
+            session: "s-1",
+            index: 2,
+            role: "conveyance",
+            fact: "f-1",
+            text: "Scratch what I said earlier: the metrics port is 41234.",
+        },
+        {
+            id: "e-5",
+            kind: "user_turn",
+            session: "s-1",
+            index: 3,
+            role: "filler",
+            text: "Tidy the README.",
+        },
+        {
+            id: "e-6",
+            kind: "user_turn",
+            session: "s-1",
+            index: 4,
+            role: "update",
+            fact: "f-3",
+            text: "Change of plan for next time: drop A; the next step is B instead.",
+        },
+        {
+            id: "e-7",
+            kind: "user_turn",
+            session: "s-1",
+            index: 5,
+            role: "probe",
+            fact: "f-2",
+            probe: "q-1",
+            text: "Who owns the checklist?",
+        },
+        {
+            id: "e-8",
+            kind: "user_turn",
+            session: "s-1",
+            index: 6,
+            role: "status",
+            fact: "f-3",
+            text: "That covers B; consider that plan finished.",
+        },
+        { id: "e-9", kind: "session_start", session: "s-2", project: "pkg" },
+        {
+            id: "e-10",
+            kind: "user_turn",
+            session: "s-2",
+            index: 0,
+            role: "conveyance",
+            fact: "f-4",
+            text: "x",
+        },
+        {
+            id: "e-11",
+            kind: "user_turn",
+            session: "s-1",
+            index: 7,
+            role: "conveyance",
+            fact: "f-5",
+            text: "y",
+        },
+        {
+            id: "e-12",
+            kind: "user_turn",
+            session: "s-1",
+            index: 8,
+            role: "filler",
+            text: "Run it.",
+        },
+    ];
+    const facts = [
+        { id: "f-1", statement: "the metrics port is 41234", supersedes: null },
+        { id: "f-2", statement: "nobody owns the release checklist", supersedes: null },
+        { id: "f-3", statement: "when we pick this back up, the next step is A", supersedes: null },
+        { id: "f-4", statement: "the other project's rule", supersedes: null },
+        { id: "f-5", statement: "the metrics port moved from 41234 to 51234", supersedes: "f-1" },
+    ];
+    const ctx = clarifyContexts(events, facts);
+    const turn = (id: string) => {
+        const e = events.find((x) => x.id === id) as unknown as ScriptTurn;
+        return { ...e, text: String(e.text) };
+    };
+
+    test("a reversal reads as said until the true conveyance replaces it", () => {
+        expect(ctx(turn("e-3"))).toEqual({
+            request: "For the record, the metrics port is 11111.",
+            facts: [
+                "For the record, the metrics port is 11111.",
+                "nobody owns the release checklist",
+            ],
+        });
+        expect(ctx(turn("e-5")).facts).toEqual([
+            "the metrics port is 41234",
+            "nobody owns the release checklist",
+        ]);
+    });
+
+    test("an update and a status turn add what they said, a probe adds nothing, and a revision supersedes", () => {
+        expect(ctx(turn("e-12"))).toEqual({
+            request: "y",
+            facts: [
+                "nobody owns the release checklist",
+                "Change of plan for next time: drop A; the next step is B instead.",
+                "That covers B; consider that plan finished.",
+                "the metrics port moved from 41234 to 51234",
+            ],
+        });
+        expect(ctx(turn("e-1"))).toEqual({ request: "", facts: [] });
     });
 });
 

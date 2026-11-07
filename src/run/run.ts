@@ -62,6 +62,7 @@ import {
     type AgentReply,
     agentReplyOf,
     checkTapeSources,
+    clarifyContexts,
     factMatcher,
     identityStatements,
     normaliser,
@@ -2279,6 +2280,7 @@ async function runArms(
         ],
         facts: scenario.facts.flatMap((f) => [f.statement, ...f.cues]),
         statements: identityStatements(scenario.facts),
+        clarifyContext: clarifyContexts(scenario.events, scenario.facts),
     });
     const scriptedById = new Map(scripted.map((t) => [t.id, t]));
     const eventOrder = new Map(allEvents.map((e, i) => [e.id, i]));
