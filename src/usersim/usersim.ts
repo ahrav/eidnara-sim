@@ -990,7 +990,8 @@ export class UserSim {
         const reactive = this.o.inWindow?.(t) === true;
         const eligible =
             t.index > 0 && PUSHBACK_ROLES.has(t.role) && (label === "task" || label === "pushback");
-        const broke = reactive && eligible ? this.o.brokeRule?.(arm, t) === true : null;
+        const sent = !plan.skipped.has(t.id);
+        const broke = reactive && eligible && sent ? this.o.brokeRule?.(arm, t) === true : null;
         const decided = broke === null ? "" : `\nwindow:${broke ? "broke" : "kept"}`;
         const digest = sha256Hex(
             cut ? `${normalised}\n${whole}${decided}` : `${normalised}${decided}`,
@@ -1035,8 +1036,14 @@ export class UserSim {
                 label: "abandon",
                 delivered: false,
                 source: "script",
+                ...(reactive ? { reactive: true as const } : {}),
             });
-            return { label: "abandon", text: "", delivered: false };
+            return {
+                label: "abandon",
+                text: "",
+                delivered: false,
+                ...(reactive ? { reactive: true as const } : {}),
+            };
         }
         // Inside a P14 window a pushback follows the agent's last turn: it comes when that turn
         // broke a session rule in force and only then, so the window's post-fold correction count

@@ -637,6 +637,29 @@ describe("reactive pushback in a P14 window", () => {
         expect(split.map((r) => [r.arm, r.event])).toEqual([["b", "e-2"]]);
     });
 
+    test("a window turn the plan skips is marked too, with no rule read", async () => {
+        const root = dir();
+        const pairing = new Pairing(join(root, "pairing.jsonl"), () => "a");
+        const read: string[] = [];
+        const user = new UserSim({
+            seed: 101,
+            plan: { ...plan, skipped: new Set(["e-2"]) },
+            tape: new Tape(join(root, "tape.jsonl")),
+            pairing,
+            llm: async () => ({ text: "Why?", stop: "end_turn" }),
+            normalise: normaliser(prereg.divergence_policy.normalisation),
+            keys: ["f-0000"],
+            inWindow: () => true,
+            brokeRule: (_arm, t) => {
+                read.push(t.id);
+                return false;
+            },
+        });
+        const d = await user.deliver("a", script[1] as ScriptTurn, "Done.");
+        expect([d.delivered, d.reactive, read]).toEqual([false, true, []]);
+        expect(pairing.records.at(-1)).toMatchObject({ delivered: false, reactive: true });
+    });
+
     test("the realised pushback rate leaves reactive turns out", () => {
         const turns = [
             { session: "s-1", label: "pushback" as Label },
