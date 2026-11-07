@@ -13,7 +13,7 @@ const KINDS = [
     "tool_error",
     "session_rule",
 ];
-const SCHEMA = "sim-fact-bank/v4";
+const SCHEMA = "sim-fact-bank/v5";
 const LANGUAGE_KINDS = [
     "constraint",
     "decision",
@@ -431,6 +431,7 @@ function renderedProblems(where: string, kind: string, t: Json, vars: Vars): str
         }
     }
     if (kind === "tool_error") problems.push(...toolErrorProblems(where, t, check, vars));
+    if (kind === "lookup") problems.push(...conceptProblems(where, t));
     problems.push(...checkProblems(where, t.check, kind, vars));
     if ("out_check" in t)
         problems.push(...checkProblems(`${where} out_check`, t.out_check, kind, vars));
@@ -439,6 +440,42 @@ function renderedProblems(where: string, kind: string, t: Json, vars: Vars): str
 
 const oldOf = (vars: Vars): Vars =>
     Object.fromEntries(Object.entries(vars).map(([k, v]) => [`old_${k}`, v]));
+
+/** A concept is one word of letters, digits, and hyphens, so it reads literally in a pattern. */
+export const CONCEPT = /^[A-Za-z][A-Za-z0-9-]*$/;
+export const namesConcept = (text: string, concept: string): boolean =>
+    new RegExp(`(?<![A-Za-z0-9-])${concept}(?![A-Za-z0-9-])`, "i").test(text);
+
+/**
+ * A lookup template's `concept` is the one word that names the fact's subject. `statement`,
+ * `revise`, and `probe` each carry it, so every cue and the question name the same subject.
+ */
+function conceptProblems(where: string, t: Json): string[] {
+    const concept = t.concept;
+    if (typeof concept !== "string" || !CONCEPT.test(concept)) {
+        return [`${where}: concept is not one word`];
+    }
+    const problems: string[] = [];
+    if (typeof t.revise !== "string" || t.revise.trim() === "") {
+        problems.push(`${where}: revise missing`);
+    }
+    for (const field of ["statement", "revise", "probe"]) {
+        const text = t[field];
+        if (typeof text === "string" && !namesConcept(text, concept)) {
+            problems.push(`${where}: ${field} does not name the concept ${concept}`);
+        }
+    }
+    const variants = Array.isArray(t.probe_variants) ? t.probe_variants : [];
+    for (const [i, text] of [t.probe, ...variants].entries()) {
+        const field = i === 0 ? "probe" : `probe_variants[${i - 1}]`;
+        if (typeof text !== "string") continue;
+        if (i > 0 && !namesConcept(text, concept)) {
+            problems.push(`${where}: ${field} does not name the concept ${concept}`);
+        }
+        if (/\{\w+\}/.test(text)) problems.push(`${where}: ${field} names a placeholder`);
+    }
+    return problems;
+}
 
 /** Variants bind the same non-generated placeholders, and consecutive instances differ. */
 function variantProblems(where: string, variants: unknown): string[] {

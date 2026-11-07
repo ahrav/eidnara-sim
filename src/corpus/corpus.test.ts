@@ -98,7 +98,7 @@ describe("committed corpus", () => {
         broken.any.anchor[1].id = "lookup-port";
         delete broken.any.never_settled;
         expect(bankProblems(broken)).toEqual([
-            "fact-bank schema: sim-fact-bank/v0 is not sim-fact-bank/v4",
+            "fact-bank schema: sim-fact-bank/v0 is not sim-fact-bank/v5",
             "fact-bank rust/plan[0] rs-plan-field: probe missing",
             "fact-bank rust/rationale: expected at least 1 templates",
             "fact-bank rust/filler: expected a non-empty list of distinct non-blank strings",
@@ -109,6 +109,36 @@ describe("committed corpus", () => {
             "fact-bank any/anchor[0] anchor-ticket: check key must_not pattern [unclosed is not a regular expression",
             "fact-bank any/anchor[1] lookup-port: duplicate template id",
             "fact-bank python: unknown language",
+        ]);
+    });
+
+    test("a lookup template names one concept word in its statement, revision, and probe", () => {
+        const bank = JSON.parse(readFileSync(join(CORPUS_DIR, "fact-bank.json"), "utf8"));
+        const broken = structuredClone(bank);
+        delete broken.any.lookup[0].concept;
+        broken.any.lookup[1].probe =
+            "Where do I point my scraper to read numbers from my dev machine?";
+        broken.any.lookup[2].concept = "build artifacts";
+        broken.any.lookup.push({
+            ...bank.any.lookup[1],
+            id: "lookup-port-2",
+            statement: "the local port is {value}",
+            revise: "the local port moved from {old_value} to {value}",
+            probe: "Is {value} the metrics port?",
+            probe_variants: ["Which port does my scraper read?", "Is {value2} the metrics port?"],
+        });
+        const { revise: _, ...unrevised } = bank.any.lookup[1];
+        broken.any.lookup.push({ ...unrevised, id: "lookup-port-3" });
+        expect(bankProblems(broken)).toEqual([
+            "fact-bank any/lookup[0] lookup-staging-alias: concept is not one word",
+            "fact-bank any/lookup[1] lookup-port: probe does not name the concept metrics",
+            "fact-bank any/lookup[2] lookup-bucket: concept is not one word",
+            "fact-bank any/lookup[3] lookup-port-2: statement does not name the concept metrics",
+            "fact-bank any/lookup[3] lookup-port-2: revise does not name the concept metrics",
+            "fact-bank any/lookup[3] lookup-port-2: probe names a placeholder",
+            "fact-bank any/lookup[3] lookup-port-2: probe_variants[0] does not name the concept metrics",
+            "fact-bank any/lookup[3] lookup-port-2: probe_variants[1] names a placeholder",
+            "fact-bank any/lookup[4] lookup-port-3: revise missing",
         ]);
     });
 

@@ -1,6 +1,7 @@
 import { sample } from "../corpus/cdf";
 import { definesAndRaises } from "../corpus/check-script";
 import { type Distributions, table } from "../corpus/distributions";
+import { CONCEPT, namesConcept } from "../corpus/fact-bank";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
 import { Rng } from "../rng";
@@ -8,7 +9,7 @@ import { scheduleFaults, validateFault } from "./faults";
 import { bm25Ratio, cosine, type Embedder, round4 } from "./similarity";
 import { Tokens } from "./tokens";
 
-export const GENERATOR_VERSION = "sim-scenario/v7";
+export const GENERATOR_VERSION = "sim-scenario/v9";
 
 export const MANNER_WEIGHTS = {
     correction: 0.35,
@@ -26,6 +27,8 @@ export interface Template {
     /** A plan template's unit of work; the compiler composes plan statements from tasks. */
     task?: string;
     probe: string;
+    /** A lookup template's subject word, which its statement, revision, and probe each carry. */
+    concept?: string;
     out_probe?: string;
     /**
      * Further tasks under the same rule for later instances in one project, so a repeated line
@@ -1395,6 +1398,7 @@ export async function compileScenario(input: CompileInput) {
         }));
     }
     proveTwoPlansNeverOpen(plans, probes, order);
+    proveLookupNamesConcept(probes, facts, bank);
     proveResumeFollowsPlan(
         plans,
         probes,
@@ -1657,6 +1661,38 @@ export function proveResumeFollowsPlan(
                 );
             }
         }
+    }
+}
+
+/**
+ * Refuses a P8 or P8-twin item whose question leaves its fact's subject unnamed: the probe text
+ * and every cue of the fact carry the template's concept word, and the probe carries none of the
+ * item's values, so the question and the cue share an anchor a reader can follow from one to the
+ * other while the answer stays in the cue.
+ */
+export function proveLookupNamesConcept(probes: ProbeItem[], facts: Fact[], bank: Bank): void {
+    const lookups = Object.values(bank).flatMap((kinds) => (kinds.lookup ?? []) as Template[]);
+    for (const p of probes.filter((x) => x.type === "P8" || x.type === "P8-twin")) {
+        const fact = facts.find((f) => f.id === p.fact);
+        const concept = lookups.find((t) => t.id === fact?.template)?.concept;
+        if (!fact || concept === undefined || !CONCEPT.test(concept)) {
+            throw new Error(`${p.id}: its lookup template declares no concept word`);
+        }
+        const unnamed = [p.text ?? "", ...fact.cues].find((text) => !namesConcept(text, concept));
+        if (unnamed !== undefined) {
+            throw new Error(`${p.id}: "${unnamed}" does not name the concept ${concept}`);
+        }
+        const truth = p.ground_truth;
+        const answers = p.check as { answer?: string; answer_must_not?: string[] };
+        const values = [
+            ...[answers.answer ?? []].flat(),
+            ...(answers.answer_must_not ?? []),
+            ...(truth?.present.flat() ?? []),
+            ...(truth?.absent ?? []),
+            ...(truth?.stale ?? []),
+        ];
+        const stated = values.find((v) => holds(p.text ?? "", v));
+        if (stated !== undefined) throw new Error(`${p.id}: the probe states the value ${stated}`);
     }
 }
 

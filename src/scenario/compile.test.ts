@@ -18,12 +18,14 @@ import {
     type Bank,
     type CompileInput,
     compileScenario,
+    type Fact,
     MANNER_WEIGHTS,
     type Manner,
     mannerQuota,
     markerHits,
     type ProbeItem,
     proveExposure,
+    proveLookupNamesConcept,
     proveResumeFollowsPlan,
     proveTwoPlansNeverOpen,
     type Scenario,
@@ -106,7 +108,7 @@ describe("SIM-P01: deterministic compile across processes", () => {
             expect(body.manifest).toMatchObject({
                 seed,
                 tier,
-                generator_version: "sim-scenario/v7",
+                generator_version: "sim-scenario/v9",
             });
         }, 180_000);
     }
@@ -1345,6 +1347,25 @@ describe("compile-time refusals", () => {
         ).rejects.toThrow(/bm25 1, cosine 0 exceeds/);
     });
 
+    test("a lookup template without a concept word is refused", async () => {
+        await expect(
+            withInput((bank) => {
+                for (const t of lookups(bank)) delete t.concept;
+            }),
+        ).rejects.toThrow(/its lookup template declares no concept word/);
+    });
+
+    test("a P8 question that leaves its fact's concept unnamed is refused", async () => {
+        await expect(
+            withInput((bank) => {
+                const staging = lookups(bank).find((t) => t.id === "lookup-staging-alias");
+                if (staging)
+                    staging.probe =
+                        "Which alias should the deploy script aim at for pre-production?";
+            }),
+        ).rejects.toThrow(/does not name the concept staging/);
+    });
+
     test("an embedder that returns empty or short vectors is refused", async () => {
         const empty: Embedder = { model: "empty", embed: async (texts) => texts.map(() => []) };
         await expect(withInput(() => undefined, empty)).rejects.toThrow(/embedder empty returned/);
@@ -1616,6 +1637,75 @@ describe("exposure proof", () => {
         expect(() => proveTwoPlansNeverOpen([plan("f-2", "e-4")], [probe], order)).toThrow(
             /is not accepted before it/,
         );
+    });
+});
+
+describe("P8 concept anchor", () => {
+    const bank: Bank = {
+        any: { lookup: [{ id: "lookup-port", concept: "metrics", probe: "", check: {} }] },
+    };
+    const fact = {
+        id: "f-1",
+        template: "lookup-port",
+        cues: ["For the record, the local metrics port is 41234."],
+    } as Fact;
+    const probe = (text: string, type = "P8"): ProbeItem => ({
+        id: "q-1",
+        type,
+        fact: "f-1",
+        project: "mini-redis",
+        session: "s-2",
+        text,
+        check: { answer: "41234" },
+        ground_truth: {
+            expect: "answer",
+            basis: "instruction",
+            present: [["41234"]],
+            absent: [],
+            stale: [],
+            supersedes: [],
+            sources: [],
+        },
+    });
+
+    test("a paraphrased question that names the concept passes, and P8-twin is held to it too", () => {
+        const asks = "Where do I point my scraper to read Metrics from my dev machine?";
+        expect(() => proveLookupNamesConcept([probe(asks)], [fact], bank)).not.toThrow();
+        expect(() =>
+            proveLookupNamesConcept(
+                [probe("Where do I point my scraper?", "P8-twin")],
+                [fact],
+                bank,
+            ),
+        ).toThrow(/does not name the concept metrics/);
+    });
+
+    test("a synonym of the concept, a concept inside a longer word, or a stated value is refused", () => {
+        const refused = (text: string) => () =>
+            proveLookupNamesConcept([probe(text)], [fact], bank);
+        expect(refused("Where do I point my scraper to read numbers from my dev machine?")).toThrow(
+            /does not name the concept metrics/,
+        );
+        expect(refused("Which metricsd endpoint does my scraper read?")).toThrow(/concept metrics/);
+        expect(refused("Is 41234 the port for metrics?")).toThrow(/states the value 41234/);
+        const revised = {
+            ...probe("Is 31234 still the metrics port?"),
+            ground_truth: { ...probe("").ground_truth, stale: ["31234"] },
+        } as ProbeItem;
+        expect(() => proveLookupNamesConcept([revised], [fact], bank)).toThrow(
+            /states the value 31234/,
+        );
+        const literal = { ...probe("Is blue the metrics color?"), check: { answer: "blue" } };
+        expect(() => proveLookupNamesConcept([literal], [fact], bank)).toThrow(
+            /states the value blue/,
+        );
+    });
+
+    test("a cue that leaves the concept unnamed is refused", () => {
+        const bare = { ...fact, cues: ["For the record, the local port is 41234."] };
+        expect(() =>
+            proveLookupNamesConcept([probe("Which port serves metrics?")], [bare], bank),
+        ).toThrow(/For the record, the local port is 41234\." does not name the concept metrics/);
     });
 });
 

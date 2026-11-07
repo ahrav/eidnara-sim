@@ -5,7 +5,7 @@ scenario to `runs/scenarios/<tier>-<seed>.json`; a `--embedder local` compile
 defaults to `runs/scenarios/<tier>-<seed>.local.json`, so a stand-in never
 replaces a Titan scenario. The inputs are the seed, the
 tier's pre-registration in `prereg/<tier>.json`, the corpus under `corpus/`,
-and the generator version `sim-scenario/v7`. The same inputs produce the same
+and the generator version `sim-scenario/v9`. The same inputs produce the same
 bytes in any process, and a run reuses a cached `scenario.json` only when its
 top-level `schema`, generator version, pre-registration hash, and corpus
 inputs hash match the current inputs. The compiler scores cue and probe pairs with
@@ -87,7 +87,7 @@ pre-registered seeds end between 0.2 and 1.2 days past it.
 
 Each probe type gets `paired_items_per_probe_type / (seeds * hosts)` items;
 the pre-registration validator requires that division to be exact. Facts come
-from the templates in `corpus/fact-bank.json` (`sim-fact-bank/v4`), filled
+from the templates in `corpus/fact-bank.json` (`sim-fact-bank/v5`), filled
 with generated tokens: `adjective_noun` words in lower, upper, and Pascal
 case, five-digit numbers from 10000 to 65535 (so a figure a template states
 as a port is a valid TCP port), and `adjective-noun-NN` codenames, from the v1
@@ -169,7 +169,7 @@ pasted, and a P3 value read from its authoritative file).
 | P5 | rejected approach | Later session; the check forbids the rejected approach |
 | P6 | plan | First turn of the project's next session after the plan's latest conveyance, at least one hour after the previous session ends; see Plans below |
 | P7 | rationale | Later session; judge-graded against the reference reason |
-| P8 | lookup | Later session; the answer must carry the value |
+| P8 | lookup | Later session; the answer must carry the value. The question names the template's `concept`, the one word for the fact's subject that the statement and its revision also carry (`staging`, `metrics`, `artifacts`), and states no value, so it may paraphrase the rest of the cue and still identify the fact |
 | P8-twin | the P8 fact | Qualification control `wrong-project-lookup` only: the same question in a session of the twin project after the conveyance; `ground_truth.expect` is `abstain`, `absent` holds the base project's value, `check.owner` names the base project, and `sources` are the base project's |
 | P9 | never settled | Later session; the answer must abstain |
 | P10 | anchor | Later, unrelated task; the value must not appear |
@@ -347,6 +347,9 @@ The compiler throws, and writes nothing, when:
   (SIM-P07);
 - a probe turn precedes any conveyance, update, or diff of its fact
   (SIM-P06);
+- a P8 or P8-twin question, or a cue of its fact, leaves the lookup
+  template's `concept` word unnamed, or the question carries one of the
+  item's values (`proveLookupNamesConcept`);
 - a template repeats in a project without a `revise` wording, or a probe text
   repeats for more facts of one project than the bank holds framings;
 - a commit finds no free session opening in its window;
@@ -403,15 +406,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `58ae3808` | 0.2768 | 0.4982 |
-| S | 102 | `1d2e48f8` | 0.2672 | 0.5142 |
-| M | 201 | `ceeec5d5` | 0.3552 | 0.5807 |
-| M | 202 | `85f8b0c0` | 0.3513 | 0.5807 |
-| M | 203 | `2f741386` | 0.3225 | 0.551 |
-| L | 301 | `650c17f5` | 0.3247 | 0.5807 |
-| L | 302 | `0f68da60` | 0.3261 | 0.5807 |
-| L | 303 | `378adf20` | 0.3254 | 0.5807 |
-| XL | 401 | `5d22d39a` | 0.3197 | 0.5807 |
+| S | 101 | `3dbdb45d` | 0.2768 | 0.5125 |
+| S | 102 | `9e9a75ad` | 0.2672 | 0.5195 |
+| M | 201 | `37a9a062` | 0.3552 | 0.5807 |
+| M | 202 | `244a033f` | 0.3513 | 0.5807 |
+| M | 203 | `afe47b16` | 0.3225 | 0.551 |
+| L | 301 | `b16bb6e6` | 0.3247 | 0.5807 |
+| L | 302 | `3576dbbd` | 0.3261 | 0.5807 |
+| L | 303 | `ec032fa5` | 0.3254 | 0.5807 |
+| XL | 401 | `0615e036` | 0.3197 | 0.5807 |
 
 Under qualification Q (revision 3, `e8c1f508`), which adds its P8-twin
 controls, the seeds compile to these scenarios; 103 is its exploratory
@@ -419,9 +422,9 @@ hold-out:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| Q | 101 | `4a1aea24` | 0.2768 | 0.4982 |
-| Q | 102 | `61a98091` | 0.262 | 0.5142 |
-| Q | 103 | `b99f034d` | 0.2712 | 0.5021 |
+| Q | 101 | `695ff298` | 0.2768 | 0.5125 |
+| Q | 102 | `da4c0734` | 0.262 | 0.5195 |
+| Q | 103 | `21929082` | 0.2712 | 0.5021 |
 
 ## Held-out corpus
 
@@ -449,16 +452,16 @@ thresholds under Titan:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| H | 601 | `b16f11fe` | 0.323 | 0.5913 |
-| H | 602 | `2f4bcd4b` | 0.3266 | 0.5913 |
-| H | 603 | `83392366` | 0.3224 | 0.5913 |
-| H | 604 | `6d79e977` | 0.3267 | 0.5991 |
-| H | 605 | `c3234cc4` | 0.3304 | 0.5913 |
-| H | 606 | `499e8b08` | 0.3278 | 0.5913 |
-| H | 607 | `80bf2e30` | 0.3316 | 0.5913 |
-| H | 608 | `a998a923` | 0.3338 | 0.5913 |
-| H | 609 | `a5baf84f` | 0.3291 | 0.5913 |
-| H | 611 | `1f305a12` | 0.3356 | 0.5913 |
+| H | 601 | `fd4383f3` | 0.323 | 0.5913 |
+| H | 602 | `6a52113d` | 0.3266 | 0.5913 |
+| H | 603 | `f9494ffc` | 0.3224 | 0.5913 |
+| H | 604 | `f7957d35` | 0.3267 | 0.5991 |
+| H | 605 | `d89143f7` | 0.3304 | 0.5913 |
+| H | 606 | `cb893e07` | 0.3278 | 0.5913 |
+| H | 607 | `db9b5978` | 0.3316 | 0.5913 |
+| H | 608 | `b9c39df9` | 0.3338 | 0.5913 |
+| H | 609 | `72c7cad9` | 0.3291 | 0.5913 |
+| H | 611 | `137f16cf` | 0.3356 | 0.5913 |
 
 ## Known limits
 
