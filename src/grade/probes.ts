@@ -1699,7 +1699,7 @@ export const DEFERRABLE = ["P2", "P5", "P11"];
 export const asksUser = (answer: string): boolean =>
     sentences(
         answer
-            .replace(/^\s*```[\s\S]*?(?:^\s*```.*$|(?![\s\S]))/gm, "")
+            .replace(/^\s*(```|~~~)[\s\S]*?(?:^\s*\1.*$|(?![\s\S]))/gm, "")
             .replace(/`[^`\n]*`/g, "code"),
     ).some((s) => s.endsWith("?"));
 
