@@ -147,12 +147,13 @@ describe("replay transforms on a recorded agent request", () => {
 
     test("a variant resolves by name or letter, and an unknown one is refused", () => {
         expect(
-            ["a", "b", "c", "c2", "d", "d2", "e", "f", "f2"].map((v) => transformFor(v).id),
+            ["a", "b", "c", "c2", "c3", "d", "d2", "e", "f", "f2"].map((v) => transformFor(v).id),
         ).toEqual([
             "none",
             "evidence-note",
             "drop-competing",
             "drop-competing-caution",
+            "caution-off",
             "provenance-off",
             "provenance-notices-off",
             "oracle-note",
@@ -561,6 +562,180 @@ describe("memory-block-origin", () => {
         expect(transformFor("f2").apply(body, inputs()).changed).toBe(true);
         expect(text(body, 0)).toBe(
             `<session-history></session-history>\n\n${inputs().origin_memory as string}`,
+        );
+    });
+});
+
+describe("caution-off", () => {
+    const withListing = (listing: string) => {
+        const body = recorded();
+        const tool = messages(body)[4]?.content[1]?.toolResult as { content: { text: string }[] };
+        (tool.content[0] as { text: string }).text = listing;
+        return body;
+    };
+    const record = '{"anchor":"a","citation":"c","quote":"q","source":"memory_capture"}';
+
+    test("strips caution sentences from assistant items, drops emptied ones, keeps user statements", () => {
+        const body = withListing(
+            [
+                "Found 3 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: The limit is 31411. Don't deploy against it yet.",
+                record,
+                "",
+                "[2] [memory] id=b",
+                "Assistant reported: We are still waiting on the user to pick a limit.",
+                "",
+                "[3] [memory] id=c",
+                "User stated: ask before you change the limit.",
+                record,
+            ].join("\n"),
+        );
+        const applied = transformFor("c3").apply(body, inputs());
+        expect(applied).toEqual({
+            changed: true,
+            detail: { items: 2, sentences: 2, dropped: 1, unparsed: ["eidnara_note"] },
+        });
+        expect(result(body, 1)).toBe(
+            [
+                "Found 2 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: The limit is 31411.",
+                "",
+                "[2] [memory] id=c",
+                "User stated: ask before you change the limit.",
+                record,
+            ].join("\n"),
+        );
+    });
+
+    test("splits after closing quotes, keeps the attribution, and reads no ground truth", () => {
+        const payload =
+            '{"anchor":"north","citation":"manual","quote":"literal config","source":"api"}';
+        const body = withListing(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                'Assistant reported: Still pending. The warning was "Don\'t deploy." The port is 31411.',
+                payload,
+                "The limit 31411 is unconfirmed.",
+                record,
+            ].join("\n"),
+        );
+        const gt = { present: [["31411"]], stale: [], absent: [] };
+        transformFor("c3").apply(body, inputs({ ground_truth: gt }));
+        expect(result(body, 1)).toBe(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: The port is 31411.",
+                payload,
+            ].join("\n"),
+        );
+    });
+
+    test("leaves bullet lines of an eidnara_note result alone", () => {
+        const body = recorded();
+        const note = messages(body)[4]?.content[0]?.toolResult as { content: { text: string }[] };
+        const notes = "\u00a73\u00a7 ## Notes\n\n- Ask before changing production.\n- Port 31411.";
+        (note.content[0] as { text: string }).text = notes;
+        const applied = transformFor("c3").apply(body, inputs());
+        expect(note.content[0]?.text).toBe(notes);
+        expect(applied.detail.unparsed).toEqual(["eidnara_note"]);
+    });
+
+    test("keeps a JSON line inside the statement whole and approval talk without pending context", () => {
+        const payload =
+            '{"anchor":"n","citation":"m","quote":"ask before you merge","source":"api"}';
+        const body = withListing(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: Still pending.",
+                payload,
+                "Approval workflows live in src/auth.ts. Merging is awaiting your approval.",
+            ].join("\n"),
+        );
+        transformFor("c3").apply(body, inputs());
+        expect(result(body, 1)).toBe(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                payload,
+                "Assistant reported: Approval workflows live in src/auth.ts.",
+            ].join("\n"),
+        );
+    });
+
+    test("splits after Markdown closing marks", () => {
+        const body = withListing(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: The status is `still pending.` The port is 31411.",
+            ].join("\n"),
+        );
+        transformFor("c3").apply(body, inputs());
+        expect(result(body, 1)).toBe(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: The port is 31411.",
+            ].join("\n"),
+        );
+    });
+
+    test("carries the attribution to the first kept line", () => {
+        const body = withListing(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: Still pending.",
+                "The limit is 31411.",
+            ].join("\n"),
+        );
+        transformFor("c3").apply(body, inputs());
+        expect(result(body, 1)).toBe(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: The limit is 31411.",
+            ].join("\n"),
+        );
+    });
+
+    test("trims a search-hint fragment and leaves a listing without caution unchanged", () => {
+        const hint = hinted();
+        const before = JSON.stringify(hint);
+        expect(transformFor("c3").apply(hint, inputs()).changed).toBe(false);
+        expect(JSON.stringify(hint)).toBe(before);
+        const body = recorded();
+        const hintBlock = (lines: string[]) =>
+            ["<eidnara-search-hint>", ...lines, "</eidnara-search-hint>"].join("\n");
+        (messages(body)[0]?.content[0] as { text: string }).text = hintBlock([
+            "Your memory may contain 2 related fragments:",
+            "- Still pending. the port is 31411.",
+            "- \u2026Ask before changing production.",
+            "- unrelated",
+        ]);
+        transformFor("c3").apply(body, inputs());
+        expect(text(body, 0)).toBe(
+            hintBlock([
+                "Your memory may contain 2 related fragments:",
+                "- the port is 31411.",
+                "- \u2026Ask before changing production.",
+                "- unrelated",
+            ]),
         );
     });
 });

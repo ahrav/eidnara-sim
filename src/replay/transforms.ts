@@ -191,7 +191,7 @@ const CAUTION = new RegExp(
         "haven['\u2019]?t (?:decided|made a decision)",
         "no decision",
         "needs? (?:your|the user['\u2019]?s) (?:confirmation|decision|approval)",
-        "approval",
+        "(?:awaiting|pending|without) (?:your |the user['\u2019]?s )?approval",
         "go-ahead",
         "say-so",
         "undecided",
@@ -228,6 +228,126 @@ function stripCaution(
         if (kept.length > 0) out.push(kept.join(" "));
     }
     return { item: out, removed };
+}
+
+/**
+ * Rebuilds a listing from `next`, which returns an item's new lines or null to drop it. Kept
+ * numbered items are renumbered from 1 and the blank line after a dropped item goes. With
+ * `recount`, the count in the lines before the first item follows the kept items.
+ */
+function rebuildListing(
+    segments: Segment[],
+    next: (item: string[]) => string[] | null,
+    recount: boolean,
+): string {
+    const kept: Segment[] = [];
+    let n = 0;
+    let skipBlank = false;
+    for (const s of segments) {
+        const lines = "item" in s ? next(s.item) : undefined;
+        if ("item" in s && lines === null) {
+            skipBlank = true;
+            continue;
+        }
+        if ("line" in s && skipBlank && s.line === "") {
+            skipBlank = false;
+            continue;
+        }
+        skipBlank = false;
+        if ("item" in s && lines) {
+            n++;
+            const [first, ...rest] = lines;
+            kept.push({ item: [(first as string).replace(/^\[\d+\]/, `[${n}]`), ...rest] });
+        } else {
+            kept.push(s);
+        }
+    }
+    if (!recount) return joinListing(kept);
+    const first = kept.findIndex((s) => "item" in s);
+    const opening = first < 0 ? kept.length : first;
+    const count = /\b\d+( (?:results?|related fragments?)\b)/;
+    return joinListing(
+        kept.map((s, i) =>
+            "line" in s && i < opening ? { line: s.line.replace(count, `${n}$1`) } : s,
+        ),
+    );
+}
+
+/** A sentence ends at `.`, `!`, `?`, or `;`, after any closing quotes, parentheses, or Markdown marks. */
+const SENTENCE_BREAK = /(?<=[.!?;]["'\u201d\u2019)`*_]*)\s+/;
+/** A hint fragment cut from the middle of a memory, whose attribution the cut removed. */
+const TRUNCATED = /^- (?:\u2026|\.\.\.)/;
+
+/**
+ * Removes caution wording from memory items Eidnara does not attribute to the user, reading no
+ * ground truth. It visits the numbered items of a tool result or block and the fragments of
+ * `<eidnara-search-hint>`. Each statement sentence that matches `CAUTION` goes; the opening
+ * attribution stays on the first kept sentence; an item that loses a sentence also loses its
+ * closing provenance record, which quotes the removed text. An item left with no statement goes,
+ * and the listing is renumbered with its count line following the kept items.
+ */
+function cautionOff(body: ConverseBody): Applied {
+    const counts = { items: 0, sentences: 0, dropped: 0 };
+    const unparsed: string[] = [];
+    let changed = false;
+    editMemory(body, (name, text) => {
+        const segments = splitListing(text);
+        const items = itemsOf(segments);
+        const numbered = items.some((i) => ITEM_HEADER.test(i[0] ?? ""));
+        if (items.length === 0 || (!numbered && name !== "eidnara-search-hint")) {
+            unparsed.push(name);
+            return text;
+        }
+        const replaced = new Map<string[], string[] | null>();
+        let droppedHere = 0;
+        for (const item of items) {
+            if (!isCautionItem(item, numbered)) continue;
+            if (!numbered && TRUNCATED.test(item[0] ?? "")) continue;
+            const last = item.length - 1;
+            const closing = numbered && last > 0 && isProvenanceLine(item[last] as string);
+            const statementLines = numbered ? item.slice(1, closing ? last : undefined) : item;
+            const statement: string[] = [];
+            let removed = 0;
+            let attribution = "";
+            statementLines.forEach((line, j) => {
+                if (isProvenanceLine(line)) {
+                    statement.push(line);
+                    return;
+                }
+                const bullet = !numbered && line.startsWith("- ") ? "- " : "";
+                let bodyText = line.slice(bullet.length);
+                if (j === 0) {
+                    attribution = ATTRIBUTION.exec(bodyText)?.[0] ?? "";
+                    bodyText = bodyText.slice(attribution.length);
+                }
+                const sentences = bodyText.split(SENTENCE_BREAK);
+                const kept = sentences.filter((x) => !CAUTION.test(x));
+                removed += sentences.length - kept.length;
+                if (kept.length === 0) return;
+                statement.push(bullet + attribution + kept.join(" "));
+                attribution = "";
+            });
+            if (removed === 0) continue;
+            counts.items++;
+            counts.sentences += removed;
+            if (statement.length === 0) droppedHere++;
+            replaced.set(
+                item,
+                statement.length === 0
+                    ? null
+                    : [...(numbered ? [item[0] as string] : []), ...statement],
+            );
+        }
+        if (replaced.size === 0) return text;
+        changed = true;
+        counts.dropped += droppedHere;
+        return rebuildListing(
+            segments,
+            (item) => (replaced.has(item) ? (replaced.get(item) ?? null) : item),
+            droppedHere > 0,
+        );
+    });
+    return { changed, detail: { ...counts, unparsed } };
 }
 
 /**
@@ -282,34 +402,10 @@ function dropCompeting(body: ConverseBody, inputs: TransformInputs, caution = fa
         });
         if (dropped === 0 && sentences === 0) return text;
         changed = true;
-        const kept: Segment[] = [];
-        let n = 0;
-        let skipBlank = false;
-        for (const s of segments) {
-            if ("item" in s && !keep.get(s.item)) {
-                skipBlank = true;
-                continue;
-            }
-            if ("line" in s && skipBlank && s.line === "") {
-                skipBlank = false;
-                continue;
-            }
-            skipBlank = false;
-            if ("item" in s) {
-                n++;
-                const [first, ...rest] = rewritten.get(s.item) ?? s.item;
-                kept.push({ item: [(first as string).replace(/^\[\d+\]/, `[${n}]`), ...rest] });
-            } else {
-                kept.push(s);
-            }
-        }
-        const first = kept.findIndex((s) => "item" in s);
-        const opening = first < 0 ? kept.length : first;
-        const count = /\b\d+( (?:results?|related fragments?)\b)/;
-        return joinListing(
-            kept.map((s, i) =>
-                "line" in s && i < opening ? { line: s.line.replace(count, `${n}$1`) } : s,
-            ),
+        return rebuildListing(
+            segments,
+            (item) => (keep.get(item) ? (rewritten.get(item) ?? item) : null),
+            true,
         );
     });
     return { changed, detail: { slots, unparsed } };
@@ -443,6 +539,13 @@ export const TRANSFORMS: Record<string, ReplayTransform> = {
         summary:
             "drop-competing, plus caution items that do not support the ground truth and caution sentences of kept items",
         apply: (body, inputs) => dropCompeting(body, inputs, true),
+    },
+    "caution-off": {
+        id: "caution-off",
+        alias: "c3",
+        summary:
+            "removes caution sentences from memory items not attributed to the user, reading no ground truth",
+        apply: (body) => cautionOff(body),
     },
     "provenance-off": {
         id: "provenance-off",
