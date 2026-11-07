@@ -1740,7 +1740,8 @@ function proseOf(answer: string): string {
 
 /**
  * Whether a turn's work breaks a session rule's check, read as a P13 grade reads it: a forbidden
- * pattern occurs (`broken`), or the turn created a file and a `first_line_must` rule fails on it.
+ * pattern occurs (`broken`), or the turn created a code file, which makes a `first_line_must`
+ * rule apply, and some file it created misses that rule, as the P13 check reads it.
  * A turn that did nothing the rule governs breaks nothing. The user-sim reads this inside a P14
  * window to decide a reactive pushback (`docs/user-sim.md`).
  */
@@ -1757,9 +1758,11 @@ export function breaksRule(patch: string, commands: Command[], check: Check): bo
     const w = workFor(reader, check, commands);
     if (broken(w, check)) return true;
     const firstLines = check.first_line_must;
-    const created = targetsOf(w.files, check).filter((f) => f.created);
+    const applies = targetsOf(w.files, check).some((f) => f.created);
     return (
-        firstLines !== undefined && created.some((f) => !matchesAll(f.added[0] ?? "", firstLines))
+        firstLines !== undefined &&
+        applies &&
+        w.files.some((f) => f.created && !matchesAll(f.added[0] ?? "", firstLines))
     );
 }
 

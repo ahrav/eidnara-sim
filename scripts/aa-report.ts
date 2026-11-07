@@ -34,8 +34,11 @@ import {
     realisedRates,
 } from "../src/usersim/plan";
 import {
+    deliveredScript,
     pairingMismatches,
     readPairing,
+    type ScriptTurn,
+    sessionRules,
     type TurnRecord,
     tapeDigests,
     windowAllows,
@@ -248,6 +251,7 @@ function report(dir: string) {
     }
     const pairing = readPairing(join(dir, "pairing.jsonl"), order);
     // Each pairing row names a scheduled event and sits at that event's session and index.
+    const windowOf = sessionRules(scenario.events, scenario.facts ?? [], scenario.probes ?? []);
     const turnOf = new Map(
         prefix
             .filter((e) => e.kind === "user_turn")
@@ -332,7 +336,7 @@ function report(dir: string) {
         const e = turnOf.get(r.event) as { role?: string; text?: unknown } | undefined;
         const verbatim = e?.role === "probe" || e?.role === "paste" || r.source === "script";
         if (!e || !verbatim || !r.delivered) continue;
-        if (r.text_sha256 !== sha256Hex(String(e.text))) {
+        if (r.text_sha256 !== sha256Hex(deliveredScript(r, String(e.text)))) {
             throw new Error(
                 `${dir}/pairing.jsonl: ${r.arm} ${r.event} differs from the compiled text`,
             );
@@ -565,7 +569,10 @@ function report(dir: string) {
             : (plan.labels.get(r.event) ?? "task");
         const e = turnOf.get(r.event) as { role?: string } | undefined;
         const clarify = planned === "task" && r.label === "clarify" && e?.role === "filler";
-        if (r.label !== planned && !clarify && !windowAllows(planned, r, e?.role === "filler")) {
+        const turn = turnOf.get(r.event) as unknown as ScriptTurn | undefined;
+        const inWindow = turn !== undefined && windowOf(turn) !== null;
+        const filler = e?.role === "filler";
+        if (r.label !== planned && !clarify && !windowAllows(planned, r, filler, inWindow)) {
             throw new Error(
                 `${dir}/pairing.jsonl: ${r.arm} ${r.event} carries label ${r.label}; the seeded plan assigned ${planned}`,
             );

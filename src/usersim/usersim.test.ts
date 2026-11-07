@@ -616,6 +616,26 @@ describe("reactive pushback in a P14 window", () => {
         expect(rows.map((r) => r.reactive === true)).toEqual([false, true, false, true, true]);
     });
 
+    test("two arms with the same reply whose work splits a window decision diverge on record", async () => {
+        const root = dir();
+        const pairing = new Pairing(join(root, "pairing.jsonl"), () => "a");
+        const user = new UserSim({
+            seed: 101,
+            plan,
+            tape: new Tape(join(root, "tape.jsonl")),
+            pairing,
+            llm: async () => ({ text: "Why that change?", stop: "end_turn" }),
+            normalise: normaliser(prereg.divergence_policy.normalisation),
+            keys: ["f-0000"],
+            inWindow: (t) => t.id === "e-2",
+            brokeRule: (arm) => arm === "b",
+        });
+        const turns = script.slice(0, 2) as ScriptTurn[];
+        for (const arm of ["a", "b"]) for (const t of turns) await user.deliver(arm, t, "Done.");
+        const split = pairing.records.filter((r) => r.kind === "divergedAt");
+        expect(split.map((r) => [r.arm, r.event])).toEqual([["b", "e-2"]]);
+    });
+
     test("the realised pushback rate leaves reactive turns out", () => {
         const turns = [
             { session: "s-1", label: "pushback" as Label },

@@ -7,7 +7,7 @@ import { preregistrationHash } from "../src/prereg/validate";
 import { scenarioHash } from "../src/scenario/compile";
 import { corpusInputsSha256, loadPrereg } from "../src/scenario/inputs";
 import { behaviourPlan, type Label, realisedRates } from "../src/usersim/plan";
-import { tapeKey } from "../src/usersim/usersim";
+import { REACTIVE_PUSHBACK, tapeKey } from "../src/usersim/usersim";
 
 const ROOT = join(import.meta.dir, "..");
 const prereg = loadPrereg("S");
@@ -22,6 +22,7 @@ interface Fixture {
     tape: Row[];
     manifest: Row;
     calls?: Row[];
+    probes?: Row[];
 }
 
 type Plan = ReturnType<typeof behaviourPlan>;
@@ -142,14 +143,15 @@ function fixture(arms: string[] = ["host", "eidnara"], events: Row[] = scriptedE
 }
 
 const CORPUS_INPUTS_SHA = corpusInputsSha256();
-const scenarioOf = (events: Row[]) => ({
+const scenarioOf = (events: Row[], probes?: Row[]) => ({
     manifest: { seed: 101, tier: "S", corpus_inputs_sha256: CORPUS_INPUTS_SHA },
     events,
+    ...(probes ? { facts: [], probes } : {}),
 });
 
 function run(f: Fixture): { exit: number; report: Record<string, unknown>; stderr: string } {
     dir = mkdtempSync(join(tmpdir(), "pairing-check-"));
-    const body = scenarioOf(f.events);
+    const body = scenarioOf(f.events, f.probes);
     const scenario = { ...body, scenario_hash: scenarioHash(body) };
     writeFileSync(join(dir, "manifest.json"), JSON.stringify(f.manifest));
     writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));
@@ -840,18 +842,53 @@ test("a sibling turn whose digest left the reference's needs a divergence row ah
 });
 
 test("a P14-window row may carry the reactive label and its scripted pushback line", () => {
+    const windowed = (f: Fixture) => {
+        const turn = f.events.find((e) => e.id === "e-0-1") as Row;
+        f.probes = [
+            {
+                type: "P14",
+                fact: null,
+                session: turn.session,
+                check: { window_from_turn: 1, window_to_turn: 2 },
+            },
+        ];
+        f.manifest.scenario_hash = scenarioHash(scenarioOf(f.events, f.probes));
+        return String(turn.text);
+    };
     const f = fixture();
+    const text = windowed(f);
     const host = find(f.pairing, (r) => r.arm === "host" && r.event === "e-0-1");
     const eidnara = find(f.pairing, (r) => r.arm === "eidnara" && r.event === "e-0-1");
     const planned = host.label;
-    Object.assign(host, { reactive: true, label: "pushback", source: "script" });
-    Object.assign(eidnara, { reactive: true, label: "task", source: "script" });
+    Object.assign(host, {
+        reactive: true,
+        label: "pushback",
+        source: "script",
+        text_sha256: sha256Hex(`${REACTIVE_PUSHBACK}\n\n${text}`),
+    });
+    Object.assign(eidnara, {
+        reactive: true,
+        label: "task",
+        source: "script",
+        text_sha256: sha256Hex(text),
+    });
     const r = run(f);
-    expect([planned, r.report.source_label_mismatch, r.report.plan_label_mismatch]).toEqual([
+    expect([
         planned,
-        [],
-        [],
-    ]);
+        r.report.source_label_mismatch,
+        r.report.plan_label_mismatch,
+        r.report.script_text_altered,
+    ]).toEqual([planned, [], [], []]);
+    const outside = fixture();
+    Object.assign(
+        find(outside.pairing, (x) => x.arm === "host" && x.event === "e-0-1"),
+        {
+            reactive: true,
+            label: planned === "task" ? "pushback" : "task",
+            source: "script",
+        },
+    );
+    expect(run(outside).report.plan_label_mismatch).toEqual(["host e-0-1"]);
     const g = fixture();
     Object.assign(
         find(g.pairing, (x) => x.arm === "host" && x.event === "e-0-1"),

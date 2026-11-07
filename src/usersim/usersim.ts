@@ -653,14 +653,20 @@ export function windowAllows(
     planned: Label,
     r: { label: Label; reactive?: true },
     filler: boolean,
+    inWindow: boolean,
 ): boolean {
     const reactive = planned === "task" || planned === "pushback";
     return (
+        inWindow &&
         r.reactive === true &&
         reactive &&
         (r.label === "task" || r.label === "pushback" || (r.label === "clarify" && filler))
     );
 }
+
+/** The text a row delivered from the script carries: a window pushback puts its line ahead. */
+export const deliveredScript = (r: { label: Label; reactive?: true }, text: string): string =>
+    r.reactive && r.label === "pushback" ? `${REACTIVE_PUSHBACK}\n\n${text}` : text;
 
 /** Roles a pushback may precede, from the second turn of a session on. */
 const PUSHBACK_ROLES = new Set(["filler", "conveyance", "update", "reversal"]);
@@ -771,7 +777,7 @@ export function sessionRules(
         probes
             .filter((p) => p.type === "P13" && p.fact !== null)
             .map((p) => {
-                const { turns: _, ...check } = p.check as Record<string, unknown>;
+                const { turns: _, ...check } = (p.check ?? {}) as Record<string, unknown>;
                 return [p.fact as string, check] as const;
             }),
     );
@@ -976,7 +982,17 @@ export class UserSim {
         // the cut still get different digests.
         const cut = whole !== sha256Hex(agent.text);
         const normalised = this.o.normalise(agent.text);
-        const digest = sha256Hex(cut ? `${normalised}\n${whole}` : normalised);
+        // Inside a P14 window the agent's work decides a pushback, so the decision joins the
+        // digest: two arms whose replies match but whose work splits the decision diverge here.
+        let label = plan.labels.get(t.id) ?? "task";
+        const reactive = this.o.inWindow?.(t) === true;
+        const eligible =
+            t.index > 0 && PUSHBACK_ROLES.has(t.role) && (label === "task" || label === "pushback");
+        const broke = reactive && eligible ? this.o.brokeRule?.(arm, t) === true : null;
+        const decided = broke === null ? "" : `\nwindow:${broke ? "broke" : "kept"}`;
+        const digest = sha256Hex(
+            cut ? `${normalised}\n${whole}${decided}` : `${normalised}${decided}`,
+        );
         const end = cut ? (agent.tail ?? agent.text) : agent.text;
         const prev = t.index === 0 ? undefined : pairing.last(arm, t.session, t.index);
         const chain = prev ? `${prev.prefix_sha256}\n${prev.text_sha256}` : "";
@@ -1020,14 +1036,10 @@ export class UserSim {
             });
             return { label: "abandon", text: "", delivered: false };
         }
-        let label = plan.labels.get(t.id) ?? "task";
         // Inside a P14 window a pushback follows the agent's last turn: it comes when that turn
         // broke a session rule in force and only then, so the window's post-fold correction count
         // measures the agent.
-        const reactive = this.o.inWindow?.(t) === true;
-        const eligible =
-            t.index > 0 && PUSHBACK_ROLES.has(t.role) && (label === "task" || label === "pushback");
-        if (reactive && eligible) label = this.o.brokeRule?.(arm, t) ? "pushback" : "task";
+        if (broke !== null) label = broke ? "pushback" : "task";
         if (label === "task" && t.role === "filler" && asksQuestion(end)) label = "clarify";
         const reply =
             reactive && label === "pushback"

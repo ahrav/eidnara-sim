@@ -520,6 +520,13 @@ describe("breaksRule: a session rule the user-sim reads after a fold", () => {
         expect(breaksRule(file(["pub fn placeholder() {}"], true), [], c)).toBe(true);
         expect(breaksRule(file([header, "pub fn placeholder() {}"], true), [], c)).toBe(false);
         expect(breaksRule(file(["let x = 1;"], false), [], c)).toBe(false);
+        const both = patchOf([
+            { path: "src/gilded.rs", lines: [header, "pub fn f() {}"], created: true },
+            { path: "README.md", lines: ["# Gilded"], created: true },
+        ]);
+        expect(breaksRule(both, [], c)).toBe(true);
+        const note = patchOf([{ path: "notes/a.md", lines: ["# a"], created: true }]);
+        expect(breaksRule(note, [], c)).toBe(false);
         expect(breaksRule("", [run('git commit -m "no tag"')], c)).toBe(false);
     });
 });

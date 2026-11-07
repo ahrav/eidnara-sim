@@ -73,9 +73,12 @@ row's reactive label and its scripted pushback line (`windowAllows`). A
 window turn with no snapshot of the turn before it gets no reactive
 pushback: the first turn after a resume, a turn after one whose prompt threw
 or whose deadline ran out before the prompt, and a turn whose git snapshot
-ran past its bound. The pairing digest covers the agent's reply text, so two
-arms with the same reply but different work can get different window labels
-with no divergence on record. Windows lie in the last
+ran past its bound. A window
+turn's decision joins its pairing digest, so two arms whose replies match
+but whose work splits the decision diverge on record at that turn, and the
+post-run checks accept a reactive label only on a turn the compiled
+scenario places in a window. A reactive pushback row hashes the fixed line
+ahead of the script text (`deliveredScript`). Windows lie in the last
 third of their session, and P14 counts only the window turns after the
 session's first fold, so every pushback P14 counts follows an agent turn that
 broke a rule. Outside the windows the plan decides, so the arms' pushback
