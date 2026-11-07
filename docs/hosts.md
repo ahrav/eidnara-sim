@@ -305,18 +305,21 @@ complete evidence only when the two agree:
   user statements in the final store (`stm_*` decisions) and the capture
   sessions their rationale names; Pi names an Eidnara session
   `sim-<session>`, and a name without that prefix stands for every session
-  that made a `memory_capture` call. A statement is due once an agent request
-  of another session follows the last `memory_capture` call of its session,
-  since Eidnara leaves the current session's statements out of its own
-  block. Once one is due, an automatic-delivery arm is a mismatch when no
+  that made a `memory_capture` call, as does a statement whose payload names
+  no session. A statement is due once an agent request of another session
+  starts after the last `memory_capture` call of its session ended
+  (`started_wall_ms` against `wall_ms`), since Eidnara leaves the current
+  session's statements out of its own block. Once one is due, an automatic-delivery arm is a mismatch when no
   request carried a `<project-memory>` block, and an explicit-search arm is a
   mismatch when its Pi transcripts hold no `eidnara_search` result. An
   Eidnara arm whose agent worked in two or more sessions is a mismatch when
   the proxy records hold no `memory_capture` call, since every side call goes
   through the proxy.
-- `daemon_routes` counts the ready records in the arm's `daemon.log` and the
-  fixture's production search route lines with the embedding models they
-  name. A fused-route arm is a mismatch when a daemon start logged no route
+- `daemon_routes` reads the arm's `daemon.log` in order. Each ready record
+  closes one daemon generation, which counts as production when the
+  fixture's production search route line came after the previous ready
+  record; `models` lists the embedding models the route lines name. A
+  fused-route arm is a mismatch when a ready generation logged no route
   line, when the daemon never became ready while the agent made calls, when
   a route ran an embedding model other than the one the arm requires, and
   when its searches all errored; any other daemon arm is a mismatch when a

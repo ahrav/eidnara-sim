@@ -2402,20 +2402,26 @@ async function runArms(
                 : [];
             const parts = new RequestPartLog(join(o.out, "requests.jsonl"));
             try {
-                const armCalls: Pick<
+                const armCalls: (Pick<
                     CallRecord,
                     "seq" | "component" | "session" | "turn" | "request"
-                >[] = [];
+                > &
+                    Partial<Pick<CallRecord, "started_wall_ms" | "wall_ms">>)[] = [];
                 eachJsonl<CallRecord>(callsPath, (c) => {
                     if (c.arm !== arm) return;
-                    const { seq, component, session, turn, request } = c;
+                    const { seq, component, session, turn, request, started_wall_ms, wall_ms } = c;
+                    const times = { started_wall_ms, wall_ms };
                     if (component === "memory_capture") {
-                        armCalls.push({ seq, component, session, turn });
+                        armCalls.push({ seq, component, session, turn, ...times });
                     } else if (component === "agent" && request) {
-                        armCalls.push({ seq, component, session, turn, request });
+                        armCalls.push({ seq, component, session, turn, request, ...times });
                     }
                 });
-                const sessions = observed.statements?.sessions ?? null;
+                const statements = observed.statements;
+                // A statement whose payload names no session stands for any capturing session.
+                const sessions = statements
+                    ? [...statements.sessions, ...Array(statements.unattributed).fill(null)]
+                    : null;
                 observed.delivery = observeDelivery(armCalls, parts, notes, eventOrder, sessions);
             } finally {
                 parts.close();

@@ -274,9 +274,26 @@ describe("delivery check", () => {
             ["sim-s-1"],
         );
         expect(early.memory_due).toBe(false);
-        // OpenCode's own session ids map onto no run session, so any capturing session stands.
+        // OpenCode's own session ids map onto no run session, so any capturing session stands, as
+        // for a statement whose session is unknown.
         const opencode = observeDelivery([first, captured, later], parts(), [], order, ["ses_x"]);
         expect(opencode.memory_due).toBe(true);
+        const unknown = observeDelivery([first, captured, later], parts(), [], order, [null]);
+        expect(unknown.memory_due).toBe(true);
+        // Records are sequenced at completion: a request that started before the capture ended
+        // owes nothing, even when it ended after it.
+        const overlap = observeDelivery(
+            [
+                { ...first, started_wall_ms: 0, wall_ms: 10 },
+                { ...call("s-2", "e-3", "Which port?"), started_wall_ms: 15, wall_ms: 40 },
+                { ...capture("s-1"), started_wall_ms: 12, wall_ms: 20 },
+            ].sort((a, b) => a.wall_ms - b.wall_ms),
+            parts(),
+            [],
+            order,
+            ["sim-s-1"],
+        );
+        expect(overlap.memory_due).toBe(false);
         expect(observeDelivery([first, captured, later], parts(), [], order, []).memory_due).toBe(
             false,
         );

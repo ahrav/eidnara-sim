@@ -75,9 +75,14 @@ export interface ArmObservation {
 
 /**
  * The accepted user statements (`stm_*` decisions) in `final-store/kernel.sqlite`, with the
- * sessions their capture rationale names; null when the store is absent or unreadable.
+ * sessions their capture rationale names and the count of those whose payload names none; null
+ * when the store is absent or unreadable.
  */
-export type StatementObservation = { count: number; sessions: string[] } | null;
+export type StatementObservation = {
+    count: number;
+    sessions: string[];
+    unattributed: number;
+} | null;
 
 /**
  * The daemon generations `daemon.log` records: ready records, and the fixture's production search
@@ -85,6 +90,7 @@ export type StatementObservation = { count: number; sessions: string[] } | null;
  */
 export interface DaemonRouteObservation {
     ready: number;
+    /** Ready generations whose route line came after the previous ready record. */
     production: number;
     models: string[];
 }
@@ -157,11 +163,12 @@ const userTexts = (body: ConverseBody) =>
 const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
 
 export function observeDelivery(
-    calls: readonly Pick<CallRecord, "seq" | "component" | "session" | "turn" | "request">[],
+    calls: readonly (Pick<CallRecord, "seq" | "component" | "session" | "turn" | "request"> &
+        Partial<Pick<CallRecord, "started_wall_ms" | "wall_ms">>)[],
     parts: PartLookup,
     notes: readonly ExpectedNote[],
     eventIndex: ReadonlyMap<string, number>,
-    statementSessions: readonly string[] | null = null,
+    statementSessions: readonly (string | null)[] | null = null,
 ): DeliveryObservation {
     const out: DeliveryObservation = {
         requests: 0,
@@ -180,19 +187,19 @@ export function observeDelivery(
     const delivered = new Set<string>();
     const index = (event: string | null) => eventIndex.get(event ?? "") ?? -1;
     const backgrounds = [...new Set(notes.map((n) => n.background))];
-    const agentCalls: { seq: number; session: string | null }[] = [];
+    const agentCalls: { started: number; session: string | null }[] = [];
     const lastCapture = new Map<string, number>();
     const lastCall = new Map<string, number>();
     let memoryBlocks = 0;
     for (const call of calls) {
         const session = call.session ?? null;
-        if (session !== null)
-            lastCall.set(session, Math.max(lastCall.get(session) ?? -1, call.seq));
+        const ended = call.wall_ms ?? call.seq;
+        if (session !== null) lastCall.set(session, Math.max(lastCall.get(session) ?? -1, ended));
         if (call.component === "memory_capture" && session !== null) {
-            lastCapture.set(session, Math.max(lastCapture.get(session) ?? -1, call.seq));
+            lastCapture.set(session, Math.max(lastCapture.get(session) ?? -1, ended));
         }
         if (call.component !== "agent" || !call.request) continue;
-        agentCalls.push({ seq: call.seq, session });
+        agentCalls.push({ started: call.started_wall_ms ?? call.seq, session });
         const body = rebuildRequest(call.request, parts);
         if (!body) {
             out.unreadable++;
@@ -252,24 +259,25 @@ export function observeDelivery(
 const simSession = (name: string) => (name.startsWith("sim-") ? name.slice(4) : null);
 
 /**
- * Whether an agent request came, in another session, after the last capture call of a session
- * that captured a user statement. The current session's statements stay out of its own block, so
- * only such a later request owes a `<project-memory>` block.
+ * Whether an agent request started, in another session, after the last capture call of a
+ * session that captured a user statement had ended. The current session's statements stay out of
+ * its own block, so only such a later request owes a `<project-memory>` block. A statement whose
+ * session is unknown (null) or maps onto no run session adds every session that made a capture
+ * call as a possible capture session.
  */
 function memoryDue(
-    agentCalls: readonly { seq: number; session: string | null }[],
+    agentCalls: readonly { started: number; session: string | null }[],
     lastCapture: ReadonlyMap<string, number>,
     lastCall: ReadonlyMap<string, number>,
-    statementSessions: readonly string[] | null,
+    statementSessions: readonly (string | null)[] | null,
 ): boolean {
     if (!statementSessions || statementSessions.length === 0) return false;
-    const mapped = statementSessions.map(simSession);
-    const sessions = mapped.every((m) => m !== null)
-        ? [...new Set(mapped as string[])]
-        : [...lastCapture.keys()];
-    return sessions.some((s) => {
+    const mapped = statementSessions.map((s) => (s === null ? null : simSession(s)));
+    const sessions = new Set(mapped.filter((m) => m !== null) as string[]);
+    if (mapped.some((m) => m === null)) for (const s of lastCapture.keys()) sessions.add(s);
+    return [...sessions].some((s) => {
         const after = lastCapture.get(s) ?? lastCall.get(s);
-        return after !== undefined && agentCalls.some((c) => c.session !== s && c.seq > after);
+        return after !== undefined && agentCalls.some((c) => c.session !== s && c.started > after);
     });
 }
 
@@ -544,16 +552,19 @@ export function readStatements(kernelPath: string): StatementObservation {
             .query("select decision_payload as p from decisions where object_id glob 'stm_*'")
             .all() as { p: Uint8Array | string }[];
         const sessions = new Set<string>();
+        let unattributed = 0;
         for (const { p } of rows) {
             const text = typeof p === "string" ? p : new TextDecoder().decode(p);
+            let session: unknown = null;
             try {
-                const rationale = JSON.parse(String(JSON.parse(text)?.rationale ?? "null"));
-                if (typeof rationale?.session === "string") sessions.add(rationale.session);
+                session = JSON.parse(String(JSON.parse(text)?.rationale ?? "null"))?.session;
             } catch {
-                // A payload that does not parse still counts as a statement without a session.
+                session = null;
             }
+            if (typeof session === "string") sessions.add(session);
+            else unattributed++;
         }
-        return { count: rows.length, sessions: [...sessions].sort() };
+        return { count: rows.length, sessions: [...sessions].sort(), unattributed };
     } catch {
         return null;
     } finally {
@@ -563,18 +574,25 @@ export function readStatements(kernelPath: string): StatementObservation {
 
 const ROUTE_LINE = /direct_host_fixture: search route production, embedding model ([^,\s]+)/;
 
-/** Counts the daemon's ready records and production search route lines in `daemon.log`. */
+/**
+ * Reads `daemon.log` in order: each ready record closes one daemon generation, which counts as
+ * production when a route line came after the previous ready record. `models` lists the embedding
+ * models every route line names.
+ */
 export function readDaemonRoutes(path: string): DaemonRouteObservation {
     const out: DaemonRouteObservation = { ready: 0, production: 0, models: [] };
     const models = new Set<string>();
+    let routed = false;
     eachLine(path, (line) => {
         if (line.startsWith("{") && line.includes('"status":"ready"')) {
             out.ready++;
+            if (routed) out.production++;
+            routed = false;
             return;
         }
         const route = ROUTE_LINE.exec(line);
         if (route) {
-            out.production++;
+            routed = true;
             models.add(route[1] as string);
         }
     });
@@ -794,9 +812,9 @@ function routeMismatches(profile: ArmProfile, o: ArmObservation): string[] {
     const r = o.daemon_routes;
     if (!r || profile.daemon === null) return [];
     if (profile.search !== "fused") {
-        return r.production > 0
+        return r.models.length > 0
             ? [
-                  `${r.production} daemon starts logged the production search route, but the arm declares ${profile.search}`,
+                  `the daemon logged the production search route (${r.models.join(", ")}), but the arm declares ${profile.search}`,
               ]
             : [];
     }
@@ -818,10 +836,13 @@ function routeMismatches(profile: ArmProfile, o: ArmObservation): string[] {
             `the production search route ran embedding model ${other.join(", ")}, but the arm requires ${wanted}`,
         );
     }
-    if (o.search && o.search.fused === 0 && o.search.legacy_scan.length + o.search.errored > 0) {
-        out.push(
-            `${o.search.errored} eidnara_search results errored and none came from the fused route`,
-        );
+    if (
+        o.search &&
+        o.search.fused === 0 &&
+        o.search.legacy_scan.length === 0 &&
+        o.search.errored > 0
+    ) {
+        out.push(`all ${o.search.errored} eidnara_search results errored on the fused route`);
     }
     return out;
 }
