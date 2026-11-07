@@ -119,12 +119,18 @@ describe("committed corpus", () => {
         broken.rust.plan[1].target.path = "src/{token}.rs";
         broken.typescript.plan[0].task = "adding an on{TOKEN} lifecycle hook beside onRequest";
         broken.typescript.plan[1].target.symbol = "";
+        broken.typescript.plan.push({
+            ...bank.typescript.plan[1],
+            id: "ts-plan-option-2",
+            task: "a {token} option in src/index.ts that caps how many routes the app registers",
+        });
         expect(bankProblems(broken)).toEqual([
             "fact-bank rust/plan[0] rs-plan-field: target needs path and symbol",
             "fact-bank rust/plan[1] rs-plan-cmd: target path is not a fixed project path",
             "fact-bank rust/plan[1] rs-plan-cmd: task does not name the target path src/{token}.rs",
             "fact-bank typescript/plan[0] ts-plan-hook: task does not name the target path src/index.ts",
             "fact-bank typescript/plan[1] ts-plan-option: target symbol is not a fixed literal",
+            "fact-bank typescript/plan[2] ts-plan-option-2: task does not name the target symbol this.config",
         ]);
     });
 
