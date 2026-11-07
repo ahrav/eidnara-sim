@@ -74,14 +74,17 @@ export interface ArmObservation {
 }
 
 /**
- * The accepted user statements (`stm_*` decisions) in `final-store/kernel.sqlite`, with the
- * sessions their capture rationale names and the count of those whose payload names none; null
- * when the store is absent or unreadable.
+ * The committed user statements (`stm_*` decisions whose commit the log holds) in
+ * `final-store/kernel.sqlite`, with the sessions their capture rationale names and the count of
+ * those whose payload names none; null when the store is absent, and an `error` when its
+ * decisions cannot be read.
  */
 export type StatementObservation = {
     count: number;
     sessions: string[];
     unattributed: number;
+    /** Why the store's decisions could not be read, or null. */
+    error: string | null;
 } | null;
 
 /**
@@ -148,6 +151,11 @@ export interface DeliveryObservation {
      * observations recorded before it was read.
      */
     memory_due?: boolean;
+    /**
+     * Of the requests that owe a block (another session's, of the statement's project, started
+     * after the capture ended), those carrying a `<project-memory>` block.
+     */
+    due_blocks?: number;
 }
 
 /** The text blocks of the body's user messages, where a prompt prefix lands. */
@@ -169,6 +177,7 @@ export function observeDelivery(
     notes: readonly ExpectedNote[],
     eventIndex: ReadonlyMap<string, number>,
     statementSessions: readonly (string | null)[] | null = null,
+    projectOf: ReadonlyMap<string, string> = new Map(),
 ): DeliveryObservation {
     const out: DeliveryObservation = {
         requests: 0,
@@ -183,11 +192,12 @@ export function observeDelivery(
         memory_blocks: 0,
         sessions: 0,
         memory_due: false,
+        due_blocks: 0,
     };
     const delivered = new Set<string>();
     const index = (event: string | null) => eventIndex.get(event ?? "") ?? -1;
     const backgrounds = [...new Set(notes.map((n) => n.background))];
-    const agentCalls: { started: number; session: string | null }[] = [];
+    const agentCalls: { started: number; session: string | null; block: boolean }[] = [];
     const lastCapture = new Map<string, number>();
     const lastCall = new Map<string, number>();
     let memoryBlocks = 0;
@@ -199,7 +209,8 @@ export function observeDelivery(
             lastCapture.set(session, Math.max(lastCapture.get(session) ?? -1, ended));
         }
         if (call.component !== "agent" || !call.request) continue;
-        agentCalls.push({ started: call.started_wall_ms ?? call.seq, session });
+        const agent = { started: call.started_wall_ms ?? call.seq, session, block: false };
+        agentCalls.push(agent);
         const body = rebuildRequest(call.request, parts);
         if (!body) {
             out.unreadable++;
@@ -212,7 +223,10 @@ export function observeDelivery(
             system: body.system,
             messages: (body.messages ?? []).filter((m) => m?.role === "user"),
         });
-        if (injectedBlocks(given).some((b) => b.tag === "project-memory")) memoryBlocks++;
+        if (injectedBlocks(given).some((b) => b.tag === "project-memory")) {
+            memoryBlocks++;
+            agent.block = true;
+        }
         const users = userTexts(body);
         const prompt = [...users].reverse().find((t) => t.length > 0) ?? "";
         for (const n of notes) {
@@ -247,7 +261,9 @@ export function observeDelivery(
     out.notes.missing = notes.filter((n) => n.owed && !delivered.has(n.event)).map((n) => n.event);
     out.memory_blocks = memoryBlocks;
     out.sessions = new Set(agentCalls.map((c) => c.session)).size;
-    out.memory_due = memoryDue(agentCalls, lastCapture, lastCall, statementSessions);
+    const owed = owingRequests(agentCalls, lastCapture, lastCall, statementSessions, projectOf);
+    out.memory_due = owed.length > 0;
+    out.due_blocks = owed.filter((c) => c.block).length;
     return out;
 }
 
@@ -259,26 +275,37 @@ export function observeDelivery(
 const simSession = (name: string) => (name.startsWith("sim-") ? name.slice(4) : null);
 
 /**
- * Whether an agent request started, in another session, after the last capture call of a
- * session that captured a user statement had ended. The current session's statements stay out of
- * its own block, so only such a later request owes a `<project-memory>` block. A statement whose
- * session is unknown (null) or maps onto no run session adds every session that made a capture
- * call as a possible capture session.
+ * The agent requests that owe a statement's `<project-memory>` block: each started, in another
+ * session of the same project, after the last capture call of a session that captured a user
+ * statement had ended. The current session's statements stay out of its own block. A statement
+ * whose session is unknown (null) or maps onto no run session adds every session that made a
+ * capture call as a possible capture session; a session with no known project matches any.
  */
-function memoryDue(
-    agentCalls: readonly { started: number; session: string | null }[],
+function owingRequests<C extends { started: number; session: string | null }>(
+    agentCalls: readonly C[],
     lastCapture: ReadonlyMap<string, number>,
     lastCall: ReadonlyMap<string, number>,
     statementSessions: readonly (string | null)[] | null,
-): boolean {
-    if (!statementSessions || statementSessions.length === 0) return false;
+    projectOf: ReadonlyMap<string, string>,
+): C[] {
+    if (!statementSessions || statementSessions.length === 0) return [];
     const mapped = statementSessions.map((s) => (s === null ? null : simSession(s)));
     const sessions = new Set(mapped.filter((m) => m !== null) as string[]);
     if (mapped.some((m) => m === null)) for (const s of lastCapture.keys()) sessions.add(s);
-    return [...sessions].some((s) => {
+    const sameProject = (a: string, b: string | null) => {
+        const pa = projectOf.get(a);
+        const pb = b === null ? undefined : projectOf.get(b);
+        return pa === undefined || pb === undefined || pa === pb;
+    };
+    const owed = new Set<C>();
+    for (const s of sessions) {
         const after = lastCapture.get(s) ?? lastCall.get(s);
-        return after !== undefined && agentCalls.some((c) => c.session !== s && c.started > after);
-    });
+        if (after === undefined) continue;
+        for (const c of agentCalls) {
+            if (c.session !== s && c.started > after && sameProject(s, c.session)) owed.add(c);
+        }
+    }
+    return [...owed];
 }
 
 /** Delivery evidence that contradicts the profile; an arm without the observation passes. */
@@ -549,7 +576,11 @@ export function readStatements(kernelPath: string): StatementObservation {
     try {
         db = new Database(kernelPath, { readonly: true });
         const rows = db
-            .query("select decision_payload as p from decisions where object_id glob 'stm_*'")
+            .query(
+                `select decision_payload as p from decisions
+                 where object_id glob 'stm_*'
+                   and created_commit_seq in (select commit_seq from commit_log)`,
+            )
             .all() as { p: Uint8Array | string }[];
         const sessions = new Set<string>();
         let unattributed = 0;
@@ -564,9 +595,10 @@ export function readStatements(kernelPath: string): StatementObservation {
             if (typeof session === "string") sessions.add(session);
             else unattributed++;
         }
-        return { count: rows.length, sessions: [...sessions].sort(), unattributed };
-    } catch {
-        return null;
+        return { count: rows.length, sessions: [...sessions].sort(), unattributed, error: null };
+    } catch (caught) {
+        const error = (caught as Error).message;
+        return { count: 0, sessions: [], unattributed: 0, error };
     } finally {
         db?.close();
     }
@@ -781,11 +813,14 @@ function memoryMismatches(profile: ArmProfile, o: ArmObservation): string[] {
     const d = o.delivery;
     if (!d || d.memory_due === undefined) return [];
     const out: string[] = [];
+    if (o.statements?.error && (o.components.agent ?? 0) > 0) {
+        out.push(`the final store's user statements cannot be read: ${o.statements.error}`);
+    }
     const mode = deliveryOf(profile);
     const statements = o.statements?.count ?? 0;
-    if (d.memory_due && mode === "automatic" && d.memory_blocks === 0) {
+    if (d.memory_due && mode === "automatic" && (d.due_blocks ?? d.memory_blocks) === 0) {
         out.push(
-            `the final store holds ${statements} user statements captured before later sessions' agent requests, but no agent request carried a <project-memory> block`,
+            `the final store holds ${statements} user statements captured before later sessions' agent requests, but none of those requests carried a <project-memory> block`,
         );
     }
     const searches = o.search

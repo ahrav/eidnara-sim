@@ -301,20 +301,25 @@ complete evidence only when the two agree:
   system block or prefixed twice is misplaced.
 - `delivery` also counts the agent requests whose system blocks or user
   messages carry a `<project-memory>` block (`memory_blocks`), the sessions
-  with an agent request, and `memory_due`. `statements` lists the accepted
-  user statements in the final store (`stm_*` decisions) and the capture
-  sessions their rationale names; Pi names an Eidnara session
-  `sim-<session>`, and a name without that prefix stands for every session
-  that made a `memory_capture` call, as does a statement whose payload names
-  no session. A statement is due once an agent request of another session
-  starts after the last `memory_capture` call of its session ended
-  (`started_wall_ms` against `wall_ms`), since Eidnara leaves the current
-  session's statements out of its own block. Once one is due, an automatic-delivery arm is a mismatch when no
-  request carried a `<project-memory>` block, and an explicit-search arm is a
-  mismatch when its Pi transcripts hold no `eidnara_search` result. An
-  Eidnara arm whose agent worked in two or more sessions is a mismatch when
-  the proxy records hold no `memory_capture` call, since every side call goes
-  through the proxy.
+  with an agent request, `memory_due`, and `due_blocks`. `statements` lists
+  the committed user statements in the final store (`stm_*` decisions whose
+  commit the log holds) and the capture sessions their rationale names; Pi
+  names an Eidnara session `sim-<session>`, and a name without that prefix
+  stands for every session that made a `memory_capture` call, as does a
+  statement whose payload names no session. A request owes a statement's
+  block when it belongs to another session of the statement's project and
+  starts after the last `memory_capture` call of the statement's session
+  ended (`started_wall_ms` against `wall_ms`), since Eidnara leaves the
+  current session's statements out of its own block; `memory_due` holds when
+  any request owes one, and `due_blocks` counts the owing requests that
+  carry a block. Once one is due, an automatic-delivery arm is a mismatch
+  when no owing request carried a `<project-memory>` block, and an
+  explicit-search arm is a mismatch when its Pi transcripts hold no
+  `eidnara_search` result. An Eidnara arm that made agent calls is a
+  mismatch when its final store's decisions cannot be read, and one whose
+  agent worked in two or more sessions is a mismatch when the proxy records
+  hold no `memory_capture` call, since every side call goes through the
+  proxy.
 - `daemon_routes` reads the arm's `daemon.log` in order. Each ready record
   closes one daemon generation, which counts as production when the
   fixture's production search route line came after the previous ready

@@ -2312,6 +2312,7 @@ async function runArms(
     });
     const scriptedById = new Map(scripted.map((t) => [t.id, t]));
     const eventOrder = new Map(allEvents.map((e, i) => [e.id, i]));
+    const projectOf = new Map(scenario.sessions.map((x) => [x.id, x.project]));
     const oracle = (arm: string) => deliveryOf(armProfile(arm)) === "oracle-context";
     const backgrounds = manifest.order.some(oracle)
         ? oracleBackgrounds(scenario, [
@@ -2422,7 +2423,14 @@ async function runArms(
                 const sessions = statements
                     ? [...statements.sessions, ...Array(statements.unattributed).fill(null)]
                     : null;
-                observed.delivery = observeDelivery(armCalls, parts, notes, eventOrder, sessions);
+                observed.delivery = observeDelivery(
+                    armCalls,
+                    parts,
+                    notes,
+                    eventOrder,
+                    sessions,
+                    projectOf,
+                );
             } finally {
                 parts.close();
             }

@@ -76,6 +76,9 @@ function captured(
     );
     db.run("create table commit_log(commit_seq integer primary key)");
     db.run("insert into commit_log values (1), (7)");
+    db.run(
+        "create table decisions(object_id text, decision_payload blob, created_commit_seq integer)",
+    );
     for (const [i, c] of classes.entries()) {
         db.run("insert into object_registry values (?, 'observation', ?, 1, ?)", [
             `srcdesc:${c}${i}:1`,
@@ -235,7 +238,7 @@ test("every daemon start of the fused arm logs the production route over its emb
 test("delivery evidence must match the statements the final store holds", () => {
     const root = captured(armRoot([PI_ON, PASS]));
     const db = new Database(join(root, "..", "final-store", "kernel.sqlite"));
-    db.run("create table decisions(object_id text, decision_payload blob)");
+
     const payload = (session: string) =>
         new TextEncoder().encode(
             JSON.stringify({
@@ -243,21 +246,27 @@ test("delivery evidence must match the statements the final store holds", () => 
                 rationale: JSON.stringify({ session }),
             }),
         );
-    db.run("insert into decisions values ('stm_a', ?), ('stm_b', ?), ('stm_c', ?), ('mem_d', ?)", [
-        payload("sim-s-0001"),
-        payload("sim-s-0001"),
-        new TextEncoder().encode("not json"),
-        payload("sim-s-0009"),
-    ]);
+    db.run("insert into decisions values ('stm_e', ?, 99)", [payload("sim-s-0002")]);
+    db.run(
+        "insert into decisions values ('stm_a', ?, 1), ('stm_b', ?, 1), ('stm_c', ?, 7), ('mem_d', ?, 1)",
+        [
+            payload("sim-s-0001"),
+            payload("sim-s-0001"),
+            new TextEncoder().encode("not json"),
+            payload("sim-s-0009"),
+        ],
+    );
     db.close();
     const observe = (arm: string, components: Record<string, number>) =>
         observeArm(arm, "pi", root, components);
+    // stm_e's commit is absent from the log, so a partial store left it behind.
     expect(observe("eidnara", {}).statements).toEqual({
         count: 3,
         sessions: ["sim-s-0001"],
         unattributed: 1,
+        error: null,
     });
-    const delivery = (memory_blocks: number, memory_due = true) => ({
+    const delivery = (memory_blocks: number, memory_due = true, due_blocks = memory_blocks) => ({
         requests: 3,
         unreadable: 0,
         injected_blocks: memory_blocks,
@@ -265,20 +274,31 @@ test("delivery evidence must match the statements the final store holds", () => 
         memory_blocks,
         sessions: 2,
         memory_due,
+        due_blocks,
     });
     const auto = observe("eidnara", { agent: 3, memory_capture: 1 });
     auto.delivery = delivery(0);
     expect(armMismatches(auto)).toEqual([
-        "the final store holds 3 user statements captured before later sessions' agent requests, but no agent request carried a <project-memory> block",
+        "the final store holds 3 user statements captured before later sessions' agent requests, but none of those requests carried a <project-memory> block",
     ]);
     auto.delivery = delivery(1);
     expect(armMismatches(auto)).toEqual([]);
+    // A block only before the statement came due proves nothing about its delivery.
+    auto.delivery = delivery(1, true, 0);
+    expect(armMismatches(auto)).toHaveLength(1);
     auto.delivery = delivery(0, false);
     expect(armMismatches(auto)).toEqual([]);
     const explicit = observe("eidnara-search", { agent: 3, memory_capture: 1 });
     explicit.delivery = delivery(0);
     expect(armMismatches(explicit)).toEqual([
         "the final store holds 3 user statements captured before later sessions' agent requests, but the agent never called eidnara_search on an arm that declares explicit search",
+    ]);
+    const broken = captured(armRoot([PI_ON, PASS]));
+    const unreadable = observeArm("eidnara", "pi", broken, { agent: 3, memory_capture: 1 });
+    unreadable.statements = { count: 0, sessions: [], unattributed: 0, error: "no such table" };
+    unreadable.delivery = delivery(1, false);
+    expect(armMismatches(unreadable)).toEqual([
+        "the final store's user statements cannot be read: no such table",
     ]);
     const silent = observe("eidnara", { agent: 3 });
     silent.delivery = delivery(1);

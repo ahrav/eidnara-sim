@@ -255,7 +255,26 @@ describe("delivery check", () => {
         const captured = capture("s-1");
         const later = call("s-2", "e-3", "Which port?", block);
         const due = observeDelivery([first, captured, later], parts(), [], order, ["sim-s-1"]);
-        expect(due).toMatchObject({ memory_blocks: 1, sessions: 2, memory_due: true });
+        expect(due).toMatchObject({
+            memory_blocks: 1,
+            sessions: 2,
+            memory_due: true,
+            due_blocks: 1,
+        });
+        // A later session of another project owes nothing: the statement belongs to its project.
+        const projects = new Map([
+            ["s-1", "mini-redis"],
+            ["s-2", "elysia"],
+        ]);
+        const elsewhere = observeDelivery(
+            [first, captured, later],
+            parts(),
+            [],
+            order,
+            ["sim-s-1"],
+            projects,
+        );
+        expect(elsewhere.memory_due).toBe(false);
         // Only the capture's own session followed it, so no block is owed yet.
         const same = observeDelivery(
             [first, captured, call("s-1", "e-2", "Which port?")],
