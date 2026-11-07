@@ -323,15 +323,16 @@ complete evidence only when the two agree:
   agent worked in two or more sessions is a mismatch when the proxy records
   hold no `memory_capture` call, since every side call goes through the
   proxy.
-- `daemon_routes` reads the arm's `daemon.log` in order. Each ready record
-  closes one daemon generation, which counts as production when the
-  fixture's production search route line came after the previous ready
-  record; `models` lists the embedding models the route lines name. A
-  fused-route arm is a mismatch when a ready generation logged no route
-  line, when the daemon never became ready while the agent made calls, when
-  a route ran an embedding model other than the one the arm requires, and
-  when its searches all errored; any other daemon arm is a mismatch when a
-  route line appears.
+- `daemon_routes` reads the arm's `daemon.log` in order. `DaemonStack`
+  appends each start's captured stdout, with the ready record, before its
+  captured stderr, with the fixture's production search route line, so a
+  generation opens at its ready record and counts as production when a
+  route line follows before the next ready record; `models` lists the
+  embedding models the route lines name. A fused-route arm is a mismatch
+  when a ready generation logged no route line, when the daemon never
+  became ready while the agent made calls, when a route ran an embedding
+  model other than the one the arm requires, and when its searches all
+  errored; any other daemon arm is a mismatch when a route line appears.
 
 The plugin writes its log inside the arm root, which the agent's tools can
 write too, so the evidence holds against an agent that leaves the log alone;

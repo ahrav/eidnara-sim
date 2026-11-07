@@ -93,7 +93,7 @@ export type StatementObservation = {
  */
 export interface DaemonRouteObservation {
     ready: number;
-    /** Ready generations whose route line came after the previous ready record. */
+    /** Ready generations whose route line followed their ready record. */
     production: number;
     models: string[];
 }
@@ -609,25 +609,26 @@ export function readStatements(kernelPath: string): StatementObservation {
 const ROUTE_LINE = /direct_host_fixture: search route production, embedding model ([^,\s]+)/;
 
 /**
- * Reads `daemon.log` in order: each ready record closes one daemon generation, which counts as
- * production when a route line came after the previous ready record. `models` lists the embedding
- * models every route line names.
+ * Reads `daemon.log` in order. `DaemonStack` appends each start's captured stdout, which holds the
+ * ready record, before its captured stderr, which holds the fixture's route line, so a generation
+ * opens at its ready record and counts as production when a route line follows before the next
+ * ready record. `models` lists the embedding models every route line names.
  */
 export function readDaemonRoutes(path: string): DaemonRouteObservation {
     const out: DaemonRouteObservation = { ready: 0, production: 0, models: [] };
     const models = new Set<string>();
-    let routed = false;
+    let open = false;
     eachLine(path, (line) => {
         if (line.startsWith("{") && line.includes('"status":"ready"')) {
             out.ready++;
-            if (routed) out.production++;
-            routed = false;
+            open = true;
             return;
         }
         const route = ROUTE_LINE.exec(line);
         if (route) {
-            routed = true;
             models.add(route[1] as string);
+            if (open) out.production++;
+            open = false;
         }
     });
     out.models = [...models].sort();

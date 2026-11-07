@@ -182,7 +182,7 @@ test("search results are checked against the route the arm declares", () => {
     const legacyOnly = observeArm("eidnara", "pi", armRoot([PI_ON, PASS], [LEGACY]), {});
     expect(armMismatches(legacyOnly)).toEqual([]);
     const hybridRoot = captured(searched());
-    daemonLog(hybridRoot, [ROUTE, READY]);
+    daemonLog(hybridRoot, [READY, ROUTE]);
     const hybrid = observeArm("eidnara-hybrid", "pi", hybridRoot, { agent: 1 });
     expect(armMismatches(hybrid)).toEqual([
         "1 eidnara_search results came from the legacy snapshot scan (disabled), but the arm declares the fused route",
@@ -198,7 +198,7 @@ const daemonLog = (root: string, lines: string[]) =>
 
 test("every daemon start of the fused arm logs the production route over its embedding model", () => {
     const root = captured(armRoot([PI_ON, PASS], [FUSED]));
-    daemonLog(root, [ROUTE, READY, "eidnara-pass-timing session=sim-s-0000", ROUTE, READY]);
+    daemonLog(root, [READY, ROUTE, "eidnara-pass-timing session=sim-s-0000", READY, ROUTE]);
     const hybrid = observeArm("eidnara-hybrid", "pi", root, { agent: 1 });
     expect(hybrid.daemon_routes).toEqual({
         ready: 2,
@@ -206,16 +206,16 @@ test("every daemon start of the fused arm logs the production route over its emb
         models: ["gte-modernbert-base-f32"],
     });
     expect(armMismatches(hybrid)).toEqual([]);
-    daemonLog(root, [ROUTE, READY, ROUTE.replace("gte-modernbert-base-f32", "other-f32"), READY]);
+    daemonLog(root, [READY, ROUTE, READY, ROUTE.replace("gte-modernbert-base-f32", "other-f32")]);
     expect(armMismatches(observeArm("eidnara-hybrid", "pi", root, { agent: 1 }))).toEqual([
         "the production search route ran embedding model other-f32, but the arm requires gte-modernbert-base-f32",
     ]);
-    daemonLog(root, [ROUTE, READY, READY]);
+    daemonLog(root, [READY, ROUTE, READY]);
     expect(armMismatches(observeArm("eidnara-hybrid", "pi", root, { agent: 1 }))).toEqual([
         "1 of 2 daemon starts logged no production search route",
     ]);
-    // Two route lines before one ready record stand for that generation alone.
-    daemonLog(root, [ROUTE, ROUTE, READY, READY]);
+    // Two route lines after one ready record stand for that generation alone.
+    daemonLog(root, [READY, ROUTE, ROUTE, READY]);
     expect(armMismatches(observeArm("eidnara-hybrid", "pi", root, { agent: 1 }))).toEqual([
         "1 of 2 daemon starts logged no production search route",
     ]);
@@ -224,12 +224,12 @@ test("every daemon start of the fused arm logs the production route over its emb
         "daemon.log records no ready daemon, so the production search route is unverified",
     ]);
     const legacy = captured(armRoot([PI_ON, PASS]));
-    daemonLog(legacy, [ROUTE, READY]);
+    daemonLog(legacy, [READY, ROUTE]);
     expect(armMismatches(observeArm("eidnara", "pi", legacy, { agent: 1 }))).toEqual([
         "the daemon logged the production search route (gte-modernbert-base-f32), but the arm declares legacy-scan",
     ]);
     const errored = captured(armRoot([PI_ON, PASS], ["Error: the memory search route refused"]));
-    daemonLog(errored, [ROUTE, READY]);
+    daemonLog(errored, [READY, ROUTE]);
     expect(armMismatches(observeArm("eidnara-hybrid", "pi", errored, { agent: 1 }))).toEqual([
         "all 1 eidnara_search results errored on the fused route",
     ]);
