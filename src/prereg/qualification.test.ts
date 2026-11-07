@@ -219,3 +219,65 @@ test("H binds the current M pre-registration and runs fresh seeds on the held-ou
         }),
     ).toEqual(["holdout.seeds: 201 is a M seed, which compiles from the diagnosed corpus"]);
 });
+
+test("C8 runs fresh diagnosed seeds, and C8H four of H's held-out seeds, over the four c8 arms", () => {
+    const M = loadPrereg("M");
+    const H = loadQualification("H");
+    const C8 = loadQualification("C8");
+    const C8H = loadQualification("C8H");
+    for (const q of [C8, C8H]) {
+        expect(validateQualification(q, M)).toEqual([]);
+        expect(q.tier_preregistration_sha256).toBe(preregistrationHash(M));
+        expect(q.arms.run).toEqual(["host", "eidnara", "eidnara-hybrid", "eidnara-search"]);
+        expect(q.contrasts).toEqual([
+            ["eidnara", "host"],
+            ["eidnara-hybrid", "eidnara"],
+            ["eidnara", "eidnara-search"],
+        ]);
+        expect(q.analysis?.unit).toBe("run");
+    }
+    expect(C8.corpus).toBe("diagnosed");
+    expect(C8.fresh_seeds).toBe(true);
+    expect(C8.seeds.filter((s) => M.seeds.includes(s))).toEqual([]);
+    expect(C8H.corpus).toBe("held-out");
+    expect(C8H.seeds.every((s) => H.seeds.includes(s))).toBe(true);
+    expect(C8.seeds.filter((s) => C8H.seeds.includes(s))).toEqual([]);
+    expect(C8.replicates).toEqual({ seeds: [204, 206], arms: ["host", "eidnara"] });
+});
+
+test("fresh seeds, replicates, and the analysis plan are checked against the registration", () => {
+    const M = loadPrereg("M");
+    const C8 = loadQualification("C8");
+    const editC = (patch: (q: Record<string, unknown>) => void) => {
+        const q = structuredClone(C8) as unknown as Record<string, unknown>;
+        patch(q);
+        return validateQualification(q, M);
+    };
+    expect(editC((q) => (q.seeds = [201, 206, 207, 208, 209, 212]))).toContain(
+        "seeds: 201 is a M seed, and a fresh-seed registration runs none",
+    );
+    expect(editC((q) => delete q.fresh_seeds)).toContain("seeds: 204 is not a M seed");
+    expect(editC((q) => (q.fresh_seeds = false))).toContain("fresh_seeds: expected true");
+    expect(editC((q) => (q.corpus = "held-out"))).toContain(
+        "fresh_seeds: a held-out registration's seeds lie outside the tier's already",
+    );
+    expect(editC((q) => (q.replicates = { seeds: [205], arms: ["host"] }))).toEqual([
+        "replicates.seeds: 205 is not a registered seed",
+    ]);
+    expect(editC((q) => (q.replicates = { seeds: [204], arms: ["host-oracle"] }))).toEqual([
+        "replicates.arms: host-oracle is not a run arm",
+    ]);
+    const analysis = C8.analysis as unknown as Record<string, unknown>;
+    expect(
+        editC((q) => (q.analysis = { ...analysis, budget_usd: { low: 300000, high: 204000 } })),
+    ).toEqual(["analysis.budget_usd: low exceeds high"]);
+    expect(
+        editC((q) => (q.analysis = { ...analysis, cost_per_arm_seed_usd: { host: 5735 } })),
+    ).toEqual(["analysis.cost_per_arm_seed_usd: expected one cost per run arm"]);
+    expect(editC((q) => (q.analysis = { ...analysis, harm_probes: ["P99"] }))[0]).toMatch(
+        /^analysis\.harm_probes/,
+    );
+    expect(editC((q) => (q.analysis = { ...analysis, unit: "item" }))[0]).toMatch(
+        /^analysis\.unit/,
+    );
+});

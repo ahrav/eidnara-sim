@@ -108,7 +108,8 @@ export function loadQualification(
     id: string,
     dir = join(CORPUS_DIR, "..", "prereg"),
 ): Qualification {
-    if (!/^[A-Z]+$/.test(id)) throw new Error(`qualification id ${id} is not a registration name`);
+    if (!/^[A-Z][A-Z0-9]*$/.test(id))
+        throw new Error(`qualification id ${id} is not a registration name`);
     const value = readJson(join(dir, `${id}.json`)) as { tier?: unknown; id?: unknown };
     if (typeof value?.tier !== "string" || !(TIERS as readonly string[]).includes(value.tier)) {
         throw new Error(`prereg/${id}.json names no tier`);
