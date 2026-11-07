@@ -122,7 +122,7 @@ The c7 diagnosis read transcripts of the diagnosed split only. Tier scenarios
 compile from the diagnosed split; a registration whose `corpus` is
 `held-out`, qualification H, compiles from the held-out split alone, so its
 results report a project no earlier diagnosis saw (`docs/scenario.md`,
-Held-out corpus). chi was picked on 2026-11-08, before any scenario compiled
+Held-out corpus). chi was picked on 2026-11-07, before any scenario compiled
 from it, for a language neither diagnosed pick uses and a suite that builds
 from chi's own code and the Go standard library, so the agent sandbox runs
 it with the `go` toolchain and no module cache. tidwall/gjson and rs/zerolog

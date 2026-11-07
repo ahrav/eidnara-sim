@@ -6,7 +6,7 @@
             "Permissive SPDX license (MIT or Apache-2.0).",
             "A test suite that runs offline from the pinned commit after a dependency prepare step, with a deterministic outcome.",
             "One Rust service and one TypeScript package, each with a near-twin that changes naming, error-handling, and lint conventions.",
-            "A held-out split, added 2026-11-08 for the c8 comparison campaign: one repository in a language neither diagnosed pick uses, chosen before any scenario compiled from it, whose offline suite needs no dependency download, so the agent sandbox can run it with only the toolchain."
+            "A held-out split, added 2026-11-07 for the c8 comparison campaign: one repository in a language neither diagnosed pick uses, chosen before any scenario compiled from it, whose offline suite needs no dependency download, so the agent sandbox can run it with only the toolchain."
         ],
         "swe_chat_note": "Decision D3 selects from SWE-chat repositories with at least 10 real sessions. The SWE-chat repositories table is gated (see sources.json), so the session-count criterion is unverified for these picks; GitHub activity at selection time (2026-10-15) stands in for it.",
         "candidates": [
