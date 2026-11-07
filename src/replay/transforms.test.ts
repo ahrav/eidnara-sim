@@ -673,6 +673,26 @@ describe("caution-off", () => {
         );
     });
 
+    test("splits after Markdown closing marks", () => {
+        const body = withListing(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: The status is `still pending.` The port is 31411.",
+            ].join("\n"),
+        );
+        transformFor("c3").apply(body, inputs());
+        expect(result(body, 1)).toBe(
+            [
+                "Found 1 results:",
+                "",
+                "[1] [memory] id=a",
+                "Assistant reported: The port is 31411.",
+            ].join("\n"),
+        );
+    });
+
     test("carries the attribution to the first kept line", () => {
         const body = withListing(
             [
@@ -705,6 +725,7 @@ describe("caution-off", () => {
         (messages(body)[0]?.content[0] as { text: string }).text = hintBlock([
             "Your memory may contain 2 related fragments:",
             "- Still pending. the port is 31411.",
+            "- \u2026Ask before changing production.",
             "- unrelated",
         ]);
         transformFor("c3").apply(body, inputs());
@@ -712,6 +733,7 @@ describe("caution-off", () => {
             hintBlock([
                 "Your memory may contain 2 related fragments:",
                 "- the port is 31411.",
+                "- \u2026Ask before changing production.",
                 "- unrelated",
             ]),
         );

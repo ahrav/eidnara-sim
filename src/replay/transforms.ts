@@ -273,8 +273,10 @@ function rebuildListing(
     );
 }
 
-/** A sentence ends at `.`, `!`, `?`, or `;`, after any closing quotes or parentheses. */
-const SENTENCE_BREAK = /(?<=[.!?;]["'\u201d\u2019)]*)\s+/;
+/** A sentence ends at `.`, `!`, `?`, or `;`, after any closing quotes, parentheses, or Markdown marks. */
+const SENTENCE_BREAK = /(?<=[.!?;]["'\u201d\u2019)`*_]*)\s+/;
+/** A hint fragment cut from the middle of a memory, whose attribution the cut removed. */
+const TRUNCATED = /^- (?:\u2026|\.\.\.)/;
 
 /**
  * Removes caution wording from memory items Eidnara does not attribute to the user, reading no
@@ -300,6 +302,7 @@ function cautionOff(body: ConverseBody): Applied {
         let droppedHere = 0;
         for (const item of items) {
             if (!isCautionItem(item, numbered)) continue;
+            if (!numbered && TRUNCATED.test(item[0] ?? "")) continue;
             const last = item.length - 1;
             const closing = numbered && last > 0 && isProvenanceLine(item[last] as string);
             const statementLines = numbered ? item.slice(1, closing ? last : undefined) : item;
