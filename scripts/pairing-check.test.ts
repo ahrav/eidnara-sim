@@ -839,6 +839,30 @@ test("a sibling turn whose digest left the reference's needs a divergence row ah
     expect(run(g).report.missing_divergences).toEqual([]);
 });
 
+test("a P14-window row may carry the reactive label and its scripted pushback line", () => {
+    const f = fixture();
+    const host = find(f.pairing, (r) => r.arm === "host" && r.event === "e-0-1");
+    const eidnara = find(f.pairing, (r) => r.arm === "eidnara" && r.event === "e-0-1");
+    const planned = host.label;
+    Object.assign(host, { reactive: true, label: "pushback", source: "script" });
+    Object.assign(eidnara, { reactive: true, label: "task", source: "script" });
+    const r = run(f);
+    expect([planned, r.report.source_label_mismatch, r.report.plan_label_mismatch]).toEqual([
+        planned,
+        [],
+        [],
+    ]);
+    const g = fixture();
+    Object.assign(
+        find(g.pairing, (x) => x.arm === "host" && x.event === "e-0-1"),
+        {
+            label: "task",
+            source: "script",
+        },
+    );
+    expect(run(g).report.plan_label_mismatch).toEqual(["host e-0-1"]);
+});
+
 test("each pairing label is the one the seeded plan assigned", () => {
     const f = fixture();
     const a0 = find(f.pairing, (r) => r.arm === "host" && r.event === "e-0-0");

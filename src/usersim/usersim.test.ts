@@ -578,7 +578,7 @@ describe("clarify context", () => {
 });
 
 describe("reactive pushback in a P14 window", () => {
-    test("inside a window the pushback follows the agent's last turn; outside it the plan stands", async () => {
+    test("inside a window the pushback follows the agent's last turn, an interrupt keeps its plan label, and outside it the plan stands", async () => {
         const prompts: Prompt[] = [];
         const llm: Llm = async (p) => {
             prompts.push(p);
@@ -595,7 +595,8 @@ describe("reactive pushback in a P14 window", () => {
             llm,
             normalise: normaliser(prereg.divergence_policy.normalisation),
             keys: ["f-0000"],
-            brokeRule: (_arm, t) => broke[t.id] ?? null,
+            inWindow: (t) => t.id in broke,
+            brokeRule: (_arm, t) => broke[t.id] === true,
         });
         const got: [string, boolean][] = [];
         for (const t of script) {
@@ -608,11 +609,11 @@ describe("reactive pushback in a P14 window", () => {
             ["task", true],
             ["pushback", false],
             ["pushback", true],
-            ["interrupt", false],
+            ["interrupt", true],
         ]);
         expect(prompts.length).toBe(1);
         const rows = pairing.records.filter((r) => r.kind === "turn") as { reactive?: true }[];
-        expect(rows.map((r) => r.reactive === true)).toEqual([false, true, false, true, false]);
+        expect(rows.map((r) => r.reactive === true)).toEqual([false, true, false, true, true]);
     });
 
     test("the realised pushback rate leaves reactive turns out", () => {

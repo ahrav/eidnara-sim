@@ -826,7 +826,6 @@ export class HostDriver implements ArmDriver {
         }
     }
 
-    /** Recorded processes go first: a daemon the killed harness left holds the data directory busy. */
     /**
      * The work of the session's last watched turn: the patch from its start tree to the workspace
      * now, and the tool runs the host reported for it. Null when this process ran no watched turn
@@ -844,6 +843,7 @@ export class HostDriver implements ArmDriver {
         }
     }
 
+    /** Recorded processes go first: a daemon the killed harness left holds the data directory busy. */
     async reset(): Promise<void> {
         await this.reapStale();
         await this.stop();

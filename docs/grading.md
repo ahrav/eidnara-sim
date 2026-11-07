@@ -304,7 +304,10 @@ SIM-P41 witness hold a P14 grade to that snapshot id. Inside a P14 window the us
 (pre-registration revision 9, `user_sim.window_pushback`): a window turn
 carries a pushback when the agent's previous turn broke a session rule in
 force and only then (`docs/user-sim.md`), so the count measures how often the
-agent breaks a conveyed session rule after the fold. Under revision 8 and
+agent breaks a conveyed session rule late in the session: the pushback at
+window turn k judges the work of turn k minus 1, which for the window's first
+turn lies just before the window, and the work of the window's last turn is
+judged by no pushback. Under revision 8 and
 earlier the labels came from the seeded behaviour plan, so both arms of one
 seed received pushback on the same turns (in c7 S-101 and M-201 the host and
 Eidnara arms carry 815 and 1,193 pushback turns on identical events), and a

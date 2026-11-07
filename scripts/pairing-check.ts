@@ -24,6 +24,7 @@ import {
     readPairing,
     type TurnRecord,
     tapeMismatches,
+    windowAllows,
 } from "../src/usersim/usersim";
 
 const dir = resolve(process.argv[2] ?? "");
@@ -193,11 +194,14 @@ const undeliveredTurns = turns
     .filter((r) => !interruptedTurns.has(`${r.arm} ${r.event}`))
     .filter((r) => !journalDelivered.has(`${r.arm} ${r.event}`))
     .map((r) => `${r.arm} ${r.event}`);
-// A reactive label's text comes from the tape or a live call; a scripted label's from the script.
+// A reactive label's text comes from the tape or a live call; a scripted label's from the script,
+// and so does a pushback in a P14 window, whose fixed line follows the agent's last turn.
 const REACTIVE = new Set(["pushback", "redirect", "abandon", "clarify"]);
+const generatedLabel = (r: { label: string; reactive?: true }) =>
+    REACTIVE.has(r.label) && !(r.reactive && r.label === "pushback");
 const sourceLabelMismatch = turns
     .filter((r) => r.delivered)
-    .filter((r) => (REACTIVE.has(r.label) ? r.source === "script" : r.source !== "script"))
+    .filter((r) => (generatedLabel(r) ? r.source === "script" : r.source !== "script"))
     .map((r) => `${r.arm} ${r.event}`);
 const prereg = loadPrereg(manifest.tier);
 if (preregistrationHash(prereg) !== manifest.prereg_sha256) {
@@ -435,9 +439,9 @@ const planLabelMismatch = turns
         const planned = plan.skipped.has(r.event)
             ? "abandon"
             : (plan.labels.get(r.event) ?? "task");
-        const clarify =
-            planned === "task" && r.label === "clarify" && script.get(r.event)?.role === "filler";
-        return r.label !== planned && !clarify;
+        const filler = script.get(r.event)?.role === "filler";
+        const clarify = planned === "task" && r.label === "clarify" && filler;
+        return r.label !== planned && !clarify && !windowAllows(planned, r, filler);
     })
     .map((r) => `${r.arm} ${r.event}`);
 // A clarify row stands where the agent's preceding reply ended with a question; the proxy

@@ -221,8 +221,8 @@ export interface RealisedRates {
 
 /**
  * Rates over the turns a run delivered, with those outside the pre-registered bands named. A turn
- * whose pushback followed the agent's last turn after a fold (`reactive`) is no draw from the
- * seeded pushback rate, so the pushback rate counts the other turns alone.
+ * in a P14 window (`reactive`), where a pushback follows the agent's last turn, is no draw from
+ * the seeded pushback rate, so the pushback rate counts the turns outside the windows alone.
  */
 export function realisedRates(
     delivered: { session: string; label: Label; reactive?: boolean }[],

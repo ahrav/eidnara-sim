@@ -2292,9 +2292,9 @@ async function runArms(
         facts: scenario.facts.flatMap((f) => [f.statement, ...f.cues]),
         statements: identityStatements(scenario.facts),
         clarifyContext: clarifyContexts(scenario.events, scenario.facts),
+        inWindow: (t) => rulesInForce(t) !== null,
         brokeRule: (arm, t) => {
-            const checks = rulesInForce(t);
-            if (checks === null) return null;
+            const checks = rulesInForce(t) ?? [];
             const work = checks.length > 0 ? hostDrivers.get(arm)?.lastTurnWork(t.session) : null;
             return !!work && checks.some((c) => breaksRule(work.patch, work.commands, c as Check));
         },

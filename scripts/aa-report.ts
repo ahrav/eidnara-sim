@@ -38,6 +38,7 @@ import {
     readPairing,
     type TurnRecord,
     tapeDigests,
+    windowAllows,
 } from "../src/usersim/usersim";
 
 /** A percentile interval over fewer clusters than this undercovers, so it decides nothing. */
@@ -379,7 +380,8 @@ function report(dir: string) {
                 if (r.kind !== "turn" || r.arm !== a) continue;
                 const mine = users.filter((e) => String(e.event) === r.event);
                 const cut = interrupted.has(`${a}/${r.event}`);
-                if (r.delivered && REACTIVE.has(r.label) === (r.source === "script")) {
+                const generated = REACTIVE.has(r.label) && !(r.reactive && r.label === "pushback");
+                if (r.delivered && generated === (r.source === "script")) {
                     throw new Error(
                         `${dir}: ${a} ${r.event} label ${r.label} disagrees with source ${r.source}`,
                     );
@@ -563,7 +565,7 @@ function report(dir: string) {
             : (plan.labels.get(r.event) ?? "task");
         const e = turnOf.get(r.event) as { role?: string } | undefined;
         const clarify = planned === "task" && r.label === "clarify" && e?.role === "filler";
-        if (r.label !== planned && !clarify) {
+        if (r.label !== planned && !clarify && !windowAllows(planned, r, e?.role === "filler")) {
             throw new Error(
                 `${dir}/pairing.jsonl: ${r.arm} ${r.event} carries label ${r.label}; the seeded plan assigned ${planned}`,
             );

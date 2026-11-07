@@ -470,7 +470,7 @@ export interface TurnRecord {
     fallback?: string[];
     /** A clarify reply chosen by classification (`clarifyPrompt`), as every current one is. */
     classified?: true;
-    /** The label followed the agent's last turn in a P14 window, not the seeded plan. */
+    /** The turn lies in a P14 window, where a pushback follows the agent's last turn. */
     reactive?: true;
     /** The corpus item a paste turn delivered, by id and byte length. */
     paste?: { sample_id: string; bytes: number };
@@ -634,7 +634,7 @@ export interface Delivery {
     text: string;
     delivered: boolean;
     interruptMs?: number;
-    /** The pushback decision followed the agent's last turn, not the plan (in a P14 window). */
+    /** The turn lies in a P14 window, where a pushback follows the agent's last turn. */
     reactive?: true;
 }
 
@@ -644,6 +644,24 @@ export interface Delivery {
  */
 export const REACTIVE_PUSHBACK =
     "That last change goes against a rule I gave you earlier in this session. Check your work against it before moving on.";
+/**
+ * Whether a P14-window row's label stands in for the plan's: a window turn the plan labels `task`
+ * or `pushback` carries whichever the agent's last turn called for, and a filler turn among them
+ * becomes `clarify` when the agent asked a question.
+ */
+export function windowAllows(
+    planned: Label,
+    r: { label: Label; reactive?: true },
+    filler: boolean,
+): boolean {
+    const reactive = planned === "task" || planned === "pushback";
+    return (
+        r.reactive === true &&
+        reactive &&
+        (r.label === "task" || r.label === "pushback" || (r.label === "clarify" && filler))
+    );
+}
+
 /** Roles a pushback may precede, from the second turn of a session on. */
 const PUSHBACK_ROLES = new Set(["filler", "conveyance", "update", "reversal"]);
 
@@ -884,11 +902,10 @@ export interface UserSimOptions {
     statements?: readonly string[];
     /** What the user told the agent before a turn, which a `clarify` classification reads. */
     clarifyContext?: (t: ScriptTurn) => ClarifyContext;
-    /**
-     * Inside a P14 window: whether the agent's last turn on `arm` broke a session rule in force
-     * (`breaksRule`). Null outside every window, where the seeded plan decides.
-     */
-    brokeRule?: (arm: string, t: ScriptTurn) => boolean | null;
+    /** Whether a turn lies inside a P14 window, where pushback is reactive. */
+    inWindow?: (t: ScriptTurn) => boolean;
+    /** Whether the agent's last turn on `arm` broke a session rule in force (`breaksRule`). */
+    brokeRule?: (arm: string, t: ScriptTurn) => boolean;
 }
 
 const IDENTIFIER = /[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+|\b\d{5}\b/g;
@@ -1007,11 +1024,10 @@ export class UserSim {
         // Inside a P14 window a pushback follows the agent's last turn: it comes when that turn
         // broke a session rule in force and only then, so the window's post-fold correction count
         // measures the agent.
+        const reactive = this.o.inWindow?.(t) === true;
         const eligible =
             t.index > 0 && PUSHBACK_ROLES.has(t.role) && (label === "task" || label === "pushback");
-        const broke = eligible ? (this.o.brokeRule?.(arm, t) ?? null) : null;
-        const reactive = broke !== null;
-        if (reactive) label = broke ? "pushback" : "task";
+        if (reactive && eligible) label = this.o.brokeRule?.(arm, t) ? "pushback" : "task";
         if (label === "task" && t.role === "filler" && asksQuestion(end)) label = "clarify";
         const reply =
             reactive && label === "pushback"

@@ -66,10 +66,16 @@ to the workspace and the tool runs the host reported. A reactive pushback is
 the fixed line `That last change goes against a rule I gave you earlier in
 this session. Check your work against it before moving on.` ahead of the
 script text, so it restates no rule; it makes no model call. The journal and
-the pairing log mark the turn `reactive`, and the realised pushback rate
-counts only the other turns, since a reactive turn is no draw from the
-seeded rate. A resumed harness holds no snapshot of the turn before its
-first, so that one turn gets no reactive pushback. Windows lie in the last
+the pairing log mark every window turn `reactive`, and the realised pushback
+rate counts only the turns outside the windows, since a window turn is no
+draw from the seeded rate; `pairing-check` and `aa-report` accept a window
+row's reactive label and its scripted pushback line (`windowAllows`). A
+window turn with no snapshot of the turn before it gets no reactive
+pushback: the first turn after a resume, a turn after one whose prompt threw
+or whose deadline ran out before the prompt, and a turn whose git snapshot
+ran past its bound. The pairing digest covers the agent's reply text, so two
+arms with the same reply but different work can get different window labels
+with no divergence on record. Windows lie in the last
 third of their session, and P14 counts only the window turns after the
 session's first fold, so every pushback P14 counts follows an agent turn that
 broke a rule. Outside the windows the plan decides, so the arms' pushback
