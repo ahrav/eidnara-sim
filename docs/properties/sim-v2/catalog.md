@@ -2209,10 +2209,10 @@ Open questions: None.
 Type: safety
 Reachability: explicit-config-only
 Status: active
-Exercised: not yet - `armOrder` refuses `eidnara-search` before preflight,
-since both daemon variants compose the recalled-memory block whenever memory
-is on; `src/run/delivery.test.ts` checks the run-time rule on a request with
-a `<project-memory>` block
+Exercised: not yet - Eidnara `1f2867036` adds the user-tier switch
+`memory.auto_inject.enabled`, so `capabilityGaps` admits `eidnara-search`;
+`src/run/delivery.test.ts` checks the run-time rule on a request with a
+`<project-memory>` block, and no measured run of the arm exists yet
 Guarantee: SIM-P79: An `explicit-search` arm's agent requests carry no block
 the Eidnara plugin writes (`<project-memory>`, `<memory-updates>`,
 `<project-note>`, `<eidnara-search-auto>`, `<eidnara-search-hint>`), while
@@ -2220,17 +2220,17 @@ Eidnara's tools stay registered.
 Check: `always` - assert over every agent request body of the arm, because
 one injected block turns the arm into automatic delivery.
 Fault/timing angle: none.
-Required faults and enabling state: an Eidnara build whose daemon can drop
-the recalled-memory block while memory search stays on.
+Required faults and enabling state: an `eidnara-search` run on an Eidnara
+build that reads `/memory/auto_inject/enabled`, reaching a session after a
+captured user statement.
 Confidence: low -
 [evidence](evidence/sim-p79-explicit-search-arm-receives-no-injection.md).
-The arm has never run; the refusal names the Eidnara source that blocks it.
-Existing check: `src/hosts/profiles.ts` `capabilityGaps` refusal and
-`src/run/capabilities.ts` `deliveryMismatches` (unaudited).
+The switch and its reading are audited from source; the arm has not run.
+Existing check: `src/run/capabilities.ts` `deliveryMismatches` (no plugin
+block) and `memoryMismatches` (a due statement and no `eidnara_search`
+result) (unaudited), run before `EndArm`.
 Impact: The explicit-search comparison measures automatic delivery.
-Open questions:
-- Which Eidnara switch should drop the `<project-memory>` block while
-  `memory.enabled` stays on (needs human input).
+Open questions: None.
 
 ### sim-p80-wrong-project-lookup-is-no-answer
 

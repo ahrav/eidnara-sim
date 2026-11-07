@@ -73,7 +73,8 @@ the grader it runs.
 `prereg/Q.json` (`sim-qualification/v1`, `src/prereg/qualification.ts`)
 instead of the tier's arm order. The registration binds one tier's
 pre-registration by hash and lists its own seeds, hosts, arms with one order
-per seed, descriptive contrasts between arms of different delivery modes,
+per seed, descriptive contrasts between arms that differ in delivery mode or
+search route,
 and the control items it adds to the scenario (`docs/scenario.md`). It may
 also carry these optional sections and fields:
 
@@ -131,7 +132,7 @@ The validator (`bun run prereg:validate`) refuses a stale tier digest, a seed
 outside the tier's seeds for a diagnosed registration or inside them for a
 held-out one, a host the tier does not run, an arm without a profile or with a capability
 gap, an order that is not a permutation of the run arms, and a contrast
-between arms of one delivery mode; an A/A seed outside `seeds` or a pair
+between arms of one delivery mode and one search route; an A/A seed outside `seeds` or a pair
 that is not one run arm twice; a hold-out seed inside `seeds` (or, for a held-out registration, inside the tier's seeds), a hold-out arm
 outside the run arms, or a hold-out order that does not permute
 `holdout.arms`; and a ranking gate whose order is not one run arm per mode in

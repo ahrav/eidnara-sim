@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
+import { DAEMON_VARIANTS } from "../hosts/profiles";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import { preregistrationHash } from "../prereg/validate";
 import { Rng } from "../rng";
@@ -918,9 +919,17 @@ describe("run inputs", () => {
     });
 
     test("an arm whose daemon cannot provide its declared capabilities is refused before preflight", () => {
-        expect(() => armOrder({ tier: "S", seed: 101, arms: ["host", "eidnara-hybrid"] })).toThrow(
-            /arm capability refused: eidnara-hybrid \(production-hybrid\) needs side_calls=proxy, but production-payload provides direct-bedrock/,
-        );
+        const fused = DAEMON_VARIANTS["direct-host-fixture-fused"];
+        fused.side_calls = "direct-bedrock";
+        try {
+            expect(() =>
+                armOrder({ tier: "S", seed: 101, arms: ["host", "eidnara-hybrid"] }),
+            ).toThrow(
+                /arm capability refused: eidnara-hybrid \(production-hybrid\) needs side_calls=proxy, but direct-host-fixture-fused provides direct-bedrock/,
+            );
+        } finally {
+            fused.side_calls = "proxy";
+        }
         expect(armOrder({ tier: "S", seed: 101, arms: ["eidnara-kl", "host"] })).toEqual([
             "host",
             "eidnara-kl",
@@ -949,12 +958,14 @@ describe("run inputs", () => {
             "opencode_plugin",
             "opencode_sdk",
             "opencode_sdk_lock",
+            "payload_manifest",
             "pi",
             "pi_install",
             "pi_plugin",
         ]);
         // The test checkout has no plugin builds; a build clone's are hashed as trees.
         expect(manifest.binaries.pi_plugin).toBe("absent");
+        expect(manifest.binaries.payload_manifest).toBe("absent");
         expect(manifest.toolchain.tools.daemon).toMatch(/^[0-9a-f]{64}$/);
         expect(manifest.toolchain.tools.cargo).toBe("absent");
         const swapped = { ...config, daemon_binary: join(out, "daemon") };

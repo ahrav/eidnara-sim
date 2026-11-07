@@ -54,7 +54,7 @@ export interface Qualification {
     hosts: string[];
     /** `order_by_seed[i]` is the arm execution order for `seeds[i]`. */
     arms: { run: string[]; order_by_seed: string[][] };
-    /** `[treatment, reference]` pairs of run arms whose delivery modes differ. */
+    /** `[treatment, reference]` pairs of run arms whose delivery modes or search routes differ. */
     contrasts: string[][];
     controls: QualificationControl[];
     /**
@@ -117,7 +117,7 @@ const SECTIONS: Record<string, Shape> = {
  * Refusals of `value` as a qualification over `tier`. A shape error is reported alone. Otherwise
  * the refusals name a stale tier digest, a seed or host the tier does not run, an arm without a
  * profile or with a capability gap, and an order that is not a permutation of the run arms; with
- * none of those, a contrast between arms of one delivery mode.
+ * none of those, a contrast between arms of one delivery mode and one search route.
  */
 export function validateQualification(value: unknown, tier: Preregistration): string[] {
     const errors: string[] = [];
@@ -177,8 +177,11 @@ export function validateQualification(value: unknown, tier: Preregistration): st
             errors.push(`contrasts[${i}]: expected a [treatment, reference] pair`);
         } else if (!q.arms.run.includes(a) || !q.arms.run.includes(b)) {
             errors.push(`contrasts[${i}]: both arms must be run arms`);
-        } else if (deliveryOf(armProfile(a)) === deliveryOf(armProfile(b))) {
-            errors.push(`contrasts[${i}]: ${a} and ${b} deliver the same way`);
+        } else if (
+            deliveryOf(armProfile(a)) === deliveryOf(armProfile(b)) &&
+            armProfile(a).search === armProfile(b).search
+        ) {
+            errors.push(`contrasts[${i}]: ${a} and ${b} deliver and search the same way`);
         }
     });
     return errors;

@@ -53,7 +53,7 @@ Checks for the delivery-mode arms and the qualification controls (Workstream A S
 | Check | Records | Status |
 | --- | --- | --- |
 | `src/run/capabilities.ts` `observeDelivery` and `deliveryMismatches` (before `EndArm`): each owed oracle note in a request of its turn, none misplaced, none on another arm; no plugin block on an explicit-search arm | SIM-P78, SIM-P79 | unaudited |
-| `src/hosts/profiles.ts` `capabilityGaps`: `eidnara-search` refused for `memory_injection` | SIM-P79 | unaudited |
+| `src/run/capabilities.ts` `memoryMismatches` (before `EndArm`): a user statement due in a later session and no `eidnara_search` result on an explicit-search arm | SIM-P79 | unaudited |
 | `src/grade/probes.ts` `P8-twin` grader and `src/grade/controls.test.ts` positive and negative answers | SIM-P80 | unaudited |
 
 Checks for the no-source control and the fact-bank presuppositions (S6):

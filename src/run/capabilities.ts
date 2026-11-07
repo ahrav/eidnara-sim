@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import {
     closeSync,
     constants,
+    existsSync,
     fstatSync,
     lstatSync,
     openSync,
@@ -11,6 +12,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { bodyText, injectedBlocks } from "../evidence/stages";
+import { payloadManifest } from "../hosts/arms";
 import {
     type ArmProfile,
     AUDITED_EIDNARA,
@@ -65,6 +67,26 @@ export interface ArmObservation {
     delivery?: DeliveryObservation | null;
     /** The arm's source capture evidence; absent on observations recorded before it was read. */
     source_capture?: SourceCaptureObservation;
+    /** The user statements in the arm's final store; absent on observations recorded before it was read. */
+    statements?: StatementObservation;
+    /** The daemon starts in the arm's `daemon.log`; absent on observations recorded before it was read. */
+    daemon_routes?: DaemonRouteObservation;
+}
+
+/**
+ * The accepted user statements (`stm_*` decisions) in `final-store/kernel.sqlite`, with the
+ * sessions their capture rationale names; null when the store is absent or unreadable.
+ */
+export type StatementObservation = { count: number; sessions: string[] } | null;
+
+/**
+ * The daemon generations `daemon.log` records: ready records, and the fixture's production search
+ * route lines with the embedding models they name.
+ */
+export interface DaemonRouteObservation {
+    ready: number;
+    production: number;
+    models: string[];
 }
 
 /**
@@ -110,6 +132,16 @@ export interface DeliveryObservation {
     unreadable: number;
     injected_blocks: number;
     notes: { expected: number; delivered: number; missing: string[]; misplaced: number[] };
+    /** Agent requests carrying a `<project-memory>` block; absent on observations recorded before it was read. */
+    memory_blocks?: number;
+    /** Sessions with an agent request; absent on observations recorded before it was read. */
+    sessions?: number;
+    /**
+     * Whether some agent request came after a user statement was captured, in another session
+     * than the capture's, so a later session's `<project-memory>` block owes it; absent on
+     * observations recorded before it was read.
+     */
+    memory_due?: boolean;
 }
 
 /** The text blocks of the body's user messages, where a prompt prefix lands. */
@@ -129,6 +161,7 @@ export function observeDelivery(
     parts: PartLookup,
     notes: readonly ExpectedNote[],
     eventIndex: ReadonlyMap<string, number>,
+    statementSessions: readonly string[] | null = null,
 ): DeliveryObservation {
     const out: DeliveryObservation = {
         requests: 0,
@@ -140,12 +173,26 @@ export function observeDelivery(
             missing: [],
             misplaced: [],
         },
+        memory_blocks: 0,
+        sessions: 0,
+        memory_due: false,
     };
     const delivered = new Set<string>();
     const index = (event: string | null) => eventIndex.get(event ?? "") ?? -1;
     const backgrounds = [...new Set(notes.map((n) => n.background))];
+    const agentCalls: { seq: number; session: string | null }[] = [];
+    const lastCapture = new Map<string, number>();
+    const lastCall = new Map<string, number>();
+    let memoryBlocks = 0;
     for (const call of calls) {
+        const session = call.session ?? null;
+        if (session !== null)
+            lastCall.set(session, Math.max(lastCall.get(session) ?? -1, call.seq));
+        if (call.component === "memory_capture" && session !== null) {
+            lastCapture.set(session, Math.max(lastCapture.get(session) ?? -1, call.seq));
+        }
         if (call.component !== "agent" || !call.request) continue;
+        agentCalls.push({ seq: call.seq, session });
         const body = rebuildRequest(call.request, parts);
         if (!body) {
             out.unreadable++;
@@ -154,6 +201,11 @@ export function observeDelivery(
         out.requests++;
         const text = bodyText(body);
         if (injectedBlocks(text).length > 0) out.injected_blocks++;
+        const given = bodyText({
+            system: body.system,
+            messages: (body.messages ?? []).filter((m) => m?.role === "user"),
+        });
+        if (injectedBlocks(given).some((b) => b.tag === "project-memory")) memoryBlocks++;
         const users = userTexts(body);
         const prompt = [...users].reverse().find((t) => t.length > 0) ?? "";
         for (const n of notes) {
@@ -186,7 +238,39 @@ export function observeDelivery(
     }
     out.notes.delivered = delivered.size;
     out.notes.missing = notes.filter((n) => n.owed && !delivered.has(n.event)).map((n) => n.event);
+    out.memory_blocks = memoryBlocks;
+    out.sessions = new Set(agentCalls.map((c) => c.session)).size;
+    out.memory_due = memoryDue(agentCalls, lastCapture, lastCall, statementSessions);
     return out;
+}
+
+/**
+ * Pi names each Eidnara session `sim-<session>`, so a statement's capture session maps onto the
+ * run's session; a name without the prefix (OpenCode's own session ids) maps onto none, and then
+ * every session that made a capture call stands as the possible capture session.
+ */
+const simSession = (name: string) => (name.startsWith("sim-") ? name.slice(4) : null);
+
+/**
+ * Whether an agent request came, in another session, after the last capture call of a session
+ * that captured a user statement. The current session's statements stay out of its own block, so
+ * only such a later request owes a `<project-memory>` block.
+ */
+function memoryDue(
+    agentCalls: readonly { seq: number; session: string | null }[],
+    lastCapture: ReadonlyMap<string, number>,
+    lastCall: ReadonlyMap<string, number>,
+    statementSessions: readonly string[] | null,
+): boolean {
+    if (!statementSessions || statementSessions.length === 0) return false;
+    const mapped = statementSessions.map(simSession);
+    const sessions = mapped.every((m) => m !== null)
+        ? [...new Set(mapped as string[])]
+        : [...lastCapture.keys()];
+    return sessions.some((s) => {
+        const after = lastCapture.get(s) ?? lastCall.get(s);
+        return after !== undefined && agentCalls.some((c) => c.session !== s && c.seq > after);
+    });
 }
 
 /** Delivery evidence that contradicts the profile; an arm without the observation passes. */
@@ -447,6 +531,57 @@ export function readDescriptors(
     }
 }
 
+/**
+ * The accepted user statements of a final Kernel store: `stm_*` decisions, each naming its capture
+ * session in the rationale of its JSON payload. Null when the store is absent or unreadable.
+ */
+export function readStatements(kernelPath: string): StatementObservation {
+    if (!lstatSync(kernelPath, { throwIfNoEntry: false })?.isFile()) return null;
+    let db: Database | null = null;
+    try {
+        db = new Database(kernelPath, { readonly: true });
+        const rows = db
+            .query("select decision_payload as p from decisions where object_id glob 'stm_*'")
+            .all() as { p: Uint8Array | string }[];
+        const sessions = new Set<string>();
+        for (const { p } of rows) {
+            const text = typeof p === "string" ? p : new TextDecoder().decode(p);
+            try {
+                const rationale = JSON.parse(String(JSON.parse(text)?.rationale ?? "null"));
+                if (typeof rationale?.session === "string") sessions.add(rationale.session);
+            } catch {
+                // A payload that does not parse still counts as a statement without a session.
+            }
+        }
+        return { count: rows.length, sessions: [...sessions].sort() };
+    } catch {
+        return null;
+    } finally {
+        db?.close();
+    }
+}
+
+const ROUTE_LINE = /direct_host_fixture: search route production, embedding model ([^,\s]+)/;
+
+/** Counts the daemon's ready records and production search route lines in `daemon.log`. */
+export function readDaemonRoutes(path: string): DaemonRouteObservation {
+    const out: DaemonRouteObservation = { ready: 0, production: 0, models: [] };
+    const models = new Set<string>();
+    eachLine(path, (line) => {
+        if (line.startsWith("{") && line.includes('"status":"ready"')) {
+            out.ready++;
+            return;
+        }
+        const route = ROUTE_LINE.exec(line);
+        if (route) {
+            out.production++;
+            models.add(route[1] as string);
+        }
+    });
+    out.models = [...models].sort();
+    return out;
+}
+
 /** Counters every `metrics.source_capture` block carries (Eidnara docs/host-wire-protocol.md 7.9). */
 const CAPTURE_COUNTERS = ["admitted", "completed"];
 
@@ -528,6 +663,8 @@ export function observeArm(
             ...readDescriptors(join(armRoot, "..", "final-store", "kernel.sqlite")),
             ...readCaptureCounters(join(armRoot, "..", "source-capture.json")),
         },
+        statements: readStatements(join(armRoot, "..", "final-store", "kernel.sqlite")),
+        daemon_routes: readDaemonRoutes(join(armRoot, "..", "daemon.log")),
     };
 }
 
@@ -598,7 +735,8 @@ export function armMismatches(o: ArmObservation): string[] {
             );
         }
     }
-    out.push(...captureMismatches(profile, o));
+    out.push(...captureMismatches(profile, o), ...memoryMismatches(profile, o));
+    out.push(...routeMismatches(profile, o));
     if (o.search) {
         if (profile.search !== "legacy-scan" && o.search.legacy_scan.length > 0) {
             const reasons = [...new Set(o.search.legacy_scan)].join(", ");
@@ -611,6 +749,79 @@ export function armMismatches(o: ArmObservation): string[] {
                 `${o.search.fused} eidnara_search results came from the fused route, but the arm declares ${profile.search}`,
             );
         }
+    }
+    return out;
+}
+
+/**
+ * Once a user statement captured in one session meets an agent request of a later session, an
+ * automatic arm must have carried a `<project-memory>` block and an explicit-search arm must have
+ * called `eidnara_search`. An Eidnara arm whose agent worked in two sessions must also show its
+ * capture calls in the proxy records, since every side call goes through the proxy.
+ */
+function memoryMismatches(profile: ArmProfile, o: ArmObservation): string[] {
+    const d = o.delivery;
+    if (!d || d.memory_due === undefined) return [];
+    const out: string[] = [];
+    const mode = deliveryOf(profile);
+    const statements = o.statements?.count ?? 0;
+    if (d.memory_due && mode === "automatic" && d.memory_blocks === 0) {
+        out.push(
+            `the final store holds ${statements} user statements captured before later sessions' agent requests, but no agent request carried a <project-memory> block`,
+        );
+    }
+    const searches = o.search
+        ? o.search.legacy_scan.length + o.search.fused + o.search.errored
+        : null;
+    if (d.memory_due && mode === "explicit-search" && searches === 0) {
+        out.push(
+            `the final store holds ${statements} user statements captured before later sessions' agent requests, but the agent never called eidnara_search on an arm that declares explicit search`,
+        );
+    }
+    if ((d.sessions ?? 0) >= 2 && (o.components.memory_capture ?? 0) === 0) {
+        out.push(
+            `agent requests in ${d.sessions} sessions and no memory_capture call in the proxy records`,
+        );
+    }
+    return out;
+}
+
+/**
+ * Every daemon start of a fused-route arm logs the fixture's production search route over the
+ * embedding model the arm requires; a daemon of any other arm logs none.
+ */
+function routeMismatches(profile: ArmProfile, o: ArmObservation): string[] {
+    const r = o.daemon_routes;
+    if (!r || profile.daemon === null) return [];
+    if (profile.search !== "fused") {
+        return r.production > 0
+            ? [
+                  `${r.production} daemon starts logged the production search route, but the arm declares ${profile.search}`,
+              ]
+            : [];
+    }
+    const out: string[] = [];
+    if ((o.components.agent ?? 0) > 0 && r.ready === 0) {
+        out.push(
+            "daemon.log records no ready daemon, so the production search route is unverified",
+        );
+    }
+    if (r.production < r.ready) {
+        out.push(
+            `${r.ready - r.production} of ${r.ready} daemon starts logged no production search route`,
+        );
+    }
+    const wanted = profile.requires.embeddings;
+    const other = r.models.filter((m) => m !== wanted);
+    if (other.length > 0) {
+        out.push(
+            `the production search route ran embedding model ${other.join(", ")}, but the arm requires ${wanted}`,
+        );
+    }
+    if (o.search && o.search.fused === 0 && o.search.legacy_scan.length + o.search.errored > 0) {
+        out.push(
+            `${o.search.errored} eidnara_search results errored and none came from the fused route`,
+        );
     }
     return out;
 }
@@ -670,6 +881,12 @@ export function requireAuditedVariants(
     if (git(["cat-file", "-e", `${audited}^{commit}`]).exitCode !== 0) {
         throw new Error(
             `${checkout} lacks commit ${audited}, whose source the daemon capabilities in src/hosts/profiles.ts were read from`,
+        );
+    }
+    const manifest = payloadManifest(checkout);
+    if (variants.includes("direct-host-fixture-fused") && !existsSync(manifest)) {
+        throw new Error(
+            `direct-host-fixture-fused loads the payload's embedding lane, and ${manifest} is absent; build the development payload (bun run payload:dev) in the build clone`,
         );
     }
     for (const variant of variants) {

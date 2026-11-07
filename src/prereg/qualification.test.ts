@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { DAEMON_VARIANTS } from "../hosts/profiles";
 import { loadPrereg, loadQualification } from "../scenario/inputs";
 import {
     qualificationHash,
@@ -50,15 +51,22 @@ test("an arm without a profile or with a capability gap cannot be registered", (
             q.contrasts = [[arms[1], arms[0]]];
         });
     expect(run(["host", "eidnara-x"])).toContain("arms.run: eidnara-x has no profile");
-    const gaps = run(["host", "eidnara-search"]);
-    expect(gaps).toHaveLength(1);
-    expect(gaps[0]).toMatch(
-        /eidnara-search \(explicit-search-only\) needs memory_injection=switchable/,
-    );
-    expect(run(["host", "eidnara-hybrid"])[0]).toMatch(/needs side_calls=proxy/);
+    expect(run(["host", "eidnara-search"])).toEqual([]);
+    expect(run(["host", "eidnara-hybrid"])).toEqual([]);
+    const fixture = DAEMON_VARIANTS["direct-host-fixture"];
+    fixture.memory_injection = "always-on";
+    try {
+        const gaps = run(["host", "eidnara-search"]);
+        expect(gaps).toHaveLength(1);
+        expect(gaps[0]).toMatch(
+            /eidnara-search \(explicit-search-only\) needs memory_injection=switchable/,
+        );
+    } finally {
+        fixture.memory_injection = "switchable";
+    }
 });
 
-test("orders must permute the run arms, and contrasts must cross delivery modes", () => {
+test("orders must permute the run arms, and contrasts must cross delivery modes or search routes", () => {
     expect(
         editArms((q) => {
             (q.arms as { order_by_seed: string[][] }).order_by_seed = [
@@ -84,7 +92,19 @@ test("orders must permute the run arms, and contrasts must cross delivery modes"
             };
             q.contrasts = [["eidnara-kl", "eidnara"]];
         }),
-    ).toEqual(["contrasts[0]: eidnara-kl and eidnara deliver the same way"]);
+    ).toEqual(["contrasts[0]: eidnara-kl and eidnara deliver and search the same way"]);
+    expect(
+        editArms((q) => {
+            q.arms = {
+                run: ["host", "eidnara", "eidnara-hybrid"],
+                order_by_seed: [
+                    ["host", "eidnara", "eidnara-hybrid"],
+                    ["eidnara-hybrid", "eidnara", "host"],
+                ],
+            };
+            q.contrasts = [["eidnara-hybrid", "eidnara"]];
+        }),
+    ).toEqual([]);
 });
 
 test("revision 5 re-pins S revision 9 and keeps host as the no-source control", () => {

@@ -21,6 +21,7 @@ import { processStart, running } from "../run/procs";
 import {
     type ArmName,
     DaemonStack,
+    fixtureDaemonConfig,
     type HostContext,
     nodeInstall,
     OpencodeSimHost,
@@ -1533,7 +1534,14 @@ test("each Pi arm writes the host and Eidnara compaction its profile declares", 
         const config = JSON.parse(readFileSync(eidnara, "utf8"));
         expect(config.compaction).toEqual({ enabled: eidnaraCompaction });
         const hints = arm !== "eidnara-search";
-        expect(config.memory).toMatchObject({ enabled: true, auto_search: { enabled: hints } });
+        expect(config.memory).toMatchObject({
+            enabled: true,
+            auto_search: { enabled: hints },
+            auto_inject: { enabled: hints },
+        });
+        expect(fixtureDaemonConfig("m", arm as ArmName).memory).toEqual({
+            auto_inject: { enabled: hints },
+        });
     }
 });
 

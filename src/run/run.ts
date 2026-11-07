@@ -19,7 +19,13 @@ import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
 import { breaksRule, type Check } from "../grade/probes";
-import { armBase, CONTROL_LABEL, eidnaraUserConfig, fixtureDaemonConfig } from "../hosts/arms";
+import {
+    armBase,
+    CONTROL_LABEL,
+    eidnaraUserConfig,
+    fixtureDaemonConfig,
+    payloadManifest,
+} from "../hosts/arms";
 import { driverSupports, HostDriver } from "../hosts/driver";
 import {
     type ArmProfile,
@@ -1398,6 +1404,8 @@ function binaryDigests(config: SimConfig): Record<string, string> {
         // The plugin builds are ignored outputs, so the checkout's worktree digest omits them.
         pi_plugin: join(config.eidnara_checkout, "packages/pi-plugin/dist"),
         opencode_plugin: join(config.eidnara_checkout, "packages/opencode-plugin/dist"),
+        // The fused fixture verifies each payload file against this manifest's digests.
+        payload_manifest: payloadManifest(config.eidnara_checkout),
         ...(config.upgrade?.opencode_binary
             ? { opencode_upgrade: config.upgrade.opencode_binary }
             : {}),
@@ -1406,7 +1414,10 @@ function binaryDigests(config: SimConfig): Record<string, string> {
     return Object.fromEntries(
         Object.entries(files).map(([name, path]) => {
             const optional =
-                name.startsWith("opencode_sdk") || name.endsWith("_plugin") || name === "faketime";
+                name.startsWith("opencode_sdk") ||
+                name.endsWith("_plugin") ||
+                name === "faketime" ||
+                name === "payload_manifest";
             if (optional && !existsSync(path)) return [name, "absent"];
             if (statSync(path).isDirectory()) return [name, directoryDigest(realpathSync(path))];
             return [name, createHash("sha256").update(readFileSync(path)).digest("hex")];
@@ -2374,8 +2385,7 @@ async function runArms(
     const verifyArm = (arm: string, armRoot: string) => {
         if (unchecked.has(arm)) requireBoots(arm, armRoot);
         const observed = observeArm(arm, o.host, armRoot, components.get(arm) ?? {});
-        const mode = deliveryOf(armProfile(arm));
-        if (manifest.order.some(oracle) || mode === "explicit-search") {
+        if (manifest.order.some(oracle) || armProfile(arm).plugin) {
             // A recovered row says what the user-sim decided; the host may or may not have the turn.
             const turns = journal.entries.filter(
                 (t) => t.kind === "UserTurn" && t.arm === arm && t.delivered === true,
@@ -2397,11 +2407,16 @@ async function runArms(
                     "seq" | "component" | "session" | "turn" | "request"
                 >[] = [];
                 eachJsonl<CallRecord>(callsPath, (c) => {
-                    if (c.arm !== arm || c.component !== "agent" || !c.request) return;
+                    if (c.arm !== arm) return;
                     const { seq, component, session, turn, request } = c;
-                    armCalls.push({ seq, component, session, turn, request });
+                    if (component === "memory_capture") {
+                        armCalls.push({ seq, component, session, turn });
+                    } else if (component === "agent" && request) {
+                        armCalls.push({ seq, component, session, turn, request });
+                    }
                 });
-                observed.delivery = observeDelivery(armCalls, parts, notes, eventOrder);
+                const sessions = observed.statements?.sessions ?? null;
+                observed.delivery = observeDelivery(armCalls, parts, notes, eventOrder, sessions);
             } finally {
                 parts.close();
             }

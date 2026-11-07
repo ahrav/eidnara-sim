@@ -52,15 +52,16 @@ from it.
 | `eidnara` | fallback-search | `direct_host_fixture` | Eidnara | on | off | legacy scan | automatic |
 | `eidnara-kl` | knowledge-only | `direct_host_fixture` | Eidnara | off | on | legacy scan | automatic |
 | `eidnara-cf` | fallback-search | `direct_host_fixture` | Eidnara | on | off | legacy scan | automatic |
-| `eidnara-hybrid` | production-hybrid | production `eidnara-host` | Eidnara | on | off | fused | automatic |
+| `eidnara-hybrid` | production-hybrid | `direct_host_fixture` on the production query route | Eidnara | on | off | fused | automatic |
 | `eidnara-search` | explicit-search-only | `direct_host_fixture` | Eidnara | on | off | legacy scan | explicit search |
 | `host-oracle` | oracle-context | none | none | n/a | on | none | oracle context |
 
 `eidnara-cf` runs as `eidnara` here; its counterfactual deletions land with
 the counterfactual arm.
 
-Source capture is on for `eidnara` and `eidnara-cf` (`source_capture` in
-the profile) and off on every other arm. The user-only consent key
+Source capture is on for `eidnara`, `eidnara-cf`, `eidnara-hybrid`, and
+`eidnara-search` (`source_capture` in the profile) and off on every other
+arm, so each c8 contrast with `eidnara` differs in one setting. The user-only consent key
 `source_capture.enabled` goes into the daemon's own user tier
 (`fixtureDaemonConfig`, which the hermetic host stack writes as the
 daemon's `eidnara.jsonc`) and into the plugin's user tier, as one user-tier
@@ -79,16 +80,19 @@ Delivery names how knowledge from earlier sessions reaches the agent
 delivers automatically with the plugin and not at all without it):
 
 - automatic: Eidnara's tools beside its automatic injection, the daemon's
-  `<project-memory>` block and the plugin's `<eidnara-search-hint>`.
-- explicit search: Eidnara's tools with the auto-search hint off
-  (`memory.auto_search.enabled=false`) and no recalled-memory block. Eidnara
-  has no switch for that block: the daemon composes it whenever
-  `memory.enabled` holds (`crates/daemon/src/m0_compose.rs`), its config
-  (`crates/daemon/src/config.rs`) has no key that drops it, and
-  `memory.enabled=false` also disables the plugin's kernel memory client,
-  which serves Pi's `eidnara_search`. Both daemon variants therefore provide
-  `memory_injection: always-on`, and `armOrder` refuses `eidnara-search`
-  until Eidnara exposes the switch.
+  `<project-memory>` block and the plugin's `<eidnara-search-hint>`. The
+  arm writes `memory.auto_inject.enabled=true` and
+  `memory.auto_search.enabled=true`. Captured whole user statements reach the
+  `<project-memory>` block of later sessions (`user_statement_delivery`).
+- explicit search: Eidnara's tools with the auto-search hint and the
+  recalled-memory block off (`memory.auto_search.enabled=false`,
+  `memory.auto_inject.enabled=false`). The daemon reads
+  `/memory/auto_inject/enabled` from its user tier only, and injects m0
+  memory only while `memory.enabled` and that key both hold
+  (`crates/daemon/src/transform.rs`); `memory.enabled` stays on, so the
+  plugin's kernel memory client keeps serving Pi's `eidnara_search`. The arm
+  writes the key into the daemon's user tier (`fixtureDaemonConfig`) and the
+  plugin's (`eidnaraUserConfig`).
 - oracle context: the harness-only upper-bound control. `host-oracle` runs
   the host alone, and each probe turn whose `ground_truth.sources` names
   events carries those events' text ahead of the user's own (`src/run/oracle-note.ts`).
@@ -130,21 +134,39 @@ opening `Background from earlier sessions on ` or a note carries a marker
 earlier user message does; the next session starts without it.
 
 Each daemon variant provides a fixed capability set, read from the Eidnara
-source at commit `8df8e2ff0` (`AUDITED_EIDNARA`):
+source at commit `1f2867036` (`AUDITED_EIDNARA`, the `eval/c8` integration
+head):
 
 | Variant | Search route | Embeddings | Memory reviewer | Side calls | Memory injection | Source capture |
 |---|---|---|---|---|---|---|
-| `direct_host_fixture` | legacy scan (no query route limits) | deterministic 8-dimension engine | none (its `review-witness` control runs reviewer jobs against a scripted local provider on a test's request) | through the proxy, by the `--harness-runtime` redirect extension | always on | on the consent key; its control socket reports the settled `source_capture` counters |
-| production `eidnara-host` | fused | `gte-modernbert-base-f32` | yes | straight to Bedrock | always on | on the consent key |
+| `direct_host_fixture` | legacy scan (started without `--query-route`) | deterministic 8-dimension engine | none (its `review-witness` control runs reviewer jobs against a scripted local provider on a test's request) | through the proxy, by the `--harness-runtime` redirect extension | switchable | on the consent key; its control socket reports the settled `source_capture` counters |
+| `direct_host_fixture` fused (`direct-host-fixture-fused`) | fused: `--query-route production --local-embeddings-manifest <payload-manifest.json>` | `gte-modernbert-base-f32`, the payload's local embedding lane | none | through the proxy | switchable | on the consent key |
+| production `eidnara-host` | fused | `gte-modernbert-base-f32` | yes | straight to Bedrock | switchable | on the consent key |
 
-The production launcher admits only its compiled-in qualified harness
-closures, runs Pi with `--no-extensions` and a fresh `HOME`, and refuses AWS
-endpoint overrides, so its model calls cannot reach the proxy and their cost
-goes unmeasured. `armOrder` refuses an arm whose profile declares a
-capability its variant lacks, naming each gap, before the run writes a
-manifest or starts preflight; `eidnara-hybrid` is refused that way for its
-side calls and `eidnara-search` for its memory injection, and no tier
-pre-registers either. Before preflight, the run also
+Every variant also records the c8 behaviours the arms run on, each with
+its own probes: captured whole user statements delivered in later sessions'
+`<project-memory>` (`user_statement_delivery`, accepted `stm_*` decisions in
+the `user-statements` domain), small tool outputs whole in the history
+summarizer's digest (`whole_small_tool_outputs`), error lines kept with a
+captured failure report (`failure_lines_captured`), and block tags stripped
+from Pi's streamed message events (`stream_tags_stripped`).
+
+The fused variant is the fixture started with the production query route
+over the build clone's development payload,
+`packages/host-linux-x64-gnu/payload-manifest.json`
+(`payloadManifest` in `src/hosts/arms.ts`), which the hermetic host stack
+passes as `productionSearchManifest`. The fixture checks each payload file
+against the manifest's digests, installs search admission from its fixture
+records, and logs `direct_host_fixture: search route production, embedding
+model <model>` on stderr at each start. The run records the manifest's
+digest as `binaries.payload_manifest` and refuses a fused arm before
+preflight when the manifest is absent. The production launcher admits only
+its compiled-in qualified harness closures, runs Pi with `--no-extensions`
+and a fresh `HOME`, and refuses AWS endpoint overrides, so its model calls
+cannot reach the proxy and their cost goes unmeasured; no arm runs it.
+`armOrder` refuses an arm whose profile declares a capability its variant
+lacks, naming each gap, before the run writes a manifest or starts
+preflight. Before preflight, the run also
 requires the build clone to hold `AUDITED_EIDNARA` and its copies of each
 running variant's source files (`sources` in `src/hosts/profiles.ts`) to
 match that commit's, so a build whose fixture changed stops until the
@@ -154,7 +176,7 @@ handler, the Pi transform window, and the shared transform client whose
 
 Each variant also records `probes`: one regular expression per capability
 reading that a named source file at the audited commit matches or lacks
-(for example, the fixture lacks `set_query_route_limits`, and
+(for example, the fixture lacks `with_memory_reviewer_host`, and
 `source_capture.rs` gates capture on `config.source_capture_enabled &&
 config.memory_enabled`). Moving the pin to a new Eidnara commit is one
 command against a checkout that holds both commits:
@@ -257,8 +279,8 @@ complete evidence only when the two agree:
   descriptor, or its counters were not read; a daemon arm without the
   consent is a mismatch when its final store holds any descriptor, or when
   it answered agent calls and its final store is unreadable.
-- In a run whose order holds an oracle-context arm, and on an
-  explicit-search arm, `capabilities.json` also holds `delivery`: the arm's
+- In a run whose order holds an oracle-context arm, and on every Eidnara
+  arm, `capabilities.json` also holds `delivery`: the arm's
   agent request bodies rebuilt from `requests.jsonl`, those that could not
   be, those carrying a block the plugin writes (`<project-memory>`,
   `<memory-updates>`, `<project-note>`, `<eidnara-search-auto>`,
@@ -277,6 +299,28 @@ complete evidence only when the two agree:
   note; a note is owned only in a user message, at most as many times as
   notes of the same text came due in the session by that turn, so a note in a
   system block or prefixed twice is misplaced.
+- `delivery` also counts the agent requests whose system blocks or user
+  messages carry a `<project-memory>` block (`memory_blocks`), the sessions
+  with an agent request, and `memory_due`. `statements` lists the accepted
+  user statements in the final store (`stm_*` decisions) and the capture
+  sessions their rationale names; Pi names an Eidnara session
+  `sim-<session>`, and a name without that prefix stands for every session
+  that made a `memory_capture` call. A statement is due once an agent request
+  of another session follows the last `memory_capture` call of its session,
+  since Eidnara leaves the current session's statements out of its own
+  block. Once one is due, an automatic-delivery arm is a mismatch when no
+  request carried a `<project-memory>` block, and an explicit-search arm is a
+  mismatch when its Pi transcripts hold no `eidnara_search` result. An
+  Eidnara arm whose agent worked in two or more sessions is a mismatch when
+  the proxy records hold no `memory_capture` call, since every side call goes
+  through the proxy.
+- `daemon_routes` counts the ready records in the arm's `daemon.log` and the
+  fixture's production search route lines with the embedding models they
+  name. A fused-route arm is a mismatch when a daemon start logged no route
+  line, when the daemon never became ready while the agent made calls, when
+  a route ran an embedding model other than the one the arm requires, and
+  when its searches all errored; any other daemon arm is a mismatch when a
+  route line appears.
 
 The plugin writes its log inside the arm root, which the agent's tools can
 write too, so the evidence holds against an agent that leaves the log alone;
