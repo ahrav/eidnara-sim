@@ -76,8 +76,11 @@ or whose deadline ran out before the prompt, and a turn whose git snapshot
 ran past its bound. A window
 turn's decision joins its pairing digest, so two arms whose replies match
 but whose work splits the decision diverge on record at that turn, and the
-post-run checks accept a reactive label only on a turn the compiled
-scenario places in a window. A reactive pushback row hashes the fixed line
+post-run checks require the window marker on exactly the turns the compiled
+scenario places in a window, the journal's marker to match the pairing
+row's, and a relabel only on a turn a pushback may precede. The decision's
+inputs, the previous turn's patch and tool runs, stay in the driver, so the
+checks attest the marker and the label, not the rule reading itself. A reactive pushback row hashes the fixed line
 ahead of the script text (`deliveredScript`). Windows lie in the last
 third of their session, and P14 counts only the window turns after the
 session's first fold, so every pushback P14 counts follows an agent turn that

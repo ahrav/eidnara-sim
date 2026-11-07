@@ -306,6 +306,8 @@ const journalPairingMismatch = (manifest.order as string[]).flatMap((arm) => {
             off.add(String(u.event));
         if (u.delivered === true && !row.delivered) off.add(String(u.event));
         if (cut(String(u.event)) && u.delivered !== row.delivered) off.add(String(u.event));
+        // The journal's window marker, which the realised rate reads, is the pairing row's.
+        if ((u.reactive === true) !== (row.reactive === true)) off.add(String(u.event));
         // A recovered UserTurn stands only for a turn a stop cut, whose interrupt never ran.
         if (u.recovered === true && !cut(String(u.event))) off.add(String(u.event));
         if (u.label === "interrupt" && u.interrupted !== true && !cut(String(u.event)))
@@ -449,8 +451,9 @@ const planLabelMismatch = turns
         const clarify = planned === "task" && r.label === "clarify" && filler;
         const turn = script.get(r.event) as unknown as ScriptTurn | undefined;
         const inWindow = turn !== undefined && windowOf(turn) !== null;
-        // A reactive row outside every window has no reactive decision to stand for.
-        if (r.reactive && !inWindow) return true;
+        // A row carries the window marker exactly when the compiled scenario places its turn
+        // in a window.
+        if ((r.reactive === true) !== inWindow) return true;
         const allowed = turn !== undefined && windowAllows(planned, r, turn, inWindow);
         return r.label !== planned && !clarify && !allowed;
     })

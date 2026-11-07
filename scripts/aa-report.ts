@@ -572,7 +572,7 @@ function report(dir: string) {
         const turn = turnOf.get(r.event) as unknown as ScriptTurn | undefined;
         const inWindow = turn !== undefined && windowOf(turn) !== null;
         const allowed = turn !== undefined && windowAllows(planned, r, turn, inWindow);
-        if ((r.reactive && !inWindow) || (r.label !== planned && !clarify && !allowed)) {
+        if ((r.reactive === true) !== inWindow || (r.label !== planned && !clarify && !allowed)) {
             throw new Error(
                 `${dir}/pairing.jsonl: ${r.arm} ${r.event} carries label ${r.label}; the seeded plan assigned ${planned}`,
             );
