@@ -1,0 +1,96 @@
+{
+    "schema": "sim-qualification/v1",
+    "id": "C8H",
+    "revision": 1,
+    "frozen": true,
+    "tier": "M",
+    "tier_preregistration_sha256": "d1b8c9694586ff9fe2c3b55b0f98fa2e564da270d2f19d3c9d8eb8181398cd06",
+    "corpus": "held-out",
+    "seeds": [
+        603,
+        604,
+        605,
+        606
+    ],
+    "hosts": [
+        "pi"
+    ],
+    "arms": {
+        "run": [
+            "host",
+            "eidnara",
+            "eidnara-hybrid",
+            "eidnara-search"
+        ],
+        "order_by_seed": [
+            [
+                "host",
+                "eidnara",
+                "eidnara-hybrid",
+                "eidnara-search"
+            ],
+            [
+                "eidnara",
+                "eidnara-search",
+                "host",
+                "eidnara-hybrid"
+            ],
+            [
+                "eidnara-hybrid",
+                "host",
+                "eidnara-search",
+                "eidnara"
+            ],
+            [
+                "eidnara-search",
+                "eidnara-hybrid",
+                "eidnara",
+                "host"
+            ]
+        ]
+    },
+    "contrasts": [
+        [
+            "eidnara",
+            "host"
+        ],
+        [
+            "eidnara-hybrid",
+            "eidnara"
+        ],
+        [
+            "eidnara",
+            "eidnara-search"
+        ]
+    ],
+    "controls": [
+        "wrong-project-lookup"
+    ],
+    "no_source_control": "host",
+    "analysis": {
+        "unit": "run",
+        "reference": {
+            "campaign": "c7",
+            "level": "seed"
+        },
+        "harm_probes": [
+            "P2",
+            "P5",
+            "P9",
+            "P10",
+            "P11",
+            "P8-twin"
+        ],
+        "budget_usd": {
+            "low": 94000,
+            "high": 204000
+        },
+        "cost_per_arm_seed_usd": {
+            "host": 5735,
+            "eidnara": 5489,
+            "eidnara-hybrid": 5489,
+            "eidnara-search": 5284
+        }
+    },
+    "claim": "descriptive"
+}

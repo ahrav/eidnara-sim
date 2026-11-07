@@ -108,6 +108,23 @@ also carry these optional sections and fields:
   default) or `held-out` (`corpus/repos.json`, `docs/corpus.md`). A
   held-out registration's seeds lie outside the tier's seeds, since the tier
   seeds compile from the diagnosed split.
+- `fresh_seeds: true`: a diagnosed registration whose seeds all lie outside
+  the tier's seeds. They compile from the diagnosed split at the tier's
+  per-scenario item count (the tier's items divided over its own seeds and
+  hosts), so a campaign can add seeds no diagnosis read without changing
+  the tier's scenarios. A held-out registration cannot set it.
+- `replicates` (`seeds`, `arms`): run-level A/A replicates. On each listed
+  seed, each listed arm runs a second time as its own run directory (the
+  same `run-tier` command with another `--out`), launched together with the
+  first, so the pair measures run-to-run variance inside one time window
+  (NOISE.md). The seeds must be registered seeds and the arms run arms.
+- `analysis` (`unit`, `reference`, `harm_probes`, `budget_usd`,
+  `cost_per_arm_seed_usd`): the analysis plan, fixed before any measured
+  run. `unit` is `run` (one arm on one seed); `reference` names an earlier
+  campaign compared at the `seed` level; `harm_probes` lists the probe types
+  (P1 to P14, P8-twin) that must not regress; `budget_usd` holds the
+  expected spend range, `low` at most `high`; `cost_per_arm_seed_usd` holds
+  one expected cost per run arm.
 
 Revision 2 registers whole-scenario A/A controls `host~aa` and `eidnara~aa`
 on seed 102, hold-out seed 103 over `eidnara` then `host`, and the ranking
@@ -121,6 +138,20 @@ outcome for P2, P5, and P11 (`docs/grading.md`, Rule revision 8). Revision 5
 re-pins it after tier revision 9, which makes pushback inside a P14 window
 reactive (`docs/user-sim.md`).
 
+`--qualification C8` runs the c8 comparison's diagnosed registration
+`prereg/C8.json` (revision 1): tier M, `fresh_seeds`, seeds 204, 206, 207,
+208, 209, and 212 on Pi (205, 210, and 211 refuse at placement: a probe turn
+finds no session), arms `host`, `eidnara`, `eidnara-hybrid`, and
+`eidnara-search` with one order per seed, contrasts `eidnara` vs `host`,
+`eidnara-hybrid` vs `eidnara`, and `eidnara` vs `eidnara-search`, the
+`wrong-project-lookup` control, `host` as the no-source control, replicates
+of `host` and `eidnara` on 204 and 206, and the analysis plan (run unit, c7
+at the seed level, harm probes P2, P5, P9, P10, P11, and P8-twin, budget
+$94k to $204k, and c7's spend per arm-seed). `--qualification C8H`
+(`prereg/C8H.json`, revision 1) runs the same arms, contrasts, controls,
+and plan over H's held-out seeds 603 to 606 with no replicates; its runs
+report apart from C8's and are never pooled with them.
+
 `--qualification H` runs the held-out registration `prereg/H.json`
 (revision 2, which re-pins the M digest after tier revision 9). It binds tier M, selects the `held-out` corpus split, runs
 `host` and `eidnara` on both hosts over seeds 601 to 609 and 611, with the
@@ -133,7 +164,10 @@ outside the tier's seeds for a diagnosed registration or inside them for a
 held-out one, a host the tier does not run, an arm without a profile or with a capability
 gap, an order that is not a permutation of the run arms, and a contrast
 between arms of one delivery mode and one search route; an A/A seed outside `seeds` or a pair
-that is not one run arm twice; a hold-out seed inside `seeds` (or, for a held-out registration, inside the tier's seeds), a hold-out arm
+that is not one run arm twice; a fresh-seed registration with a tier seed,
+or one over the held-out split; a replicate seed outside `seeds` or a
+replicate arm outside the run arms; an analysis plan whose budget's `low`
+exceeds its `high` or whose costs do not name each run arm once; a hold-out seed inside `seeds` (or, for a held-out registration, inside the tier's seeds), a hold-out arm
 outside the run arms, or a hold-out order that does not permute
 `holdout.arms`; and a ranking gate whose order is not one run arm per mode in
 that order or whose items differ from `RANKING_GATE_ITEMS`; and a

@@ -22,7 +22,7 @@ import {
 } from "./validate";
 
 export const QUALIFICATION_SCHEMA = "sim-qualification/v1";
-export const QUALIFICATIONS = ["Q", "H"] as const;
+export const QUALIFICATIONS = ["Q", "H", "C8", "C8H"] as const;
 /**
  * Control items a qualification adds to its scenarios. `wrong-project-lookup` asks each P8 lookup
  * again in the twin project (`P8-twin`), where the right answer is that the value belongs to the
@@ -80,11 +80,40 @@ export interface Qualification {
     no_source_control?: string;
     /**
      * `corpus` selects the registration's corpus split and defaults to `diagnosed`. A `held-out`
-     * registration's seeds lie outside the tier's seeds; a `diagnosed` one's lie inside them.
+     * registration's seeds lie outside the tier's seeds; a `diagnosed` one's lie inside them unless
+     * it sets `fresh_seeds`.
      */
     corpus?: Split;
+    /**
+     * A diagnosed registration over seeds outside the tier's: they compile from the diagnosed
+     * split at the tier's per-scenario item count, and no earlier campaign ran them.
+     */
+    fresh_seeds?: true;
+    /**
+     * Run-level A/A replicates: on each listed seed, each listed arm runs a second time as its own
+     * run, launched together with the first.
+     */
+    replicates?: { seeds: number[]; arms: string[] };
+    /** The analysis plan the registration fixes before any measured run. */
+    analysis?: Analysis;
     claim: "descriptive";
 }
+
+/**
+ * The run (one arm on one seed) is the analysis unit; contrasts are also read against an earlier
+ * campaign at the seed level. `harm_probes` must not regress, and the budget states the expected
+ * spend range and the cost per arm-seed it rests on.
+ */
+export interface Analysis {
+    unit: "run";
+    reference: { campaign: string; level: "seed" };
+    harm_probes: string[];
+    budget_usd: { low: number; high: number };
+    cost_per_arm_seed_usd: Record<string, number>;
+}
+
+/** The probe types a registration may name: P1 to P14 and the wrong-project control P8-twin. */
+const PROBE_TYPES = [...Array.from({ length: 14 }, (_, i) => `P${i + 1}`), "P8-twin"];
 
 const SHAPE: Shape = {
     schema: literal(QUALIFICATION_SCHEMA),
@@ -111,6 +140,20 @@ const SECTIONS: Record<string, Shape> = {
         pooled: literal(false),
     },
     ranking_gate: { order: list(text), items: list(oneOf(RANKING_GATE_ITEMS)) },
+    replicates: { seeds: list(uint32), arms: list(text) },
+    analysis: {
+        unit: literal("run"),
+        reference: { campaign: text, level: literal("seed") },
+        harm_probes: list(oneOf(PROBE_TYPES)),
+        budget_usd: { low: posInt, high: posInt },
+        cost_per_arm_seed_usd: (v) =>
+            v !== null &&
+            typeof v === "object" &&
+            !Array.isArray(v) &&
+            Object.values(v).every((x) => posInt(x) === null)
+                ? null
+                : "expected an object of positive integer costs by arm",
+    },
 };
 
 /**
@@ -121,13 +164,21 @@ const SECTIONS: Record<string, Shape> = {
  */
 export function validateQualification(value: unknown, tier: Preregistration): string[] {
     const errors: string[] = [];
-    checkShape(value, SHAPE, "", errors, [...Object.keys(SECTIONS), "no_source_control", "corpus"]);
+    checkShape(value, SHAPE, "", errors, [
+        ...Object.keys(SECTIONS),
+        "no_source_control",
+        "corpus",
+        "fresh_seeds",
+    ]);
     for (const [field, shape] of Object.entries(SECTIONS)) {
         const v = (value as Record<string, unknown> | null)?.[field];
         if (v !== undefined) checkShape(v, shape, field, errors);
     }
     const split = (value as Record<string, unknown> | null)?.corpus;
     if (split !== undefined) checkShape({ corpus: split }, { corpus: oneOf(SPLITS) }, "", errors);
+    const fresh = (value as Record<string, unknown> | null)?.fresh_seeds;
+    if (fresh !== undefined)
+        checkShape({ fresh_seeds: fresh }, { fresh_seeds: literal(true) }, "", errors);
     if (errors.length > 0) return errors;
     // SAFETY: checkShape found no error, so value has every field SHAPE declares.
     const q = value as Qualification;
@@ -139,11 +190,17 @@ export function validateQualification(value: unknown, tier: Preregistration): st
         );
     }
     const heldOut = q.corpus === "held-out";
-    for (const seed of q.seeds.filter((s) => tier.seeds.includes(s) === heldOut)) {
+    if (heldOut && q.fresh_seeds) {
+        errors.push("fresh_seeds: a held-out registration's seeds lie outside the tier's already");
+    }
+    const outside = heldOut || q.fresh_seeds === true;
+    for (const seed of q.seeds.filter((s) => tier.seeds.includes(s) === outside)) {
         errors.push(
             heldOut
                 ? `seeds: ${seed} is a ${tier.tier} seed, which compiles from the diagnosed corpus`
-                : `seeds: ${seed} is not a ${tier.tier} seed`,
+                : outside
+                  ? `seeds: ${seed} is a ${tier.tier} seed, and a fresh-seed registration runs none`
+                  : `seeds: ${seed} is not a ${tier.tier} seed`,
         );
     }
     for (const seed of q.holdout?.seeds.filter((s) => heldOut && tier.seeds.includes(s)) ?? []) {
@@ -217,6 +274,22 @@ function checkSections(q: Qualification, errors: string[]): void {
                 errors.push(`holdout.order_by_seed[${i}]: is not a permutation of holdout.arms`);
             }
         });
+    }
+    const r = q.replicates;
+    for (const seed of r?.seeds.filter((s) => !q.seeds.includes(s)) ?? []) {
+        errors.push(`replicates.seeds: ${seed} is not a registered seed`);
+    }
+    for (const arm of r?.arms.filter((a) => !q.arms.run.includes(a)) ?? []) {
+        errors.push(`replicates.arms: ${arm} is not a run arm`);
+    }
+    const a = q.analysis;
+    if (a) {
+        if (a.budget_usd.low > a.budget_usd.high) {
+            errors.push("analysis.budget_usd: low exceeds high");
+        }
+        if (!sameSet(Object.keys(a.cost_per_arm_seed_usd), q.arms.run)) {
+            errors.push("analysis.cost_per_arm_seed_usd: expected one cost per run arm");
+        }
     }
     const control = q.no_source_control;
     if (control !== undefined) {
