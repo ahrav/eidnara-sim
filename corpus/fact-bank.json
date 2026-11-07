@@ -1,6 +1,6 @@
 {
-    "schema": "sim-fact-bank/v4",
-    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {alt}, {ALT}, and {Alt} a second word in lower, upper, and Pascal case, {value} and {value2} distinct five-digit numbers, and {codename} an adjective-noun-NN codename. A template's variants list binds further placeholders, one entry per instance in turn. probe_variants and out_probe_variants list further tasks under the same rule, so the n-th repeat of a task text in one project asks the n-th variant instead of the work the agent already did; a repeat past the list keeps the text behind a framing. A tool_result script is a program the agent runs that defines the error identity the check names and raises it, so the identity exists in the repository and the failure is one the script produces. When a template repeats in one project, the later instance is conveyed through revise, whose {old_*} placeholders name the previous instance's values. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, an optional scope (a directory prefix ending in /, or one file path) restricts a check's diff-channel keys to files under that prefix or to that file, and an optional applies lists regexes for the constructs a rule governs (a new public constant, a returned error string, a log call): each match in the scoped added lines, extended over its open brackets, is one unit, and the rule holds only when a unit exists and every unit matches every must regex; and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures. A plan template names a task; the compiler composes plan statements from one or two tasks. A tool_error template has form tool_result (a committed script the agent runs) or pasted (a failure transcript the user pastes). Every rust and typescript template carries requires, the constructs its tasks presuppose: each entry names a file path and a regex that the file must match at the pinned commit of every repository of that language and of its twin; the compiler refuses a bank whose requirement a pinned tree lacks.",
+    "schema": "sim-fact-bank/v5",
+    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {alt}, {ALT}, and {Alt} a second word in lower, upper, and Pascal case, {value} and {value2} distinct five-digit numbers, and {codename} an adjective-noun-NN codename. A template's variants list binds further placeholders, one entry per instance in turn. probe_variants and out_probe_variants list further tasks under the same rule, so the n-th repeat of a task text in one project asks the n-th variant instead of the work the agent already did; a repeat past the list keeps the text behind a framing. A tool_result script is a program the agent runs that defines the error identity the check names and raises it, so the identity exists in the repository and the failure is one the script produces. When a template repeats in one project, the later instance is conveyed through revise, whose {old_*} placeholders name the previous instance's values. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, an optional scope (a directory prefix ending in /, or one file path) restricts a check's diff-channel keys to files under that prefix or to that file, and an optional applies lists regexes for the constructs a rule governs (a new public constant, a returned error string, a log call): each match in the scoped added lines, extended over its open brackets, is one unit, and the rule holds only when a unit exists and every unit matches every must regex; and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures. A lookup template's concept is one word naming the fact's subject; its statement, revise, and probe each carry that word, and its probe names no placeholder, so the question identifies the fact without stating its value. A plan template names a task; the compiler composes plan statements from one or two tasks. A tool_error template has form tool_result (a committed script the agent runs) or pasted (a failure transcript the user pastes). Every rust and typescript template carries requires, the constructs its tasks presuppose: each entry names a file path and a regex that the file must match at the pinned commit of every repository of that language and of its twin; the compiler refuses a bank whose requirement a pinned tree lacks.",
     "rust": {
         "constraint": [
             {
@@ -1415,7 +1415,8 @@
             {
                 "id": "lookup-staging-alias",
                 "statement": "the staging cluster alias is {codename}",
-                "probe": "Which alias should the deploy script aim at for pre-production?",
+                "concept": "staging",
+                "probe": "Which name should the deploy script use to reach staging?",
                 "check": {
                     "answer": "{codename}"
                 },
@@ -1424,7 +1425,8 @@
             {
                 "id": "lookup-port",
                 "statement": "the local metrics port is {value}",
-                "probe": "Where do I point my scraper to read numbers from my dev machine?",
+                "concept": "metrics",
+                "probe": "Where do I point my scraper to read metrics from my dev machine?",
                 "check": {
                     "answer": "{value}"
                 },
@@ -1433,7 +1435,8 @@
             {
                 "id": "lookup-bucket",
                 "statement": "the artifacts bucket is named {codename}",
-                "probe": "Where should the release job upload its build outputs?",
+                "concept": "artifacts",
+                "probe": "Where should the release job upload its build artifacts?",
                 "check": {
                     "answer": "{codename}"
                 },

@@ -5,7 +5,7 @@ scenario to `runs/scenarios/<tier>-<seed>.json`; a `--embedder local` compile
 defaults to `runs/scenarios/<tier>-<seed>.local.json`, so a stand-in never
 replaces a Titan scenario. The inputs are the seed, the
 tier's pre-registration in `prereg/<tier>.json`, the corpus under `corpus/`,
-and the generator version `sim-scenario/v7`. The same inputs produce the same
+and the generator version `sim-scenario/v8`. The same inputs produce the same
 bytes in any process, and a run reuses a cached `scenario.json` only when its
 top-level `schema`, generator version, pre-registration hash, and corpus
 inputs hash match the current inputs. The compiler scores cue and probe pairs with
@@ -86,7 +86,7 @@ pre-registered seeds end between 0.2 and 1.2 days past it.
 
 Each probe type gets `paired_items_per_probe_type / (seeds * hosts)` items;
 the pre-registration validator requires that division to be exact. Facts come
-from the templates in `corpus/fact-bank.json` (`sim-fact-bank/v4`), filled
+from the templates in `corpus/fact-bank.json` (`sim-fact-bank/v5`), filled
 with generated tokens: `adjective_noun` words in lower, upper, and Pascal
 case, five-digit numbers from 10000 to 65535 (so a figure a template states
 as a port is a valid TCP port), and `adjective-noun-NN` codenames, from the v1
@@ -167,7 +167,7 @@ pasted, and a P3 value read from its authoritative file).
 | P5 | rejected approach | Later session; the check forbids the rejected approach |
 | P6 | plan | First turn of the project's next session after the plan's latest conveyance, at least one hour after the previous session ends; see Plans below |
 | P7 | rationale | Later session; judge-graded against the reference reason |
-| P8 | lookup | Later session; the answer must carry the value |
+| P8 | lookup | Later session; the answer must carry the value. The question names the template's `concept`, the one word for the fact's subject that the statement and its revision also carry (`staging`, `metrics`, `artifacts`), and states no value, so it may paraphrase the rest of the cue and still identify the fact |
 | P8-twin | the P8 fact | Qualification control `wrong-project-lookup` only: the same question in a session of the twin project after the conveyance; `ground_truth.expect` is `abstain`, `absent` holds the base project's value, `check.owner` names the base project, and `sources` are the base project's |
 | P9 | never settled | Later session; the answer must abstain |
 | P10 | anchor | Later, unrelated task; the value must not appear |
@@ -344,6 +344,9 @@ The compiler throws, and writes nothing, when:
   (SIM-P07);
 - a probe turn precedes any conveyance, update, or diff of its fact
   (SIM-P06);
+- a P8 or P8-twin question, or a cue of its fact, leaves the lookup
+  template's `concept` word unnamed, or the question carries one of the
+  item's values (`proveLookupNamesConcept`);
 - a template repeats in a project without a `revise` wording, or a probe text
   repeats for more facts of one project than the bank holds framings;
 - a commit finds no free session opening in its window;

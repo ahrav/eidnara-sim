@@ -28,7 +28,7 @@ const FILES: Record<string, Record<string, string>> = {
 };
 const read = (t: PinnedTree, path: string) => FILES[t.id]?.[path] ?? null;
 const bank = (rust: unknown[], typescript: unknown[] = []) => ({
-    schema: "sim-fact-bank/v4",
+    schema: "sim-fact-bank/v5",
     rust: { rejected: rust, filler: ["Tidy the README."] },
     typescript: { rejected: typescript },
     any: { lookup: [{ id: "lookup-port", requires: [{ path: "nowhere", pattern: "x" }] }] },
