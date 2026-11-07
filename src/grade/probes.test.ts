@@ -972,6 +972,22 @@ describe("grading harness", () => {
         diff.patch = "fatal: not a git repository";
         expect(() => gradeItem(f.probe, [snap], rules)).toThrow("patch");
         diff.patch = "";
+        const call = {
+            seq: 1,
+            arm: snap.arm,
+            session: snap.session,
+            component: "agent",
+            turn: snap.turn,
+            scenario_ms: 0,
+            status: 200,
+            error: null,
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            response_text: "I left the code as it is.",
+        };
+        snap.artefacts.push({ id: `${snap.id}:calls`, class: "proxy-call", calls: [call] });
         const noop = gradeItem(f.probe, [snap], rules);
         expect([noop?.verdict, noop?.reason]).toEqual(["fail", "no code change"]);
     });

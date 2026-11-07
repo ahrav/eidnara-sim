@@ -1,4 +1,4 @@
-import type { GradeRecord } from "../grade/probes";
+import { DEFERRABLE, DEFERRED, type GradeRecord } from "../grade/probes";
 import type { OracleCount } from "../oracle/oracles";
 import type { Recovery } from "../oracle/recovery";
 import type { Preregistration } from "../prereg/schema";
@@ -64,15 +64,48 @@ function accuracy(r: TierReport): string[] {
             (g) => g.arm === arm && (type === "ALL" || g.probe_type === type),
         );
         const n = (v: string) => mine.filter((g) => g.verdict === v).length;
-        return `${n("pass")}/${mine.length} (f${n("fail")} e${n("excluded")})`;
+        const d = mine.filter(deferred).length;
+        return `${n("pass")}/${mine.length} (f${n("fail")} e${n("excluded") - d} d${d})`;
     };
     return [
-        "## Accuracy by probe type (pass/total; f=fail e=excluded)",
+        "## Accuracy by probe type (pass/total; f=fail e=excluded d=deferred)",
         "",
         ...table(
             ["probe type", ...r.arms],
             [...types, "ALL"].map((t) => [t, ...r.arms.map((a) => cell(a, t))]),
         ),
+        ...deferredRates(r),
+    ];
+}
+
+const deferred = (g: GradeRecord) => g.verdict === "excluded" && g.reason === DEFERRED;
+
+/**
+ * Each arm's deferred rate on the harm probes that admit it: deferred items over the items graded
+ * or deferred. A deferred item is out of the pass rate, so its rate is reported beside it.
+ */
+function deferredRates(r: TierReport): string[] {
+    const rows = DEFERRABLE.flatMap((type) =>
+        r.arms.map((arm) => {
+            const mine = r.grades.filter(
+                (g) =>
+                    g.arm === arm &&
+                    g.probe_type === type &&
+                    (g.verdict !== "excluded" || deferred(g)),
+            );
+            const d = mine.filter(deferred).length;
+            return [
+                type,
+                arm,
+                `${d}/${mine.length}`,
+                mine.length === 0 ? "-" : fmt(d / mine.length),
+            ];
+        }),
+    );
+    return [
+        "## Deferred harm items (no code change, a question to the user)",
+        "",
+        ...table(["probe type", "arm", "deferred/items", "rate"], rows),
     ];
 }
 

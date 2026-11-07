@@ -235,7 +235,9 @@ and the resources gate fails until the run is repeated.
 
 `renderTier` writes, in order: the runs, arms, and each run's recorded
 clock distortions, the accuracy table by probe type in the v1
-sweep report's layout, the gate verdict with every metric's n, difference,
+sweep report's layout (with deferred items counted apart from the other
+exclusions) and each arm's deferred rate on P2, P5, and P11
+(`docs/grading.md`, Rule revision 8), the gate verdict with every metric's n, difference,
 interval (or the rate-ratio upper bound a sign-test gate decides on), p,
 detectable difference, resolution ratio, verdict, and gate
 result (a bound family shows its observed per-run values, or a binary

@@ -1,10 +1,10 @@
 {
     "schema": "sim-qualification/v1",
     "id": "Q",
-    "revision": 3,
+    "revision": 4,
     "frozen": true,
     "tier": "S",
-    "tier_preregistration_sha256": "583e428d34781097acacc4f302f9e857ed2037517a0f463492e963f1f106efca",
+    "tier_preregistration_sha256": "3df45dec7a4ec31f93c15382f5927215f7f3294b6f1c63b10b84eb0b074bb83f",
     "seeds": [101, 102],
     "hosts": ["pi"],
     "arms": {

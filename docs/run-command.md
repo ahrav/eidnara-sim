@@ -110,7 +110,9 @@ gate over `host-oracle`, `eidnara`, `host`. Revision 3 (`e8c1f508`) names
 `host` as the no-source control, in place of the P1 control items of
 generator `sim-scenario/v5`. Those asked the P1 task in the same workspace
 before the rule was conveyed, and agent edits persist across sessions, so on
-every arm the agent had done the P1 task before its P1 probe.
+every arm the agent had done the P1 task before its P1 probe. Revision 4
+re-pins the S digest after tier revision 8, which registers the deferred
+outcome for P2, P5, and P11 (`docs/grading.md`, Rule revision 8).
 
 The validator (`bun run prereg:validate`) refuses a stale tier digest, a seed or
 host the tier does not run, an arm without a profile or with a capability

@@ -741,23 +741,28 @@ export function tierInput(
         for (const o of obs) o.runs = (o.runs ?? []).filter((r) => shared.has(r.run));
     }
     const pairArms = [control, treatment];
-    const excluded = runs.flatMap((g) => {
-        const judgedPair = (r: GradeRecord) =>
-            g.judged.some(
-                (o) =>
-                    o.item === r.item &&
-                    o.arm !== r.arm &&
-                    pairArms.includes(o.arm) &&
-                    judgmentKey(o) === judgmentKey(r),
-            );
-        return [...g.grades.filter((r) => r.probe_type !== "P7"), ...g.judged.filter(judgedPair)]
-            .filter((r) => r.verdict === "excluded" && pairArms.includes(r.arm))
-            .map((r) => ({
-                id: `${runKey(g)}/${r.item}`,
-                arm: r.arm,
-                reason: r.reason ?? "excluded",
-            }));
-    });
+    const excluded = runs
+        .flatMap((g) => {
+            const judgedPair = (r: GradeRecord) =>
+                g.judged.some(
+                    (o) =>
+                        o.item === r.item &&
+                        o.arm !== r.arm &&
+                        pairArms.includes(o.arm) &&
+                        judgmentKey(o) === judgmentKey(r),
+                );
+            return [
+                ...g.grades.filter((r) => r.probe_type !== "P7"),
+                ...g.judged.filter(judgedPair),
+            ]
+                .filter((r) => r.verdict === "excluded" && pairArms.includes(r.arm))
+                .map((r) => ({
+                    id: `${runKey(g)}/${r.item}`,
+                    arm: r.arm,
+                    reason: r.reason ?? "excluded",
+                }));
+        })
+        .filter((e) => !asym.includes(e.id));
     return {
         observations,
         excluded,

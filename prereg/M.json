@@ -1,7 +1,7 @@
 {
     "schema": "sim-prereg/v1",
     "tier": "M",
-    "revision": 7,
+    "revision": 8,
     "frozen": true,
     "arms": {
         "default": "eidnara",
@@ -106,6 +106,7 @@
         "first_attempt_only": true,
         "lookup_match": "committed-whole-word",
         "abstain_rule": "abstention-without-guess",
+        "no_change_question": "deferred",
         "p11_false_positive_weight": "2",
         "p13_reduction_ratio": {
             "min": "0.02",
