@@ -72,13 +72,14 @@ function templatesOf(bank: unknown, lang: string): { id: string; requires: unkno
         typeof t.target.symbol === "string"
             ? [{ path: t.target.path, pattern: literal(t.target.symbol) }]
             : [];
-    return Object.values(kinds).flatMap((list) =>
+    return Object.entries(kinds).flatMap(([kind, list]) =>
         Array.isArray(list)
             ? list.filter(isObject).map((t) => ({
                   id: String(t.id),
-                  requires: Array.isArray(t.requires)
-                      ? [...t.requires, ...targetOf(t)]
-                      : t.requires,
+                  requires:
+                      kind === "plan" && Array.isArray(t.requires)
+                          ? [...t.requires, ...targetOf(t)]
+                          : t.requires,
               }))
             : [],
     );

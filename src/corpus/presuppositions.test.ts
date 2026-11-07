@@ -79,11 +79,15 @@ describe("template presuppositions", () => {
             ...template(id, ["src/server.rs", "fn run"]),
             target: { path: "src/server.rs", symbol },
         });
-        const b = bank([plan("rs-plan-run", "run()"), plan("rs-plan-cap", "MAX_CONNECTIONS")]);
+        const plans = (list: unknown[]) => {
+            const b = bank([plan("rs-rejected-target", "MAX_CONNECTIONS")]);
+            return { ...b, rust: { ...b.rust, plan: list } };
+        };
+        const b = plans([plan("rs-plan-run", "run()"), plan("rs-plan-cap", "MAX_CONNECTIONS")]);
         expect(presuppositionProblems(b, TREES, read)).toEqual([
             "rs-plan-cap: svc-twin@aaaaaaa src/server.rs lacks /MAX_CONNECTIONS/",
         ]);
-        const regex = bank([plan("rs-plan-any", "r.n()")]);
+        const regex = plans([plan("rs-plan-any", "r.n()")]);
         expect(presuppositionProblems(regex, [TREES[0] as PinnedTree], read)).toEqual([
             "rs-plan-any: svc@aaaaaaa src/server.rs lacks /r\\.n\\(\\)/",
         ]);
