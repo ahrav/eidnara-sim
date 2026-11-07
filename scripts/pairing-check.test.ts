@@ -889,6 +889,10 @@ test("a P14-window row may carry the reactive label and its scripted pushback li
         },
     );
     expect(run(outside).report.plan_label_mismatch).toEqual(["host e-0-1"]);
+    const same = fixture();
+    const row = find(same.pairing, (x) => x.arm === "host" && x.event === "e-0-1");
+    Object.assign(row, { reactive: true });
+    expect(run(same).report.plan_label_mismatch).toEqual(["host e-0-1"]);
     const g = fixture();
     Object.assign(
         find(g.pairing, (x) => x.arm === "host" && x.event === "e-0-1"),

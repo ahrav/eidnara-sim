@@ -652,15 +652,17 @@ export const REACTIVE_PUSHBACK =
 export function windowAllows(
     planned: Label,
     r: { label: Label; reactive?: true },
-    filler: boolean,
+    turn: { index: number; role: string },
     inWindow: boolean,
 ): boolean {
     const reactive = planned === "task" || planned === "pushback";
+    const eligible = turn.index > 0 && PUSHBACK_ROLES.has(turn.role);
     return (
         inWindow &&
         r.reactive === true &&
         reactive &&
-        (r.label === "task" || r.label === "pushback" || (r.label === "clarify" && filler))
+        ((eligible && (r.label === "task" || r.label === "pushback")) ||
+            (r.label === "clarify" && turn.role === "filler"))
     );
 }
 

@@ -449,7 +449,10 @@ const planLabelMismatch = turns
         const clarify = planned === "task" && r.label === "clarify" && filler;
         const turn = script.get(r.event) as unknown as ScriptTurn | undefined;
         const inWindow = turn !== undefined && windowOf(turn) !== null;
-        return r.label !== planned && !clarify && !windowAllows(planned, r, filler, inWindow);
+        // A reactive row outside every window has no reactive decision to stand for.
+        if (r.reactive && !inWindow) return true;
+        const allowed = turn !== undefined && windowAllows(planned, r, turn, inWindow);
+        return r.label !== planned && !clarify && !allowed;
     })
     .map((r) => `${r.arm} ${r.event}`);
 // A clarify row stands where the agent's preceding reply ended with a question; the proxy

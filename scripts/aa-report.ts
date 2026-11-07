@@ -571,8 +571,8 @@ function report(dir: string) {
         const clarify = planned === "task" && r.label === "clarify" && e?.role === "filler";
         const turn = turnOf.get(r.event) as unknown as ScriptTurn | undefined;
         const inWindow = turn !== undefined && windowOf(turn) !== null;
-        const filler = e?.role === "filler";
-        if (r.label !== planned && !clarify && !windowAllows(planned, r, filler, inWindow)) {
+        const allowed = turn !== undefined && windowAllows(planned, r, turn, inWindow);
+        if ((r.reactive && !inWindow) || (r.label !== planned && !clarify && !allowed)) {
             throw new Error(
                 `${dir}/pairing.jsonl: ${r.arm} ${r.event} carries label ${r.label}; the seeded plan assigned ${planned}`,
             );

@@ -45,6 +45,7 @@ import {
     tapeKey,
     tapeMismatches,
     UserSim,
+    windowAllows,
 } from "./usersim";
 
 const prereg = loadPrereg("S");
@@ -644,6 +645,21 @@ describe("reactive pushback in a P14 window", () => {
             { session: "s-1", label: "task" as Label, reactive: true },
         ];
         expect(realisedRates(turns, prereg).rates.pushback_per_turn).toBe(0.5);
+    });
+});
+
+describe("window rows in the post-run checks", () => {
+    test("a window relabel needs a role a pushback may precede; a clarify needs a filler", () => {
+        const r = (label: Label) => ({ label, reactive: true as const });
+        const filler = { index: 3, role: "filler" };
+        const status = { index: 3, role: "status" };
+        const first = { index: 0, role: "filler" };
+        expect(windowAllows("task", r("pushback"), filler, true)).toBe(true);
+        expect(windowAllows("task", r("pushback"), status, true)).toBe(false);
+        expect(windowAllows("task", r("pushback"), first, true)).toBe(false);
+        expect(windowAllows("pushback", r("clarify"), filler, true)).toBe(true);
+        expect(windowAllows("task", r("pushback"), filler, false)).toBe(false);
+        expect(windowAllows("interrupt", r("task"), filler, true)).toBe(false);
     });
 });
 
