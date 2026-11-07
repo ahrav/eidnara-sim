@@ -410,6 +410,18 @@ describe("clarify replies on recorded c7 calls", () => {
         expect(
             tapeMismatches(join(root, "tape.jsonl"), pairing.records, 101, scripted, named),
         ).toEqual([]);
+        const stale = pairing.records.map((r) =>
+            r.kind === "turn"
+                ? {
+                      ...r,
+                      fallback: ["fact"],
+                      text_sha256: sha256Hex(`Use your best judgement on that.\n\n${c.turn.text}`),
+                  }
+                : r,
+        );
+        expect(tapeMismatches(join(root, "tape.jsonl"), stale, 101, scripted, named)).toEqual([
+            `a ${c.turn.id}`,
+        ]);
     });
 
     test("a classification that is neither word gets the clarify fallback line and records why", async () => {

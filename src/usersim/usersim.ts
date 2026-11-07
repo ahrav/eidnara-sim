@@ -247,6 +247,11 @@ export function tapeMismatches(
                 [...recorded].some((c) => !expected.has(c))
             )
                 return true;
+            // A classified clarify row falls back exactly when a cause above or an unread word
+            // calls for it, as the live reply does.
+            const falls = expected.size > 0 || fixed === null;
+            if (r.label === "clarify" && !legacy && (r.fallback !== undefined) !== falls)
+                return true;
             const reply = r.fallback ? (FALLBACK[r.label] ?? "") : (fixed ?? "");
             const delivered = r.label === "abandon" ? reply : `${reply}\n\n${text}`;
             return sha256Hex(delivered) !== r.text_sha256;
