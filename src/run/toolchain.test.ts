@@ -190,6 +190,7 @@ test("the probe runs the configured compiler, whatever RUSTC the harness inherit
     stub(join(bin, "rustc"), "rustc 1.0.0");
     stub(join(bin, "rustdoc"), "rustdoc 1.0.0");
     stub(join(bin, "bun"), "1.0.0");
+    stub(join(bin, "go"), "go version go1.0.0 linux/amd64");
     stub(join(ambient, "rustc"), "rustc 9.9.9-ambient");
     // Stands in for the sandbox launcher: applies the --env pairs and runs the command.
     const launcher = join(launcherDir, "sandbox.sh");
@@ -212,6 +213,9 @@ test("the probe runs the configured compiler, whatever RUSTC the harness inherit
     try {
         const results = await toolchainProbe(config, launcher, offset);
         expect(results.find((r) => r.tool === "rustc")?.version).toBe("rustc 1.0.0");
+        expect(results.find((r) => r.tool === "go")?.version).toBe(
+            "go version go1.0.0 linux/amd64",
+        );
     } finally {
         if (before === undefined) delete process.env.RUSTC;
         else process.env.RUSTC = before;
