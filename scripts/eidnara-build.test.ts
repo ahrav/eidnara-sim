@@ -68,6 +68,27 @@ test("a reused build clone is reset to the fetched commit before building", () =
     expect(existsSync(join(dst, "stray.txt"))).toBe(false);
 });
 
+test("the build ends with the development payload, after the launcher it records", () => {
+    const { stubs, src, dst, root } = fixture();
+    const log = join(root, "calls.log");
+    for (const tool of ["bun", "cargo"]) {
+        writeFileSync(join(stubs, tool), `#!/bin/sh\necho "${tool} $*" >> "${log}"\nexit 0\n`, {
+            mode: 0o755,
+        });
+    }
+    expect(build(src, dst, stubs).exitCode).toBe(0);
+    const calls = readFileSync(log, "utf8").trim().split("\n");
+    const at = (prefix: string) => calls.findIndex((c) => c.startsWith(prefix));
+    expect(at("bun run inputs:fetch")).toBeGreaterThan(at("cargo build --locked --release"));
+    expect(calls).toContain(
+        `cargo build --locked --target-dir ${dst}/target -p daemon --bin eidnara-host`,
+    );
+    expect(at("bun run payload:dev")).toBe(calls.length - 1);
+    expect(at("bun run payload:dev")).toBeGreaterThan(
+        at(`cargo build --locked --target-dir ${dst}/target -p daemon --bin eidnara-host`),
+    );
+});
+
 test("the build refuses a clone path that is the source checkout itself", () => {
     const { stubs, src } = fixture();
     writeFileSync(join(src, "README"), "edited\n");

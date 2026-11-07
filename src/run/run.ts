@@ -2407,11 +2407,11 @@ async function runArms(
                     CallRecord,
                     "seq" | "component" | "session" | "turn" | "request"
                 > &
-                    Partial<Pick<CallRecord, "started_wall_ms" | "wall_ms">>)[] = [];
+                    Partial<Pick<CallRecord, "started_wall_ms" | "wall_ms" | "status">>)[] = [];
                 eachJsonl<CallRecord>(callsPath, (c) => {
                     if (c.arm !== arm) return;
                     const { seq, component, session, turn, request, started_wall_ms, wall_ms } = c;
-                    const times = { started_wall_ms, wall_ms };
+                    const times = { started_wall_ms, wall_ms, status: c.status };
                     if (component === "memory_capture") {
                         armCalls.push({ seq, component, session, turn, ...times });
                     } else if (component === "agent" && request) {

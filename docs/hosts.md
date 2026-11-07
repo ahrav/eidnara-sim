@@ -160,7 +160,10 @@ against the manifest's digests, installs search admission from its fixture
 records, and logs `direct_host_fixture: search route production, embedding
 model <model>` on stderr at each start. The run records the manifest's
 digest as `binaries.payload_manifest` and refuses a fused arm before
-preflight when the manifest is absent. The production launcher admits only
+preflight when the manifest is absent. `scripts/eidnara-build.sh` builds
+the payload last: it fetches the host inputs, builds the debug
+`eidnara-host` launcher whose digest the payload records, builds the native
+addon, and runs `bun run payload:dev`. The production launcher admits only
 its compiled-in qualified harness closures, runs Pi with `--no-extensions`
 and a fresh `HOME`, and refuses AWS endpoint overrides, so its model calls
 cannot reach the proxy and their cost goes unmeasured; no arm runs it.
@@ -308,8 +311,8 @@ complete evidence only when the two agree:
   stands for every session that made a `memory_capture` call, as does a
   statement whose payload names no session. A request owes a statement's
   block when it belongs to another session of the statement's project and
-  starts after the last `memory_capture` call of the statement's session
-  ended (`started_wall_ms` against `wall_ms`), since Eidnara leaves the
+  starts after the last answered (status 200) `memory_capture` call of the
+  statement's session ended (`started_wall_ms` against `wall_ms`), since Eidnara leaves the
   current session's statements out of its own block; `memory_due` holds when
   any request owes one, and `due_blocks` counts the owing requests that
   carry a block. Once one is due, an automatic-delivery arm is a mismatch

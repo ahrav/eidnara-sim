@@ -172,7 +172,7 @@ const occurrences = (text: string, needle: string) => text.split(needle).length 
 
 export function observeDelivery(
     calls: readonly (Pick<CallRecord, "seq" | "component" | "session" | "turn" | "request"> &
-        Partial<Pick<CallRecord, "started_wall_ms" | "wall_ms">>)[],
+        Partial<Pick<CallRecord, "started_wall_ms" | "wall_ms" | "status">>)[],
     parts: PartLookup,
     notes: readonly ExpectedNote[],
     eventIndex: ReadonlyMap<string, number>,
@@ -205,7 +205,9 @@ export function observeDelivery(
         const session = call.session ?? null;
         const ended = call.wall_ms ?? call.seq;
         if (session !== null) lastCall.set(session, Math.max(lastCall.get(session) ?? -1, ended));
-        if (call.component === "memory_capture" && session !== null) {
+        // Only a capture call the provider answered can have produced a statement.
+        const answered = call.status === undefined || call.status === 200;
+        if (call.component === "memory_capture" && session !== null && answered) {
             lastCapture.set(session, Math.max(lastCapture.get(session) ?? -1, ended));
         }
         if (call.component !== "agent" || !call.request) continue;

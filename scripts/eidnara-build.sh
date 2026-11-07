@@ -99,5 +99,12 @@ bun install --frozen-lockfile
 # CARGO_TARGET_DIR or a Cargo configuration specifies.
 cargo build --locked --release --target-dir "$dst/target" -p daemon \
     --example direct_host_fixture --bin eidnara-host --features direct-host-fixture
+# The fused fixture (eidnara-hybrid) loads the development payload's embedding lane from
+# packages/host-linux-x64-gnu/payload-manifest.json. The payload records the debug launcher's
+# digest, so it is rebuilt after the launcher on every build.
+bun run inputs:fetch
+cargo build --locked --target-dir "$dst/target" -p daemon --bin eidnara-host
+(cd packages/shm-native && bun run build:native)
+bun run payload:dev
 rm -f "$dst/.sim-build-commit"
 git -C "$dst" rev-parse HEAD | tee "$dst/.sim-build-commit"
