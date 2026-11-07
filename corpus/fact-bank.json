@@ -1,6 +1,6 @@
 {
     "schema": "sim-fact-bank/v4",
-    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {alt}, {ALT}, and {Alt} a second word in lower, upper, and Pascal case, {value} and {value2} distinct five-digit numbers, and {codename} an adjective-noun-NN codename. A template's variants list binds further placeholders, one entry per instance in turn. probe_variants and out_probe_variants list further tasks under the same rule, so the n-th repeat of a task text in one project asks the n-th variant instead of the work the agent already did; a repeat past the list keeps the text behind a framing. A tool_result script is a program the agent runs that defines the error identity the check names and raises it, so the identity exists in the repository and the failure is one the script produces. When a template repeats in one project, the later instance is conveyed through revise, whose {old_*} placeholders name the previous instance's values. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, an optional scope (a directory prefix ending in /, or one file path) restricts a check's diff-channel keys to files under that prefix or to that file, and an optional applies lists regexes for the constructs a rule governs (a new public constant, a returned error string, a log call): each match in the scoped added lines, extended over its open brackets, is one unit, and the rule holds only when a unit exists and every unit matches every must regex; and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures. A plan template names a task; the compiler composes plan statements from one or two tasks. A tool_error template has form tool_result (a committed script the agent runs) or pasted (a failure transcript the user pastes). Every rust and typescript template carries requires, the constructs its tasks presuppose: each entry names a file path and a regex that the file must match at the pinned commit of every repository of that language and of its twin; the compiler refuses a bank whose requirement a pinned tree lacks.",
+    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {alt}, {ALT}, and {Alt} a second word in lower, upper, and Pascal case, {value} and {value2} distinct five-digit numbers, and {codename} an adjective-noun-NN codename. A template's variants list binds further placeholders, one entry per instance in turn. probe_variants and out_probe_variants list further tasks under the same rule, so the n-th repeat of a task text in one project asks the n-th variant instead of the work the agent already did; a repeat past the list keeps the text behind a framing. A tool_result script is a program the agent runs that defines the error identity the check names and raises it, so the identity exists in the repository and the failure is one the script produces. When a template repeats in one project, the later instance is conveyed through revise, whose {old_*} placeholders name the previous instance's values. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, an optional scope (a directory prefix ending in /, or one file path) restricts a check's diff-channel keys to files under that prefix or to that file, and an optional applies lists regexes for the constructs a rule governs (a new public constant, a returned error string, a log call): each match in the scoped added lines, extended over its open brackets, is one unit, and the rule holds only when a unit exists and every unit matches every must regex; and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures. A plan template names a task; the compiler composes plan statements from one or two tasks. A tool_error template has form tool_result (a committed script the agent runs) or pasted (a failure transcript the user pastes). Every rust, typescript, and go template carries requires, the constructs its tasks presuppose: each entry names a file path and a regex that the file must match at the pinned commit of every repository of that language and of its twin; the compiler refuses a bank whose requirement a pinned tree lacks.",
     "rust": {
         "constraint": [
             {
@@ -1453,35 +1453,35 @@
                     "Make RealIP also keep the name of the header it took the client address from on the request context."
                 ],
                 "out_probe_variants": [
-                    "Let the router record on the request context which mounted subrouter handled the request."
+                    "Have the router put a per-request arrival sequence number on the request context."
                 ]
             },
             {
                 "id": "go-http-error-prefix",
                 "requires": [
                     {
-                        "path": "middleware/content_type.go",
-                        "pattern": "w\\.WriteHeader\\(http\\.StatusUnsupportedMediaType\\)"
+                        "path": "middleware/recoverer.go",
+                        "pattern": "w\\.WriteHeader\\(http\\.StatusInternalServerError\\)"
                     },
                     {
-                        "path": "middleware/request_size.go",
-                        "pattern": "http\\.MaxBytesReader\\("
-                    },
-                    {
-                        "path": "mux.go",
-                        "pattern": "func methodNotAllowedHandler\\("
+                        "path": "middleware/timeout.go",
+                        "pattern": "w\\.WriteHeader\\(http\\.StatusGatewayTimeout\\)"
                     },
                     {
                         "path": "mux.go",
                         "pattern": "func \\(mx \\*\\w+\\) NotFoundHandler\\("
+                    },
+                    {
+                        "path": "mux.go",
+                        "pattern": "func \\(mx \\*\\w+\\) routeHTTP\\("
                     }
                 ],
                 "statement": "each http.Error call you add under middleware/ passes a message literal that begins with \"{token}: \"",
-                "probe": "Make AllowContentType explain its 415 reply with a short plain-text body.",
-                "out_probe": "Give the router's default 405 handler a plain-text body saying which methods the route accepts.",
+                "probe": "Make Recoverer send a short plain-text body with its 500 reply.",
+                "out_probe": "Give the router's fallback 404 reply a plain-text body that names the path it could not route.",
                 "example": {
                     "path": "middleware/{token}.go",
-                    "content": "package middleware\n\nimport \"net/http\"\n\nfunc requireTenant(w http.ResponseWriter, r *http.Request) bool {\n\tif r.Header.Get(\"X-Tenant\") == \"\" {\n\t\thttp.Error(w, \"{token}: tenant header missing\", http.StatusBadRequest)\n\t\treturn false\n\t}\n\treturn true\n}\n"
+                    "content": "package middleware\n\nimport \"net/http\"\n\nfunc requireTenant(w http.ResponseWriter, r *http.Request) bool {\n\tif r.Header.Get(\"X-Tenant\") == \"\" {\n\t\thttp.Error(w, \"{token}: tenant header missing\", http.StatusServiceUnavailable)\n\t\treturn false\n\t}\n\treturn true\n}\n"
                 },
                 "check": {
                     "scope": "middleware/",
@@ -1494,10 +1494,10 @@
                 },
                 "revise": "the \"{old_token}: \" lead-in for http.Error messages under middleware/ is gone; those messages begin with \"{token}: \" now",
                 "probe_variants": [
-                    "Make RequestSize answer an oversized body with a short plain-text reason before the handler runs."
+                    "Make Timeout send a short plain-text body with its 504 reply."
                 ],
                 "out_probe_variants": [
-                    "Make the router's fallback 404 reply name the path it failed to route."
+                    "Make the router answer 500 with a plain-text body when a matched route's handler turns out to be nil."
                 ]
             },
             {
@@ -1565,15 +1565,15 @@
                     }
                 ],
                 "statement": "error values you declare in mux.go are named Err{Alt}<Reason>, for example Err{Alt}PatternEmpty",
-                "probe": "Add a TryMount method on the router that reports a conflicting mount as an error value callers can compare against, instead of panicking.",
-                "out_probe": "Give the Compressor a way to report an unknown encoding name as an error value callers can compare against.",
+                "probe": "Add a TryMount method in mux.go that reports a conflicting mount as an error value callers can compare against, instead of panicking.",
+                "out_probe": "Add a Compressor method that returns the encoder registered under a name, with an error value callers can compare against when none is.",
                 "check": {
                     "scope": "mux.go",
                     "must": [
-                        "\\bErr{Alt}\\w*\\s*="
+                        "\\bErr{Alt}\\w*(?:\\s+error)?\\s*="
                     ],
                     "applies": [
-                        "^\\s*(?:var\\s+)?\\w+\\s*=\\s*(?:errors\\.New|fmt\\.Errorf)\\s*\\("
+                        "^\\s*(?:var\\s+)?[Ee]rr[A-Z]\\w*(?:\\s+error)?\\s*=\\s*(?:errors\\.New|fmt\\.Errorf)\\s*\\("
                     ]
                 },
                 "revise": "error values declared in mux.go leave the Err{old_Alt} naming behind; call them Err{Alt}<Reason> now, for example Err{Alt}PatternEmpty",
@@ -1614,7 +1614,7 @@
                 "check": {
                     "scope": "middleware/",
                     "must": [
-                        "log\\.(?:Printf|Println|Print)\\(\\s*\"\\[{token}\\] "
+                        "log\\.(?:Printf|Println|Print)\\(\\s*\"\\[{token}\\] |log\\.Println\\(\\s*\"\\[{token}\\]\","
                     ],
                     "applies": [
                         "\\blog\\.(?:Printf|Println|Print)\\s*\\("
@@ -1692,7 +1692,7 @@
                         "pattern": "type throttler struct"
                     }
                 ],
-                "task": "adding a {token}_waiting counter field to the throttler struct in middleware/throttle.go",
+                "task": "giving the throttler struct in middleware/throttle.go a {token}_waiting counter",
                 "probe": "Pick the work back up from where our last session ended.",
                 "check": {
                     "must": [
@@ -1708,7 +1708,7 @@
                         "pattern": "type node struct"
                     }
                 ],
-                "task": "adding a {token}_hits field to the node struct in tree.go",
+                "task": "giving the node struct in tree.go a {token}_hits field",
                 "probe": "Resume the change that was still open last time.",
                 "check": {
                     "must": [
@@ -1765,6 +1765,7 @@
                 "statement": "retrying a turned-away request with time.Sleep inside the handler was tried and backed out because it held goroutines long after clients disconnected",
                 "probe": "When Throttle has no free slot, have the request wait briefly and try once more before it is rejected.",
                 "check": {
+                    "scope": "middleware/throttle.go",
                     "must_not": [
                         "\\btime\\.Sleep\\s*\\("
                     ]
@@ -1782,11 +1783,12 @@
                         "pattern": "all middlewares must be defined before routes"
                     }
                 ],
-                "statement": "guarding the routing tree with a sync.RWMutex was tried and reverted because every lookup then contended on the lock under load",
+                "statement": "we put a sync.RWMutex around the routing tree once and pulled it, since every lookup then contended on the read lock under load",
                 "probe": "Let callers add routes to a router that is already serving traffic.",
                 "check": {
                     "must_not": [
-                        "\\bsync\\.(?:RW)?Mutex\\b"
+                        "\\bsync\\.RWMutex\\b",
+                        "\\.RLock\\s*\\("
                     ]
                 }
             },
@@ -1802,8 +1804,7 @@
                 "probe": "Let routes register handlers that return an error, and have the router turn that error into a response.",
                 "check": {
                     "must_not": [
-                        "\\breflect\\.",
-                        "\"reflect\""
+                        "\\breflect\\.(?!DeepEqual\\b)"
                     ]
                 }
             },
@@ -1820,7 +1821,7 @@
                     }
                 ],
                 "statement": "installing default middlewares from an init function was tried and backed out because import order changed which stack a router started with",
-                "probe": "Make every router NewRouter returns start with RequestID and Recoverer already in its stack.",
+                "probe": "Add a helper that hands back a new router with RequestID and Recoverer already in its stack.",
                 "check": {
                     "must_not": [
                         "^\\s*func\\s+init\\s*\\(\\s*\\)"
@@ -1836,8 +1837,9 @@
                     }
                 ],
                 "statement": "running the wrapped handler on its own goroutine to enforce the deadline was tried and reverted because slow handlers kept writing after the response had gone",
-                "probe": "Make Timeout answer 504 the moment the deadline passes, even when the handler ignores its context.",
+                "probe": "Keep a handler's writes from reaching the client once the Timeout deadline has passed.",
                 "check": {
+                    "scope": "middleware/timeout.go",
                     "must_not": [
                         "\\bgo\\s+func\\b",
                         "\\bgo\\s+\\w+(?:\\.\\w+)*\\s*\\("
@@ -1853,10 +1855,11 @@
                     }
                 ],
                 "statement": "reading the body with io.ReadAll to measure it was tried and backed out because it buffered the whole body before the size cap applied",
-                "probe": "Make RequestSize report the body's real length in a response header when the body fits under the cap.",
+                "probe": "Make RequestSize log how many body bytes the handler actually read, once the handler returns.",
                 "check": {
                     "must_not": [
-                        "\\b(?:io|ioutil)\\.ReadAll\\s*\\("
+                        "\\b(?:io|ioutil)\\.ReadAll\\s*\\(",
+                        "\\bio\\.Copy\\s*\\([^,\\n]+,\\s*r\\.Body\\b"
                     ]
                 }
             },
@@ -1868,8 +1871,8 @@
                         "pattern": "func \\(n \\*node\\) findRoute\\("
                     }
                 ],
-                "statement": "converting request paths with unsafe pointer casts was tried and dropped because the race detector flagged shared byte buffers",
-                "probe": "Speed up route lookups for requests with very long paths.",
+                "statement": "an unsafe pointer cast for request paths went in once and came out again after the race detector flagged shared byte buffers",
+                "probe": "Make route matching cheaper when request paths are several kilobytes long.",
                 "check": {
                     "must_not": [
                         "\\bunsafe\\.",
@@ -1885,8 +1888,8 @@
                         "pattern": "\"crypto/rand\""
                     }
                 ],
-                "statement": "drawing request ID suffixes from math/rand was tried and reverted because two hosts produced colliding sequences",
-                "probe": "Make RequestID add a short random suffix to each ID it generates.",
+                "statement": "math/rand once supplied request ID suffixes, and we reverted it after two hosts produced colliding sequences",
+                "probe": "Make RequestID end each generated ID with a few unpredictable characters.",
                 "check": {
                     "must_not": [
                         "\"math/rand(?:/v2)?\""
@@ -1922,8 +1925,9 @@
                     }
                 ],
                 "statement": "starting middleware side work from context.Background was tried and backed out because it ignored the client's cancellation",
-                "probe": "Make Heartbeat check a dependency, with a short time limit, before it answers.",
+                "probe": "Make Heartbeat call a health-check function its caller supplies, under a short time limit, before it answers.",
                 "check": {
+                    "scope": "middleware/heartbeat.go",
                     "must_not": [
                         "\\bcontext\\.(?:Background|TODO)\\s*\\(\\s*\\)"
                     ]
@@ -1954,12 +1958,13 @@
                         "pattern": "func \\(mx \\*\\w+\\) Mount\\("
                     }
                 ],
-                "statement": "a package-level map of named routers was tried and backed out because mounted subrouters in different tests saw each other's entries",
+                "statement": "a package-level map of named routers existed for a while; mounted subrouters in different tests saw each other's entries, so it was removed",
                 "probe": "Let handlers look up a mounted subrouter by a name given when it was mounted.",
                 "check": {
                     "must_not": [
                         "^var\\s+\\w+\\s*=\\s*(?:make\\(\\s*)?map\\[",
                         "^var\\s+\\w+\\s+map\\[",
+                        "^\\t\\w+\\s*=\\s*(?:make\\(\\s*)?map\\[",
                         "\\bsync\\.Map\\b"
                     ]
                 }
@@ -1996,7 +2001,7 @@
                 ],
                 "statement": "requests that new code refuses get a 400 Bad Request status",
                 "update": "inside middleware/ only, refused requests get {status} (http.{name}) instead",
-                "probe": "Make AllowContentType turn away a request whose body is empty.",
+                "probe": "Make AllowContentType turn away a request that carries its Content-Type header more than once.",
                 "out_probe": "Make the router turn away a request whose path holds a doubled slash.",
                 "check": {
                     "scope": "middleware/",
@@ -2007,7 +2012,7 @@
                         "http\\.StatusBadRequest\\b|\\b400\\b"
                     ],
                     "applies": [
-                        "\\bhttp\\.Error\\s*\\(|\\.WriteHeader\\s*\\("
+                        "\\bhttp\\.Error\\s*\\(|\\.WriteHeader\\s*\\(\\s*(?!http\\.Status(?:OK|Created|Accepted|NoContent|MovedPermanently|Found|NotModified)\\b|[23]\\d\\d\\b)"
                     ]
                 },
                 "out_check": {
@@ -2018,7 +2023,7 @@
                         "http\\.{name}\\b|\\b{code}\\b"
                     ],
                     "applies": [
-                        "\\bhttp\\.Error\\s*\\(|\\.WriteHeader\\s*\\("
+                        "\\bhttp\\.Error\\s*\\(|\\.WriteHeader\\s*\\(\\s*(?!http\\.Status(?:OK|Created|Accepted|NoContent|MovedPermanently|Found|NotModified)\\b|[23]\\d\\d\\b)"
                     ]
                 },
                 "variants": [
@@ -2045,10 +2050,10 @@
                 ],
                 "revise": "the middleware/ refusal status moves again: requests refused there get {status} (http.{name}) now, not {old_status}, and code elsewhere keeps 400 Bad Request",
                 "probe_variants": [
-                    "Make ContentCharset turn away a request whose charset parameter is blank.",
+                    "Make ContentCharset turn away a request whose charset value runs past 40 bytes.",
                     "Make AllowContentEncoding turn away a request that lists more than one encoding.",
                     "Make RequestSize turn away a request that sends no Content-Length header.",
-                    "Make BasicAuth turn away a request whose username holds a colon."
+                    "Make BasicAuth turn away a request whose username runs past 64 bytes."
                 ],
                 "out_probe_variants": [
                     "Make the router turn away a request whose path holds an encoded NUL byte.",
@@ -2059,11 +2064,11 @@
             }
         ],
         "filler": [
-            "Run go vet on the middleware package and tell me what it reports.",
-            "Explain how a request reaches a handler mounted two subrouters deep.",
-            "Walk me through what Recoverer prints when a handler panics.",
-            "Tidy the doc comments in middleware/nocache.go so each header in the list says why it is there.",
-            "Check whether the compress middleware still handles a response that sets no Content-Type."
+            "What does go vet report for the middleware package?",
+            "Which middlewares in this repo touch response headers, and in which files?",
+            "Show me how Mount and Route differ when a subrouter is attached.",
+            "The doc comments in middleware/nocache.go could say why each header is in the list; please improve them.",
+            "Does Compress still cope with a response that sets no Content-Type?"
         ],
         "tool_error": [
             {
@@ -2079,14 +2084,14 @@
                     }
                 ],
                 "form": "tool_result",
-                "statement": "the {token} route replay stops with {Alt}Error",
+                "statement": "replaying the {token} capture ends in {Alt}Error",
                 "script": {
                     "path": "scripts/check_{token}.py",
                     "content": "#!/usr/bin/env python3\n\"\"\"Replays recorded request paths from the {token} capture against the route table.\"\"\"\nimport sys\n\nCAPTURED = 240\nROUTES = [\"/articles/:id\", \"/articles/search\", \"/users/:id/posts\"]\n\n\nclass {Alt}Error(Exception):\n    \"\"\"A captured path that reached the service matches no registered route.\"\"\"\n\n\ndef match(path):\n    parts = path.strip(\"/\").split(\"/\")\n    for route in ROUTES:\n        want = route.strip(\"/\").split(\"/\")\n        if len(want) == len(parts) and all(w.startswith(\":\") or w == p for w, p in zip(want, parts)):\n            return route\n    return None\n\n\ndef replay():\n    print(\"replaying %d captured paths from {token}\" % CAPTURED)\n    for n in range(1, CAPTURED + 1):\n        path = \"/articles/%d/comments\" % {value} if n == 177 else \"/users/%d/posts\" % n\n        if match(path) is None:\n            raise {Alt}Error(\"captured request %d (%s) matches no route\" % (n, path))\n\n\nif __name__ == \"__main__\":\n    try:\n        replay()\n    except {Alt}Error as e:\n        print(\"error: {Alt}Error: %s\" % e, file=sys.stderr)\n        sys.exit(1)\n"
                 },
-                "command": "From the repo root, run `python3 scripts/check_{token}.py` and tell me what it prints; it reproduces issue #{value2}.",
-                "revise": "The {old_token} script is gone and issue #{value2} has a fresh repro: run `python3 scripts/check_{token}.py` and tell me what it prints.",
-                "probe": "Issue #{value2} came back: CI failed the same way once the fix merged. Add an entry to CONTRIBUTING.md under a troubleshooting heading that names the exact error type it raised.",
+                "command": "From the repo root, run `python3 scripts/check_{token}.py` and tell me what it prints. It is the repro attached to issue #{value2}.",
+                "revise": "Issue #{value2} has a new repro script, since the {old_token} one was deleted. From the repo root, run `python3 scripts/check_{token}.py` and tell me what it prints.",
+                "probe": "Issue #{value2} came back after the fix merged. Write a troubleshooting note in CONTRIBUTING.md that names the error class the replay raised, so the next person recognises it.",
                 "check": {
                     "must": [
                         "\\b{Alt}Error\\b"
@@ -2109,10 +2114,10 @@
                     }
                 ],
                 "form": "pasted",
-                "statement": "the {token} branch's throttle test fails with {Alt}Error",
+                "statement": "go test on the {token} branch stops at {Alt}Error in the throttle backlog test",
                 "paste": "My branch for issue #{value2} fails in CI:\n```\n$ go test ./middleware -run Throttle\n--- FAIL: TestThrottle{Alt}Backlog (0.31s)\n    throttle_test.go:248: backlog request 7: {Alt}Error: slot {value} released twice\nFAIL\nFAIL\tgithub.com/go-chi/chi/v5/middleware\t0.412s\nFAIL\n```",
-                "revise": "Issue #{value2} failed on my branch again, with a different slot:\n```\n$ go test ./middleware -run Throttle\n--- FAIL: TestThrottle{Alt}Backlog (0.29s)\n    throttle_test.go:248: backlog request 3: {Alt}Error: slot {value} released twice\nFAIL\nFAIL\tgithub.com/go-chi/chi/v5/middleware\t0.388s\nFAIL\n```",
-                "probe": "Issue #{value2} is open again and failing the way that output showed. Add an entry to CONTRIBUTING.md under a troubleshooting heading that names the exact error type it raised.",
+                "revise": "Issue #{value2} broke on my branch again, and the failure now carries a different error:\n```\n$ go test ./middleware -run Throttle\n--- FAIL: TestThrottle{Alt}Backlog (0.29s)\n    throttle_test.go:248: backlog request 3: {Alt}Error: slot {value} released twice\nFAIL\nFAIL\tgithub.com/go-chi/chi/v5/middleware\t0.388s\nFAIL\n```",
+                "probe": "Issue #{value2} reopened with the failure from that go test output. Put a note under a troubleshooting heading in CONTRIBUTING.md that names the error class the test hit.",
                 "check": {
                     "must": [
                         "\\b{Alt}Error\\b"

@@ -229,9 +229,8 @@ export function loadCompileInput(
     });
     // Scaling items by repository count preserves the tier's average item load per repository
     // across splits.
-    const bases = (s: Split) => all.filter((r) => r.split === s).length;
-    const items =
-        (prereg.stopping_rule.paired_items_per_probe_type * bases(split)) / bases("diagnosed");
+    const diagnosed = all.filter((r) => r.split === "diagnosed").length;
+    const items = (prereg.stopping_rule.paired_items_per_probe_type * repos.length) / diagnosed;
     return {
         seed,
         prereg,
@@ -241,6 +240,6 @@ export function loadCompileInput(
         pastes: parseJsonl(texts["tool-outputs/samples.jsonl"]) as CompileInput["pastes"],
         corpusInputsSha256: corpusInputsSha256(texts),
         embedder,
-        ...(split === "diagnosed" ? {} : { items }),
+        items,
     };
 }

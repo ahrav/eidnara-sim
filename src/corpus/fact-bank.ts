@@ -14,8 +14,6 @@ const KINDS = [
     "session_rule",
 ];
 const SCHEMA = "sim-fact-bank/v4";
-const LANGUAGES = ["rust", "typescript", "go", "any"];
-/** Kinds every language object carries; `any` holds the kinds without a language-specific template set. */
 const LANGUAGE_KINDS = [
     "constraint",
     "decision",
@@ -26,12 +24,14 @@ const LANGUAGE_KINDS = [
     "tool_error",
     "filler",
 ];
+/** Kinds every language object carries; `any` holds the kinds without a language-specific template set. */
 const REQUIRED_KINDS: Record<string, string[]> = {
     rust: LANGUAGE_KINDS,
     typescript: LANGUAGE_KINDS,
     go: LANGUAGE_KINDS,
     any: ["lookup", "never_settled", "anchor", "session_rule", "framings"],
 };
+const LANGUAGES = Object.keys(REQUIRED_KINDS);
 /** Lists of plain strings a language object may carry beside its fact kinds. */
 const TEXT_LISTS = ["filler", "framings"];
 const FORMS = ["tool_result", "pasted"];
@@ -210,7 +210,7 @@ export function bankProblems(bank: unknown): string[] {
             problems.push(`fact-bank ${lang}: expected an object of kinds`);
             continue;
         }
-        for (const kind of REQUIRED_KINDS[lang] ?? []) {
+        for (const kind of REQUIRED_KINDS[lang] as string[]) {
             if (!(kind in kinds)) problems.push(`fact-bank ${lang}/${kind}: kind missing`);
         }
         for (const [kind, templates] of Object.entries(kinds)) {

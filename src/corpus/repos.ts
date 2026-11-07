@@ -212,7 +212,7 @@ export function summarize(output: string): string[] {
     const fails = new Set<string>();
     for (const raw of output.split("\n")) {
         const line = raw.replace(ANSI, "").trim();
-        const pkg = /^(ok|FAIL)\s+(\S+)\s/.exec(`${line} `);
+        const pkg = /^(ok|FAIL)\s+(\S+)/.exec(line);
         if (/^test result:/.test(line)) results.push(line.replace(/; finished in .*$/, ""));
         else if (/^\(fail\) /.test(line)) fails.add(line.replace(/ \[[\d.]+m?s\]$/, ""));
         else if (/^\d+ (pass|fail|skip)$/.test(line)) results.push(line);
