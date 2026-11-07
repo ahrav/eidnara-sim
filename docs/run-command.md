@@ -75,7 +75,7 @@ instead of the tier's arm order. The registration binds one tier's
 pre-registration by hash and lists its own seeds, hosts, arms with one order
 per seed, descriptive contrasts between arms of different delivery modes,
 and the control items it adds to the scenario (`docs/scenario.md`). It may
-also carry three sections:
+also carry these optional sections and fields:
 
 - `aa_controls` (`seeds`, `pairs`): whole-scenario A/A controls. On each
   listed seed, each `[arm, arm]` pair runs `<arm>~aa` right after its arm,
@@ -103,6 +103,10 @@ also carry three sections:
   scripted conveyances, commits, and probes as every arm, in its own
   workspace, and receives no memory between sessions. An item's base rate is
   that arm's pass rate on the same scripted item.
+- `corpus`: the corpus split its scenarios compile from, `diagnosed` (the
+  default) or `held-out` (`corpus/repos.json`, `docs/corpus.md`). A
+  held-out registration's seeds lie outside the tier's seeds, since the tier
+  seeds compile from the diagnosed split.
 
 Revision 2 registers whole-scenario A/A controls `host~aa` and `eidnara~aa`
 on seed 102, hold-out seed 103 over `eidnara` then `host`, and the ranking
@@ -112,8 +116,16 @@ generator `sim-scenario/v5`. Those asked the P1 task in the same workspace
 before the rule was conveyed, and agent edits persist across sessions, so on
 every arm the agent had done the P1 task before its P1 probe.
 
-The validator (`bun run prereg:validate`) refuses a stale tier digest, a seed or
-host the tier does not run, an arm without a profile or with a capability
+`--qualification H` runs the held-out registration `prereg/H.json`
+(revision 1). It binds tier M, selects the `held-out` corpus split, runs
+`host` and `eidnara` on both hosts over seeds 601 to 609 and 611, with the
+arm order alternating by seed, adds the `wrong-project-lookup` control, and
+names `host` as the no-source control. Its runs report apart from the tier's
+diagnosed seeds (`docs/scenario.md`, Held-out corpus).
+
+The validator (`bun run prereg:validate`) refuses a stale tier digest, a seed
+outside the tier's seeds for a diagnosed registration or inside them for a
+held-out one, a host the tier does not run, an arm without a profile or with a capability
 gap, an order that is not a permutation of the run arms, and a contrast
 between arms of one delivery mode; an A/A seed outside `seeds` or a pair
 that is not one run arm twice; a hold-out seed inside `seeds`, a hold-out arm

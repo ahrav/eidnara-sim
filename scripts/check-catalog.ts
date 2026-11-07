@@ -267,7 +267,7 @@ export function checkCatalog(
  * the fact-bank presupposition and P1 no-pre-emption records, and the 3 liveness bounds.
  */
 export const SIM_IDS = [
-    { prefix: "SIM-P", count: 82 },
+    { prefix: "SIM-P", count: 83 },
     { prefix: "SIM-L", count: 3 },
 ];
 
