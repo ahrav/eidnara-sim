@@ -78,10 +78,12 @@ agent's options, and in some disowned work the user had asked for (`I haven't
 settled on a value yet, so don't change the test expectations to 58899`,
 M-201 eidnara seq 9743). Classified with this prompt, 9 of the 350 are
 `SETTLED` and 341 `OPEN` (`tests/fixtures/usersim/c7-clarify.json` keeps
-eleven of them across the host, eidnara, and oracle arms). A pairing row
-recorded before classification, a clarify reply whose tape entry is free text
-and whose row names no `unread` cause, is checked as the free text it
-delivered, so `pairing-check` still certifies those runs. Over the whole S seed 101 scenario the plan gives pushback 45.7%,
+eleven of them across the host, eidnara, and oracle arms). Every clarify row
+the user-sim now writes carries `classified: true`. A clarify row without it
+was recorded before classification and delivered the model's free text, so
+`pairing-check` checks it as that text and still certifies those runs, while
+a replay source holding one is refused, since a replay would send the fixed
+text in its place. Over the whole S seed 101 scenario the plan gives pushback 45.7%,
 interrupt 4.5%, and redirect and abandon 6% of 50 sessions, inside every
 band.
 

@@ -327,7 +327,7 @@ describe("clarify replies on recorded c7 calls", () => {
         }
     });
 
-    test("a recorded tape replays each classification, an unread one, and a pre-classification reply", async () => {
+    test("a recorded tape replays each classification and an unread one; a pre-classification reply passes only its own run's check", async () => {
         const c = clarifyCalls[0] as RecordedClarify;
         const scripted = new Map([[c.turn.id, c.turn.text]]);
         for (const answer of ["SETTLED", "OPEN", "Rename the three tests."]) {
@@ -361,7 +361,7 @@ describe("clarify replies on recorded c7 calls", () => {
         }
         const root = dir();
         const tape = join(root, "tape.jsonl");
-        const free = "Yes, rename those three tests to match.";
+        const free = "Open the config file and rename those three tests to match.";
         const row = {
             kind: "turn",
             arm: "a",
@@ -381,7 +381,8 @@ describe("clarify replies on recorded c7 calls", () => {
             tape,
             `${JSON.stringify({ key, event: c.turn.id, label: "clarify", digest: "d", text: free, stop: "end_turn" })}\n`,
         );
-        expect(tapeMismatches(tape, [row], 101, scripted)).toEqual([]);
+        expect(tapeMismatches(tape, [row], 101, scripted, undefined, true)).toEqual([]);
+        expect(tapeMismatches(tape, [row], 101, scripted)).toEqual([`a ${c.turn.id}`]);
     });
 
     test("a classification that is neither word gets the clarify fallback line and records why", async () => {

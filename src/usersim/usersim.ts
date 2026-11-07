@@ -174,6 +174,9 @@ const pairingRow: RowCheck = (row) => {
         ...oneOf(row, "label", LABELS),
         ...oneOf(row, "source", ["script", "tape", "live"]),
         ...(typeof row.delivered === "boolean" ? [] : ["delivered is not a boolean"]),
+        ...(row.classified === undefined || row.classified === true
+            ? []
+            : ["classified is not true"]),
         ...(row.fallback === undefined ||
         (Array.isArray(row.fallback) &&
             row.fallback.length > 0 &&
@@ -206,6 +209,7 @@ export function tapeMismatches(
     seed: number,
     scripted: ReadonlyMap<string, string>,
     namesFact?: (text: string) => boolean,
+    legacyClarify = false,
 ): string[] {
     const entries = new Map(jsonl<TapeEntry>(tapePath, "source", tapeRow).map((t) => [t.key, t]));
     return rows
@@ -230,11 +234,13 @@ export function tapeMismatches(
             if (entry.text === "") expected.add("empty");
             if (!NORMAL_STOPS.has(entry.stop)) expected.add(entry.stop);
             if (namesFact?.(entry.text)) expected.add("fact-token");
-            // A clarify row recorded before classification holds the model's free text, which it
-            // delivered as written; a classification row delivers the fixed text for its word.
-            const word = r.label === "clarify" ? clarifyReply(entry.text) : entry.text;
-            const classified = word !== null || recorded.has("unread");
-            const fixed = classified ? word : entry.text;
+            // A classified clarify row delivers the fixed text for its word. A clarify row recorded
+            // before classification delivered the model's free text as written; only a check of
+            // the run that recorded it (`legacyClarify`) accepts one, since a replay would send
+            // the fixed text in its place.
+            const legacy = r.label === "clarify" && r.classified !== true;
+            if (legacy && !legacyClarify) return true;
+            const fixed = r.label === "clarify" && !legacy ? clarifyReply(entry.text) : entry.text;
             if (fixed === null && entry.text !== "") expected.add("unread");
             if (
                 [...expected].some((c) => !recorded.has(c)) ||
@@ -456,6 +462,8 @@ export interface TurnRecord {
     /** The tape key of a `tape` or `live` reply, which `<run>/tape.jsonl` holds. */
     tape_key?: string;
     fallback?: string[];
+    /** A clarify reply chosen by classification (`clarifyPrompt`), as every current one is. */
+    classified?: true;
     /** The corpus item a paste turn delivered, by id and byte length. */
     paste?: { sample_id: string; bytes: number };
 }
@@ -939,6 +947,7 @@ export class UserSim {
             source: reply?.source ?? "script",
             ...(reply ? { tape_key: reply.key } : {}),
             ...(reply?.fallback ? { fallback: reply.fallback } : {}),
+            ...(reply && label === "clarify" ? { classified: true as const } : {}),
             ...(t.paste ? { paste: t.paste } : {}),
         });
         const interruptMs = plan.interruptMs.get(t.id);
