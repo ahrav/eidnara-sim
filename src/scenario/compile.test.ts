@@ -1674,6 +1674,13 @@ describe("P8 concept anchor", () => {
         );
         expect(refused("Which metricsd endpoint does my scraper read?")).toThrow(/concept metrics/);
         expect(refused("Is 41234 the port for metrics?")).toThrow(/states the value 41234/);
+        const revised = {
+            ...probe("Is 31234 still the metrics port?"),
+            ground_truth: { ...probe("").ground_truth, stale: ["31234"] },
+        } as ProbeItem;
+        expect(() => proveLookupNamesConcept([revised], [fact], bank)).toThrow(
+            /states the value 31234/,
+        );
     });
 
     test("a cue that leaves the concept unnamed is refused", () => {

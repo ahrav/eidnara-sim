@@ -123,6 +123,7 @@ describe("committed corpus", () => {
             ...bank.any.lookup[1],
             id: "lookup-port-2",
             statement: "the local port is {value}",
+            revise: "the local port moved from {old_value} to {value}",
             probe: "Is {value} the metrics port?",
         });
         expect(bankProblems(broken)).toEqual([
@@ -130,6 +131,7 @@ describe("committed corpus", () => {
             "fact-bank any/lookup[1] lookup-port: probe does not name the concept metrics",
             "fact-bank any/lookup[2] lookup-bucket: concept is not one word",
             "fact-bank any/lookup[3] lookup-port-2: statement does not name the concept metrics",
+            "fact-bank any/lookup[3] lookup-port-2: revise does not name the concept metrics",
             "fact-bank any/lookup[3] lookup-port-2: probe names a placeholder",
         ]);
     });
