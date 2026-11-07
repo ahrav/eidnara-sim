@@ -58,12 +58,29 @@ type Json = Record<string, unknown>;
 const isObject = (v: unknown): v is Json =>
     typeof v === "object" && v !== null && !Array.isArray(v);
 
+/**
+ * A template's requirements: its `requires` list, and for a plan its `target`, whose symbol the
+ * file must hold literally, so the next step a plan leaves open names code the tree has.
+ */
 function templatesOf(bank: unknown, lang: string): { id: string; requires: unknown }[] {
     const kinds = isObject(bank) ? bank[lang] : undefined;
     if (!isObject(kinds)) return [];
-    return Object.values(kinds).flatMap((list) =>
+    const literal = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const targetOf = (t: Json) =>
+        isObject(t.target) &&
+        typeof t.target.path === "string" &&
+        typeof t.target.symbol === "string"
+            ? [{ path: t.target.path, pattern: literal(t.target.symbol) }]
+            : [];
+    return Object.entries(kinds).flatMap(([kind, list]) =>
         Array.isArray(list)
-            ? list.filter(isObject).map((t) => ({ id: String(t.id), requires: t.requires }))
+            ? list.filter(isObject).map((t) => ({
+                  id: String(t.id),
+                  requires:
+                      kind === "plan" && Array.isArray(t.requires)
+                          ? [...t.requires, ...targetOf(t)]
+                          : t.requires,
+              }))
             : [],
     );
 }

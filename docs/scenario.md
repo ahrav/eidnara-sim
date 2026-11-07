@@ -5,7 +5,7 @@ scenario to `runs/scenarios/<tier>-<seed>.json`; a `--embedder local` compile
 defaults to `runs/scenarios/<tier>-<seed>.local.json`, so a stand-in never
 replaces a Titan scenario. The inputs are the seed, the
 tier's pre-registration in `prereg/<tier>.json`, the corpus under `corpus/`,
-and the generator version `sim-scenario/v8`. The same inputs produce the same
+and the generator version `sim-scenario/v9`. The same inputs produce the same
 bytes in any process, and a run reuses a cached `scenario.json` only when its
 top-level `schema`, generator version, pre-registration hash, and corpus
 inputs hash match the current inputs. The compiler scores cue and probe pairs with
@@ -86,7 +86,7 @@ pre-registered seeds end between 0.2 and 1.2 days past it.
 
 Each probe type gets `paired_items_per_probe_type / (seeds * hosts)` items;
 the pre-registration validator requires that division to be exact. Facts come
-from the templates in `corpus/fact-bank.json` (`sim-fact-bank/v5`), filled
+from the templates in `corpus/fact-bank.json` (`sim-fact-bank/v6`), filled
 with generated tokens: `adjective_noun` words in lower, upper, and Pascal
 case, five-digit numbers from 10000 to 65535 (so a figure a template states
 as a port is a valid TCP port), and `adjective-noun-NN` codenames, from the v1
@@ -179,7 +179,13 @@ pasted, and a P3 value read from its authoritative file).
 ### Plans (P6)
 
 Each project's P6 facts get one window each, so plans run one after another.
-A plan template is a `task`; a fact states one task (`resume`) or two tasks
+A plan template is a `task` and a `target`: a project path and a literal
+symbol in that file (`read_frame` in `src/connection.rs`, `onRequest` in
+`src/index.ts`). The task names both and the behaviour the step adds, so
+an agent that recalls the plan can resume it from the repository; the
+fact-bank gate refuses a task that leaves either unnamed, and the
+presupposition check refuses a bank whose target symbol a pinned tree of
+the language lacks. A fact states one task (`resume`) or two tasks
 with no order (`clarify`) when `(slot + project index + seed) mod 3` is 2,
 where `slot` counts the project's P6 facts. A resume item in an odd slot is
 revised before its probe ("Change of plan for

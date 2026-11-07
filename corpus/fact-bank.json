@@ -1,6 +1,6 @@
 {
-    "schema": "sim-fact-bank/v5",
-    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {alt}, {ALT}, and {Alt} a second word in lower, upper, and Pascal case, {value} and {value2} distinct five-digit numbers, and {codename} an adjective-noun-NN codename. A template's variants list binds further placeholders, one entry per instance in turn. probe_variants and out_probe_variants list further tasks under the same rule, so the n-th repeat of a task text in one project asks the n-th variant instead of the work the agent already did; a repeat past the list keeps the text behind a framing. A tool_result script is a program the agent runs that defines the error identity the check names and raises it, so the identity exists in the repository and the failure is one the script produces. When a template repeats in one project, the later instance is conveyed through revise, whose {old_*} placeholders name the previous instance's values. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, an optional scope (a directory prefix ending in /, or one file path) restricts a check's diff-channel keys to files under that prefix or to that file, and an optional applies lists regexes for the constructs a rule governs (a new public constant, a returned error string, a log call): each match in the scoped added lines, extended over its open brackets, is one unit, and the rule holds only when a unit exists and every unit matches every must regex; and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures. A lookup template's concept is one word naming the fact's subject; its statement, revise, and probe each carry that word, and its probe names no placeholder, so the question identifies the fact without stating its value. A plan template names a task; the compiler composes plan statements from one or two tasks. A tool_error template has form tool_result (a committed script the agent runs) or pasted (a failure transcript the user pastes). Every rust and typescript template carries requires, the constructs its tasks presuppose: each entry names a file path and a regex that the file must match at the pinned commit of every repository of that language and of its twin; the compiler refuses a bank whose requirement a pinned tree lacks.",
+    "schema": "sim-fact-bank/v6",
+    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {alt}, {ALT}, and {Alt} a second word in lower, upper, and Pascal case, {value} and {value2} distinct five-digit numbers, and {codename} an adjective-noun-NN codename. A template's variants list binds further placeholders, one entry per instance in turn. probe_variants and out_probe_variants list further tasks under the same rule, so the n-th repeat of a task text in one project asks the n-th variant instead of the work the agent already did; a repeat past the list keeps the text behind a framing. A tool_result script is a program the agent runs that defines the error identity the check names and raises it, so the identity exists in the repository and the failure is one the script produces. When a template repeats in one project, the later instance is conveyed through revise, whose {old_*} placeholders name the previous instance's values. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, an optional scope (a directory prefix ending in /, or one file path) restricts a check's diff-channel keys to files under that prefix or to that file, and an optional applies lists regexes for the constructs a rule governs (a new public constant, a returned error string, a log call): each match in the scoped added lines, extended over its open brackets, is one unit, and the rule holds only when a unit exists and every unit matches every must regex; and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures. A lookup template's concept is one word naming the fact's subject; its statement, revise, and probe each carry that word, and its probe names no placeholder, so the question identifies the fact without stating its value. A plan template names a task and its target, a project path and a literal symbol that file holds at every pinned tree of its language; the task names both, so the step it leaves open points at code the repository has; the compiler composes plan statements from one or two tasks. A tool_error template has form tool_result (a committed script the agent runs) or pasted (a failure transcript the user pastes). Every rust and typescript template carries requires, the constructs its tasks presuppose: each entry names a file path and a regex that the file must match at the pinned commit of every repository of that language and of its twin; the compiler refuses a bank whose requirement a pinned tree lacks.",
     "rust": {
         "constraint": [
             {
@@ -247,7 +247,11 @@
                         "pattern": "pub struct Connection"
                     }
                 ],
-                "task": "adding a {token}_count field to the Connection struct",
+                "target": {
+                    "path": "src/connection.rs",
+                    "symbol": "read_frame"
+                },
+                "task": "adding a {token}_count field to the Connection struct in src/connection.rs that counts the frames read_frame has returned on that connection, starting at 0 in Connection::new and growing by one each time read_frame returns a frame",
                 "probe": "Let's carry on from where we stopped last time.",
                 "check": {
                     "must": [
@@ -263,7 +267,11 @@
                         "pattern": "pub enum Command"
                     }
                 ],
-                "task": "a {TOKEN} command that returns the server's uptime",
+                "target": {
+                    "path": "src/cmd/mod.rs",
+                    "symbol": "from_frame"
+                },
+                "task": "a {TOKEN} command in src/cmd/mod.rs that Command::from_frame matches by the name {token} beside ping and that replies with the whole seconds since the server started as an integer frame",
                 "probe": "Pick up the outstanding item from our earlier session.",
                 "check": {
                     "must": [
@@ -980,7 +988,11 @@
                         "pattern": "onRequest<"
                     }
                 ],
-                "task": "adding an on{TOKEN} lifecycle hook beside onRequest",
+                "target": {
+                    "path": "src/index.ts",
+                    "symbol": "onRequest"
+                },
+                "task": "adding an on{TOKEN} method to the Elysia class in src/index.ts beside onRequest that takes a handler, registers it with this.on under a new {token} lifecycle event, and returns the app",
                 "probe": "Let's continue with what we left unfinished.",
                 "check": {
                     "must": [
@@ -996,7 +1008,11 @@
                         "pattern": "this\\.config = \\{"
                     }
                 ],
-                "task": "a {token} option on the app constructor that caps how many routes the app registers",
+                "target": {
+                    "path": "src/index.ts",
+                    "symbol": "this.config"
+                },
+                "task": "a {token} option in the config the Elysia constructor in src/index.ts copies into this.config that caps how many routes the app registers, so registering a route past the cap throws an Error that names the cap",
                 "probe": "Carry on with the open item from before.",
                 "check": {
                     "must": [

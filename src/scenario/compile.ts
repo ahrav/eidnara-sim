@@ -9,7 +9,7 @@ import { scheduleFaults, validateFault } from "./faults";
 import { bm25Ratio, cosine, type Embedder, round4 } from "./similarity";
 import { Tokens } from "./tokens";
 
-export const GENERATOR_VERSION = "sim-scenario/v8";
+export const GENERATOR_VERSION = "sim-scenario/v9";
 
 export const MANNER_WEIGHTS = {
     correction: 0.35,
@@ -49,6 +49,8 @@ export interface Template {
     paste?: string;
     check: Record<string, unknown>;
     out_check?: Record<string, unknown>;
+    /** A plan's next step: the file it changes and a literal symbol there, both named in `task`. */
+    target?: { path: string; symbol: string };
     /** The constructs the template's tasks presuppose in each pinned repository of its language. */
     requires?: { path: string; pattern: string }[];
 }
@@ -731,7 +733,7 @@ export async function compileScenario(input: CompileInput) {
         const nextStep = (task: string) => `when we pick this back up, the next step is ${task}`;
         const statement = isPlan
             ? planExpect === "clarify"
-                ? `two items are open for next time, ${taskText(0)} and ${taskText(1)}, and I have not decided which comes first`
+                ? `two items are open for next time and I have not decided which comes first. One is ${taskText(0)}. The other is ${taskText(1)}`
                 : nextStep(taskText(0))
             : render(statementTemplate, withOld);
         const basis: Basis =
@@ -1110,7 +1112,7 @@ export async function compileScenario(input: CompileInput) {
                     : [taskText(planRevised ? 1 : 0)];
             const text =
                 planExpect === "clarify"
-                    ? `Let's set both of those aside for now; consider ${taskText(0)} and ${taskText(1)} closed.`
+                    ? "Let's set both of those open items aside for now and consider them closed."
                     : `That covers ${next[0]}; consider that plan finished.`;
             const done = take([sessionOf(t.session)], after(t), {
                 role: "status",
