@@ -707,6 +707,14 @@ const pairsIn = (text: string): string[] =>
                 .match(PAIR) ?? [],
     );
 
+/**
+ * The statements whose identifiers name facts. A plan's statement names the repository code its
+ * next step changes (`read_frame`, `from_frame`), which a reply may discuss; the plan's own
+ * generated token stays matched through the adjective-noun pairs of its statement and cues.
+ */
+export const identityStatements = (facts: readonly { kind: string; statement: string }[]) =>
+    facts.filter((f) => f.kind !== "plan").map((f) => f.statement);
+
 export function factIdentities(
     statements: readonly string[],
     cues: readonly string[] = [],

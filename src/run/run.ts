@@ -63,6 +63,7 @@ import {
     agentReplyOf,
     checkTapeSources,
     factMatcher,
+    identityStatements,
     normaliser,
     Pairing,
     proxyUserSim,
@@ -1534,7 +1535,7 @@ export async function loadManifest(
                     .map((e) => [String(e.id), String((e as { text?: unknown }).text ?? "")]),
             ),
             namesFact: factMatcher(
-                (scenario.facts ?? []).map((f) => f.statement),
+                identityStatements(scenario.facts ?? []),
                 (scenario.facts ?? []).flatMap((f) => [f.statement, ...f.cues]),
             ),
         });
@@ -2279,7 +2280,7 @@ async function runArms(
             ...scenario.probes.map((p) => p.id),
         ],
         facts: scenario.facts.flatMap((f) => [f.statement, ...f.cues]),
-        statements: scenario.facts.map((f) => f.statement),
+        statements: identityStatements(scenario.facts),
     });
     const scriptedById = new Map(scripted.map((t) => [t.id, t]));
     const eventOrder = new Map(allEvents.map((e, i) => [e.id, i]));

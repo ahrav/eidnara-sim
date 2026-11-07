@@ -98,7 +98,7 @@ describe("committed corpus", () => {
         broken.any.anchor[1].id = "lookup-port";
         delete broken.any.never_settled;
         expect(bankProblems(broken)).toEqual([
-            "fact-bank schema: sim-fact-bank/v0 is not sim-fact-bank/v5",
+            "fact-bank schema: sim-fact-bank/v0 is not sim-fact-bank/v6",
             "fact-bank rust/plan[0] rs-plan-field: probe missing",
             "fact-bank rust/rationale: expected at least 1 templates",
             "fact-bank rust/filler: expected a non-empty list of distinct non-blank strings",
@@ -109,6 +109,22 @@ describe("committed corpus", () => {
             "fact-bank any/anchor[0] anchor-ticket: check key must_not pattern [unclosed is not a regular expression",
             "fact-bank any/anchor[1] lookup-port: duplicate template id",
             "fact-bank python: unknown language",
+        ]);
+    });
+
+    test("a plan template names a fixed target path and symbol, and its task names both", () => {
+        const bank = JSON.parse(readFileSync(join(CORPUS_DIR, "fact-bank.json"), "utf8"));
+        const broken = structuredClone(bank);
+        delete broken.rust.plan[0].target;
+        broken.rust.plan[1].target.path = "src/{token}.rs";
+        broken.typescript.plan[0].task = "adding an on{TOKEN} lifecycle hook beside onRequest";
+        broken.typescript.plan[1].target.symbol = "";
+        expect(bankProblems(broken)).toEqual([
+            "fact-bank rust/plan[0] rs-plan-field: target needs path and symbol",
+            "fact-bank rust/plan[1] rs-plan-cmd: target path is not a fixed project path",
+            "fact-bank rust/plan[1] rs-plan-cmd: task does not name the target path src/{token}.rs",
+            "fact-bank typescript/plan[0] ts-plan-hook: task does not name the target path src/index.ts",
+            "fact-bank typescript/plan[1] ts-plan-option: target symbol is not a fixed literal",
         ]);
     });
 

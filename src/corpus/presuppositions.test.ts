@@ -28,7 +28,7 @@ const FILES: Record<string, Record<string, string>> = {
 };
 const read = (t: PinnedTree, path: string) => FILES[t.id]?.[path] ?? null;
 const bank = (rust: unknown[], typescript: unknown[] = []) => ({
-    schema: "sim-fact-bank/v5",
+    schema: "sim-fact-bank/v6",
     rust: { rejected: rust, filler: ["Tidy the README."] },
     typescript: { rejected: typescript },
     any: { lookup: [{ id: "lookup-port", requires: [{ path: "nowhere", pattern: "x" }] }] },
@@ -71,6 +71,21 @@ describe("template presuppositions", () => {
             "rs-bad: a requirement lacks a path or pattern",
             "rs-unclosed: svc@aaaaaaa src/server.rs lacks /[fn/",
             "rs-blank: svc@aaaaaaa src/server.rs lacks / /",
+        ]);
+    });
+
+    test("a plan's target symbol must appear literally in its file at every tree", () => {
+        const plan = (id: string, symbol: string) => ({
+            ...template(id, ["src/server.rs", "fn run"]),
+            target: { path: "src/server.rs", symbol },
+        });
+        const b = bank([plan("rs-plan-run", "run()"), plan("rs-plan-cap", "MAX_CONNECTIONS")]);
+        expect(presuppositionProblems(b, TREES, read)).toEqual([
+            "rs-plan-cap: svc-twin@aaaaaaa src/server.rs lacks /MAX_CONNECTIONS/",
+        ]);
+        const regex = bank([plan("rs-plan-any", "r.n()")]);
+        expect(presuppositionProblems(regex, [TREES[0] as PinnedTree], read)).toEqual([
+            "rs-plan-any: svc@aaaaaaa src/server.rs lacks /r\\.n\\(\\)/",
         ]);
     });
 
