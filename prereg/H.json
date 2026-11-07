@@ -1,10 +1,10 @@
 {
     "schema": "sim-qualification/v1",
     "id": "H",
-    "revision": 1,
+    "revision": 2,
     "frozen": true,
     "tier": "M",
-    "tier_preregistration_sha256": "d1acd2aea88605962c3d926c11ef8f436f4be16de20e3cfa5152e8dff7adc914",
+    "tier_preregistration_sha256": "d1b8c9694586ff9fe2c3b55b0f98fa2e564da270d2f19d3c9d8eb8181398cd06",
     "corpus": "held-out",
     "seeds": [601, 602, 603, 604, 605, 606, 607, 608, 609, 611],
     "hosts": ["pi", "opencode"],

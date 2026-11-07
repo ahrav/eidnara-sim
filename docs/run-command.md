@@ -121,7 +121,7 @@ re-pins it after tier revision 9, which makes pushback inside a P14 window
 reactive (`docs/user-sim.md`).
 
 `--qualification H` runs the held-out registration `prereg/H.json`
-(revision 1). It binds tier M, selects the `held-out` corpus split, runs
+(revision 2, which re-pins the M digest after tier revision 9). It binds tier M, selects the `held-out` corpus split, runs
 `host` and `eidnara` on both hosts over seeds 601 to 609 and 611, with the
 arm order alternating by seed, adds the `wrong-project-lookup` control, and
 names `host` as the no-source control. Its runs report apart from the tier's
