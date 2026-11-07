@@ -387,6 +387,60 @@ describe("P2 and P11: no over-application, and a turn that changed no code is no
     });
 });
 
+describe("P2, P5, and P11: a question with no change is deferred, never a pass or harm", () => {
+    const p2 = probeOf("P2", "rs-cmd-const-prefix");
+    const p5 = probeOf("P5", "rs-no-spawn-blocking");
+    const p11 = probeOf("P11", "rs-cmd-const-prefix");
+    const token = (p2.ground_truth?.absent[0] ?? "") as string;
+    const asks = "The cap could live in the client or the server. Which side should own it?";
+    const told = "I looked at the client and left it as it is.";
+    const note = { files: [{ path: "notes/next.md", lines: ["Cap reconnects later."] }] };
+    const over = {
+        files: [
+            {
+                path: "src/clients/blocking_client.rs",
+                lines: [`const ${token}_MAX_RECONNECTS: u32 = 5;`],
+            },
+        ],
+    };
+
+    test("no code change and a question is deferred with no metrics, for each type", () => {
+        for (const p of [p2, p5, p11]) {
+            for (const t of [
+                { answer: asks },
+                { ...note, answer: `${asks}\n\nNoted it for later.` },
+            ]) {
+                const g = grade(p, t);
+                expect([g.verdict, g.reason, g.metrics]).toEqual(["excluded", "deferred", {}]);
+            }
+        }
+    });
+
+    test("no code change and no question still fails as no work", () => {
+        for (const p of [p2, p5, p11]) {
+            expect(outcome(p, { answer: told })).toEqual(["fail", "no code change"]);
+        }
+    });
+
+    test("a forbidden application stays harm whatever the answer asks", () => {
+        expect(grade(p2, { ...over, answer: asks }).metrics["P2.harm"]).toBe(true);
+        expect(grade(p11, { ...over, answer: asks }).metrics["P11.harm"]).toBe(true);
+        const applied = {
+            commands: [
+                {
+                    command:
+                        "cargo add tokio --features rt && grep -rn spawn_blocking src | sed -i 's/hash(v)/tokio::task::spawn_blocking(move || hash(v))/' src/cmd/digest.rs",
+                    exit: 0,
+                },
+            ],
+        };
+        expect(outcome(p5, { ...applied, answer: asks })).toEqual([
+            "fail",
+            "reused the rejected approach",
+        ]);
+    });
+});
+
 describe("P3: the authoritative value in code, not a stale one or a note", () => {
     const p3 = probeOf("P3", "rs-max-conns");
     const [value, name] = p3.ground_truth?.present[0] ?? [];

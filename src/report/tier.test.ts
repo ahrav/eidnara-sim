@@ -402,6 +402,33 @@ function asymmetricFixture(record: (host: ArmLogs) => void): GradedRun {
 }
 
 describe("tier report", () => {
+    test("deferred harm items show in the accuracy cell and as a per-arm rate", () => {
+        const report = tierReport(prereg, [fixture()], boundary);
+        const base = { probe_type: "P2", version: 1, snapshot: "s", inputs: ["i"] };
+        const graded = (arm: string, item: string, verdict: string, reason?: string) =>
+            ({
+                ...base,
+                arm,
+                item,
+                verdict,
+                metrics: {},
+                ...(reason ? { reason } : {}),
+                later_attempts_logged: 0,
+            }) as GradeRecord;
+        report.grades = [
+            graded("eidnara", "q-1", "excluded", "deferred"),
+            graded("eidnara", "q-2", "pass"),
+            graded("eidnara", "q-3", "excluded", "session interrupted"),
+            graded("host", "q-1", "fail", "no code change"),
+            graded("host", "q-2", "pass"),
+        ];
+        const text = renderTier(report);
+        expect(text).toContain("| P2 | eidnara | 1/2 | 0.50 |");
+        expect(text).toContain("| P2 | host | 0/2 | 0.00 |");
+        expect(text).toContain("1/3 (f0 e1 d1)");
+        expect(text).toContain("1/2 (f1 e0 d0)");
+    });
+
     test("an A/A fixture renders every panel with the pre-registration, and its falsification set shows zero effect", () => {
         const g = fixture();
         const report = tierReport(prereg, [g], boundary);

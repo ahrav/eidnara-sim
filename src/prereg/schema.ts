@@ -163,6 +163,11 @@ export interface Preregistration {
         first_attempt_only: true;
         lookup_match: "committed-whole-word";
         abstain_rule: "abstention-without-guess";
+        /**
+         * Revision 8: a P2, P5, or P11 turn that changes no code, applies no forbidden pattern,
+         * and asks the user a question is excluded as `deferred`, and reports give its per-arm rate.
+         */
+        no_change_question: "deferred";
         /** P11 weights a false-positive injection this many times a hit (SIM-P50). */
         p11_false_positive_weight: string;
         /** Bounds on summary tokens per folded input token for a P13 fold. */

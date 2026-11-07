@@ -189,6 +189,7 @@ const PREREG_SHAPE: Shape = {
         first_attempt_only: literal(true),
         lookup_match: literal("committed-whole-word"),
         abstain_rule: literal("abstention-without-guess"),
+        no_change_question: literal("deferred"),
         p11_false_positive_weight: decimal,
         p13_reduction_ratio: { min: unitRate, max: unitRate },
         judge: {

@@ -34,7 +34,7 @@ test("Q binds the current S pre-registration and runs the three delivery modes i
 
 test("a stale tier digest, a foreign seed or host, and an unknown field are refused", () => {
     expect(edit((q) => (q.tier_preregistration_sha256 = "0".repeat(64)))[0]).toMatch(
-        /hashes to 583e428d/,
+        /hashes to 3df45dec/,
     );
     expect(edit((q) => (q.seeds = [101, 201]))).toContain("seeds: 201 is not a S seed");
     expect(edit((q) => (q.hosts = ["opencode", "cursor"]))[0]).toMatch(
@@ -87,8 +87,8 @@ test("orders must permute the run arms, and contrasts must cross delivery modes"
     ).toEqual(["contrasts[0]: eidnara-kl and eidnara deliver the same way"]);
 });
 
-test("revision 3 names host as the no-source control beside revision 2's sections", () => {
-    expect(Q.revision).toBe(3);
+test("revision 4 re-pins S revision 8 and keeps host as the no-source control", () => {
+    expect(Q.revision).toBe(4);
     expect(Q.no_source_control).toBe("host");
     expect(qualificationSeed(Q, 102)).toEqual({
         order: ["host-oracle", "eidnara", "host"],
