@@ -419,14 +419,18 @@ campaign file:
 }
 ```
 
-A run may name a `group` (a plain name); runs without one are each their
-own group. With `max_concurrent` set, a run holds a launch slot from its
-first launch until it reaches `EndRun` or is given up, a stopped run waiting
-for its resume included, and the supervisor starts groups whole and in
-campaign order: a group launches in one poll once the runs holding a slot
-plus the group's runs fit in `max_concurrent`, and the first group that
-does not fit holds back every later one. A group whose run began keeps all
-its runs, so its resumes never wait for a slot. A group larger than
+A run may name a `group` (a plain name); a run without one is its own
+group, apart from any named group. With `max_concurrent` set, a run holds a
+launch slot from its first launch until it reaches `EndRun` or is given up,
+a stopped run waiting for its resume included, and while its process or its
+run directory's lease is live whatever its record says. Each poll reads
+every run's journal before it admits, so a run that reached `EndRun` since
+the last poll frees its slot at once. The supervisor starts groups whole and
+in campaign order: a group launches in one poll once the slots held plus
+the group's runs fit in `max_concurrent`, and the first group that does not
+fit holds back every later one. A group whose run began keeps all its runs
+and reserves a slot for each one that has not launched, so its resumes and
+late members never wait behind a later group. A group larger than
 `max_concurrent` is refused. Without `max_concurrent` every run launches at
 once.
 
@@ -465,9 +469,12 @@ field keeps every record. Every `poll_ms` the supervisor:
   held. A run's spend (`spend_usd`, `spend_calls`, `spend_by_component`) sums
   every complete record of its `calls.jsonl` at `prices` (USD per million
   input, output, cache-read, and cache-write tokens; c7's 5, 25, 0.5, and
-  6.25 by default, charged to every component and model). The supervisor
-  reads each file from where the last poll stopped, and from its start after
-  a restart or when the file shrank or was replaced;
+  6.25 by default, charged to every component and model); a complete line
+  that is not a JSON object counts for nothing. The supervisor reads each
+  file from where the last poll stopped, and from its start after a restart
+  or when the file shrank or was replaced. A linked run directory's records
+  are not read, and a call log that exists but cannot be opened as a plain
+  file raises an alert;
 - raises an alert for a run that gave up, a running run whose journal gained
   no entry for `stale_ms` (45 minutes by default, past the 20-minute job
   deadline), a failed finalize step, each `inode_paths` filesystem whose

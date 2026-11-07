@@ -18,6 +18,7 @@ import {
     type CampaignSpec,
     decide,
     finalizeArgv,
+    groupKey,
     lastErrorIn,
     launchArgv,
     noSpend,
@@ -345,20 +346,31 @@ const begun = (name: string, record: RunRecord) =>
     existsSync(join(runDir(spec, name), "journal.jsonl")) ||
     existsSync(join(runDir(spec, name), "manifest.json"));
 const OPEN_STATES = new Set<RunRecord["state"]>(["pending", "running"]);
+const running = (name: string) => {
+    const dir = runDir(spec, name);
+    return live(name) || (existsSync(dir) && leaseHeld(dir));
+};
+
+/** The run's progress, read only from a plain run directory. */
+function observe(name: string, now: number): RunProgress {
+    const dir = runDir(spec, name);
+    if (lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        throw new Error(`${dir} is a link; a run directory must be a plain directory`);
+    }
+    return runProgress(dir, now);
+}
 
 function step(
     run: CampaignSpec["runs"][number],
     record: RunRecord,
     now: number,
     mayStart: boolean,
+    observed: RunProgress | Error,
 ): RunProgress {
-    const dir = runDir(spec, run.name);
-    if (lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) {
-        throw new Error(`${dir} is a link; a run directory must be a plain directory`);
-    }
-    const progress = runProgress(dir, now);
-    const running = live(run.name) || (existsSync(dir) && leaseHeld(dir));
-    if (record.state === "running" && !running) {
+    if (observed instanceof Error) throw observed;
+    const progress = observed;
+    const isRunning = running(run.name);
+    if (record.state === "running" && !isRunning) {
         record.last_error = lastErrorIn(logOf(run.name)) ?? record.last_error;
         record.stalled =
             progress.measured_events === record.progress_at_launch ? record.stalled + 1 : 0;
@@ -369,7 +381,7 @@ function step(
     const decision = decide(
         record,
         progress,
-        running,
+        isRunning,
         spec.max_resumes,
         now,
         spec.relaunch_backoff_ms,
@@ -386,38 +398,57 @@ function step(
         record.gave_up_reason = decision.reason;
         say(`${run.name} GAVE UP: ${decision.reason}`, true);
     }
-    if (decision.action === "wait" && running) record.state = "running";
+    if (decision.action === "wait" && isRunning) record.state = "running";
     return progress;
 }
 
 let raised = new Set<string>();
 const spends = new Map<string, Spend>(spec.runs.map((r) => [r.name, noSpend()]));
-const groupOf = new Map(spec.runs.map((r) => [r.name, r.group ?? r.name]));
+const groupOf = new Map(spec.runs.map((r) => [r.name, r.group ?? null]));
 const cents = (usd: number) => Math.round(usd * 100) / 100;
 for (;;) {
     const now = Date.now();
     const rows: { record: RunRecord; progress: RunProgress }[] = [];
+    // Progress is read before admission, so a run that reached EndRun since the last poll frees its
+    // slot now, and a run whose process or lease is live holds one whatever its record says.
+    const observed = new Map<string, RunProgress | Error>();
+    for (const run of spec.runs) {
+        try {
+            observed.set(run.name, observe(run.name, now));
+        } catch (caught) {
+            observed.set(run.name, caught as Error);
+        }
+    }
     const slots = spec.runs.map((run) => {
         const record = records.get(run.name) as RunRecord;
         const began = begun(run.name, record);
+        const progress = observed.get(run.name);
+        const ended = progress !== undefined && !(progress instanceof Error) && progress.ended;
         return {
             name: run.name,
-            group: run.group ?? run.name,
+            group: groupKey(run),
             begun: began,
-            holding: began && OPEN_STATES.has(record.state),
+            holding: began && (running(run.name) || (!ended && OPEN_STATES.has(record.state))),
         };
     });
     const allowed = admitted(spec.max_concurrent, slots);
     for (const run of spec.runs) {
         const record = records.get(run.name) as RunRecord;
         try {
-            rows.push({ record, progress: step(run, record, now, allowed.has(run.name)) });
+            const progress = step(
+                run,
+                record,
+                now,
+                allowed.has(run.name),
+                observed.get(run.name) ?? empty(now),
+            );
+            rows.push({ record, progress });
             record.step_failures = 0;
         } catch (caught) {
             record.last_error = `supervisor: ${(caught as Error).message}`;
             record.step_failures++;
             say(`ALERT run ${run.name}: supervisor step failed: ${record.last_error}`, true);
-            if (record.step_failures >= STALL_LIMIT && !live(run.name)) {
+            if (record.step_failures >= STALL_LIMIT && !running(run.name)) {
                 record.state = "gave-up";
                 record.gave_up_reason = `${record.step_failures} supervisor steps in a row failed; last: ${record.last_error}`;
                 say(`${run.name} GAVE UP: ${record.gave_up_reason}`, true);
@@ -427,6 +458,9 @@ for (;;) {
     }
     for (const run of spec.runs) {
         const path = join(runDir(spec, run.name), "calls.jsonl");
+        // A linked run directory is refused by its step, and its records count for nothing.
+        if (lstatSync(runDir(spec, run.name), { throwIfNoEntry: false })?.isSymbolicLink())
+            continue;
         try {
             spends.set(run.name, readSpend(path, spends.get(run.name) ?? noSpend(), spec.prices));
         } catch (caught) {

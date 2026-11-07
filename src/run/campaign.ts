@@ -129,8 +129,8 @@ export function parseCampaign(raw: unknown): CampaignSpec {
     } else if (max != null) {
         const sizes = new Map<string, number>();
         for (const r of o?.runs ?? []) {
-            const g = r?.group ?? r?.name;
-            sizes.set(g, (sizes.get(g) ?? 0) + 1);
+            if (r?.group === undefined) continue;
+            sizes.set(r.group, (sizes.get(r.group) ?? 0) + 1);
         }
         for (const [g, n] of sizes) {
             if (n > max) problems.push(`group ${g} has ${n} runs, more than max_concurrent ${max}`);
@@ -191,9 +191,10 @@ export interface Slot {
 }
 
 /**
- * The runs that may launch this poll. A group with a run that began keeps every run; the other
- * groups start whole, in campaign order, while the runs holding a slot plus the group fit in
- * `max_concurrent`, and the first group that does not fit holds back every later one.
+ * The runs that may launch this poll. A group with a run that began keeps every run and reserves
+ * a slot for each run of it that has not launched; the other groups start whole, in campaign
+ * order, while the slots held and reserved plus the group fit in `max_concurrent`, and the first
+ * group that does not fit holds back every later one.
  */
 export function admitted(max: number | null, slots: readonly Slot[]): Set<string> {
     if (max === null) return new Set(slots.map((s) => s.name));
@@ -204,6 +205,8 @@ export function admitted(max: number | null, slots: readonly Slot[]): Set<string
     let blocked = false;
     for (const members of groups.values()) {
         if (members.some((m) => m.begun)) {
+            // Members of a begun group that have not launched yet keep their reserved slots.
+            held += members.filter((m) => !m.begun).length;
             for (const m of members) out.add(m.name);
             continue;
         }
@@ -243,19 +246,21 @@ export function callUsd(c: Record<string, unknown>, prices: Prices): number {
 
 /**
  * Adds the call records appended to `path` since `prev` to its spend. Only complete lines count,
- * so a record still being written is read on a later poll. A file that shrank or was replaced is
- * read again from its start; an absent file has spent nothing.
+ * so a record still being written is read on a later poll, and a line that is not a JSON object
+ * is passed over. A file that shrank or was replaced is read again from its start; an absent file
+ * has spent nothing, and any other open failure is thrown.
  */
 export function readSpend(path: string, prev: Spend, prices: Prices): Spend {
     let fd: number;
     try {
         fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    } catch {
-        return prev;
+    } catch (caught) {
+        if ((caught as NodeJS.ErrnoException).code === "ENOENT") return prev;
+        throw caught;
     }
     try {
         const st = fstatSync(fd);
-        if (!st.isFile()) return prev;
+        if (!st.isFile()) throw new Error(`${path} is not a regular file`);
         const spend =
             st.ino !== prev.ino || st.size < prev.offset
                 ? { ...noSpend(), ino: st.ino }
@@ -274,14 +279,17 @@ export function readSpend(path: string, prev: Spend, prices: Prices): Spend {
                 spend.offset += nl + 1;
                 data = data.subarray(nl + 1);
                 nl = data.indexOf(0x0a);
-                let c: Record<string, unknown>;
+                let c: unknown;
                 try {
                     c = JSON.parse(line);
                 } catch {
                     continue;
                 }
-                const usd = callUsd(c, prices);
-                const component = typeof c.component === "string" ? c.component : "unknown";
+                if (c === null || typeof c !== "object" || Array.isArray(c)) continue;
+                const record = c as Record<string, unknown>;
+                const usd = callUsd(record, prices);
+                const component =
+                    typeof record.component === "string" ? record.component : "unknown";
                 spend.usd += usd;
                 spend.calls++;
                 spend.by_component[component] = (spend.by_component[component] ?? 0) + usd;
@@ -295,6 +303,10 @@ export function readSpend(path: string, prev: Spend, prices: Prices): Spend {
 }
 
 export const runDir = (spec: CampaignSpec, name: string) => join(spec.out, name);
+
+/** A run's admission group: its named group, or itself alone, which no named group can share. */
+export const groupKey = (run: { name: string; group?: string }) =>
+    run.group === undefined ? `run:${run.name}` : `group:${run.group}`;
 
 /**
  * A run's command line. A resume adds `--sim-upgrade <sim_upgrade>` when the campaign names one;
@@ -471,7 +483,7 @@ export function alerts(
 ): string[] {
     const out: string[] = [];
     if (spec.spend_cap_usd !== null && spendUsd > spec.spend_cap_usd) {
-        out.push(`campaign spend $${Math.round(spendUsd)} passes the $${spec.spend_cap_usd} cap`);
+        out.push(`campaign spend $${spendUsd.toFixed(2)} passes the $${spec.spend_cap_usd} cap`);
     }
     for (const { record, progress } of runs) {
         if (record.state === "gave-up") {
@@ -505,7 +517,7 @@ export const alertKey = (alert: string) =>
     alert
         .replace(/for \d+ min$/, "for # min")
         .replace(/inode use [\d.]+%/, "inode use #%")
-        .replace(/^campaign spend \$\d+/, "campaign spend $#");
+        .replace(/^campaign spend \$[\d.]+/, "campaign spend $#");
 
 /** The last `error:` line within the last `tail` bytes of a log. */
 export function lastErrorIn(path: string, tail = 64 * 1024): string | null {

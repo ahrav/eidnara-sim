@@ -19,6 +19,7 @@ import {
     C7_PRICES,
     callUsd,
     decide,
+    groupKey,
     noSpend,
     openLog,
     parseCampaign,
@@ -382,7 +383,7 @@ test("max_concurrent starts each group whole, in campaign order, and the status 
         spend_calls: 1,
         spend_by_component: { agent: 6 },
     });
-    expect(status.alerts).toContain("campaign spend $30 passes the $10 cap");
+    expect(status.alerts).toContain("campaign spend $30.00 passes the $10 cap");
 });
 
 test("admission holds a group back until all its runs fit, and never splits one", () => {
@@ -414,6 +415,10 @@ test("admission holds a group back until all its runs fit, and never splits one"
     ];
     expect([...admitted(2, ended)]).toEqual(["a1", "a2"]);
     expect([...admitted(3, ended)]).toEqual(["a1", "a2", "b1", "b2"]);
+    // A group that began only in part reserves a slot for each of its runs still to launch.
+    const partial = [slot("a1", "a", true), slot("a2", "a"), slot("b1", "b")];
+    expect([...admitted(2, partial)]).toEqual(["a1", "a2"]);
+    expect([...admitted(3, partial)]).toEqual(["a1", "a2", "b1"]);
 });
 
 test("spend reads only complete call records, and starts over on a shrunk or replaced file", () => {
@@ -440,6 +445,13 @@ test("spend reads only complete call records, and starts over on a shrunk or rep
     writeFileSync(path, `${rec("agent", 0, 40_000)}\n`);
     expect(readSpend(path, second, C7_PRICES)).toMatchObject({ usd: 1, calls: 1 });
     expect(callUsd({ input_tokens: -5, output_tokens: "x" }, C7_PRICES)).toBe(0);
+    // A complete line that is JSON but not an object is passed over, and later records count.
+    writeFileSync(path, `null\n[1]\n${rec("agent", 0, 40_000)}\n`);
+    expect(readSpend(path, noSpend(), C7_PRICES)).toMatchObject({ usd: 1, calls: 1 });
+    // Only an absent file has spent nothing; a file that cannot be opened is an error.
+    const linked = join(dir, "linked.jsonl");
+    symlinkSync(path, linked);
+    expect(() => readSpend(linked, noSpend(), C7_PRICES)).toThrow();
 });
 
 test("a campaign file with a group larger than max_concurrent, bad prices, or a bad cap is refused", () => {
@@ -461,6 +473,13 @@ test("a campaign file with a group larger than max_concurrent, bad prices, or a 
     expect(() =>
         parseCampaign({ ...base, runs: [{ name: "r", args: [], group: "../g" }] }),
     ).toThrow("group is not a plain name");
+    // A run without a group is its own group, even when another run's group shares its name.
+    const shared = [
+        { name: "foo", args: [] },
+        { name: "bar", args: [], group: "foo" },
+    ];
+    expect(parseCampaign({ ...base, runs: shared, max_concurrent: 1 }).max_concurrent).toBe(1);
+    expect(groupKey({ name: "foo" })).not.toBe(groupKey({ name: "bar", group: "foo" }));
     expect(parseCampaign({ ...base, runs })).toMatchObject({
         max_concurrent: null,
         prices: C7_PRICES,
