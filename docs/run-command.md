@@ -500,8 +500,8 @@ field keeps every record. Every `poll_ms` the supervisor:
 - writes `<out>/campaign-status.json` (`sim-campaign-status/v1`): per run,
   the state, group, launches, last `error:` line of its log, events done and
   total, failed and interrupted turns, daemon exits, journal resumes,
-  unresolved fatal causes, the last entry's wall time and the last event's
-  (`last_progress_wall_ms`), the ETA at the event
+  unresolved fatal causes, the last entry's wall time, the latest `Event`,
+  `StartRun`, or `ResumeRun` wall time (`last_progress_wall_ms`), the ETA at the event
   rate of the last six hours, and its spend; plus the current alerts, the
   campaign's total spend, `spend_cap_usd`, `max_concurrent`, and the slots
   held. A run's spend (`spend_usd`, `spend_calls`, `spend_by_component`) sums

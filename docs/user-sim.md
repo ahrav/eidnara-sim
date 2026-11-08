@@ -231,8 +231,8 @@ delivered text differs from the reference arm's before the recorded
 divergence index. `scripts/pairing-check.ts <run>` reports those
 mismatches, the divergences, each arm's reply sources and fallbacks, probe
 or paste text that differs from the script, non-filler turns left unsent,
-and each arm's rates; it exits 1 on any of them or on a rate outside its
-band. It also lists under `unwitnessed_clarify` each delivered `clarify`
+and each arm's rates; it exits 1 on any of them or, on a whole-scenario
+run, on a rate outside its band (Journal, below). It also lists under `unwitnessed_clarify` each delivered `clarify`
 turn whose session's last agent reply recorded in `calls.jsonl` before the
 turn began (its tail when cut) ends without a question; it reads the call
 log once and keeps one reply per `clarify` turn. A turn a stop cut, journaled `failed(interrupted)` by an
