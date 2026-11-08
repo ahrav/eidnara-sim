@@ -45,6 +45,7 @@ import {
     type ArmDriver,
     type ArmHandle,
     fatalCause,
+    GATE_EXIT_MS,
     HarnessFailure,
     type ScenarioEvent,
     Scheduler,
@@ -7611,6 +7612,139 @@ describe("resume after harness interruptions", () => {
         }
     });
 
+    test("a Pi launch that exits 1 with no stderr at a session_start stops the run; the resume delivers the session_start again", async () => {
+        const error = "Pi RPC process exited with code 1 signal null\n";
+        const events = fixtureEvents(2);
+        const options = { events, faults: [], settleMs: 0, order: ["a"] };
+        for (const legacy of [false, true]) {
+            const path = join(dir(), "j.jsonl");
+            const failing = fakeDriver([], 0, (e) => {
+                if (e.id === "e-000000") throw new Error(error);
+            });
+            await expect(
+                new Scheduler({
+                    ...options,
+                    journal: new Journal(path),
+                    drivers: { a: failing },
+                }).run(),
+            ).rejects.toThrow(error);
+            const fatal = readJournal(path).find((e) => e.kind === "ItemState" && e.fatal === true);
+            expect(fatal).toMatchObject({ event: "e-000000", error, cause: "host-launch" });
+            if (legacy) {
+                const lines = readFileSync(path, "utf8").split("\n");
+                const at = lines.findIndex((l) => l.includes('"fatal":true'));
+                lines[at] = JSON.stringify({
+                    ...JSON.parse(lines[at] as string),
+                    cause: "event-error",
+                });
+                writeFileSync(path, lines.join("\n"));
+            }
+            const second: string[] = [];
+            const resumed = new Journal(path);
+            const n = resumed.entries.length;
+            await new Scheduler({
+                ...options,
+                journal: resumed,
+                drivers: { a: fakeDriver(second) },
+            }).run();
+            const added = resumed.entries.slice(n);
+            expect(added.slice(0, 2).map((e) => e.kind)).toEqual(["ResumeRun", "Recovered"]);
+            expect(added[1]).toMatchObject({
+                recovers: fatal?.seq,
+                cause: "host-launch",
+                event: "e-000000",
+            });
+            expect(added.some((e) => e.state === "failed(interrupted)")).toBe(false);
+            expect(second).toEqual([
+                "session_start:e-000000",
+                "user_turn:e-000001",
+                "user_turn:e-000002",
+                "session_end:e-999999",
+            ]);
+            expect(resumed.entries.at(-1)?.kind).toBe("EndRun");
+            expect(interruptions(resumed.entries).a).toMatchObject({
+                interrupted_turns: 0,
+                stops_by_cause: { "host-launch": 1 },
+                unresolved: [],
+            });
+            invariants(resumed.entries);
+            resumed.close();
+            await new Scheduler({
+                ...options,
+                journal: new Journal(path),
+                drivers: { a: fakeDriver([]) },
+            }).run();
+        }
+    });
+
+    test("a Pi launch exit journaled later than GATE_EXIT_MS after the arm's previous entry is refused, a job entry mid-launch included", async () => {
+        const error = "Pi RPC process exited with code 1 signal null\n";
+        const events = fixtureEvents(1);
+        const options = { events, faults: [], settleMs: 0, order: ["a"] };
+        // The sampler's job lands mid-launch, within the bound of the exit, in the second case.
+        for (const midLaunchJob of [false, true]) {
+            const path = join(dir(), "j.jsonl");
+            const failing = fakeDriver([], 0, async (e) => {
+                if (e.id !== "e-000000") return;
+                await Bun.sleep(GATE_EXIT_MS + 20);
+                if (midLaunchJob) {
+                    failing.arm().jobStart("daemon-cpu-a-1");
+                    await Bun.sleep(10);
+                    failing.arm().jobEnd("daemon-cpu-a-1");
+                }
+                throw new Error(error);
+            });
+            await expect(
+                new Scheduler({
+                    ...options,
+                    journal: new Journal(path),
+                    drivers: { a: failing },
+                }).run(),
+            ).rejects.toThrow(error);
+            const journaled = readJournal(path);
+            const fatal = journaled.find((e) => e.kind === "ItemState" && e.fatal === true);
+            expect(fatal).toMatchObject({ event: "e-000000", error, cause: "host-launch" });
+            if (midLaunchJob) {
+                const kinds = journaled.filter((e) => e.seq < (fatal?.seq ?? 0)).slice(-2);
+                expect(kinds.map((e) => e.kind)).toEqual(["RegisterJob", "EndJob"]);
+            }
+            await expect(
+                new Scheduler({
+                    ...options,
+                    journal: new Journal(path),
+                    drivers: { a: fakeDriver([]) },
+                }).run(),
+            ).rejects.toThrow("run failed: event e-000000 failed");
+        }
+    });
+
+    test("a Pi launch exit that carries stderr stays event-error, and its resume is refused", async () => {
+        const error =
+            "Pi RPC process exited with code 1 signal null\nError: extension failed to load\n";
+        const events = fixtureEvents(1);
+        const options = { events, faults: [], settleMs: 0, order: ["a"] };
+        const path = join(dir(), "j.jsonl");
+        const failing = fakeDriver([], 0, (e) => {
+            if (e.id === "e-000000") throw new Error(error);
+        });
+        await expect(
+            new Scheduler({
+                ...options,
+                journal: new Journal(path),
+                drivers: { a: failing },
+            }).run(),
+        ).rejects.toThrow(error);
+        const fatal = readJournal(path).find((e) => e.kind === "ItemState" && e.fatal === true);
+        expect(fatal).toMatchObject({ event: "e-000000", cause: "event-error" });
+        await expect(
+            new Scheduler({
+                ...options,
+                journal: new Journal(path),
+                drivers: { a: fakeDriver([]) },
+            }).run(),
+        ).rejects.toThrow("run failed: event e-000000 failed");
+    });
+
     test("a job release that lands after its arm stopped is dropped, and never reaches the next arm", async () => {
         const path = join(dir(), "j.jsonl");
         let release: (() => void) | null = null;
@@ -7812,6 +7946,48 @@ describe("fatal causes on resume", () => {
         await expect(
             run(journalWith({ ...event, error: "driver outcome is null", cause: "host-abort" })),
         ).rejects.toThrow("run failed: event e-000001 failed");
+    });
+
+    test("a host launch is classified by its whole error text and is refused at a user turn", async () => {
+        const error = "Pi RPC process exited with code 1 signal null\n";
+        const at = (fields: Record<string, unknown>) =>
+            ({
+                kind: "ItemState",
+                arm: "a",
+                scenario_ms: 0,
+                wall_ms: 0,
+                seq: 0,
+                fatal: true,
+                ...fields,
+            }) as Entry;
+        for (const cause of ["host-launch", "event-error", undefined]) {
+            expect(fatalCause(at({ ...event, error, cause }))).toBe("host-launch");
+        }
+        for (const error of [
+            "Pi RPC process exited with code 1 signal null\nboom\n",
+            "Pi RPC process exited with code 2 signal null\n",
+            "Pi RPC process exited with code null signal SIGKILL\n",
+            "Pi RPC process exited with code 1 signal null",
+        ]) {
+            expect(fatalCause(at({ ...event, error, cause: "event-error" }))).toBe("event-error");
+        }
+        expect(
+            fatalCause(at({ ...event, error: "driver outcome is null", cause: "host-launch" })),
+        ).toBe("event-error");
+        // A transport error that stores host-launch reaches the journal check and contradicts it.
+        await expect(
+            run(journalWith({ ...event, error: "fetch failed", cause: "host-launch" })),
+        ).rejects.toThrow(/cause its shape contradicts/);
+        // `journalWith` stops the arm at e-000001, a user turn, so the launch error is refused there.
+        for (const cause of ["host-launch", "event-error", "driver outcome is null"]) {
+            const fields =
+                cause === "driver outcome is null"
+                    ? { error: cause, cause: "host-launch" }
+                    : { error, cause };
+            await expect(run(journalWith({ ...event, ...fields }))).rejects.toThrow(
+                "run failed: event e-000001 failed",
+            );
+        }
     });
 
     test("a fatal record whose cause contradicts its shape, or of unknown shape, is refused", async () => {
