@@ -7958,6 +7958,13 @@ describe("fatal causes on resume", () => {
         ]) {
             expect(fatalCause(at({ ...event, error, cause: "event-error" }))).toBe("event-error");
         }
+        expect(
+            fatalCause(at({ ...event, error: "driver outcome is null", cause: "host-launch" })),
+        ).toBe("event-error");
+        // A transport error that stores host-launch reaches the journal check and contradicts it.
+        await expect(
+            run(journalWith({ ...event, error: "fetch failed", cause: "host-launch" })),
+        ).rejects.toThrow(/cause its shape contradicts/);
         // `journalWith` stops the arm at e-000001, a user turn, so the launch error is refused there.
         for (const cause of ["host-launch", "event-error", "driver outcome is null"]) {
             const fields =
