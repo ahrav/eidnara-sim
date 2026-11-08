@@ -254,8 +254,11 @@ and `interrupted`) before its `EndTurn`, so a resume that reads the
 `EndTurn` as the whole turn has the user record too, and each arm's
 `UserSimRates` before its `EndArm`: the rates over the turns it delivered
 and the rates outside their band. A run cut short of its scenario can leave
-a band and is flagged, and `scripts/pairing-check.ts` fails a run that lacks
-an arm's `UserSimRates`. `scripts/grade-run.ts` grades each P14 item from
+a band and is flagged. `scripts/pairing-check.ts` fails a run that lacks an
+arm's `UserSimRates` or whose recomputed rates differ from it, and fails a
+whole-scenario run with a rate outside its band; a run over an `--events`
+prefix reports its flagged rates (`rates_scope: "prefix"`) and passes on
+them, since the bands bound a whole scenario's draws. `scripts/grade-run.ts` grades each P14 item from
 a session view of its calls with these labels placed among them
 (`docs/grading.md`).
 

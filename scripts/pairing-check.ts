@@ -489,6 +489,11 @@ const unwitnessedClarify = clarifyRows
     .filter((w) => w.reply === undefined || !asksQuestion(w.reply))
     .map((w) => `${w.row.arm} ${w.row.event}`);
 const prefix = new Set(allScheduled.map((e) => e.id));
+/**
+ * The bands bound a whole scenario's realised rates; a run over a prefix draws too few turns and
+ * sessions to meet them, so its rates outside a band are reported and do not fail the check.
+ */
+const wholeScenario = manifest.events === scenario.events.length;
 const outOfPrefix = [
     ...new Set([
         ...turns.filter((r) => !prefix.has(r.event)).map((r) => `${r.arm} ${r.event}`),
@@ -562,6 +567,7 @@ const report = {
     script_text_altered: scriptAltered,
     out_of_prefix: outOfPrefix,
     rates: journal.filter((e) => e.kind === "UserSimRates"),
+    rates_scope: wholeScenario ? "scenario" : "prefix",
     flagged: journal
         .filter((e) => e.kind === "UserSimRates" && (e.outside as string[]).length > 0)
         .map((e) => `${e.arm}: ${(e.outside as string[]).join(", ")}`),
@@ -605,7 +611,7 @@ const failed =
     provenance.length +
     scriptAltered.length +
     outOfPrefix.length +
-    report.flagged.length +
+    (wholeScenario ? report.flagged.length : 0) +
     report.missing_rates.length +
     report.rates_mismatch.length +
     report.invalid_labels.length +

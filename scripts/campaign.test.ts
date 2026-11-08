@@ -285,6 +285,22 @@ test("alerts name a silent running run and a filesystem past 80% inode use", () 
     expect(alertKey("run r journaled nothing for 5 min")).toBe(
         alertKey("run r journaled nothing for 7 min"),
     );
+    // A turn that never ends keeps background job entries arriving; the run is still silent.
+    j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-0", outcome: "ok" });
+    const evented = runProgress(dir).last_progress_wall_ms as number;
+    j.append({ kind: "RegisterJob", arm: "a", scenario_ms: 0, job: "daemon-cpu-a-1" });
+    const busy = runProgress(dir);
+    const quiet = record({ state: "running", launched_at: evented - 60_000 });
+    expect(
+        alerts(spec, [{ record: quiet, progress: busy }], evented + 50 * 60_000, () => null),
+    ).toEqual(["run r journaled nothing for 50 min"]);
+    const fresh = { ...busy, last_entry_wall_ms: evented + 49 * 60_000 };
+    expect(
+        alerts(spec, [{ record: quiet, progress: fresh }], evented + 50 * 60_000, () => null),
+    ).toEqual(["run r finished no event for 50 min"]);
+    expect(alertKey("run r finished no event for 50 min")).toBe(
+        alertKey("run r finished no event for 51 min"),
+    );
     expect(alertKey("run s101 GAVE UP: x")).not.toBe(alertKey("run s102 GAVE UP: x"));
 });
 

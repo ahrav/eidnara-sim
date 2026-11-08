@@ -500,7 +500,8 @@ field keeps every record. Every `poll_ms` the supervisor:
 - writes `<out>/campaign-status.json` (`sim-campaign-status/v1`): per run,
   the state, group, launches, last `error:` line of its log, events done and
   total, failed and interrupted turns, daemon exits, journal resumes,
-  unresolved fatal causes, the last entry's wall time, the ETA at the event
+  unresolved fatal causes, the last entry's wall time and the last event's
+  (`last_progress_wall_ms`), the ETA at the event
   rate of the last six hours, and its spend; plus the current alerts, the
   campaign's total spend, `spend_cap_usd`, `max_concurrent`, and the slots
   held. A run's spend (`spend_usd`, `spend_calls`, `spend_by_component`) sums
@@ -515,7 +516,9 @@ field keeps every record. Every `poll_ms` the supervisor:
   until a read succeeds;
 - raises an alert for a run that gave up, a running run whose journal gained
   no entry for `stale_ms` (45 minutes by default, past the 20-minute job
-  deadline), a failed finalize step, each `inode_paths` filesystem whose
+  deadline), a running run whose journal gained entries but no `Event` (and
+  no `StartRun` or `ResumeRun`) for `stale_ms`, since the background
+  daemon-CPU and settle jobs keep journaling while a turn hangs, a failed finalize step, each `inode_paths` filesystem whose
   inode use passes 80%, and a total spend past `spend_cap_usd`. The spend
   alert only reports; the supervisor keeps every run going.
 

@@ -567,6 +567,30 @@ test("user-turn evidence outside the executed prefix is rejected", () => {
     expect(r.exit).toBe(1);
 });
 
+test("rates outside their band fail a whole scenario only; a prefix run reports them", () => {
+    const f = fixture();
+    f.manifest = { ...f.manifest, events: 20 };
+    const kept = (r: Row) => Number(String(r.event).split("-")[1]) < 2;
+    f.journal = drop(
+        f.journal,
+        (r) => !((r.kind === "Event" || r.kind === "UserTurn") && !kept(r)),
+    );
+    f.pairing = drop(f.pairing, kept);
+    for (const arm of ["host", "eidnara"]) {
+        const rates = find(f.journal, (r) => r.kind === "UserSimRates" && r.arm === arm);
+        const turns = f.journal
+            .filter((r) => r.kind === "UserTurn" && r.arm === arm)
+            .map((r) => ({ session: String(r.session), label: r.label as Label }));
+        Object.assign(rates, realisedRates(turns, prereg));
+    }
+    const r = run(f);
+    expect(r.report.rates_scope).toBe("prefix");
+    expect((r.report.flagged as unknown[]).length).toBeGreaterThan(0);
+    expect(r.report.rates_mismatch).toEqual([]);
+    expect(r.exit).toBe(0);
+    expect(run(fixture()).report.rates_scope).toBe("scenario");
+});
+
 test("every delivered scripted row carries the compiled text's hash", () => {
     const events = scriptedEvents();
     find(events, (e) => e.id === "e-1-9").role = "conveyance";

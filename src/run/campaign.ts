@@ -363,6 +363,12 @@ export interface RunProgress {
     pending_fatal: string[];
     measured_events: number;
     last_entry_wall_ms: number | null;
+    /**
+     * The wall time of the run's last measured step: its latest `Event`, or the `StartRun` or
+     * `ResumeRun` of the current attempt when that came later. Background job entries keep
+     * arriving during a turn that never ends, so the silence alert reads this instead.
+     */
+    last_progress_wall_ms: number | null;
     eta_ms: number | null;
 }
 
@@ -413,6 +419,11 @@ export function runProgress(dir: string, now = Date.now()): RunProgress {
         pending_fatal: arms.flatMap((a) => a.unresolved),
         measured_events: events.filter((e) => e.outcome !== "failed(interrupted)").length,
         last_entry_wall_ms: entries.at(-1)?.wall_ms ?? null,
+        last_progress_wall_ms:
+            [...entries]
+                .reverse()
+                .find((e) => e.kind === "Event" || e.kind === "StartRun" || e.kind === "ResumeRun")
+                ?.wall_ms ?? null,
         eta_ms: left === 0 ? 0 : left !== null && rate ? Math.round(left / rate) : null,
     };
 }
@@ -508,6 +519,12 @@ export function alerts(
         if (record.state === "running" && last > 0 && now - last > spec.stale_ms) {
             const minutes = Math.round((now - last) / 60_000);
             out.push(`run ${record.name} journaled nothing for ${minutes} min`);
+        } else {
+            const step = Math.max(progress.last_progress_wall_ms ?? 0, record.launched_at ?? 0);
+            if (record.state === "running" && step > 0 && now - step > spec.stale_ms) {
+                const minutes = Math.round((now - step) / 60_000);
+                out.push(`run ${record.name} finished no event for ${minutes} min`);
+            }
         }
         const failed = record.finalize.filter((f) => f.exit !== 0);
         if (record.state === "finalized" && failed.length > 0) {
@@ -530,7 +547,7 @@ export function alerts(
  */
 export const alertKey = (alert: string) =>
     alert
-        .replace(/for \d+ min$/, "for # min")
+        .replace(/ for \d+ min$/, " for # min")
         .replace(/inode use [\d.]+%/, "inode use #%")
         .replace(/^campaign spend \$[\d.]+/, "campaign spend $#");
 
