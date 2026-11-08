@@ -1,7 +1,7 @@
 {
     "schema": "sim-qualification/v1",
     "id": "C8",
-    "revision": 1,
+    "revision": 2,
     "frozen": true,
     "tier": "M",
     "tier_preregistration_sha256": "d1b8c9694586ff9fe2c3b55b0f98fa2e564da270d2f19d3c9d8eb8181398cd06",
@@ -12,8 +12,7 @@
         206,
         207,
         208,
-        209,
-        212
+        209
     ],
     "hosts": [
         "pi"
@@ -55,12 +54,6 @@
                 "eidnara",
                 "eidnara-hybrid",
                 "host"
-            ],
-            [
-                "eidnara-hybrid",
-                "eidnara-search",
-                "host",
-                "eidnara"
             ]
         ]
     },

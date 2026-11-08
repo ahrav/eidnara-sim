@@ -474,23 +474,23 @@ thresholds under Titan:
 
 ## c8 comparison seeds
 
-Qualifications C8 (`prereg/C8.json`, revision 1, `b025478d`, diagnosed split,
-fresh seeds) and C8H (`prereg/C8H.json`, revision 1, `bb29dac2`, held-out
+Qualifications C8 (`prereg/C8.json`, revision 2, `c3762c53`, diagnosed split,
+fresh seeds) and C8H (`prereg/C8H.json`, revision 2, `fc1448b3`, held-out
 split) compile these scenarios under Titan, each within the thresholds;
-seeds 205, 210, and 211 refuse at placement (a probe turn finds no session):
+seeds 205, 210, and 211 refuse at placement (a probe turn finds no session).
+A scenario's manifest carries its registration's hash, so revision 2 changes
+every `scenario_hash` and leaves the similarity values as they were:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| C8 | 204 | `fe66334e` | 0.3335 | 0.5807 |
-| C8 | 206 | `ea990c2f` | 0.3427 | 0.5807 |
-| C8 | 207 | `f802779c` | 0.3392 | 0.5441 |
-| C8 | 208 | `24f04e83` | 0.3504 | 0.5807 |
-| C8 | 209 | `3fd44060` | 0.3665 | 0.5807 |
-| C8 | 212 | `c21d489f` | 0.2798 | 0.5807 |
-| C8H | 603 | `9ce7fe9d` | 0.2946 | 0.5913 |
-| C8H | 604 | `52523b7f` | 0.3028 | 0.5991 |
-| C8H | 605 | `d47eb463` | 0.3021 | 0.5913 |
-| C8H | 606 | `e44d0ad5` | 0.2998 | 0.5913 |
+| C8 | 204 | `a445f55c` | 0.3335 | 0.5807 |
+| C8 | 206 | `e8df9351` | 0.3427 | 0.5807 |
+| C8 | 207 | `778d9d9b` | 0.3392 | 0.5441 |
+| C8 | 208 | `e585d9a1` | 0.3504 | 0.5807 |
+| C8 | 209 | `d8f494e5` | 0.3665 | 0.5807 |
+| C8H | 603 | `91b50eaa` | 0.2946 | 0.5913 |
+| C8H | 604 | `9aaf96db` | 0.3028 | 0.5991 |
+| C8H | 605 | `af4bcec8` | 0.3021 | 0.5913 |
 
 A C8 scenario issues 20 items per probe type, a tier M scenario's count; a
 C8H scenario issues 10, as H's do.

@@ -220,7 +220,7 @@ test("H binds the current M pre-registration and runs fresh seeds on the held-ou
     ).toEqual(["holdout.seeds: 201 is a M seed, which compiles from the diagnosed corpus"]);
 });
 
-test("C8 runs fresh diagnosed seeds, and C8H four of H's held-out seeds, over the four c8 arms", () => {
+test("C8 runs fresh diagnosed seeds, and C8H three of H's held-out seeds, over the four c8 arms", () => {
     const M = loadPrereg("M");
     const H = loadQualification("H");
     const C8 = loadQualification("C8");
@@ -253,7 +253,7 @@ test("fresh seeds, replicates, and the analysis plan are checked against the reg
         patch(q);
         return validateQualification(q, M);
     };
-    expect(editC((q) => (q.seeds = [201, 206, 207, 208, 209, 212]))).toContain(
+    expect(editC((q) => (q.seeds = [201, 206, 207, 208, 209]))).toContain(
         "seeds: 201 is a M seed, and a fresh-seed registration runs none",
     );
     expect(editC((q) => delete q.fresh_seeds)).toContain("seeds: 204 is not a M seed");
