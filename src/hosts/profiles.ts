@@ -109,6 +109,7 @@ const BEHAVIOUR_SOURCES = [
     "crates/daemon/src/memory_capture/native.rs",
     "crates/daemon/src/tool_outcome.rs",
     "crates/daemon/src/history_summarizer_open_items.rs",
+    "crates/daemon/src/history_summarizer_citations.rs",
     "crates/daemon/src/history_summarizer_validate.rs",
     "crates/daemon/testdata/history_summarizer-system-prompt.txt",
 ];

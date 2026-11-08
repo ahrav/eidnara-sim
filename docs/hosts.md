@@ -201,15 +201,15 @@ script prints the `git diff` to read, and after that reading the pin moves to
 the commit. Exit 2 (`broken`): a probe fails, so `DAEMON_VARIANTS` needs
 revising before the pin moves. The pin names only merged commits, so a run
 built from an unmerged branch stops at preflight once its fixture sources
-differ from the pin's. At `8df8e2ff0` the verdict is `unchanged`; against
-the previous pin `0d7c680f5` it is `reread`, for two changed sources.
-`crates/daemon/src/config.rs` adds the user-only keys
-`contradiction_candidates.enabled` and `verifier.enabled`, both default false,
-which no arm sets. `crates/daemon/src/source_capture.rs` adds the
-memory-capture `decisions_*` counters to the settled `source_capture` report,
-each an unsigned integer, and keeps the `source_capture_enabled &&
-memory_enabled` consent gate, so every capability reading and the counter
-record's shape check stay as recorded.
+differ from the pin's. At `8e6265d2c` the verdict is `unchanged`; against
+the previous pin `1f2867036` it is `reread`, for four changed sources from
+#1207 (E6): `history_summarizer_open_items.rs` is new and holds
+`retire_settled_lines`, `history_summarizer_validate.rs` passes the parsed
+segments through it, `history_summarizer_citations.rs` exposes the claim-key
+grammar it reads status-line keys with, and the summarizer prompt gains the
+open-items section. Every earlier probe holds there. Audited against the
+current pin, a commit before E6 returns `broken`, since the
+`settled_lines_retired` probes need those files.
 
 ## Capability evidence
 
