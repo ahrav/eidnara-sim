@@ -128,18 +128,16 @@ export type FatalCause =
  * without an open turn (a `session_end`) is delivered again with no host session open. A host
  * abort fails in the host process after the harness already ended the turn at its deadline or
  * at the user's abort; the stop's teardown stops that host, and the resume marks the turn
- * interrupted and opens a fresh host session. A host launch fails in the launch gate before Pi
- * runs, so no turn is open and nothing reached the workspace; the resume delivers the
- * `session_start` again, which launches a fresh host. A fault mechanism that failed, or a
- * delivery that failed for any other reason, names a harness or driver defect whose effect on
- * the arm is unknown, so such a run stays refused.
+ * interrupted and opens a fresh host session. A fault mechanism that failed, or a delivery that
+ * failed for any other reason, names a harness or driver defect whose effect on the arm is
+ * unknown, so such a run stays refused. A host launch is recovered only under
+ * `Scheduler.gateExit`.
  */
 export const RECOVERABLE_CAUSES: ReadonlySet<FatalCause> = new Set<FatalCause>([
     "job-deadline",
     "harness-transport",
     "host-teardown",
     "host-abort",
-    "host-launch",
     "daemon-exit",
 ]);
 
@@ -165,6 +163,9 @@ const HOST_ABORT =
     /^(?:Pi turn still running \d+ ms after (?:abort \([^\n]*\)|the user's abort)|OpenCode turn still running 30 s after abort)$/;
 
 const HOST_LAUNCH = "Pi RPC process exited with code 1 signal null\n";
+
+/** The longest a `host-launch` stop may take, from the arm's previous entry, to be recovered. */
+export const GATE_EXIT_MS = 50;
 
 /** The event causes `fatalCause` classifies by error text whatever `cause` the record stores. */
 const TEXT_CAUSES: ReadonlySet<FatalCause> = new Set<FatalCause>([
@@ -496,7 +497,8 @@ export class Scheduler {
                 : pending.find(
                       (e) =>
                           !RECOVERABLE_CAUSES.has(fatalCause(e)) &&
-                          !this.strandedRefusal(e, entries),
+                          !this.strandedRefusal(e, entries) &&
+                          !this.gateExit(e, entries),
                   );
         if (fatal) {
             const cause = fatal.fault
@@ -1135,7 +1137,9 @@ export class Scheduler {
                     }
                     const cause = fatalCause(f);
                     const recoverable =
-                        RECOVERABLE_CAUSES.has(cause) || this.strandedRefusal(f, entries);
+                        RECOVERABLE_CAUSES.has(cause) ||
+                        this.strandedRefusal(f, entries) ||
+                        this.gateExit(f, entries);
                     if (e.cause !== cause || !recoverable) {
                         throw fail(`Recovered for fatal record ${f.seq} misreports its cause`, e);
                     }
@@ -1171,10 +1175,6 @@ export class Scheduler {
                         }
                         if (e.cause !== undefined && !storedCauseAgrees(e)) {
                             throw fail("fatal ItemState names a cause its shape contradicts", e);
-                        }
-                        const at = this.o.events.find((x) => x.id === e.event)?.kind;
-                        if (fatalCause(e) === "host-launch" && at !== "session_start") {
-                            throw fail("host-launch stop at an event other than session_start", e);
                         }
                         unresolved.set(e.seq, e);
                         return;
@@ -1486,6 +1486,23 @@ export class Scheduler {
                 !(fatalCause(e) === "event-error" && e.error === refusedEnd(end.id)),
         );
         return cut ? null : String(turn.cause ?? "harness-exit");
+    }
+
+    /**
+     * Whether fatal record `f` is a Pi launch that ended in its gate shell: a `host-launch` at a
+     * `session_start`, journaled within `GATE_EXIT_MS` of the arm's previous entry. That interval
+     * bounds the launch's whole lifetime, and a launch that ran the sandbox launcher takes
+     * longer (`docs/run.md`), so Pi never started and the resume delivers the `session_start`
+     * again.
+     */
+    private gateExit(f: Entry, entries: readonly Entry[]): boolean {
+        const at = this.o.events.find((x) => x.id === f.event);
+        if (at?.kind !== "session_start" || !isFatal(f) || fatalCause(f) !== "host-launch") {
+            return false;
+        }
+        const before = entries.filter((e) => e.arm === f.arm && e.seq < f.seq).at(-1);
+        const span = Number(f.wall_ms) - Number(before?.wall_ms);
+        return span >= 0 && span <= GATE_EXIT_MS;
     }
 
     /**

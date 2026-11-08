@@ -268,7 +268,7 @@ A fatal `ItemState` stops the run and carries one `cause`:
 | `harness-transport` | a user turn's delivery failed with `TransportFailure`: a user-sim call whose bounded retries all failed in transport | recovered |
 | `host-teardown` | an event's delivery failed with exactly `host tree <pid> survived SIGKILL`: the host's process tree outlived the kill that stopped it (a session close), and the record carries the tree's `host_pid` | recovered |
 | `host-abort` | a user turn's delivery failed with exactly a drain error of `src/hosts/arms.ts`: `Pi turn still running <n> ms after abort (<reason>)`, `Pi turn still running <n> ms after the user's abort`, or `OpenCode turn still running 30 s after abort`. The harness had already ended the turn at its deadline or the user's abort, and the host process kept it running | recovered |
-| `host-launch` | a `session_start`'s delivery failed with exactly `Pi RPC process exited with code 1 signal null` and an empty stderr. `PiSimHost.openSession` starts Pi through a gate shell that runs `read _ <&3`; when Bun's extra stdio pipe fails (`connect ENOENT` in `node:child_process`, oven-sh/bun#30443), the gate's newline is lost, `read` meets end of file, and the shell exits 1 before the sandbox launcher runs. Pi never started, so no turn was open and the workspace is as the previous event left it; the resume delivers the `session_start` again | recovered |
+| `host-launch` | a `session_start`'s delivery failed with exactly `Pi RPC process exited with code 1 signal null` and an empty stderr. `PiSimHost.openSession` starts Pi through a gate shell that runs `read _ <&3`; when Bun's extra stdio pipe fails (`connect ENOENT` in `node:child_process`, oven-sh/bun#30443), the gate's newline is lost, `read` meets end of file, and the shell exits 1 before the sandbox launcher runs. Pi never started, so no turn was open and the workspace is as the previous event left it; the resume delivers the `session_start` again | recovered when the record is within `GATE_EXIT_MS` (50 ms) of the arm's previous journal entry, the gate shell's whole lifetime; a launch that ran the sandbox launcher (sudo, unshare, bind mounts, node) takes over 250 ms, so a later record is refused |
 | `daemon-exit` | the daemon exited outside an outage window | recovered |
 | `fault-error` | a scheduler fault's mechanism failed | refused |
 | `event-error` | an event's delivery failed for any other reason | refused, except the driver's refusal of a stranded `session_end` (below) |
@@ -282,11 +282,12 @@ cause existed, which stores `event-error` with that text, names
 `host-teardown`, `host-abort`, or `host-launch` too; a stored `host-teardown`
 must carry the `host_pid` its error names, a stored `event-error` on that text
 must carry none, a stored `host-abort` or `event-error` is the only cause a
-drain error may carry, a stored `host-launch` or `event-error` is the only
-cause the launch error may carry, and the replay refuses the launch error at
-any event other than a `session_start`. Output from the sandbox launcher or Pi
-follows the launch error's newline, so a launch that ran and failed keeps
-`event-error`. A
+drain error may carry, and a stored `host-launch` or `event-error` is the only
+cause the launch error may carry. A `host-launch` record is recovered only at a
+`session_start` and only within `GATE_EXIT_MS` of the arm's previous entry;
+elsewhere it is refused as an `event-error` is. Output from the sandbox
+launcher or Pi follows the launch error's newline, so a launch that ran and
+failed keeps `event-error`. A
 `session_end` that stops on a host teardown first reports a daemon already
 gone (`daemon-exit`), since the teardown cut the session_end before the
 driver's own daemon check. An event record

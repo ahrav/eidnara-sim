@@ -45,6 +45,7 @@ import {
     type ArmDriver,
     type ArmHandle,
     fatalCause,
+    GATE_EXIT_MS,
     HarnessFailure,
     type ScenarioEvent,
     Scheduler,
@@ -7676,6 +7677,34 @@ describe("resume after harness interruptions", () => {
         }
     });
 
+    test("a Pi launch exit journaled later than GATE_EXIT_MS after the arm's previous entry is refused", async () => {
+        const error = "Pi RPC process exited with code 1 signal null\n";
+        const events = fixtureEvents(1);
+        const options = { events, faults: [], settleMs: 0, order: ["a"] };
+        const path = join(dir(), "j.jsonl");
+        const failing = fakeDriver([], 0, async (e) => {
+            if (e.id !== "e-000000") return;
+            await Bun.sleep(GATE_EXIT_MS + 20);
+            throw new Error(error);
+        });
+        await expect(
+            new Scheduler({
+                ...options,
+                journal: new Journal(path),
+                drivers: { a: failing },
+            }).run(),
+        ).rejects.toThrow(error);
+        const fatal = readJournal(path).find((e) => e.kind === "ItemState" && e.fatal === true);
+        expect(fatal).toMatchObject({ event: "e-000000", error, cause: "host-launch" });
+        await expect(
+            new Scheduler({
+                ...options,
+                journal: new Journal(path),
+                drivers: { a: fakeDriver([]) },
+            }).run(),
+        ).rejects.toThrow("run failed: event e-000000 failed");
+    });
+
     test("a Pi launch exit that carries stderr stays event-error, and its resume is refused", async () => {
         const error =
             "Pi RPC process exited with code 1 signal null\nError: extension failed to load\n";
@@ -7906,7 +7935,7 @@ describe("fatal causes on resume", () => {
         ).rejects.toThrow("run failed: event e-000001 failed");
     });
 
-    test("a host launch is classified by its whole error text and holds only at a session_start", async () => {
+    test("a host launch is classified by its whole error text and is refused at a user turn", async () => {
         const error = "Pi RPC process exited with code 1 signal null\n";
         const at = (fields: Record<string, unknown>) =>
             ({
@@ -7929,13 +7958,14 @@ describe("fatal causes on resume", () => {
         ]) {
             expect(fatalCause(at({ ...event, error, cause: "event-error" }))).toBe("event-error");
         }
-        await expect(
-            run(journalWith({ ...event, error: "driver outcome is null", cause: "host-launch" })),
-        ).rejects.toThrow("run failed: event e-000001 failed");
-        // `journalWith` stops the arm at e-000001, a user turn.
-        for (const cause of ["host-launch", "event-error"]) {
-            await expect(run(journalWith({ ...event, error, cause }))).rejects.toThrow(
-                /host-launch stop at an event other than session_start/,
+        // `journalWith` stops the arm at e-000001, a user turn, so the launch error is refused there.
+        for (const cause of ["host-launch", "event-error", "driver outcome is null"]) {
+            const fields =
+                cause === "driver outcome is null"
+                    ? { error: cause, cause: "host-launch" }
+                    : { error, cause };
+            await expect(run(journalWith({ ...event, ...fields }))).rejects.toThrow(
+                "run failed: event e-000001 failed",
             );
         }
     });
