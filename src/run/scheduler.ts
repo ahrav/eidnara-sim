@@ -165,7 +165,7 @@ const HOST_ABORT =
 const HOST_LAUNCH = "Pi RPC process exited with code 1 signal null\n";
 
 /** The longest a `host-launch` stop may take, from the arm's previous entry, to be recovered. */
-export const GATE_EXIT_MS = 50;
+export const GATE_EXIT_MS = 150;
 
 /** The event causes `fatalCause` classifies by error text whatever `cause` the record stores. */
 const TEXT_CAUSES: ReadonlySet<FatalCause> = new Set<FatalCause>([
