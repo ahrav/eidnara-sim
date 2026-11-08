@@ -134,7 +134,7 @@ opening `Background from earlier sessions on ` or a note carries a marker
 earlier user message does; the next session starts without it.
 
 Each daemon variant provides a fixed capability set, read from the Eidnara
-source at commit `1f2867036` (`AUDITED_EIDNARA`, the `eval/c8` integration
+source at commit `8e6265d2c` (`AUDITED_EIDNARA`, the `eval/c8` integration
 head):
 
 | Variant | Search route | Embeddings | Memory reviewer | Side calls | Memory injection | Source capture |
@@ -148,8 +148,10 @@ its own probes: captured whole user statements delivered in later sessions'
 `<project-memory>` (`user_statement_delivery`, accepted `stm_*` decisions in
 the `user-statements` domain), small tool outputs whole in the history
 summarizer's digest (`whole_small_tool_outputs`), error lines kept with a
-captured failure report (`failure_lines_captured`), and block tags stripped
-from Pi's streamed message events (`stream_tags_stripped`).
+captured failure report (`failure_lines_captured`), block tags stripped
+from Pi's streamed message events (`stream_tags_stripped`), and keyed open
+items in the history summarizer whose settled waiting and constraint lines
+validation retires (`settled_lines_retired`, `retire_settled_lines`).
 
 The fused variant is the fixture started with the production query route
 over the build clone's development payload,

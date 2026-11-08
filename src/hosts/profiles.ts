@@ -39,6 +39,7 @@ export interface DaemonCapabilities {
     whole_small_tool_outputs: boolean;
     failure_lines_captured: boolean;
     stream_tags_stripped: boolean;
+    settled_lines_retired: boolean;
     /**
      * Whether the daemon honours the user-tier `source_capture.enabled` consent key, retaining
      * message text, tool outputs, and configured documents as Kernel source descriptors.
@@ -47,7 +48,7 @@ export interface DaemonCapabilities {
 }
 
 /** The Eidnara commit whose source `DAEMON_VARIANTS` was read from. */
-export const AUDITED_EIDNARA = "1f2867036ab7d7c6e5a36df1a36d99ab79d7982c";
+export const AUDITED_EIDNARA = "8e6265d2ccc12c9e9fddd602e4d206c57b6eb52d";
 
 /**
  * One mechanical reading behind a capability: `file` at the audited commit matches `pattern`
@@ -83,6 +84,8 @@ const BEHAVIOUR_NOTES: VariantRecord["notes"] = {
         "crates/daemon/src/memory_capture/native.rs runs failure_evidence::attach on the frozen quotations, so error lines join the memory that frames them",
     stream_tags_stripped:
         "packages/pi-plugin/src/index.ts strips block tags from message_start and message_update events (stripStreamedTags) on turns the daemon served tagged",
+    settled_lines_retired:
+        "the history summarizer prompt (crates/daemon/testdata/history_summarizer-system-prompt.txt) asks for keyed Waiting on user / Constraint / Decided / Lifted status lines, and crates/daemon/src/history_summarizer_validate.rs runs history_summarizer_open_items::retire_settled_lines on each parsed segment before claims are checked",
 };
 /**
  * The plugin sources behind the knowledge-only arm's evidence: the Pi context handler that
@@ -105,6 +108,9 @@ const BEHAVIOUR_SOURCES = [
     "crates/daemon/src/memory_capture.rs",
     "crates/daemon/src/memory_capture/native.rs",
     "crates/daemon/src/tool_outcome.rs",
+    "crates/daemon/src/history_summarizer_open_items.rs",
+    "crates/daemon/src/history_summarizer_validate.rs",
+    "crates/daemon/testdata/history_summarizer-system-prompt.txt",
 ];
 /** Source capture requires both `source_capture.enabled` and `memory.enabled` in the daemon's effective config. */
 const SOURCE_CAPTURE_SOURCES = ["crates/daemon/src/source_capture.rs"];
@@ -155,6 +161,21 @@ const SHARED_PROBES = [
         "packages/pi-plugin/src/index.ts",
         "stripStreamedTags\\(event\\)",
     ),
+    probe(
+        "settled_lines_retired",
+        "crates/daemon/src/history_summarizer_open_items.rs",
+        "pub\\(crate\\) fn retire_settled_lines",
+    ),
+    probe(
+        "settled_lines_retired",
+        "crates/daemon/src/history_summarizer_validate.rs",
+        "history_summarizer_open_items::retire_settled_lines\\(",
+    ),
+    probe(
+        "settled_lines_retired",
+        "crates/daemon/testdata/history_summarizer-system-prompt.txt",
+        "## Open items: waiting, constraints, decided, lifted",
+    ),
 ];
 const BEHAVIOURS = {
     memory_injection: "switchable",
@@ -162,6 +183,7 @@ const BEHAVIOURS = {
     whole_small_tool_outputs: true,
     failure_lines_captured: true,
     stream_tags_stripped: true,
+    settled_lines_retired: true,
 } as const;
 
 const FIXTURE = "crates/daemon/examples/direct_host_fixture.rs";
