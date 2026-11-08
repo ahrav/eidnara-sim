@@ -231,8 +231,8 @@ delivered text differs from the reference arm's before the recorded
 divergence index. `scripts/pairing-check.ts <run>` reports those
 mismatches, the divergences, each arm's reply sources and fallbacks, probe
 or paste text that differs from the script, non-filler turns left unsent,
-and each arm's rates; it exits 1 on any of them or on a rate outside its
-band. It also lists under `unwitnessed_clarify` each delivered `clarify`
+and each arm's rates; it exits 1 on any of them or, on a whole-scenario
+run, on a rate outside its band (Journal, below). It also lists under `unwitnessed_clarify` each delivered `clarify`
 turn whose session's last agent reply recorded in `calls.jsonl` before the
 turn began (its tail when cut) ends without a question; it reads the call
 log once and keeps one reply per `clarify` turn. A turn a stop cut, journaled `failed(interrupted)` by an
@@ -254,8 +254,11 @@ and `interrupted`) before its `EndTurn`, so a resume that reads the
 `EndTurn` as the whole turn has the user record too, and each arm's
 `UserSimRates` before its `EndArm`: the rates over the turns it delivered
 and the rates outside their band. A run cut short of its scenario can leave
-a band and is flagged, and `scripts/pairing-check.ts` fails a run that lacks
-an arm's `UserSimRates`. `scripts/grade-run.ts` grades each P14 item from
+a band and is flagged. `scripts/pairing-check.ts` fails a run that lacks an
+arm's `UserSimRates` or whose recomputed rates differ from it, and fails a
+whole-scenario run with a rate outside its band; a run over an `--events`
+prefix reports its flagged rates (`rates_scope: "prefix"`) and passes on
+them, since the bands bound a whole scenario's draws. `scripts/grade-run.ts` grades each P14 item from
 a session view of its calls with these labels placed among them
 (`docs/grading.md`).
 
