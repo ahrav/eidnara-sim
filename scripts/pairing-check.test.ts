@@ -589,6 +589,17 @@ test("rates outside their band fail a whole scenario only; a prefix run reports 
     expect(r.report.rates_mismatch).toEqual([]);
     expect(r.exit).toBe(0);
     expect(run(fixture()).report.rates_scope).toBe("scenario");
+    const whole = run(fixture(["host", "eidnara"], scriptedEvents().slice(0, 20)));
+    expect(whole.report.rates_scope).toBe("scenario");
+    expect((whole.report.flagged as unknown[]).length).toBeGreaterThan(0);
+    expect(whole.report.rates_mismatch).toEqual([]);
+    const failing = Object.entries(whole.report)
+        .filter(
+            ([k, v]) => k !== "rates" && k !== "divergences" && Array.isArray(v) && v.length > 0,
+        )
+        .map(([k]) => k);
+    expect(failing).toEqual(["flagged"]);
+    expect(whole.exit).toBe(1);
 });
 
 test("every delivered scripted row carries the compiled text's hash", () => {

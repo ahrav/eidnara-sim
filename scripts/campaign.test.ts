@@ -286,18 +286,26 @@ test("alerts name a silent running run and a filesystem past 80% inode use", () 
         alertKey("run r journaled nothing for 7 min"),
     );
     // A turn that never ends keeps background job entries arriving; the run is still silent.
-    j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-0", outcome: "ok" });
-    const evented = runProgress(dir).last_progress_wall_ms as number;
-    j.append({ kind: "RegisterJob", arm: "a", scenario_ms: 0, job: "daemon-cpu-a-1" });
-    const busy = runProgress(dir);
-    const quiet = record({ state: "running", launched_at: evented - 60_000 });
-    expect(
-        alerts(spec, [{ record: quiet, progress: busy }], evented + 50 * 60_000, () => null),
-    ).toEqual(["run r journaled nothing for 50 min"]);
-    const fresh = { ...busy, last_entry_wall_ms: evented + 49 * 60_000 };
-    expect(
-        alerts(spec, [{ record: quiet, progress: fresh }], evented + 50 * 60_000, () => null),
-    ).toEqual(["run r finished no event for 50 min"]);
+    const hung = mkdtempSync(join(tmpdir(), "sim-campaign-"));
+    const h = new Journal(join(hung, "journal.jsonl"));
+    h.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+    h.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-0", outcome: "ok" });
+    Bun.sleepSync(40);
+    h.append({ kind: "RegisterJob", arm: "a", scenario_ms: 0, job: "daemon-cpu-a-1" });
+    const busy = runProgress(hung);
+    const event = readFileSync(join(hung, "journal.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l))
+        .find((e) => e.kind === "Event");
+    expect(busy.last_progress_wall_ms).toBe(event.wall_ms);
+    expect(busy.last_entry_wall_ms as number).toBeGreaterThan(event.wall_ms + 30);
+    const tight = { ...spec, stale_ms: 20 };
+    const quiet = record({ state: "running", launched_at: event.wall_ms - 60_000 });
+    const at = (busy.last_entry_wall_ms as number) + 5;
+    expect(alerts(tight, [{ record: quiet, progress: busy }], at, () => null)).toEqual([
+        `run r finished no event for ${Math.round((at - event.wall_ms) / 60_000)} min`,
+    ]);
     expect(alertKey("run r finished no event for 50 min")).toBe(
         alertKey("run r finished no event for 51 min"),
     );
