@@ -52,6 +52,7 @@ const VARIANT: VariantRecord = {
     whole_small_tool_outputs: true,
     failure_lines_captured: true,
     stream_tags_stripped: true,
+    settled_lines_retired: true,
     evidence: "test",
     sources: ["fixture.rs", "config.rs"],
     probes: [
