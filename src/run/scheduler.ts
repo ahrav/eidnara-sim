@@ -1490,17 +1490,27 @@ export class Scheduler {
 
     /**
      * Whether fatal record `f` is a Pi launch that ended in its gate shell: a `host-launch` at a
-     * `session_start`, journaled within `GATE_EXIT_MS` of the arm's previous entry. That interval
-     * bounds the launch's whole lifetime, and a launch that ran the sandbox launcher takes
-     * longer (`docs/run.md`), so Pi never started and the resume delivers the `session_start`
-     * again.
+     * `session_start`, journaled within `GATE_EXIT_MS` of the arm's last entry written before the
+     * delivery began. Job entries are left out of the baseline: the resource sampler registers
+     * and ends jobs from its own timer, so one can land while the launch runs. Every other entry
+     * of the arm is written by the step before it delivers. That interval bounds the launch's
+     * whole lifetime, and a launch that ran the sandbox launcher takes longer (`docs/run.md`),
+     * so Pi never started and the resume delivers the `session_start` again.
      */
     private gateExit(f: Entry, entries: readonly Entry[]): boolean {
         const at = this.o.events.find((x) => x.id === f.event);
         if (at?.kind !== "session_start" || !isFatal(f) || fatalCause(f) !== "host-launch") {
             return false;
         }
-        const before = entries.filter((e) => e.arm === f.arm && e.seq < f.seq).at(-1);
+        const before = entries
+            .filter(
+                (e) =>
+                    e.arm === f.arm &&
+                    e.seq < f.seq &&
+                    e.kind !== "RegisterJob" &&
+                    e.kind !== "EndJob",
+            )
+            .at(-1);
         const span = Number(f.wall_ms) - Number(before?.wall_ms);
         return span >= 0 && span <= GATE_EXIT_MS;
     }

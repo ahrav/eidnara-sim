@@ -7677,32 +7677,45 @@ describe("resume after harness interruptions", () => {
         }
     });
 
-    test("a Pi launch exit journaled later than GATE_EXIT_MS after the arm's previous entry is refused", async () => {
+    test("a Pi launch exit journaled later than GATE_EXIT_MS after the arm's previous entry is refused, a job entry mid-launch included", async () => {
         const error = "Pi RPC process exited with code 1 signal null\n";
         const events = fixtureEvents(1);
         const options = { events, faults: [], settleMs: 0, order: ["a"] };
-        const path = join(dir(), "j.jsonl");
-        const failing = fakeDriver([], 0, async (e) => {
-            if (e.id !== "e-000000") return;
-            await Bun.sleep(GATE_EXIT_MS + 20);
-            throw new Error(error);
-        });
-        await expect(
-            new Scheduler({
-                ...options,
-                journal: new Journal(path),
-                drivers: { a: failing },
-            }).run(),
-        ).rejects.toThrow(error);
-        const fatal = readJournal(path).find((e) => e.kind === "ItemState" && e.fatal === true);
-        expect(fatal).toMatchObject({ event: "e-000000", error, cause: "host-launch" });
-        await expect(
-            new Scheduler({
-                ...options,
-                journal: new Journal(path),
-                drivers: { a: fakeDriver([]) },
-            }).run(),
-        ).rejects.toThrow("run failed: event e-000000 failed");
+        // The sampler's job lands mid-launch, within the bound of the exit, in the second case.
+        for (const midLaunchJob of [false, true]) {
+            const path = join(dir(), "j.jsonl");
+            const failing = fakeDriver([], 0, async (e) => {
+                if (e.id !== "e-000000") return;
+                await Bun.sleep(GATE_EXIT_MS + 20);
+                if (midLaunchJob) {
+                    failing.arm().jobStart("daemon-cpu-a-1");
+                    await Bun.sleep(10);
+                    failing.arm().jobEnd("daemon-cpu-a-1");
+                }
+                throw new Error(error);
+            });
+            await expect(
+                new Scheduler({
+                    ...options,
+                    journal: new Journal(path),
+                    drivers: { a: failing },
+                }).run(),
+            ).rejects.toThrow(error);
+            const journaled = readJournal(path);
+            const fatal = journaled.find((e) => e.kind === "ItemState" && e.fatal === true);
+            expect(fatal).toMatchObject({ event: "e-000000", error, cause: "host-launch" });
+            if (midLaunchJob) {
+                const kinds = journaled.filter((e) => e.seq < (fatal?.seq ?? 0)).slice(-2);
+                expect(kinds.map((e) => e.kind)).toEqual(["RegisterJob", "EndJob"]);
+            }
+            await expect(
+                new Scheduler({
+                    ...options,
+                    journal: new Journal(path),
+                    drivers: { a: fakeDriver([]) },
+                }).run(),
+            ).rejects.toThrow("run failed: event e-000000 failed");
+        }
     });
 
     test("a Pi launch exit that carries stderr stays event-error, and its resume is refused", async () => {
