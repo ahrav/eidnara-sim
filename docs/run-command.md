@@ -139,8 +139,8 @@ re-pins it after tier revision 9, which makes pushback inside a P14 window
 reactive (`docs/user-sim.md`).
 
 `--qualification C8` runs the c8 comparison's diagnosed registration
-`prereg/C8.json` (revision 1): tier M, `fresh_seeds`, seeds 204, 206, 207,
-208, 209, and 212 on Pi (205, 210, and 211 refuse at placement: a probe turn
+`prereg/C8.json` (revision 2): tier M, `fresh_seeds`, seeds 204, 206, 207,
+208, and 209 on Pi (205, 210, and 211 refuse at placement: a probe turn
 finds no session), arms `host`, `eidnara`, `eidnara-hybrid`, and
 `eidnara-search` with one order per seed, contrasts `eidnara` vs `host`,
 `eidnara-hybrid` vs `eidnara`, and `eidnara` vs `eidnara-search`, the
@@ -148,9 +148,14 @@ finds no session), arms `host`, `eidnara`, `eidnara-hybrid`, and
 of `host` and `eidnara` on 204 and 206, and the analysis plan (run unit, c7
 at the seed level, harm probes P2, P5, P9, P10, P11, and P8-twin, budget
 $94k to $204k, and c7's spend per arm-seed). `--qualification C8H`
-(`prereg/C8H.json`, revision 1) runs the same arms, contrasts, controls,
-and plan over H's held-out seeds 603 to 606 with no replicates; its runs
-report apart from C8's and are never pooled with them.
+(`prereg/C8H.json`, revision 2) runs the same arms, contrasts, controls,
+and plan over H's held-out seeds 603, 604, and 605 with no replicates; its
+runs report apart from C8's and are never pooled with them. Revision 2 of
+both registrations fits the campaign to the budget before any measured run:
+at c7's spend per arm-seed, revision 1's 44 runs (seeds 204 to 212 and 603
+to 606) come to about $242k, over the $204k spend cap, so revision 2 drops
+C8 seed 212 and C8H seed 606 and keeps 36 runs (about $198k). The choice
+used no outcome data; no measured run existed when it was made.
 
 `--qualification H` runs the held-out registration `prereg/H.json`
 (revision 2, which re-pins the M digest after tier revision 9). It binds tier M, selects the `held-out` corpus split, runs
