@@ -102,7 +102,12 @@ delivers automatically with the plugin and not at all without it):
   history-summarizer claims, read from that session's history segments
   (`render_memory_updates` in `crates/daemon/src/m1_compose.rs`,
   `load_history_segments_above` in `crates/memory-store/src/lib.rs`), and the
-  arm may carry it.
+  arm may carry it. The history summarizer reads `<project-memory>` as
+  dedup and contradiction input whenever `memory.enabled` holds
+  (`project_memory_read` in `crates/daemon/src/lib.rs`), so on this arm, as
+  on the automatic ones, session summaries are written with project memory
+  in view; the delivery check reads block tags and leaves that indirect path
+  to the arm definition.
 - oracle context: the harness-only upper-bound control. `host-oracle` runs
   the host alone, and each probe turn whose `ground_truth.sources` names
   events carries those events' text ahead of the user's own (`src/run/oracle-note.ts`).
