@@ -2209,26 +2209,30 @@ Open questions: None.
 Type: safety
 Reachability: explicit-config-only
 Status: active
-Exercised: not yet - Eidnara `1f2867036` adds the user-tier switch
-`memory.auto_inject.enabled`, so `capabilityGaps` admits `eidnara-search`;
-`src/run/delivery.test.ts` checks the run-time rule on a request with a
-`<project-memory>` block, and no measured run of the arm exists yet
-Guarantee: SIM-P79: An `explicit-search` arm's agent requests carry no block
-the Eidnara plugin writes (`<project-memory>`, `<memory-updates>`,
-`<project-note>`, `<eidnara-search-auto>`, `<eidnara-search-hint>`), while
-Eidnara's tools stay registered.
+Exercised: partial - C8H-M-603-eidnara-search ran all 2,106 events at
+Eidnara `8e6265d2c`; its 5,989 agent requests carry no automatic recall
+block, and 21 carry a session-local `<memory-updates>` block;
+`src/run/delivery.test.ts` checks the run-time rule on each recall tag and on
+a `<memory-updates>` block inside `<session-history-since>`
+Guarantee: SIM-P79: An `explicit-search` arm's agent requests carry no
+automatic recall block (`<project-memory>`, `<project-note>`,
+`<eidnara-search-auto>`, `<eidnara-search-hint>`), while Eidnara's tools stay
+registered; the session-local `<memory-updates>` block that Eidnara
+compaction renders from the current session's own history segments may
+appear, as on every arm with Eidnara compaction.
 Check: `always` - assert over every agent request body of the arm, because
-one injected block turns the arm into automatic delivery.
+one automatic recall block turns the arm into automatic delivery.
 Fault/timing angle: none.
 Required faults and enabling state: an `eidnara-search` run on an Eidnara
 build that reads `/memory/auto_inject/enabled`, reaching a session after a
 captured user statement.
 Confidence: low -
 [evidence](evidence/sim-p79-explicit-search-arm-receives-no-injection.md).
-The switch and its reading are audited from source; the arm has not run.
-Existing check: `src/run/capabilities.ts` `deliveryMismatches` (no plugin
-block) and `memoryMismatches` (a due statement and no `eidnara_search`
-result) (unaudited), run before `EndArm`.
+The switch and its reading are audited from source; one measured run
+of the arm has finished its events.
+Existing check: `src/run/capabilities.ts` `deliveryMismatches` (no block
+whose tag is in `AUTOMATIC_RECALL_TAGS`) and `memoryMismatches` (a due
+statement and no `eidnara_search` result) (unaudited), run before `EndArm`.
 Impact: The explicit-search comparison measures automatic delivery.
 Open questions: None.
 

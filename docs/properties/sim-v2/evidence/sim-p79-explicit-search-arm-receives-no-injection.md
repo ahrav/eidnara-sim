@@ -1,7 +1,7 @@
 # sim-p79-explicit-search-arm-receives-no-injection
 
 Evidence status: Workstream A S5 record; the arm is admitted at Eidnara
-`1f2867036` and has not run a measured campaign.
+`1f2867036`, and C8H-M-603-eidnara-search ran its events at `8e6265d2c`.
 
 ## Discovery trigger
 
@@ -41,10 +41,24 @@ arm writes `memory.auto_search.enabled=false` and
 daemon's (`src/hosts/arms.ts`).
 
 `deliveryMismatches` fails an explicit-search arm whose agent request
-carries a plugin block or cannot be rebuilt; `memoryMismatches` fails one
-whose final store holds a user statement due in a later session while its
-transcripts hold no `eidnara_search` result. `src/run/delivery.test.ts`
-covers a `<project-memory>` block and the due rule.
+carries a block whose tag is in `AUTOMATIC_RECALL_TAGS` (`<project-memory>`,
+`<project-note>`, `<eidnara-search-auto>`, `<eidnara-search-hint>`) or
+cannot be rebuilt; `memoryMismatches` fails one whose final store holds a
+user statement due in a later session while its transcripts hold no
+`eidnara_search` result. `src/run/delivery.test.ts` covers each recall tag,
+a `<memory-updates>` block inside `<session-history-since>`, and the due
+rule.
+
+Eidnara at `8e6265d2c` (read-only, `eval/c8`) renders `<memory-updates>`
+inside `<session-history-since>` from the current session's own
+history-summarizer claims: `render_memory_updates`
+(`crates/daemon/src/m1_compose.rs:160`) reads the segments
+`load_history_segments_above` loads with `WHERE session_id = ?1`
+(`crates/memory-store/src/lib.rs:12891-12902`). `compose_m1` gates only the
+user-profile block on `inject_memory`, so the block appears on every arm
+with Eidnara compaction. C8H-M-603-eidnara-search carried it in 21 of 5,989
+agent requests, each holding one claim keyed in session s-0128 alone, and
+no automatic recall block.
 
 ## Failure scenario
 
@@ -70,3 +84,16 @@ a captured user statement.
   drops both memory blocks while `memory.enabled` keeps the search source.
 - Missing evidence: a measured run of the arm.
 - Conclusion: resolved by Eidnara PR #1203.
+
+### Q: Does `<memory-updates>` count as automatic delivery?
+- Sources examined: `crates/daemon/src/m1_compose.rs`,
+  `crates/memory-store/src/lib.rs` at `8e6265d2c`; the 21 requests of
+  C8H-M-603-eidnara-search rebuilt from `requests.jsonl`.
+- Findings: the block holds the session's own summarizer claims, read from
+  its own history segments; it carries no stored memory and no content from
+  another session.
+- Missing evidence: none for the tag rule. The history summarizer's input
+  includes `<project-memory>` while `memory.enabled` holds, an indirect path
+  this check does not read.
+- Conclusion: resolved; the guarantee names the four automatic recall tags,
+  and `<memory-updates>` may appear.
