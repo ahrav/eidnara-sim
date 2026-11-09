@@ -238,9 +238,33 @@ describe("delivery check", () => {
             "<project-memory>\n- the alias is gilded-marmot-53\n</project-memory>",
         );
         expect(check("eidnara-search", [injected], [])).toEqual([
-            "1 agent requests carry an Eidnara injected block, but the arm declares explicit search alone",
+            "1 agent requests carry an automatic Eidnara recall block, but the arm declares explicit search alone",
         ]);
         expect(check("eidnara", [injected], [])).toEqual([]);
+    });
+
+    test("the explicit-search arm carries its session's own compaction claims but no recalled memory", () => {
+        const claims =
+            "<memory-updates>\nLater statements supersede earlier ones: where two statements in this history disagree, the later one is current.\n[corrections: compress.empty-type-permanent-tests = should I add those three as permanent tests @323]\n</memory-updates>";
+        const history = `<session-history-since>\n${claims}\n<new-history_segments>\nsegment 320-331\n</new-history_segments>\n</session-history-since>`;
+        const folded = call("s-1", "e-2", `${history}\n\nWhich alias?`);
+        expect(check("eidnara-search", [folded], [])).toEqual([]);
+        expect(observeDelivery([folded], parts(), [], order).injected_blocks).toBe(0);
+        for (const tag of [
+            "project-memory",
+            "project-note",
+            "eidnara-search-hint",
+            "eidnara-search-auto",
+        ]) {
+            const recalled = call(
+                "s-1",
+                "e-2",
+                `${history}\n<${tag}>\n- the alias is gilded-marmot-53\n</${tag}>\n\nWhich alias?`,
+            );
+            expect(check("eidnara-search", [folded, recalled], [])).toEqual([
+                "1 agent requests carry an automatic Eidnara recall block, but the arm declares explicit search alone",
+            ]);
+        }
     });
 
     test("a statement captured in one session owes a later session's project-memory block", () => {

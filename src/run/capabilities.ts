@@ -132,13 +132,14 @@ export interface ExpectedNote {
 
 /**
  * The arm's agent request bodies against its delivery mode: how many were read and could not be
- * rebuilt, how many carry a block the Eidnara plugin writes, which owed oracle notes reached the
+ * rebuilt, how many carry an automatic recall block, which owed oracle notes reached the
  * prompt of their own turn, and which requests carry a note outside its session or before its
  * turn, or an opening that matches no owed note.
  */
 export interface DeliveryObservation {
     requests: number;
     unreadable: number;
+    /** Requests carrying a block whose tag is in `AUTOMATIC_RECALL_TAGS`. */
     injected_blocks: number;
     notes: { expected: number; delivered: number; missing: string[]; misplaced: number[] };
     /** Agent requests carrying a `<project-memory>` block; absent on observations recorded before it was read. */
@@ -169,6 +170,14 @@ const userTexts = (body: ConverseBody) =>
         );
 
 const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
+
+/** Tags of the injected blocks that break explicit-search delivery mode. */
+export const AUTOMATIC_RECALL_TAGS: ReadonlySet<string> = new Set([
+    "project-memory",
+    "project-note",
+    "eidnara-search-auto",
+    "eidnara-search-hint",
+]);
 
 export function observeDelivery(
     calls: readonly (Pick<CallRecord, "seq" | "component" | "session" | "turn" | "request"> &
@@ -220,7 +229,9 @@ export function observeDelivery(
         }
         out.requests++;
         const text = bodyText(body);
-        if (injectedBlocks(text).length > 0) out.injected_blocks++;
+        if (injectedBlocks(text).some((b) => AUTOMATIC_RECALL_TAGS.has(b.tag))) {
+            out.injected_blocks++;
+        }
         const given = bodyText({
             system: body.system,
             messages: (body.messages ?? []).filter((m) => m?.role === "user"),
@@ -333,7 +344,7 @@ export function deliveryMismatches(profile: ArmProfile, o: DeliveryObservation |
     }
     if (mode === "explicit-search" && o.injected_blocks > 0) {
         out.push(
-            `${o.injected_blocks} agent requests carry an Eidnara injected block, but the arm declares explicit search alone`,
+            `${o.injected_blocks} agent requests carry an automatic Eidnara recall block, but the arm declares explicit search alone`,
         );
     }
     if (notes.misplaced.length > 0) {

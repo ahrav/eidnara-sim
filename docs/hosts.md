@@ -92,7 +92,22 @@ delivers automatically with the plugin and not at all without it):
   (`crates/daemon/src/transform.rs`); `memory.enabled` stays on, so the
   plugin's kernel memory client keeps serving Pi's `eidnara_search`. The arm
   writes the key into the daemon's user tier (`fixtureDaemonConfig`) and the
-  plugin's (`eidnaraUserConfig`).
+  plugin's (`eidnaraUserConfig`). An explicit-search arm receives no
+  automatic recall from stored memory: no `<project-memory>`,
+  `<project-note>`, `<eidnara-search-auto>`, or `<eidnara-search-hint>` block
+  (`AUTOMATIC_RECALL_TAGS` in `src/run/capabilities.ts`). Eidnara compaction
+  still runs, so its session-local fold output reaches the agent as on every
+  arm with Eidnara compaction: `<memory-updates>` inside
+  `<session-history-since>` holds the current session's own
+  history-summarizer claims, read from that session's history segments
+  (`render_memory_updates` in `crates/daemon/src/m1_compose.rs`,
+  `load_history_segments_above` in `crates/memory-store/src/lib.rs`), and the
+  arm may carry it. The history summarizer reads `<project-memory>` as
+  dedup and contradiction input whenever `memory.enabled` holds
+  (`project_memory_read` in `crates/daemon/src/lib.rs`), so on this arm, as
+  on the automatic ones, session summaries are written with project memory
+  in view; the delivery check reads block tags and leaves that indirect path
+  to the arm definition.
 - oracle context: the harness-only upper-bound control. `host-oracle` runs
   the host alone, and each probe turn whose `ground_truth.sources` names
   events carries those events' text ahead of the user's own (`src/run/oracle-note.ts`).
@@ -287,9 +302,10 @@ complete evidence only when the two agree:
 - In a run whose order holds an oracle-context arm, and on every Eidnara
   arm, `capabilities.json` also holds `delivery`: the arm's
   agent request bodies rebuilt from `requests.jsonl`, those that could not
-  be, those carrying a block the plugin writes (`<project-memory>`,
-  `<memory-updates>`, `<project-note>`, `<eidnara-search-auto>`,
-  `<eidnara-search-hint>`), and the oracle notes the arm owed (one per
+  be, those carrying an automatic recall block (`<project-memory>`,
+  `<project-note>`, `<eidnara-search-auto>`, `<eidnara-search-hint>`;
+  `<memory-updates>`, session-local compaction output, passes), and the
+  oracle notes the arm owed (one per
   delivered `UserTurn` of a probe with sources; a row a resume recovered from
   the pairing log places its note but owes no delivery), delivered, and
   misplaced. A note is delivered when a prompt of its own turn starts with it
@@ -297,7 +313,8 @@ complete evidence only when the two agree:
   when it owed no note, when an owed note was not delivered, when a request carries a
   note before its turn or in another session or an opening that matches no
   owed note; any other arm is a mismatch when a request carries a note; an
-  explicit-search arm is a mismatch when a request carries a plugin block;
+  explicit-search arm is a mismatch when a request carries an automatic
+  recall block;
   and every arm whose delivery is read is a mismatch when a body cannot be
   rebuilt. Openings are counted in the system blocks and user messages, the
   text that enters the context, since the agent's own replies may quote a
