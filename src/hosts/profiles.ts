@@ -48,7 +48,7 @@ export interface DaemonCapabilities {
 }
 
 /** The Eidnara commit whose source `DAEMON_VARIANTS` was read from. */
-export const AUDITED_EIDNARA = "8e6265d2ccc12c9e9fddd602e4d206c57b6eb52d";
+export const AUDITED_EIDNARA = "837c3bab3fba27064780afff45937c26a0e2a13d";
 
 /**
  * One mechanical reading behind a capability: `file` at the audited commit matches `pattern`
@@ -211,6 +211,30 @@ const FIXTURE_PROBES = [
 ];
 
 /**
+ * The production route registers search-projection outbox consumers, so automatic delivery there
+ * also rests on the canonical memory read serving at any consumer lag and on the projection
+ * lifecycle renewing a rebuild whose deadline passed (Eidnara #1208, c8 ISSUES I3).
+ */
+const FUSED_DELIVERY_SOURCES = [
+    "crates/daemon/src/canonical_memory.rs",
+    "crates/daemon/src/search_lifecycle_owner.rs",
+];
+const FUSED_DELIVERY_PROBES = [
+    probe(
+        "user_statement_delivery",
+        "crates/daemon/src/canonical_memory.rs",
+        "decide_for_tip_read",
+        false,
+    ),
+    probe("search", "crates/daemon/src/search_lifecycle_owner.rs", "SliceOutcome::Expired"),
+];
+const FUSED_NOTES: VariantRecord["notes"] = {
+    ...BEHAVIOUR_NOTES,
+    user_statement_delivery: `${BEHAVIOUR_NOTES.user_statement_delivery}; crates/daemon/src/canonical_memory.rs read_project_memory serves those rows from the canonical tables at the pinned tip at any outbox consumer lag, so the production route's search-projection consumers cannot withhold the block`,
+    search: "crates/daemon/src/search_lifecycle_owner.rs reports a Rebuilding record whose deadline passed, or that was stamped ahead of a clock stepped back, as SliceOutcome::Expired, and the slice loop renews it with its attempt and consumer, so a rebuild outlives a clock jump longer than B_recovery_ms",
+};
+
+/**
  * What each daemon variant provides, with the Eidnara source that establishes it. Only the
  * fixture's `--harness-runtime` redirect extension points model calls at the proxy; the
  * production launcher refuses that closure.
@@ -245,6 +269,7 @@ export const DAEMON_VARIANTS: Record<DaemonVariant, VariantRecord> = {
         sources: [
             ...FIXTURE_SOURCES,
             "crates/daemon/src/bin/eidnara_host/payload_local_embeddings.rs",
+            ...FUSED_DELIVERY_SOURCES,
         ],
         probes: [
             probe("search", FIXTURE, '\\(Some\\("production"\\), Some\\(payload_manifest\\)\\)'),
@@ -261,9 +286,10 @@ export const DAEMON_VARIANTS: Record<DaemonVariant, VariantRecord> = {
                 "payload/model/gte-modernbert-base-f32",
             ),
             probe("embeddings", FIXTURE, "search route production, embedding model"),
+            ...FUSED_DELIVERY_PROBES,
             ...FIXTURE_PROBES,
         ],
-        notes: BEHAVIOUR_NOTES,
+        notes: FUSED_NOTES,
     },
     "production-payload": {
         search: "fused",
