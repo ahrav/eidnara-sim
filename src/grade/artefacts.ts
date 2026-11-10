@@ -101,6 +101,11 @@ export class EvidenceRefused extends GradeRefused {}
 
 export class AnswerRefused extends EvidenceRefused {}
 
+/** Signals a probe turn with one or more agent calls whose responses all remain incomplete. */
+export class ResponseIncomplete extends GradeRefused {}
+
+export const NO_RESPONSE = "no completed agent response";
+
 export const completed = (c: CallView) =>
     c.status >= 200 && c.status < 300 && c.error === null && c.failed !== true;
 
@@ -319,10 +324,16 @@ export class ArtefactReader {
     }
 
     answer(): string {
-        const last = this.turnCalls().filter(completed).at(-1);
-        if (!last) {
+        const calls = this.turnCalls();
+        if (calls.length === 0) {
             throw new GradeRefused(
-                `snapshot ${this.snapshot.id} has no completed agent response for turn ${this.snapshot.turn}`,
+                `snapshot ${this.snapshot.id} has no agent call for turn ${this.snapshot.turn}`,
+            );
+        }
+        const last = calls.filter(completed).at(-1);
+        if (!last) {
+            throw new ResponseIncomplete(
+                `snapshot ${this.snapshot.id} has ${NO_RESPONSE} for turn ${this.snapshot.turn}: calls ${calls.map((c) => c.seq).join(", ")} failed`,
             );
         }
         if (last.response_text_truncated) {

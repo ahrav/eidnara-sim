@@ -2132,13 +2132,19 @@ describe("grading harness", () => {
         expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
     });
 
-    test("an answer grader refuses a turn with no completed agent response", () => {
+    test("an answer grader excludes a turn with no completed agent response and refuses one with no agent call", () => {
         const f = fixture("P10-pass");
         const snap = structuredClone(f.snapshots[0]) as Snapshot;
         const calls = snap.artefacts.find((a) => a.class === "proxy-call");
         if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
         for (const c of calls.calls) Object.assign(c, { status: 502, error: "upstream" });
-        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("no completed agent response");
+        expect(gradeItem(f.probe, [snap], rules)).toMatchObject({
+            verdict: "excluded",
+            reason: "no completed agent response",
+            metrics: {},
+        });
+        calls.calls = [];
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("has no agent call for turn e-1");
         const p8 = fixture("P8-pass");
         const s8 = structuredClone(p8.snapshots[0]) as Snapshot;
         const c8 = s8.artefacts.find((a) => a.class === "proxy-call");

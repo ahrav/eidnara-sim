@@ -17,6 +17,8 @@ import {
     type CallView,
     EvidenceRefused,
     GradeRefused,
+    NO_RESPONSE,
+    ResponseIncomplete,
     type Snapshot,
 } from "../src/grade/artefacts";
 import {
@@ -82,6 +84,8 @@ export interface Summary {
     graded: number;
     /** Skipped item counts by arm, then by reason. */
     skipped: Record<string, Record<string, number>>;
+    /** Over the run's current grades, the `excluded` ones counted by arm, then by reason. */
+    excluded: Record<string, Record<string, number>>;
     /** Each grade version maps to the number of aggregated grades carrying it. */
     versions: Record<string, number>;
     p11: Record<string, { n: number; weighted_score: number }>;
@@ -482,6 +486,11 @@ export async function judgeP7(o: {
             try {
                 built = p7Pair(probe.id, a, b);
             } catch (caught) {
+                if (caught instanceof ResponseIncomplete) {
+                    both(`P7 ${NO_RESPONSE}`);
+                    console.error(`${probe.id} (${arm}): ${String(caught)}`);
+                    continue;
+                }
                 if (!(caught instanceof AnswerRefused)) throw caught;
                 refuse(caught);
                 continue;
@@ -1139,10 +1148,17 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     const p3 = memoryArms.map((arm) => ({ arm, delta_mem: deltaMem(current, arm) }));
     const versions: Summary["versions"] = {};
     for (const g of current) versions[g.version] = (versions[g.version] ?? 0) + 1;
+    const excluded: Summary["excluded"] = {};
+    for (const g of current.filter((g) => g.verdict === "excluded")) {
+        const mine = (excluded[g.arm] ??= {});
+        const reason = g.reason ?? "excluded";
+        mine[reason] = (mine[reason] ?? 0) + 1;
+    }
     return {
         verdicts: verdictCounts(current),
         graded: graded.length,
         skipped,
+        excluded,
         versions,
         p11,
         p3,

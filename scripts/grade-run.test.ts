@@ -993,6 +993,30 @@ describe("grade-run", () => {
         expect(summary.verdicts).toEqual({ "eidnara/P5": { pass: 1 }, "host/P5": { pass: 1 } });
     });
 
+    test("a P7 side with no completed agent response skips both sides, with the other grades kept", async () => {
+        const p7 = fixture("P7-pass");
+        const dir = run({ probes: [p5.probe, p7.probe] });
+        snapshot(dir, "eidnara", snap);
+        snapshot(dir, "host", snap);
+        const cut = p7snapshot(p7.probe.id, "e-2");
+        for (const a of cut.artefacts) {
+            if (a.class !== "proxy-call") continue;
+            for (const c of a.calls) {
+                delete c.response_text;
+                Object.assign(c, { error: "the stream ended", failed: true });
+            }
+        }
+        snapshot(dir, "eidnara", { ...cut, turn: "e-2" });
+        snapshot(dir, "host", { ...p7snapshot(p7.probe.id, "e-2"), turn: "e-2" });
+        const config = { bedrock: { region: "us-east-1", aws_profile: "none" } } as SimConfig;
+        const summary = await gradeRun(dir, config);
+        expect(summary.skipped).toEqual({
+            host: { "P7 no completed agent response": 1 },
+            eidnara: { "P7 no completed agent response": 1 },
+        });
+        expect(summary.verdicts).toEqual({ "eidnara/P5": { pass: 1 }, "host/P5": { pass: 1 } });
+    });
+
     test("a P10 snapshot whose turn has no agent call aborts grading instead of grading an empty answer", async () => {
         const p10 = fixture("P10-pass");
         const base = p10.snapshots[0] as Snapshot;
@@ -1003,9 +1027,69 @@ describe("grade-run", () => {
                 a.class === "proxy-call" ? { ...a, calls: [] } : a,
             ) as Snapshot["artefacts"],
         });
-        await expect(gradeRun(dir, null)).rejects.toThrow(
-            "has no completed agent response for turn e-1",
+        await expect(gradeRun(dir, null)).rejects.toThrow("has no agent call for turn e-1");
+    });
+
+    test("a probe turn whose only agent call the stream cut grades excluded, counted per arm", async () => {
+        const p8 = fixture("P8-pass");
+        const cut = structuredClone(p8.snapshots[0]) as Snapshot;
+        for (const a of cut.artefacts) {
+            if (a.class !== "proxy-call") continue;
+            for (const c of a.calls) {
+                delete c.response_text;
+                Object.assign(c, {
+                    turn: "e-2",
+                    status: 200,
+                    error: "the stream ended without both a stop reason and metadata",
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    failed: true,
+                });
+            }
+        }
+        const dir = run({ probes: [p5.probe, p8.probe], unended: { host: ["e-1", "e-2"] } });
+        snapshot(dir, "eidnara", snap);
+        snapshot(dir, "eidnara", { ...cut, turn: "e-2" });
+        const callsPath = join(dir, "calls.jsonl");
+        const records = readFileSync(callsPath, "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l));
+        for (const r of records) if (r.error !== null) r.finish_reason = "stream_cut";
+        writeFileSync(callsPath, records.map((r) => `${JSON.stringify(r)}\n`).join(""));
+        const summary = await gradeRun(dir, null);
+        expect(summary.verdicts).toEqual({
+            "eidnara/P5": { pass: 1 },
+            "eidnara/P8": { excluded: 1 },
+        });
+        expect(summary.excluded).toEqual({ eidnara: { "no completed agent response": 1 } });
+        const grades = readFileSync(join(dir, "grades.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l));
+        expect(grades.find((g) => g.item === p8.probe.id)).toMatchObject({
+            verdict: "excluded",
+            reason: "no completed agent response",
+            metrics: {},
+            inputs: ["p1"],
+        });
+        // The cut call's record and its snapshot view still have to agree.
+        const tampered = run({ probes: [p5.probe, p8.probe], unended: { host: ["e-1", "e-2"] } });
+        snapshot(tampered, "eidnara", snap);
+        snapshot(tampered, "eidnara", { ...cut, turn: "e-2" });
+        const log = join(tampered, "eidnara", "snapshots.jsonl");
+        const rows = readFileSync(log, "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l));
+        for (const a of rows[1].artefacts) {
+            if (a.class === "proxy-call") for (const c of a.calls) c.error = "edited";
+        }
+        writeFileSync(log, rows.map((r) => `${JSON.stringify(r)}\n`).join(""));
+        await expect(gradeRun(tampered, null)).rejects.toThrow(
+            "with content that differs from calls.jsonl",
         );
+        expect(() => readFileSync(join(tampered, "grades.jsonl"))).toThrow();
     });
 
     test("an interrupted run is refused, naming the arm and its event counts", async () => {
