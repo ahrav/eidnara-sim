@@ -2132,7 +2132,7 @@ describe("grading harness", () => {
         expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
     });
 
-    test("an answer grader excludes a turn with no completed agent response and refuses one with no agent call", () => {
+    test("a turn with no completed agent response is excluded under any grader; one with no agent call refuses an answer grader", () => {
         const f = fixture("P10-pass");
         const snap = structuredClone(f.snapshots[0]) as Snapshot;
         const calls = snap.artefacts.find((a) => a.class === "proxy-call");
@@ -2145,6 +2145,17 @@ describe("grading harness", () => {
         });
         calls.calls = [];
         expect(() => gradeItem(f.probe, [snap], rules)).toThrow("has no agent call for turn e-1");
+        const p1 = fixture("P1-pass");
+        expect(gradeItem(p1.probe, p1.snapshots, rules)?.verdict).toBe("pass");
+        const s1 = structuredClone(p1.snapshots[0]) as Snapshot;
+        for (const a of s1.artefacts) {
+            if (a.class !== "proxy-call") continue;
+            for (const c of a.calls) if (c.component === "agent") c.failed = true;
+        }
+        expect(gradeItem(p1.probe, [s1], rules)).toMatchObject({
+            verdict: "excluded",
+            reason: "no completed agent response",
+        });
         const p8 = fixture("P8-pass");
         const s8 = structuredClone(p8.snapshots[0]) as Snapshot;
         const c8 = s8.artefacts.find((a) => a.class === "proxy-call");

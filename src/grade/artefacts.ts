@@ -323,6 +323,19 @@ export class ArtefactReader {
         return this.calls().filter((c) => c.component === "agent" && c.turn === turn);
     }
 
+    responseIncomplete(): boolean {
+        const artefacts = this.snapshot.artefacts.filter(
+            (a): a is ProxyCalls => a.class === "proxy-call",
+        );
+        const [only] = artefacts;
+        if (!only || artefacts.length > 1) return false;
+        const turn = this.snapshot.turn;
+        const calls = only.calls.filter((c) => c.component === "agent" && c.turn === turn);
+        if (calls.length === 0 || calls.some(completed)) return false;
+        this.read.add(only.id);
+        return true;
+    }
+
     answer(): string {
         const calls = this.turnCalls();
         if (calls.length === 0) {

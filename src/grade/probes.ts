@@ -25,7 +25,6 @@ import {
     num,
     oneOf,
     optional,
-    ResponseIncomplete,
     type Snapshot,
     str,
     text,
@@ -2052,11 +2051,10 @@ export function gradeItem(
     requireEvidence(probe, first, sources);
     const reader = new ArtefactReader(first);
     let outcome: Outcome;
-    try {
-        outcome = grader(reader, (probe.check ?? {}) as Check, rules, probe, sources);
-    } catch (caught) {
-        if (!(caught instanceof ResponseIncomplete)) throw caught;
+    if (probe.type !== "P14" && reader.responseIncomplete()) {
         outcome = { verdict: "excluded", reason: NO_RESPONSE, metrics: {} };
+    } else {
+        outcome = grader(reader, (probe.check ?? {}) as Check, rules, probe, sources);
     }
     return {
         item: probe.id,
