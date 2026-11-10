@@ -21,6 +21,7 @@ import {
     completed,
     type Field,
     GradeRefused,
+    NO_RESPONSE,
     num,
     oneOf,
     optional,
@@ -2049,7 +2050,12 @@ export function gradeItem(
     const grader = graderFor(probe);
     requireEvidence(probe, first, sources);
     const reader = new ArtefactReader(first);
-    const outcome = grader(reader, (probe.check ?? {}) as Check, rules, probe, sources);
+    let outcome: Outcome;
+    if (probe.type !== "P14" && reader.responseIncomplete()) {
+        outcome = { verdict: "excluded", reason: NO_RESPONSE, metrics: {} };
+    } else {
+        outcome = grader(reader, (probe.check ?? {}) as Check, rules, probe, sources);
+    }
     return {
         item: probe.id,
         arm: first.arm,

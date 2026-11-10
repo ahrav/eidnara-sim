@@ -1,3 +1,4 @@
+import { NO_RESPONSE } from "../grade/artefacts";
 import { type GradeRecord, RECORDED_TYPES, runsScript, type SourceEvent } from "../grade/probes";
 import type { ConverseBody } from "../proxy/classify";
 import { type RequestPart, rebuildRequest } from "../proxy/requests";
@@ -1156,6 +1157,10 @@ export function attribute(
 ): ProbeEvidence["attributed"] {
     const at = (name: StageName) => stages.find((s) => s.stage === name);
     if (o.verdict === "excluded") {
+        const application = at("application") as Stage;
+        if (application.reason === NO_RESPONSE) {
+            return { cause: "application", status: "excluded", reason: NO_RESPONSE };
+        }
         // An item set aside because its evidence never existed (a P12 check that never ran, a
         // P13 range with no fold) names that stage, the grader's own fold reason first; any other
         // exclusion stays the grader's.

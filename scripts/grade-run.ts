@@ -13,15 +13,18 @@ import { join, resolve } from "node:path";
 import { loadConfig, type SimConfig } from "../src/config/config";
 import {
     AnswerRefused,
+    ArtefactReader,
     assertArtefactsOnly,
     type CallView,
     EvidenceRefused,
     GradeRefused,
+    NO_RESPONSE,
     type Snapshot,
 } from "../src/grade/artefacts";
 import {
     BlindingRefused,
     gradeP7,
+    incompleteSides,
     type Judgment,
     judgePair,
     type P7Inputs,
@@ -82,6 +85,8 @@ export interface Summary {
     graded: number;
     /** Skipped item counts by arm, then by reason. */
     skipped: Record<string, Record<string, number>>;
+    /** Over the run's current grades, the `excluded` ones counted by arm, then by reason. */
+    excluded: Record<string, Record<string, number>>;
     /** Each grade version maps to the number of aggregated grades carrying it. */
     versions: Record<string, number>;
     p11: Record<string, { n: number; weighted_score: number }>;
@@ -414,6 +419,11 @@ export function p7Pairs(o: {
                 return [];
             }
             for (const side of [mine[0], theirs[0]]) requireEvidence(probe, side);
+            const [ra, rb] = [mine[0], theirs[0]].map((s) => new ArtefactReader(s));
+            if (incompleteSides(probe.id, ra as ArtefactReader, rb as ArtefactReader).length > 0) {
+                for (const side of [arm, "host"]) skip(side, `P7 ${NO_RESPONSE}`);
+                return [];
+            }
             return [{ probe, arm, a: mine[0], b: theirs[0], rows: { a: mine, b: theirs } }];
         }),
     );
@@ -1139,10 +1149,17 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     const p3 = memoryArms.map((arm) => ({ arm, delta_mem: deltaMem(current, arm) }));
     const versions: Summary["versions"] = {};
     for (const g of current) versions[g.version] = (versions[g.version] ?? 0) + 1;
+    const excluded: Summary["excluded"] = {};
+    for (const g of current.filter((g) => g.verdict === "excluded")) {
+        const mine = (excluded[g.arm] ??= {});
+        const reason = g.reason ?? "excluded";
+        mine[reason] = (mine[reason] ?? 0) + 1;
+    }
     return {
         verdicts: verdictCounts(current),
         graded: graded.length,
         skipped,
+        excluded,
         versions,
         p11,
         p3,

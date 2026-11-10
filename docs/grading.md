@@ -50,7 +50,13 @@ of the probe turn in the `proxy-call` artefact, the streamed provider text the
 proxy relayed, which can differ from the copy the host transcript keeps
 (`docs/evidence.md`: the Pi plugin rewrites a leading `§<n>§` tag out of the
 persisted message); a turn whose final completed call has no response text, or with no
-completed response, refuses the grade.
+agent call, refuses the grade. A probe turn whose agent calls all failed (an HTTP error,
+a recorded error, or a `stream_cut` finish, which the call view marks `failed`) holds no
+completed response, so before its grader runs an item of any type but P14 is graded
+`excluded` with reason `no completed agent response` and no metrics. That check reads the
+`proxy-call` artefact, so every grade of a snapshot that carries one lists it among its
+inputs. A P7 pair with such a side skips both sides as `P7 no completed agent response`
+before the judge starts, unless a side's turn holds no agent call, which refuses grading.
 
 `GradeLog` appends grades to one JSONL file under an exclusive `<path>.lock` file held across the read, version check, truncation, and write (a lock still held after two seconds is refused by name, so a dead writer's lock is an operator's to remove), validating each record's shape (exactly its type's registered metrics, each of its shape, in agreement with the verdict: harm implies failure for P2, P10, and P11, a pass carries no harm, P11's weight is 1 on a pass, negative on a fail with harm, and 0 on a fail without it, P3's reliance and harm agree, P4's harm equals its collapse, P13's score is the mean of its three parts) before writing it, in full, through a no-follow descriptor to a regular, single-link file; reads open the file the same way, so a linked path is refused before any byte is read. A regrade of an item and arm
 takes the next version, an append out of version order is refused, and
@@ -266,7 +272,8 @@ count is listed as outside the run. The printed summary covers the run's
 latest grades, earlier passes' included, and `graded` counts the ones this
 invocation appended. It prints the verdict
 counts per arm and probe type (a P7 row also names the arm judged against),
-the skipped items by arm and reason, the grade versions the summary
+the skipped items by arm and reason, the excluded grades by arm and reason
+(`excluded`), the grade versions the summary
 aggregates, the summed
 `P11.weighted_score` per arm, Δmem per memory arm from those grades, the judge errors, the journal's last `seq` as `journal_seq`, and
 `grader`: the grader digest each grade carries with the eidnara-sim commit
@@ -519,7 +526,8 @@ and a forbidden application fails with harm whatever the answer asks. A
 no-change turn's answer is now grade input: grade-run skips an item whose
 answer the proxy truncated or recorded without text (`answer refused`, as
 for P8), which leaves the cost panel's `usd_per_pass` null, and a turn with no
-completed agent response refuses the grade. An item excluded on one arm in a
+completed agent response is graded `excluded` with reason `no completed agent
+response`. An item excluded on one arm in a
 session a fault reached on one arm alone stays in the asymmetric stratum and
 leaves the exclusion list.
 

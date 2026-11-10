@@ -181,6 +181,7 @@
       "P1.pass": false
     },
     "inputs": [
+      "host:q-0012:calls",
       "host:q-0012:diff"
     ]
   }
