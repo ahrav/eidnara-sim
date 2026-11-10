@@ -777,6 +777,15 @@ describe("evidence stages on the host arm", () => {
         });
         expect(stage(both, "source")?.status).toBe("unavailable");
         expect(both.attributed.cause).toBe("fold");
+        const cut = graded(unsourced, {
+            probe_type: "P13",
+            reason: "no completed agent response",
+        });
+        expect(cut.attributed).toEqual({
+            cause: "application",
+            status: "excluded",
+            reason: "no completed agent response",
+        });
     });
 
     test("a rule with no literal leaves its delivery unobserved; an avoid item's is n/a", () => {

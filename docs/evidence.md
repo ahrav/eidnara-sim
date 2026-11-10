@@ -93,7 +93,9 @@ Each probe gets one `attributed` cause with a status and reason:
 5. A probe whose context carried every group is attributed to `application`.
 6. Otherwise the first stage whose status is not `ok` or `n/a`.
 
-An excluded probe names the stage whose evidence never existed, such as a
+A probe excluded with reason `no completed agent response` is the
+grader's (`application`, `excluded`) whatever its other stages hold.
+Another excluded probe names the stage whose evidence never existed, such as a
 P12 check that never ran or a P13 item with no fold in its range (`fold`,
 `unavailable`, which the grader's own reason takes ahead of an earlier
 unavailable stage); any other exclusion is the grader's (`application`,
