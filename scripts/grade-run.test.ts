@@ -1015,6 +1015,19 @@ describe("grade-run", () => {
             eidnara: { "P7 no completed agent response": 1 },
         });
         expect(summary.verdicts).toEqual({ "eidnara/P5": { pass: 1 }, "host/P5": { pass: 1 } });
+        const swapped = run({ probes: [p5.probe, p7.probe] });
+        snapshot(swapped, "eidnara", snap);
+        snapshot(swapped, "host", snap);
+        const truncated = p7snapshot(p7.probe.id, "e-2");
+        for (const a of truncated.artefacts) {
+            if (a.class === "proxy-call") for (const c of a.calls) c.response_text_truncated = true;
+        }
+        snapshot(swapped, "eidnara", { ...truncated, turn: "e-2" });
+        snapshot(swapped, "host", { ...cut, turn: "e-2" });
+        expect((await gradeRun(swapped, config)).skipped).toEqual({
+            host: { "P7 no completed agent response": 1 },
+            eidnara: { "P7 no completed agent response": 1 },
+        });
     });
 
     test("a P10 snapshot whose turn has no agent call aborts grading instead of grading an empty answer", async () => {

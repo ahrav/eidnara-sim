@@ -8,6 +8,8 @@ import {
     ArtefactReader,
     assertArtefactsOnly,
     GradeRefused,
+    NO_RESPONSE,
+    ResponseIncomplete,
     type Snapshot,
 } from "./artefacts";
 import type { GradeRecord, Rules } from "./probes";
@@ -456,6 +458,12 @@ export function p7Pair(item: string, a: Snapshot, b: Snapshot): P7Inputs | null 
     });
     if (a.turn_outcome === "failed" || b.turn_outcome === "failed") return null;
     const [ra, rb] = readers as [ArtefactReader, ArtefactReader];
+    const cut = (["a", "b"] as const).filter((_, i) => readers[i]?.responseIncomplete());
+    if (cut.length > 0) {
+        throw new ResponseIncomplete(
+            `P7 item ${item}: side ${cut.join(" and ")} has ${NO_RESPONSE} for its probe turn`,
+        );
+    }
     const pair = { id: item, a: ra.answer(), b: rb.answer() };
     for (const [side, text] of [
         ["a", pair.a],
