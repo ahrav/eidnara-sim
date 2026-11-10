@@ -2156,6 +2156,35 @@ describe("grading harness", () => {
             verdict: "excluded",
             reason: "no completed agent response",
         });
+        const p2 = fixture("P2-pass");
+        const s2 = structuredClone(p2.snapshots[0]) as Snapshot;
+        s2.artefacts.push({
+            id: "cut",
+            class: "proxy-call",
+            calls: [
+                {
+                    seq: 1,
+                    arm: s2.arm,
+                    session: s2.session,
+                    component: "agent",
+                    turn: s2.turn,
+                    scenario_ms: 0,
+                    status: 200,
+                    error: "the stream ended without both a stop reason and metadata",
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    failed: true,
+                },
+            ],
+        });
+        expect(gradeItem(p2.probe, p2.snapshots, rules)?.verdict).toBe("pass");
+        expect(gradeItem(p2.probe, [s2], rules)).toMatchObject({
+            verdict: "excluded",
+            reason: "no completed agent response",
+            inputs: ["cut"],
+        });
         const p8 = fixture("P8-pass");
         const s8 = structuredClone(p8.snapshots[0]) as Snapshot;
         const c8 = s8.artefacts.find((a) => a.class === "proxy-call");
