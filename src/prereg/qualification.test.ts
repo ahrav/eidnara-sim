@@ -245,6 +245,47 @@ test("C8 runs fresh diagnosed seeds, and C8H three of H's held-out seeds, over t
     expect(C8.replicates).toEqual({ seeds: [204, 206], arms: ["host", "eidnara"] });
 });
 
+test("C8X and C8XH rerun the hybrid arm alone over C8's and C8H's seeds, with c8 as reference", () => {
+    const M = loadPrereg("M");
+    const pairs = [
+        [loadQualification("C8X"), loadQualification("C8")],
+        [loadQualification("C8XH"), loadQualification("C8H")],
+    ] as const;
+    for (const [rerun, original] of pairs) {
+        expect(validateQualification(rerun, M)).toEqual([]);
+        expect(rerun.arms.run).toEqual(["eidnara-hybrid"]);
+        expect(rerun.contrasts).toEqual([]);
+        expect(rerun.seeds).toEqual(original.seeds);
+        expect(rerun.corpus).toBe(original.corpus);
+        expect(rerun.fresh_seeds).toBe(original.fresh_seeds);
+        // The controls decide the compiled items, so the rerun's scenarios match the original's.
+        expect(rerun.controls).toEqual(original.controls);
+        expect(rerun.analysis?.reference).toEqual({ campaign: "c8", level: "seed" });
+        expect(rerun.analysis?.harm_probes).toEqual(original.analysis?.harm_probes);
+    }
+    const C8X = loadQualification("C8X");
+    const edit = (patch: (q: Record<string, unknown>) => void) => {
+        const q = structuredClone(C8X) as unknown as Record<string, unknown>;
+        patch(q);
+        return validateQualification(q, M);
+    };
+    expect(
+        edit((q) => {
+            q.arms = {
+                run: ["eidnara-hybrid", "eidnara"],
+                order_by_seed: C8X.seeds.map(() => ["eidnara-hybrid", "eidnara"]),
+            };
+            q.analysis = {
+                ...(C8X.analysis as object),
+                cost_per_arm_seed_usd: { "eidnara-hybrid": 5489, eidnara: 5489 },
+            };
+        }),
+    ).toEqual(["contrasts: a registration that runs two or more arms names a contrast"]);
+    expect(edit((q) => delete q.analysis)).toEqual([
+        "contrasts: a one-arm registration names its reference campaign in analysis",
+    ]);
+});
+
 test("fresh seeds, replicates, and the analysis plan are checked against the registration", () => {
     const M = loadPrereg("M");
     const C8 = loadQualification("C8");

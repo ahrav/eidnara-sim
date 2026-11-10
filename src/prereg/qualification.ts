@@ -22,7 +22,7 @@ import {
 } from "./validate";
 
 export const QUALIFICATION_SCHEMA = "sim-qualification/v1";
-export const QUALIFICATIONS = ["Q", "H", "C8", "C8H"] as const;
+export const QUALIFICATIONS = ["Q", "H", "C8", "C8H", "C8X", "C8XH"] as const;
 /**
  * Control items a qualification adds to its scenarios. `wrong-project-lookup` asks each P8 lookup
  * again in the twin project (`P8-twin`), where the right answer is that the value belongs to the
@@ -54,7 +54,11 @@ export interface Qualification {
     hosts: string[];
     /** `order_by_seed[i]` is the arm execution order for `seeds[i]`. */
     arms: { run: string[]; order_by_seed: string[][] };
-    /** `[treatment, reference]` pairs of run arms whose delivery modes or search routes differ. */
+    /**
+     * `[treatment, reference]` pairs of run arms whose delivery modes or search routes differ; empty
+     * only when the registration runs one arm, whose reference runs belong to the campaign
+     * `analysis.reference` names.
+     */
     contrasts: string[][];
     controls: QualificationControl[];
     /**
@@ -126,7 +130,7 @@ const SHAPE: Shape = {
     seeds: list(uint32),
     hosts: list(oneOf(HOSTS)),
     arms: { run: list(text), order_by_seed: list(list(text), false) },
-    contrasts: list(list(text)),
+    contrasts: (v) => (Array.isArray(v) && v.length === 0 ? null : list(list(text))(v)),
     controls: list(oneOf(QUALIFICATION_CONTROLS)),
     claim: literal("descriptive"),
 };
@@ -227,6 +231,12 @@ export function validateQualification(value: unknown, tier: Preregistration): st
         }
     });
     checkSections(q, errors);
+    if (q.contrasts.length === 0 && q.arms.run.length > 1) {
+        errors.push("contrasts: a registration that runs two or more arms names a contrast");
+    }
+    if (q.contrasts.length === 0 && !q.analysis) {
+        errors.push("contrasts: a one-arm registration names its reference campaign in analysis");
+    }
     if (errors.length > 0) return errors;
     q.contrasts.forEach((pair, i) => {
         const [a, b] = pair;
