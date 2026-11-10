@@ -288,6 +288,29 @@ test("delivery evidence must match the statements the final store holds", () => 
     expect(armMismatches(auto)).toHaveLength(1);
     auto.delivery = delivery(0, false);
     expect(armMismatches(auto)).toEqual([]);
+    // Every session that owes a block must carry one; a block in some sessions leaves the rest owed.
+    const sessions = (due: number, uncovered: string[]) => ({
+        ...delivery(2),
+        due_sessions: due,
+        covered_sessions: due - uncovered.length,
+        uncovered_sessions: uncovered,
+    });
+    auto.delivery = sessions(3, []);
+    expect(armMismatches(auto)).toEqual([]);
+    auto.delivery = sessions(3, ["s-0004"]);
+    expect(armMismatches(auto)).toEqual([
+        "2 of 3 sessions that owe a <project-memory> block carried one (coverage 0.667, required 1); none in s-0004",
+    ]);
+    const many = Array.from({ length: 23 }, (_, i) => `s-${String(i + 10).padStart(4, "0")}`);
+    auto.delivery = sessions(25, many);
+    expect(armMismatches(auto)).toEqual([
+        `2 of 25 sessions that owe a <project-memory> block carried one (coverage 0.080, required 1); none in ${many.slice(0, 20).join(", ")} and 3 more`,
+    ]);
+    // The explicit-search arm owes no block, so its coverage is not judged.
+    const searched = observe("eidnara-search", { agent: 3, memory_capture: 1 });
+    searched.search = { legacy_scan: ["x"], fused: 0, errored: 0 };
+    searched.delivery = { ...sessions(3, ["s-0004"]), injected_blocks: 0 };
+    expect(armMismatches(searched)).toEqual([]);
     const explicit = observe("eidnara-search", { agent: 3, memory_capture: 1 });
     explicit.delivery = delivery(0);
     expect(armMismatches(explicit)).toEqual([

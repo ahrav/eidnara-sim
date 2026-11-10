@@ -284,6 +284,26 @@ describe("delivery check", () => {
             sessions: 2,
             memory_due: true,
             due_blocks: 1,
+            due_sessions: 1,
+            covered_sessions: 1,
+            uncovered_sessions: [],
+        });
+        // Coverage counts sessions: one owing request with a block covers its session, and a
+        // session whose owing requests all lack one stays uncovered.
+        const bare = call("s-2", "e-3", "Which port again?");
+        const missed = call("s-3", "e-4", "Which port now?");
+        const coverage = observeDelivery(
+            [first, captured, bare, later, missed],
+            parts(),
+            [],
+            order,
+            ["sim-s-1"],
+        );
+        expect(coverage).toMatchObject({
+            due_blocks: 1,
+            due_sessions: 2,
+            covered_sessions: 1,
+            uncovered_sessions: ["s-3"],
         });
         // A later session of another project owes nothing: the statement belongs to its project.
         const projects = new Map([
