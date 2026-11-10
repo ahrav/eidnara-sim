@@ -1024,10 +1024,18 @@ describe("grade-run", () => {
         }
         snapshot(swapped, "eidnara", { ...truncated, turn: "e-2" });
         snapshot(swapped, "host", { ...cut, turn: "e-2" });
-        expect((await gradeRun(swapped, config)).skipped).toEqual({
+        expect((await gradeRun(swapped, null)).skipped).toEqual({
             host: { "P7 no completed agent response": 1 },
             eidnara: { "P7 no completed agent response": 1 },
         });
+        const silent = run({ probes: [p5.probe, p7.probe] });
+        snapshot(silent, "eidnara", snap);
+        snapshot(silent, "host", snap);
+        const empty = p7snapshot(p7.probe.id, "e-2");
+        for (const a of empty.artefacts) if (a.class === "proxy-call") a.calls = [];
+        snapshot(silent, "eidnara", { ...cut, turn: "e-2" });
+        snapshot(silent, "host", { ...empty, turn: "e-2" });
+        await expect(gradeRun(silent, null)).rejects.toThrow("side b has no agent call");
     });
 
     test("a P10 snapshot whose turn has no agent call aborts grading instead of grading an empty answer", async () => {

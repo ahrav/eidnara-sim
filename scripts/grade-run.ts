@@ -13,17 +13,18 @@ import { join, resolve } from "node:path";
 import { loadConfig, type SimConfig } from "../src/config/config";
 import {
     AnswerRefused,
+    ArtefactReader,
     assertArtefactsOnly,
     type CallView,
     EvidenceRefused,
     GradeRefused,
     NO_RESPONSE,
-    ResponseIncomplete,
     type Snapshot,
 } from "../src/grade/artefacts";
 import {
     BlindingRefused,
     gradeP7,
+    incompleteSides,
     type Judgment,
     judgePair,
     type P7Inputs,
@@ -418,6 +419,11 @@ export function p7Pairs(o: {
                 return [];
             }
             for (const side of [mine[0], theirs[0]]) requireEvidence(probe, side);
+            const [ra, rb] = [mine[0], theirs[0]].map((s) => new ArtefactReader(s));
+            if (incompleteSides(probe.id, ra as ArtefactReader, rb as ArtefactReader).length > 0) {
+                for (const side of [arm, "host"]) skip(side, `P7 ${NO_RESPONSE}`);
+                return [];
+            }
             return [{ probe, arm, a: mine[0], b: theirs[0], rows: { a: mine, b: theirs } }];
         }),
     );
@@ -486,11 +492,6 @@ export async function judgeP7(o: {
             try {
                 built = p7Pair(probe.id, a, b);
             } catch (caught) {
-                if (caught instanceof ResponseIncomplete) {
-                    both(`P7 ${NO_RESPONSE}`);
-                    console.error(`${probe.id} (${arm}): ${String(caught)}`);
-                    continue;
-                }
                 if (!(caught instanceof AnswerRefused)) throw caught;
                 refuse(caught);
                 continue;

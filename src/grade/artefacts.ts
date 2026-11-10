@@ -329,11 +329,10 @@ export class ArtefactReader {
         );
         const [only] = artefacts;
         if (!only || artefacts.length > 1) return false;
+        this.read.add(only.id);
         const turn = this.snapshot.turn;
         const calls = only.calls.filter((c) => c.component === "agent" && c.turn === turn);
-        if (calls.length === 0 || calls.some(completed)) return false;
-        this.read.add(only.id);
-        return true;
+        return calls.length > 0 && !calls.some(completed);
     }
 
     answer(): string {

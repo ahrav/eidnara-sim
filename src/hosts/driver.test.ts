@@ -3409,7 +3409,7 @@ describe("probe snapshots", () => {
         };
         const grade = gradeItem(probe, [snap], loadPrereg("S").grading);
         expect(grade?.verdict).toBe("pass");
-        expect(grade?.inputs).toEqual(["host:q-1:e-9:diff"]);
+        expect(grade?.inputs).toEqual(["host:q-1:e-9:calls", "host:q-1:e-9:diff"]);
     });
 
     test("a session_end replayed on resume keeps that session's diff as the next one's prior session", async () => {

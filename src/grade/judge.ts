@@ -447,6 +447,23 @@ export interface P7Inputs {
     inputs: string[];
 }
 
+/**
+ * The sides of a P7 pair whose probe turn holds agent calls and no completed one. A side whose
+ * turn holds no agent call is refused first, whichever side is incomplete.
+ */
+export function incompleteSides(item: string, a: ArtefactReader, b: ArtefactReader): ("a" | "b")[] {
+    const sides = [
+        ["a", a],
+        ["b", b],
+    ] as const;
+    for (const [side, reader] of sides) {
+        if (reader.turnCalls().length === 0) {
+            throw new GradeRefused(`P7 item ${item}: side ${side} has no agent call for its turn`);
+        }
+    }
+    return sides.filter(([, reader]) => reader.responseIncomplete()).map(([side]) => side);
+}
+
 export function p7Pair(item: string, a: Snapshot, b: Snapshot): P7Inputs | null {
     if (a.item !== item || b.item !== item) {
         throw new GradeRefused(`snapshots for ${item} mix items`);
@@ -458,7 +475,7 @@ export function p7Pair(item: string, a: Snapshot, b: Snapshot): P7Inputs | null 
     });
     if (a.turn_outcome === "failed" || b.turn_outcome === "failed") return null;
     const [ra, rb] = readers as [ArtefactReader, ArtefactReader];
-    const cut = (["a", "b"] as const).filter((_, i) => readers[i]?.responseIncomplete());
+    const cut = incompleteSides(item, ra, rb);
     if (cut.length > 0) {
         throw new ResponseIncomplete(
             `P7 item ${item}: side ${cut.join(" and ")} has ${NO_RESPONSE} for its probe turn`,

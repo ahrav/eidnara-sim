@@ -255,6 +255,7 @@
       "P1.pass": false
     },
     "inputs": [
+      "calls-s0003",
       "diff-s0003"
     ]
   }
