@@ -496,21 +496,22 @@ A C8 scenario issues 20 items per probe type, a tier M scenario's count; a
 C8H scenario issues 10, as H's do.
 
 The hybrid rerun's registrations C8X (`prereg/C8X.json`, revision 1,
-`9b281cf8`) and C8XH (`prereg/C8XH.json`, revision 1, `fe966cde`) carry
-C8's and C8H's seeds, splits, and controls, so each scenario holds the same
+`ff9a09d3`) and C8XH (`prereg/C8XH.json`, revision 1, `cf75e20a`) name C8
+and C8H in `reference_runs` and carry their seeds, splits, and controls,
+which `bun run prereg:validate` checks, so each scenario holds the same
 items as the C8 or C8H scenario of its seed; only the manifest's
 registration hash, and with it the `scenario_hash`, differs:
 
 | Registration | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| C8X | 204 | `e9cef843` | 0.3335 | 0.5807 |
-| C8X | 206 | `3ae88cbd` | 0.3427 | 0.5807 |
-| C8X | 207 | `cdd2cb5b` | 0.3392 | 0.5441 |
-| C8X | 208 | `091e350a` | 0.3504 | 0.5807 |
-| C8X | 209 | `52f61d01` | 0.3665 | 0.5807 |
-| C8XH | 603 | `9723fb40` | 0.2946 | 0.5913 |
-| C8XH | 604 | `ef390ffe` | 0.3028 | 0.5991 |
-| C8XH | 605 | `fc79bce7` | 0.3021 | 0.5913 |
+| C8X | 204 | `d59758fb` | 0.3335 | 0.5807 |
+| C8X | 206 | `226a9475` | 0.3427 | 0.5807 |
+| C8X | 207 | `16d46eed` | 0.3392 | 0.5441 |
+| C8X | 208 | `dcd82334` | 0.3504 | 0.5807 |
+| C8X | 209 | `4c441c18` | 0.3665 | 0.5807 |
+| C8XH | 603 | `3d55fd32` | 0.2946 | 0.5913 |
+| C8XH | 604 | `5008191d` | 0.3028 | 0.5991 |
+| C8XH | 605 | `16583e1a` | 0.3021 | 0.5913 |
 
 ## Known limits
 

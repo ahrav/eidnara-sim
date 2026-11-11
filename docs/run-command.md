@@ -168,9 +168,13 @@ automatic project memory on the production route for the life of each
 store once a search-projection rebuild outlived its deadline. The rerun
 builds from `eval/c8h` (Eidnara #1208 on `eval/c8`). The seeds, arm, and
 analysis were decided before any rerun outcome existed. A one-arm
-registration takes its comparison from its `analysis.reference` campaign,
-c8: the `eidnara-hybrid` vs `eidnara` contrast reads the C8 and C8H
-`eidnara` runs at the seed level. C8XH reports apart from C8X and is never
+registration names its contrasts in `reference_runs`: C8X pairs
+`eidnara-hybrid` with C8's `eidnara` runs and C8XH with C8H's, seed by
+seed, and `analysis.reference` is c8 at the seed level. The validator
+refuses a `reference_runs` whose registration differs in tier, split,
+fresh-seed flag, seeds, or controls, or lacks the reference arm, so the
+rerun's seeds are the reference registration's seeds and are never an
+independent seed selection. C8XH reports apart from C8X and is never
 pooled with it. The budget is the c8 campaign's remaining $46k (low bound
 eight arm-seeds at c7's cheapest `eidnara` spend, $3,932), at c7's
 $5,489 per `eidnara-hybrid` arm-seed.

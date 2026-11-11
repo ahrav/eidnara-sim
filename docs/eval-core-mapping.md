@@ -214,6 +214,16 @@ that journal. An eval-core counterpart would need a `FaultAction` family for
 harness seams and a scope outside `StoreFamily` in the Suite C fault contract
 (`eval-suite-c-fault-report/v3`); no extension is made here.
 
+## Qualification reference runs
+
+A qualification's `reference_runs` (`src/prereg/qualification.ts`) names an
+earlier registration and pairs each of its run arms with one of that
+registration's run arms over the same seeds, split, and controls, so a
+rerun's contrast reads runs another campaign recorded. eval-core's
+`Manifest` pairs the `aged` and `fresh` arms of one run identity and has no
+cross-campaign reference; carrying it needs `eval-manifest/v10` with a
+reference run set beside `run_identity`. No extension is made here.
+
 ## Run settings outside the pre-registration
 
 `manifest.turns_await_jobs` records whether each user turn waited for

@@ -175,13 +175,14 @@ over the build clone's development payload,
 passes as `productionSearchManifest`. The fixture checks each payload file
 against the manifest's digests, installs search admission from its fixture
 records, and logs `direct_host_fixture: search route production, embedding
-model <model>` on stderr at each start. The production route registers
-search-projection outbox consumers, so the fused variant's statement
-delivery and search also rest on `canonical_memory.rs`, whose
+model <model>` on stderr at each start. The production route, in the fused
+fixture and in `eidnara-host`, registers search-projection outbox
+consumers, so both fused variants' statement delivery and search also rest
+on `canonical_memory.rs`, whose
 `read_project_memory` serves the canonical rows at the pinned tip at any
 consumer lag (it calls no `decide_for_tip_read`), and on
 `search_lifecycle_owner.rs`, which reports a rebuild whose deadline passed
-as `SliceOutcome::Expired` and renews it. Both files are among the
+as `SliceOutcome::Expired` and renews it. Both files are among each fused
 variant's sources and probes. The run records the manifest's
 digest as `binaries.payload_manifest` and refuses a fused arm before
 preflight when the manifest is absent. `scripts/eidnara-build.sh` builds
@@ -226,8 +227,8 @@ built from an unmerged branch stops at preflight once its fixture sources
 differ from the pin's. At `837c3bab3` the verdict is `unchanged`. Audited
 from the previous pin `8e6265d2c` to `837c3bab3` it is `reread`, for the two
 fused-variant sources #1208 changed (`canonical_memory.rs` and
-`search_lifecycle_owner.rs`), with every probe held; the legacy fixture's and
-the production payload's sources are identical at both commits. Audited
+`search_lifecycle_owner.rs`), with every probe held; the legacy fixture's
+sources are identical at both commits. Audited
 against the current pin, `8e6265d2c` returns `broken`: its
 `canonical_memory.rs` gates the read on `decide_for_tip_read`, and its
 `search_lifecycle_owner.rs` has no `SliceOutcome::Expired`. A commit before
