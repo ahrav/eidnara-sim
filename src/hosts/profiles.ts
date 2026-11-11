@@ -211,8 +211,8 @@ const FIXTURE_PROBES = [
 ];
 
 /**
- * The production route registers search-projection outbox consumers, so automatic delivery there
- * also rests on the canonical memory read serving at any consumer lag and on the projection
+ * The production route, in the fused fixture and in `eidnara-host`, registers search-projection
+ * outbox consumers, so automatic delivery there also rests on the canonical memory read serving at any consumer lag and on the projection
  * lifecycle renewing a rebuild whose deadline passed (Eidnara #1208, c8 ISSUES I3).
  */
 const FUSED_DELIVERY_SOURCES = [
@@ -304,6 +304,7 @@ export const DAEMON_VARIANTS: Record<DaemonVariant, VariantRecord> = {
             "crates/daemon/src/bin/eidnara_host/serve.rs",
             "crates/host-runtime/src/model_execution/pi.rs",
             "crates/host-runtime/src/model_execution/aws_profile.rs",
+            ...FUSED_DELIVERY_SOURCES,
             ...PASS_SOURCES,
             ...MEMORY_INJECTION_SOURCES,
             ...SOURCE_CAPTURE_SOURCES,
@@ -331,9 +332,10 @@ export const DAEMON_VARIANTS: Record<DaemonVariant, VariantRecord> = {
                 "QUALIFIED_HARNESS_CLOSURES",
             ),
             probe("side_calls", "crates/host-runtime/src/model_execution/pi.rs", "--no-extensions"),
+            ...FUSED_DELIVERY_PROBES,
             ...SHARED_PROBES,
         ],
-        notes: BEHAVIOUR_NOTES,
+        notes: FUSED_NOTES,
     },
 };
 
