@@ -5,6 +5,7 @@ import {
     qualificationHash,
     qualificationSeed,
     RANKING_GATE_ITEMS,
+    referenceErrors,
     validateQualification,
 } from "./qualification";
 import { preregistrationHash } from "./validate";
@@ -243,6 +244,80 @@ test("C8 runs fresh diagnosed seeds, and C8H three of H's held-out seeds, over t
     expect(C8H.seeds.every((s) => H.seeds.includes(s))).toBe(true);
     expect(C8.seeds.filter((s) => C8H.seeds.includes(s))).toEqual([]);
     expect(C8.replicates).toEqual({ seeds: [204, 206], arms: ["host", "eidnara"] });
+});
+
+test("C8X and C8XH rerun the hybrid arm alone over C8's and C8H's seeds, with c8 as reference", () => {
+    const M = loadPrereg("M");
+    const pairs = [
+        [loadQualification("C8X"), loadQualification("C8")],
+        [loadQualification("C8XH"), loadQualification("C8H")],
+    ] as const;
+    for (const [rerun, original] of pairs) {
+        expect(validateQualification(rerun, M)).toEqual([]);
+        expect(rerun.arms.run).toEqual(["eidnara-hybrid"]);
+        expect(rerun.contrasts).toEqual([]);
+        expect(rerun.seeds).toEqual(original.seeds);
+        expect(rerun.corpus).toBe(original.corpus);
+        expect(rerun.fresh_seeds).toBe(original.fresh_seeds);
+        // The controls decide the compiled items, so the rerun's scenarios match the original's.
+        expect(rerun.controls).toEqual(original.controls);
+        expect(rerun.analysis?.reference).toEqual({ campaign: "c8", level: "seed" });
+        expect(rerun.analysis?.harm_probes).toEqual(original.analysis?.harm_probes);
+        expect(rerun.reference_runs).toEqual({
+            registration: original.id,
+            contrasts: [["eidnara-hybrid", "eidnara"]],
+        });
+        expect(referenceErrors(rerun, original)).toEqual([]);
+    }
+    // The rerun keeps its reference registration's seeds, split, and controls, and pairs with one of
+    // its run arms.
+    const [C8X, C8] = pairs[0];
+    const H = loadQualification("H");
+    expect(referenceErrors(C8X, { ...C8, seeds: [204, 206] })).toEqual([
+        "reference_runs: seeds differs from C8's",
+    ]);
+    expect(referenceErrors(C8X, { ...C8, controls: [] as never[] })).toEqual([
+        "reference_runs: controls differs from C8's",
+    ]);
+    expect(referenceErrors(C8X, H)).toEqual([
+        "reference_runs: corpus differs from H's",
+        "reference_runs: fresh_seeds differs from H's",
+        "reference_runs: seeds differs from H's",
+    ]);
+    expect(referenceErrors(C8X, { ...C8, arms: { run: ["host"], order_by_seed: [] } })).toEqual([
+        "reference_runs.contrasts[0]: eidnara is not a C8 run arm",
+    ]);
+    const edit = (patch: (q: Record<string, unknown>) => void) => {
+        const q = structuredClone(C8X) as unknown as Record<string, unknown>;
+        patch(q);
+        return validateQualification(q, M);
+    };
+    expect(
+        edit((q) => {
+            q.arms = {
+                run: ["eidnara-hybrid", "eidnara"],
+                order_by_seed: C8X.seeds.map(() => ["eidnara-hybrid", "eidnara"]),
+            };
+            q.analysis = {
+                ...(C8X.analysis as object),
+                cost_per_arm_seed_usd: { "eidnara-hybrid": 5489, eidnara: 5489 },
+            };
+        }),
+    ).toEqual(["contrasts: a registration that runs two or more arms names a contrast"]);
+    expect(edit((q) => delete q.reference_runs)).toEqual([
+        "contrasts: a one-arm registration names its contrasts in reference_runs",
+    ]);
+    const runs = (contrasts: string[][], registration = "C8") =>
+        edit((q) => (q.reference_runs = { registration, contrasts }));
+    expect(runs([["eidnara-hybrid", "eidnara"]], "C8X")).toEqual([
+        "reference_runs.registration: names this registration",
+    ]);
+    expect(runs([["eidnara", "host"]])).toEqual([
+        "reference_runs.contrasts[0]: eidnara is not a run arm",
+    ]);
+    expect(runs([["eidnara-hybrid", "nope"]])).toEqual([
+        "reference_runs.contrasts[0]: nope has no profile",
+    ]);
 });
 
 test("fresh seeds, replicates, and the analysis plan are checked against the registration", () => {

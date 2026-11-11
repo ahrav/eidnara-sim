@@ -1,0 +1,78 @@
+{
+    "schema": "sim-qualification/v1",
+    "id": "C8X",
+    "revision": 1,
+    "frozen": true,
+    "tier": "M",
+    "tier_preregistration_sha256": "d1b8c9694586ff9fe2c3b55b0f98fa2e564da270d2f19d3c9d8eb8181398cd06",
+    "corpus": "diagnosed",
+    "fresh_seeds": true,
+    "seeds": [
+        204,
+        206,
+        207,
+        208,
+        209
+    ],
+    "hosts": [
+        "pi"
+    ],
+    "arms": {
+        "run": [
+            "eidnara-hybrid"
+        ],
+        "order_by_seed": [
+            [
+                "eidnara-hybrid"
+            ],
+            [
+                "eidnara-hybrid"
+            ],
+            [
+                "eidnara-hybrid"
+            ],
+            [
+                "eidnara-hybrid"
+            ],
+            [
+                "eidnara-hybrid"
+            ]
+        ]
+    },
+    "contrasts": [],
+    "controls": [
+        "wrong-project-lookup"
+    ],
+    "reference_runs": {
+        "registration": "C8",
+        "contrasts": [
+            [
+                "eidnara-hybrid",
+                "eidnara"
+            ]
+        ]
+    },
+    "analysis": {
+        "unit": "run",
+        "reference": {
+            "campaign": "c8",
+            "level": "seed"
+        },
+        "harm_probes": [
+            "P2",
+            "P5",
+            "P9",
+            "P10",
+            "P11",
+            "P8-twin"
+        ],
+        "budget_usd": {
+            "low": 31456,
+            "high": 46000
+        },
+        "cost_per_arm_seed_usd": {
+            "eidnara-hybrid": 5489
+        }
+    },
+    "claim": "descriptive"
+}

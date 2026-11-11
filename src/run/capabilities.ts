@@ -157,6 +157,15 @@ export interface DeliveryObservation {
      * after the capture ended), those carrying a `<project-memory>` block.
      */
     due_blocks?: number;
+    /**
+     * Sessions with at least one request that owes a block; absent on observations recorded
+     * before it was read.
+     */
+    due_sessions?: number;
+    /** Of those, the sessions in which at least one owing request carried a `<project-memory>` block. */
+    covered_sessions?: number;
+    /** The owing sessions in which no owing request carried a block, in session order. */
+    uncovered_sessions?: string[];
 }
 
 /** The text blocks of the body's user messages, where a prompt prefix lands. */
@@ -202,6 +211,9 @@ export function observeDelivery(
         sessions: 0,
         memory_due: false,
         due_blocks: 0,
+        due_sessions: 0,
+        covered_sessions: 0,
+        uncovered_sessions: [],
     };
     const delivered = new Set<string>();
     const index = (event: string | null) => eventIndex.get(event ?? "") ?? -1;
@@ -277,6 +289,17 @@ export function observeDelivery(
     const owed = owingRequests(agentCalls, lastCapture, lastCall, statementSessions, projectOf);
     out.memory_due = owed.length > 0;
     out.due_blocks = owed.filter((c) => c.block).length;
+    const owing = new Map<string, boolean>();
+    for (const c of owed) {
+        const key = c.session ?? "";
+        owing.set(key, (owing.get(key) ?? false) || c.block);
+    }
+    out.due_sessions = owing.size;
+    out.covered_sessions = [...owing.values()].filter(Boolean).length;
+    out.uncovered_sessions = [...owing]
+        .filter(([, covered]) => !covered)
+        .map(([session]) => session)
+        .sort();
     return out;
 }
 
@@ -818,9 +841,17 @@ export function armMismatches(o: ArmObservation): string[] {
 }
 
 /**
+ * The share of owing sessions an automatic arm must cover: every one. Automatic delivery serves the
+ * statements captured in earlier sessions of a project in the `<project-memory>` block of each
+ * later session's passes, so each session that owes a block carries it in some owing request.
+ */
+export const REQUIRED_MEMORY_COVERAGE = 1;
+
+/**
  * Once a user statement captured in one session meets an agent request of a later session, an
- * automatic arm must have carried a `<project-memory>` block and an explicit-search arm must have
- * called `eidnara_search`. An Eidnara arm whose agent worked in two sessions must also show its
+ * automatic arm must have carried a `<project-memory>` block in every session that owes one (at
+ * least `REQUIRED_MEMORY_COVERAGE` of them) and an explicit-search arm must have called
+ * `eidnara_search`. An Eidnara arm whose agent worked in two sessions must also show its
  * capture calls in the proxy records, since every side call goes through the proxy.
  */
 function memoryMismatches(profile: ArmProfile, o: ArmObservation): string[] {
@@ -836,6 +867,16 @@ function memoryMismatches(profile: ArmProfile, o: ArmObservation): string[] {
         out.push(
             `the final store holds ${statements} user statements captured before later sessions' agent requests, but none of those requests carried a <project-memory> block`,
         );
+    } else if (d.memory_due && mode === "automatic" && d.due_sessions !== undefined) {
+        const covered = d.covered_sessions ?? 0;
+        if (covered < REQUIRED_MEMORY_COVERAGE * d.due_sessions) {
+            const missed = d.uncovered_sessions ?? [];
+            const shown = missed.slice(0, 20).join(", ");
+            const more = missed.length > 20 ? ` and ${missed.length - 20} more` : "";
+            out.push(
+                `${covered} of ${d.due_sessions} sessions that owe a <project-memory> block carried one (coverage ${(covered / d.due_sessions).toFixed(3)}, required ${REQUIRED_MEMORY_COVERAGE}); none in ${shown}${more}`,
+            );
+        }
     }
     const searches = o.search
         ? o.search.legacy_scan.length + o.search.fused + o.search.errored

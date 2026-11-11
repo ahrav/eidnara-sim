@@ -157,6 +157,28 @@ to 606) come to about $242k, over the $204k spend cap, so revision 2 drops
 C8 seed 212 and C8H seed 606 and keeps 36 runs (about $198k). The choice
 used no outcome data; no measured run existed when it was made.
 
+`--qualification C8X` (`prereg/C8X.json`, revision 1) and
+`--qualification C8XH` (`prereg/C8XH.json`, revision 1) rerun the c8
+comparison's `eidnara-hybrid` arm alone, C8X over C8's fresh diagnosed seeds
+204, 206, 207, 208, and 209 and C8XH over C8H's held-out seeds 603, 604, and
+605, with C8's `wrong-project-lookup` control, so each scenario compiles to
+the same items as C8's or C8H's (only the manifest's registration hash
+differs). The c8 hybrid runs are invalid: Eidnara defect I3 withheld
+automatic project memory on the production route for the life of each
+store once a search-projection rebuild outlived its deadline. The rerun
+builds from `eval/c8h` (Eidnara #1208 on `eval/c8`). The seeds, arm, and
+analysis were decided before any rerun outcome existed. A one-arm
+registration names its contrasts in `reference_runs`: C8X pairs
+`eidnara-hybrid` with C8's `eidnara` runs and C8XH with C8H's, seed by
+seed, and `analysis.reference` is c8 at the seed level. The validator
+refuses a `reference_runs` whose registration differs in tier, split,
+fresh-seed flag, seeds, or controls, or lacks the reference arm, so the
+rerun's seeds are the reference registration's seeds and are never an
+independent seed selection. C8XH reports apart from C8X and is never
+pooled with it. The budget is the c8 campaign's remaining $46k (low bound
+eight arm-seeds at c7's cheapest `eidnara` spend, $3,932), at c7's
+$5,489 per `eidnara-hybrid` arm-seed.
+
 `--qualification H` runs the held-out registration `prereg/H.json`
 (revision 2, which re-pins the M digest after tier revision 9). It binds tier M, selects the `held-out` corpus split, runs
 `host` and `eidnara` on both hosts over seeds 601 to 609 and 611, with the
