@@ -149,8 +149,8 @@ opening `Background from earlier sessions on ` or a note carries a marker
 earlier user message does; the next session starts without it.
 
 Each daemon variant provides a fixed capability set, read from the Eidnara
-source at commit `8e6265d2c` (`AUDITED_EIDNARA`, the `eval/c8` integration
-head):
+source at commit `837c3bab3` (`AUDITED_EIDNARA`, the `eval/c8h` integration
+head: `eval/c8` `8e6265d2c` plus Eidnara #1208):
 
 | Variant | Search route | Embeddings | Memory reviewer | Side calls | Memory injection | Source capture |
 |---|---|---|---|---|---|---|
@@ -175,7 +175,14 @@ over the build clone's development payload,
 passes as `productionSearchManifest`. The fixture checks each payload file
 against the manifest's digests, installs search admission from its fixture
 records, and logs `direct_host_fixture: search route production, embedding
-model <model>` on stderr at each start. The run records the manifest's
+model <model>` on stderr at each start. The production route registers
+search-projection outbox consumers, so the fused variant's statement
+delivery and search also rest on `canonical_memory.rs`, whose
+`read_project_memory` serves the canonical rows at the pinned tip at any
+consumer lag (it calls no `decide_for_tip_read`), and on
+`search_lifecycle_owner.rs`, which reports a rebuild whose deadline passed
+as `SliceOutcome::Expired` and renews it. Both files are among the
+variant's sources and probes. The run records the manifest's
 digest as `binaries.payload_manifest` and refuses a fused arm before
 preflight when the manifest is absent. `scripts/eidnara-build.sh` builds
 the payload last: it fetches the host inputs, builds the debug
@@ -216,15 +223,17 @@ script prints the `git diff` to read, and after that reading the pin moves to
 the commit. Exit 2 (`broken`): a probe fails, so `DAEMON_VARIANTS` needs
 revising before the pin moves. The pin names only merged commits, so a run
 built from an unmerged branch stops at preflight once its fixture sources
-differ from the pin's. At `8e6265d2c` the verdict is `unchanged`; against
-the previous pin `1f2867036` it is `reread`, for four changed sources from
-#1207 (E6): `history_summarizer_open_items.rs` is new and holds
-`retire_settled_lines`, `history_summarizer_validate.rs` passes the parsed
-segments through it, `history_summarizer_citations.rs` exposes the claim-key
-grammar it reads status-line keys with, and the summarizer prompt gains the
-open-items section. Every earlier probe holds there. Audited against the
-current pin, a commit before E6 returns `broken`, since the
-`settled_lines_retired` probes need those files.
+differ from the pin's. At `837c3bab3` the verdict is `unchanged`. Audited
+from the previous pin `8e6265d2c` to `837c3bab3` it is `reread`, for the two
+fused-variant sources #1208 changed (`canonical_memory.rs` and
+`search_lifecycle_owner.rs`), with every probe held; the legacy fixture's and
+the production payload's sources are identical at both commits. Audited
+against the current pin, `8e6265d2c` returns `broken`: its
+`canonical_memory.rs` gates the read on `decide_for_tip_read`, and its
+`search_lifecycle_owner.rs` has no `SliceOutcome::Expired`. A commit before
+E6 also returns `broken`, since the `settled_lines_retired` probes need
+`history_summarizer_open_items.rs` and the summarizer prompt's open-items
+section.
 
 ## Capability evidence
 
@@ -334,8 +343,15 @@ complete evidence only when the two agree:
   statement's session ended (`started_wall_ms` against `wall_ms`), since Eidnara leaves the
   current session's statements out of its own block; `memory_due` holds when
   any request owes one, and `due_blocks` counts the owing requests that
-  carry a block. Once one is due, an automatic-delivery arm is a mismatch
-  when no owing request carried a `<project-memory>` block, and an
+  carry a block. `due_sessions` counts the sessions with an owing request,
+  `covered_sessions` those in which an owing request carried a block, and
+  `uncovered_sessions` names the rest. Once one is due, an automatic-delivery
+  arm is a mismatch when no owing request carried a `<project-memory>`
+  block, and also when `covered_sessions` is below
+  `REQUIRED_MEMORY_COVERAGE` (1) times `due_sessions`: automatic delivery
+  serves the statements of earlier sessions on each later session's passes,
+  so every owing session carries the block, and the mismatch names the
+  uncovered sessions. An
   explicit-search arm is a mismatch when its Pi transcripts hold no
   `eidnara_search` result. An Eidnara arm that made agent calls is a
   mismatch when its final store's decisions cannot be read, and one whose
