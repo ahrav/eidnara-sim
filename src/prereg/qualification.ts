@@ -241,7 +241,7 @@ export function validateQualification(value: unknown, tier: Preregistration): st
     if (q.contrasts.length === 0 && q.arms.run.length > 1) {
         errors.push("contrasts: a registration that runs two or more arms names a contrast");
     }
-    if (q.contrasts.length === 0 && !q.reference_runs) {
+    if (q.contrasts.length === 0 && q.arms.run.length === 1 && !q.reference_runs) {
         errors.push("contrasts: a one-arm registration names its contrasts in reference_runs");
     }
     if (errors.length > 0) return errors;

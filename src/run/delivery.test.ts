@@ -293,7 +293,7 @@ describe("delivery check", () => {
         const bare = call("s-2", "e-3", "Which port again?");
         const missed = call("s-3", "e-4", "Which port now?");
         const coverage = observeDelivery(
-            [first, captured, bare, later, missed],
+            [first, captured, later, bare, missed],
             parts(),
             [],
             order,
