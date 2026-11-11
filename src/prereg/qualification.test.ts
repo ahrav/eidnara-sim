@@ -5,6 +5,7 @@ import {
     qualificationHash,
     qualificationSeed,
     RANKING_GATE_ITEMS,
+    referenceErrors,
     validateQualification,
 } from "./qualification";
 import { preregistrationHash } from "./validate";
@@ -262,8 +263,30 @@ test("C8X and C8XH rerun the hybrid arm alone over C8's and C8H's seeds, with c8
         expect(rerun.controls).toEqual(original.controls);
         expect(rerun.analysis?.reference).toEqual({ campaign: "c8", level: "seed" });
         expect(rerun.analysis?.harm_probes).toEqual(original.analysis?.harm_probes);
+        expect(rerun.reference_runs).toEqual({
+            registration: original.id,
+            contrasts: [["eidnara-hybrid", "eidnara"]],
+        });
+        expect(referenceErrors(rerun, original)).toEqual([]);
     }
-    const C8X = loadQualification("C8X");
+    // The rerun keeps its reference registration's seeds, split, and controls, and pairs with one of
+    // its run arms.
+    const [C8X, C8] = pairs[0];
+    const H = loadQualification("H");
+    expect(referenceErrors(C8X, { ...C8, seeds: [204, 206] })).toEqual([
+        "reference_runs: seeds differs from C8's",
+    ]);
+    expect(referenceErrors(C8X, { ...C8, controls: [] as never[] })).toEqual([
+        "reference_runs: controls differs from C8's",
+    ]);
+    expect(referenceErrors(C8X, H)).toEqual([
+        "reference_runs: corpus differs from H's",
+        "reference_runs: fresh_seeds differs from H's",
+        "reference_runs: seeds differs from H's",
+    ]);
+    expect(referenceErrors(C8X, { ...C8, arms: { run: ["host"], order_by_seed: [] } })).toEqual([
+        "reference_runs.contrasts[0]: eidnara is not a C8 run arm",
+    ]);
     const edit = (patch: (q: Record<string, unknown>) => void) => {
         const q = structuredClone(C8X) as unknown as Record<string, unknown>;
         patch(q);
@@ -281,8 +304,19 @@ test("C8X and C8XH rerun the hybrid arm alone over C8's and C8H's seeds, with c8
             };
         }),
     ).toEqual(["contrasts: a registration that runs two or more arms names a contrast"]);
-    expect(edit((q) => delete q.analysis)).toEqual([
-        "contrasts: a one-arm registration names its reference campaign in analysis",
+    expect(edit((q) => delete q.reference_runs)).toEqual([
+        "contrasts: a one-arm registration names its contrasts in reference_runs",
+    ]);
+    const runs = (contrasts: string[][], registration = "C8") =>
+        edit((q) => (q.reference_runs = { registration, contrasts }));
+    expect(runs([["eidnara-hybrid", "eidnara"]], "C8X")).toEqual([
+        "reference_runs.registration: names this registration",
+    ]);
+    expect(runs([["eidnara", "host"]])).toEqual([
+        "reference_runs.contrasts[0]: eidnara is not a run arm",
+    ]);
+    expect(runs([["eidnara-hybrid", "nope"]])).toEqual([
+        "reference_runs.contrasts[0]: nope has no profile",
     ]);
 });
 

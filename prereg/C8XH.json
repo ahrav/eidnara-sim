@@ -34,6 +34,15 @@
     "controls": [
         "wrong-project-lookup"
     ],
+    "reference_runs": {
+        "registration": "C8H",
+        "contrasts": [
+            [
+                "eidnara-hybrid",
+                "eidnara"
+            ]
+        ]
+    },
     "analysis": {
         "unit": "run",
         "reference": {

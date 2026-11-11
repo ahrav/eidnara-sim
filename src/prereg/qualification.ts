@@ -56,8 +56,7 @@ export interface Qualification {
     arms: { run: string[]; order_by_seed: string[][] };
     /**
      * `[treatment, reference]` pairs of run arms whose delivery modes or search routes differ; empty
-     * only when the registration runs one arm, whose reference runs belong to the campaign
-     * `analysis.reference` names.
+     * only when the registration runs one arm and `reference_runs` names its contrasts.
      */
     contrasts: string[][];
     controls: QualificationControl[];
@@ -90,9 +89,16 @@ export interface Qualification {
     corpus?: Split;
     /**
      * A diagnosed registration over seeds outside the tier's: they compile from the diagnosed
-     * split at the tier's per-scenario item count, and no earlier campaign ran them.
+     * split at the tier's per-scenario item count, and no earlier campaign ran them, or, with
+     * `reference_runs`, they are exactly the seeds of the registration it reruns.
      */
     fresh_seeds?: true;
+    /**
+     * A rerun of some arms of an earlier registration over its seeds, split, and controls, so each
+     * scenario holds the same items: `contrasts` pairs each of this registration's run arms with
+     * a run arm of `registration`, whose runs on the same seeds are the reference.
+     */
+    reference_runs?: { registration: string; contrasts: string[][] };
     /**
      * Run-level A/A replicates: on each listed seed, each listed arm runs a second time as its own
      * run, launched together with the first.
@@ -145,6 +151,7 @@ const SECTIONS: Record<string, Shape> = {
     },
     ranking_gate: { order: list(text), items: list(oneOf(RANKING_GATE_ITEMS)) },
     replicates: { seeds: list(uint32), arms: list(text) },
+    reference_runs: { registration: oneOf(QUALIFICATIONS), contrasts: list(list(text)) },
     analysis: {
         unit: literal("run"),
         reference: { campaign: text, level: literal("seed") },
@@ -234,8 +241,8 @@ export function validateQualification(value: unknown, tier: Preregistration): st
     if (q.contrasts.length === 0 && q.arms.run.length > 1) {
         errors.push("contrasts: a registration that runs two or more arms names a contrast");
     }
-    if (q.contrasts.length === 0 && !q.analysis) {
-        errors.push("contrasts: a one-arm registration names its reference campaign in analysis");
+    if (q.contrasts.length === 0 && !q.reference_runs) {
+        errors.push("contrasts: a one-arm registration names its contrasts in reference_runs");
     }
     if (errors.length > 0) return errors;
     q.contrasts.forEach((pair, i) => {
@@ -292,6 +299,27 @@ function checkSections(q: Qualification, errors: string[]): void {
     for (const arm of r?.arms.filter((a) => !q.arms.run.includes(a)) ?? []) {
         errors.push(`replicates.arms: ${arm} is not a run arm`);
     }
+    const ref = q.reference_runs;
+    if (ref?.registration === q.id) {
+        errors.push("reference_runs.registration: names this registration");
+    }
+    ref?.contrasts.forEach((pair, i) => {
+        const [a, b] = pair;
+        if (pair.length !== 2 || a === undefined || b === undefined) {
+            errors.push(`reference_runs.contrasts[${i}]: expected a [treatment, reference] pair`);
+        } else if (!q.arms.run.includes(a)) {
+            errors.push(`reference_runs.contrasts[${i}]: ${a} is not a run arm`);
+        } else if (!isArmName(b)) {
+            errors.push(`reference_runs.contrasts[${i}]: ${b} has no profile`);
+        } else if (
+            deliveryOf(armProfile(a)) === deliveryOf(armProfile(b)) &&
+            armProfile(a).search === armProfile(b).search
+        ) {
+            errors.push(
+                `reference_runs.contrasts[${i}]: ${a} and ${b} deliver and search the same way`,
+            );
+        }
+    });
     const a = q.analysis;
     if (a) {
         if (a.budget_usd.low > a.budget_usd.high) {
@@ -329,6 +357,33 @@ function checkSections(q: Qualification, errors: string[]): void {
             errors.push(`ranking_gate.items: expected ${RANKING_GATE_ITEMS.join(", ")}`);
         }
     }
+}
+
+/**
+ * Refusals of `q`'s `reference_runs` against `reference`, the registration it names: the rerun
+ * keeps its tier, split, fresh-seed flag, seeds, and controls, so each scenario compiles to the
+ * same items, and each reference arm is one of its run arms.
+ */
+export function referenceErrors(q: Qualification, reference: Qualification): string[] {
+    const r = q.reference_runs;
+    if (!r) return [];
+    const errors: string[] = [];
+    const same = (field: string, a: unknown, b: unknown) => {
+        if (JSON.stringify(a) !== JSON.stringify(b)) {
+            errors.push(`reference_runs: ${field} differs from ${reference.id}'s`);
+        }
+    };
+    same("tier", q.tier, reference.tier);
+    same("corpus", q.corpus ?? "diagnosed", reference.corpus ?? "diagnosed");
+    same("fresh_seeds", q.fresh_seeds ?? false, reference.fresh_seeds ?? false);
+    same("seeds", q.seeds, reference.seeds);
+    same("controls", q.controls, reference.controls);
+    r.contrasts.forEach(([, arm], i) => {
+        if (arm !== undefined && !reference.arms.run.includes(arm)) {
+            errors.push(`reference_runs.contrasts[${i}]: ${arm} is not a ${reference.id} run arm`);
+        }
+    });
+    return errors;
 }
 
 /** The arms a qualification runs on `seed`: its order, its A/A pairs, and whether it is a hold-out. */

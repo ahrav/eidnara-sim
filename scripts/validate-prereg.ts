@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { QUALIFICATIONS, qualificationHash } from "../src/prereg/qualification";
+import { QUALIFICATIONS, qualificationHash, referenceErrors } from "../src/prereg/qualification";
 import { type Preregistration, TIERS } from "../src/prereg/schema";
 import { preregistrationHash, validatePreregistration } from "../src/prereg/validate";
 import { loadQualification } from "../src/scenario/inputs";
@@ -33,6 +33,9 @@ for (const tier of TIERS) {
 for (const id of QUALIFICATIONS) {
     try {
         const q = loadQualification(id, dir);
+        const named = q.reference_runs?.registration;
+        const errors = named ? referenceErrors(q, loadQualification(named, dir)) : [];
+        if (errors.length > 0) throw new Error(errors.join("\n  "));
         console.log(`${id}: accepted ${qualificationHash(q)} over ${q.tier}`);
     } catch (cause) {
         failed = true;
