@@ -154,6 +154,48 @@ describe("delivery check", () => {
         expect(seen.notes).toEqual({ expected: 1, delivered: 1, missing: [], misplaced: [] });
     });
 
+    test("contested statements and open-item lines are read from the blocks the daemon wrote", () => {
+        const memory = (line: string) => `<project-memory>\n${line}\n</project-memory>`;
+        const contested =
+            'User stated: The limit is 300. (stated 2026-03-01; contested 2026-04-09 by mem_b: "Assistant reported: the file holds 500.")';
+        const history = (tag: string, segments: string[]) =>
+            `<${tag}>\n${segments.join("\n")}\n</${tag}>`;
+        const waiting = "## 1-4 · Plan\nWaiting on user (deploy.order): which step goes first?";
+        const decided = "## 5-8 · Answer\n- Decided (deploy.order): step two goes first.";
+        const archive = "## 9-12 · Later work\nI added the changelog entry.";
+        const calls = [
+            call("s-2", "e-1", `${memory(contested)}\nTask.`),
+            call("s-2", "e-2", `${memory("User stated: The limit is 300.")}\nTask.`),
+            // The waiting line's segment is the block's newest summarized one.
+            call("s-2", "e-3", `${history("session-history", [waiting, archive])}\nTask.`),
+            // A later segment holds a status line, so the waiting line before it is stale.
+            call("s-2", "e-4", `${history("session-history", [waiting, decided])}\nTask.`),
+            // Each block renders on its own: the baseline's waiting line stays beside the answer above it.
+            call(
+                "s-2",
+                "e-4",
+                `${history("session-history", [waiting])}\n${history("session-history-since", [decided])}\nTask.`,
+            ),
+            // The blocks are told apart by their whole tag names, in either order.
+            call(
+                "s-2",
+                "e-4",
+                `${history("session-history-since", [decided])}\n${history("session-history", [waiting])}\nTask.`,
+            ),
+            // A status line in the agent's own prompt text is no rendered history.
+            call("s-2", "e-4", `${waiting}\n${decided}`),
+        ];
+        const seen = observeDelivery(calls, parts(), [], order);
+        expect(seen.contested_blocks).toBe(1);
+        expect(seen.memory_blocks).toBe(2);
+        expect(seen.open_items).toEqual({
+            blocks: 6,
+            waiting_blocks: 4,
+            stale_waiting_blocks: 1,
+            stale_requests: [calls[3]?.seq as number],
+        });
+    });
+
     test("a run with no owed note, or a note that reached no request of its turn, is invalid", () => {
         expect(check("host-oracle", [call("s-1", "e-1", "First task.")], [])).toEqual([
             "the arm reached no probe turn with sources, so it delivered no oracle note",

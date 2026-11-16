@@ -26,6 +26,7 @@ import {
     parseCampaign,
     type RunRecord,
     readSpend,
+    runEnv,
     runProgress,
 } from "../src/run/campaign";
 import { Journal } from "../src/run/journal";
@@ -310,6 +311,27 @@ test("alerts name a silent running run and a filesystem past 80% inode use", () 
         alertKey("run r finished no event for 51 min"),
     );
     expect(alertKey("run s101 GAVE UP: x")).not.toBe(alertKey("run s102 GAVE UP: x"));
+});
+
+test("a run reads the sim config its campaign entry names, and the supervisor's otherwise", () => {
+    const base = { schema: "sim-campaign/v1", out: "/x" };
+    const spec = parseCampaign({
+        ...base,
+        runs: [
+            { name: "new", args: [] },
+            { name: "ref", args: [], config: "/w2/sim-ref.config.json" },
+        ],
+    });
+    const env = { PATH: "/bin", SIM_CONFIG: "/w2/sim.config.json" };
+    expect(runEnv(spec.runs[0], env)).toBe(env);
+    expect(runEnv(spec.runs[1], env)).toEqual({
+        PATH: "/bin",
+        SIM_CONFIG: "/w2/sim-ref.config.json",
+    });
+    expect(runEnv(undefined, env)).toBe(env);
+    expect(() =>
+        parseCampaign({ ...base, runs: [{ name: "r", args: [], config: "sim.config.json" }] }),
+    ).toThrow("run r config is no absolute path");
 });
 
 test("a campaign file that lets a run pick its own --out, or repeats a name, is refused", () => {

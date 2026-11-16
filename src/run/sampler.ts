@@ -87,6 +87,33 @@ export function treeBytes(dir: string): number | null {
     return readable ? total : null;
 }
 
+/** The `progress` block of the daemon's `search.lifecycle.status` answer (Eidnara host wire protocol). */
+export interface SearchProgress {
+    tip: number | null;
+    checkpoint: number | null;
+    lag_commits: number | null;
+    rebuilds: { recorded: number; completed: number; renewed: number } | null;
+    blocked: string | null;
+}
+
+/**
+ * One reading of the daemon's own status, taken over an observational route: the `process_memory`
+ * block of the Context module's `status` answer, and on a fused-route arm the lifecycle record
+ * state, admission state, and `progress` block of `search.lifecycle.status`. A field the answer
+ * lacks is null, and `error` names a read that failed.
+ */
+export interface DaemonStatusReading {
+    /** The wall time the reading returned at. */
+    wall_ms: number;
+    process_memory: Record<string, unknown> | null;
+    search: {
+        state: string | null;
+        admission: string | null;
+        progress: SearchProgress | null;
+    } | null;
+    error: string | null;
+}
+
 export interface Sample {
     wall_ms: number;
     scenario_ms: number;
@@ -98,6 +125,8 @@ export interface Sample {
     cpu_ms: number | null;
     cpu_fraction: number | null;
     store_bytes: number | null;
+    /** The daemon status reading that returned since the previous sample, or null with none. */
+    daemon_status?: DaemonStatusReading | null;
 }
 
 export class ResourceSampler {
@@ -118,6 +147,11 @@ export class ResourceSampler {
             pid: () => number | null;
             /** Reads a process's /proc snapshot; defaults to procStats. */
             stats?: (pid: number) => ReturnType<typeof procStats>;
+            /**
+             * Hands over the daemon status reading that returned since the last call and starts
+             * the next read; absent on an arm whose daemon status is not read.
+             */
+            status?: () => DaemonStatusReading | null;
             storeDir: string;
             scenarioMs: () => number;
             onBusy: (busy: boolean) => void;
@@ -159,6 +193,7 @@ export class ResourceSampler {
             cpu_ms: stats?.cpuMs ?? null,
             cpu_fraction: fraction === null ? null : Math.round(fraction * 1e4) / 1e4,
             store_bytes: treeBytes(this.o.storeDir),
+            ...(this.o.status ? { daemon_status: stats ? this.o.status() : null } : {}),
         };
         appendFileSync(this.o.path, `${JSON.stringify(s)}\n`);
         return s;

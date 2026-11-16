@@ -15,11 +15,13 @@ import { bodyText, injectedBlocks } from "../evidence/stages";
 import { payloadManifest } from "../hosts/arms";
 import {
     type ArmProfile,
-    AUDITED_EIDNARA,
+    AUDITED_BUILDS,
+    type AuditedBuild,
     armProfile,
-    DAEMON_VARIANTS,
+    type DaemonCapabilities,
     type DaemonVariant,
     deliveryOf,
+    FIXTURE_READER_LAG_COMMITS,
 } from "../hosts/profiles";
 import type { ConverseBody } from "../proxy/classify";
 import type { CallRecord } from "../proxy/records";
@@ -60,7 +62,13 @@ export interface ArmObservation {
      * successful results the fused route answered (every success without the fallback note), and
      * the results that reported an error; null where the host's transcripts are not read.
      */
-    search: { legacy_scan: string[]; fused: number; errored: number } | null;
+    search: {
+        legacy_scan: string[];
+        fused: number;
+        errored: number;
+        /** Results holding a `Contested by` line; absent on observations recorded before it was read. */
+        contested?: number;
+    } | null;
     /** Proxy call records of the arm, by component. */
     components: Record<string, number>;
     /** What the arm's agent requests carried; null where the run's arms need no request read. */
@@ -71,6 +79,36 @@ export interface ArmObservation {
     statements?: StatementObservation;
     /** The daemon starts in the arm's `daemon.log`; absent on observations recorded before it was read. */
     daemon_routes?: DaemonRouteObservation;
+    /** The daemon status readings in the arm's `resources.jsonl`; absent on observations recorded before they were read. */
+    daemon_status?: DaemonStatusObservation;
+}
+
+/**
+ * The daemon status readings the sampler wrote beside its `/proc` samples: how many samples of a
+ * live daemon there are, how many carry the `process_memory` block of the Context module's
+ * `status` answer, and what the `progress` block of `search.lifecycle.status` reported.
+ */
+export interface DaemonStatusObservation {
+    /** Samples that name a live daemon process. */
+    samples: number;
+    process_memory: number;
+    /** The largest anonymous resident bytes a `process_memory` block reported, or null with none. */
+    max_rss_anon_bytes: number | null;
+    /** The last `process_memory` block's C-heap release count, or null with none. */
+    c_heap_releases: number | null;
+    search_progress: {
+        /** Samples carrying a `progress` block. */
+        samples: number;
+        /** Of those, the samples of a Current, admitted projection within `FIXTURE_READER_LAG_COMMITS` of the tip. */
+        served: number;
+        max_lag_commits: number | null;
+        /** The last sample's lag behind the kernel tip, in commits. */
+        last_lag_commits: number | null;
+        /** The last sample's rebuild counts. */
+        rebuilds: { recorded: number; completed: number; renewed: number } | null;
+        /** Samples whose progress names a blocking reason. */
+        blocked: number;
+    };
 }
 
 /**
@@ -85,6 +123,13 @@ export type StatementObservation = {
     unattributed: number;
     /** Why the store's decisions could not be read, or null. */
     error: string | null;
+    /**
+     * The Kernel lineages (source ids) the statement records join: how many there are, how many
+     * statements the largest holds, and how many statements sit on a per-message lineage
+     * (`memory_capture_statement:<32 hex digits>`); absent on observations recorded before it was
+     * read.
+     */
+    lineages?: { count: number; largest: number; per_message: number };
 } | null;
 
 /**
@@ -166,7 +211,66 @@ export interface DeliveryObservation {
     covered_sessions?: number;
     /** The owing sessions in which no owing request carried a block, in session order. */
     uncovered_sessions?: string[];
+    /** Agent requests whose `<project-memory>` block renders a contested statement; absent on observations recorded before it was read. */
+    contested_blocks?: number;
+    /** The keyed open items in the requests' rendered history; absent on observations recorded before it was read. */
+    open_items?: OpenItemObservation;
 }
+
+/**
+ * The open-item status lines in the history blocks (`<session-history>` and
+ * `<session-history-since>`) of the arm's agent requests. The rows of one block render together,
+ * so a waiting line belongs in the block's newest summarized segment alone.
+ */
+export interface OpenItemObservation {
+    /** History blocks holding at least one rendered segment. */
+    blocks: number;
+    /** Of those, the blocks with a `Waiting on user (key)` line. */
+    waiting_blocks: number;
+    /** Of those, the blocks where a later segment of the block holds a status line of any form. */
+    stale_waiting_blocks: number;
+    /** The call sequence numbers of the first requests with such a block, at most twenty. */
+    stale_requests: number[];
+}
+
+const HISTORY_BLOCK = /<(session-history-since|session-history)(?=[\s>])[^>]*>([\s\S]*?)<\/\1>/g;
+/** A rendered segment opens with `## <first>-<last>`; a body line that starts with `## ` is rendered indented. */
+const SEGMENT_HEADING = /^## \d+-\d+/;
+/** The four status-line forms, each after at most one `- ` or `* ` bullet (Eidnara `history_open_items.rs`). */
+const STATUS_LINE = /^(?:[-*] )?(Waiting on user|Constraint|Decided|Lifted) \([^()\s]+\): \S/;
+
+/**
+ * The open-item status lines of one request's history blocks. A block is stale when a segment
+ * with a waiting line is followed, inside the block, by a segment holding a status line: that
+ * later segment is a summarized one, so the waiting line's segment is no longer the newest.
+ */
+export function openItemsOf(text: string): { blocks: number; waiting: number; stale: number } {
+    const out = { blocks: 0, waiting: 0, stale: 0 };
+    for (const block of text.matchAll(HISTORY_BLOCK)) {
+        const segments: { waiting: boolean; status: boolean }[] = [];
+        for (const line of (block[2] as string).split("\n")) {
+            if (SEGMENT_HEADING.test(line)) {
+                segments.push({ waiting: false, status: false });
+                continue;
+            }
+            const current = segments.at(-1);
+            const form = STATUS_LINE.exec(line)?.[1];
+            if (!current || form === undefined) continue;
+            current.status = true;
+            if (form === "Waiting on user") current.waiting = true;
+        }
+        if (segments.length === 0) continue;
+        out.blocks++;
+        if (!segments.some((s) => s.waiting)) continue;
+        out.waiting++;
+        const lastStatus = segments.map((s) => s.status).lastIndexOf(true);
+        if (segments.some((s, i) => s.waiting && i < lastStatus)) out.stale++;
+    }
+    return out;
+}
+
+/** A contested statement as `<project-memory>` renders it (Eidnara `canonical_memory.rs` `contested_line`). */
+const CONTESTED_LINE = / \(stated [^;()]+; contested [^()]+? by [^\s:]+: "/;
 
 /** The text blocks of the body's user messages, where a prompt prefix lands. */
 const userTexts = (body: ConverseBody) =>
@@ -214,7 +318,11 @@ export function observeDelivery(
         due_sessions: 0,
         covered_sessions: 0,
         uncovered_sessions: [],
+        contested_blocks: 0,
+        open_items: { blocks: 0, waiting_blocks: 0, stale_waiting_blocks: 0, stale_requests: [] },
     };
+    const openItems = out.open_items as OpenItemObservation;
+    let contestedBlocks = 0;
     const delivered = new Set<string>();
     const index = (event: string | null) => eventIndex.get(event ?? "") ?? -1;
     const backgrounds = [...new Set(notes.map((n) => n.background))];
@@ -248,9 +356,18 @@ export function observeDelivery(
             system: body.system,
             messages: (body.messages ?? []).filter((m) => m?.role === "user"),
         });
-        if (injectedBlocks(given).some((b) => b.tag === "project-memory")) {
+        const memory = injectedBlocks(given).filter((b) => b.tag === "project-memory");
+        if (memory.length > 0) {
             memoryBlocks++;
             agent.block = true;
+            if (memory.some((b) => CONTESTED_LINE.test(b.body))) contestedBlocks++;
+        }
+        const items = openItemsOf(given);
+        openItems.blocks += items.blocks;
+        openItems.waiting_blocks += items.waiting;
+        openItems.stale_waiting_blocks += items.stale;
+        if (items.stale > 0 && openItems.stale_requests.length < 20) {
+            openItems.stale_requests.push(call.seq);
         }
         const users = userTexts(body);
         const prompt = [...users].reverse().find((t) => t.length > 0) ?? "";
@@ -285,6 +402,7 @@ export function observeDelivery(
     out.notes.delivered = delivered.size;
     out.notes.missing = notes.filter((n) => n.owed && !delivered.has(n.event)).map((n) => n.event);
     out.memory_blocks = memoryBlocks;
+    out.contested_blocks = contestedBlocks;
     out.sessions = new Set(agentCalls.map((c) => c.session)).size;
     const owed = owingRequests(agentCalls, lastCapture, lastCall, statementSessions, projectOf);
     out.memory_due = owed.length > 0;
@@ -503,7 +621,7 @@ const FALLBACK =
  * walk enters only real subdirectories; an absent directory holds no results.
  */
 export function readPiSearches(root: string, rel: string): NonNullable<ArmObservation["search"]> {
-    const search = { legacy_scan: [] as string[], fused: 0, errored: 0 };
+    const search = { legacy_scan: [] as string[], fused: 0, errored: 0, contested: 0 };
     let sessionsDir = root;
     for (const part of rel.split("/")) {
         sessionsDir = join(sessionsDir, part);
@@ -549,6 +667,7 @@ export function readPiSearches(root: string, rel: string): NonNullable<ArmObserv
                     .join("\n");
                 // The plugin prepends the fallback note to every legacy-scan answer and to no
                 // answer the fused route ranked; a refusal is an error result.
+                if (/^Contested by /m.test(text)) search.contested++;
                 const fallback = FALLBACK.exec(text);
                 if (fallback) search.legacy_scan.push(fallback[1] as string);
                 else if (m.isError === true || text.startsWith("Error")) search.errored++;
@@ -631,7 +750,27 @@ export function readStatements(kernelPath: string): StatementObservation {
             if (typeof session === "string") sessions.add(session);
             else unattributed++;
         }
-        return { count: rows.length, sessions: [...sessions].sort(), unattributed, error: null };
+        const lineages = db
+            .query(
+                `select o.source_id as source, count(*) as n from object_registry o
+                 where o.object_id glob 'stm_*'
+                   and o.created_commit_seq in (select commit_seq from commit_log)
+                 group by o.source_id`,
+            )
+            .all() as { source: string; n: number }[];
+        return {
+            count: rows.length,
+            sessions: [...sessions].sort(),
+            unattributed,
+            error: null,
+            lineages: {
+                count: lineages.length,
+                largest: Math.max(0, ...lineages.map((l) => l.n)),
+                per_message: lineages
+                    .filter((l) => PER_MESSAGE_LINEAGE.test(l.source))
+                    .reduce((sum, l) => sum + l.n, 0),
+            },
+        };
     } catch (caught) {
         const error = (caught as Error).message;
         return { count: 0, sessions: [], unattributed: 0, error };
@@ -639,6 +778,9 @@ export function readStatements(kernelPath: string): StatementObservation {
         db?.close();
     }
 }
+
+/** A per-message statement lineage: the shared prefix, a colon, and 32 hex digits of the capture job id. */
+const PER_MESSAGE_LINEAGE = /^memory_capture_statement:[0-9a-f]{32}$/;
 
 const ROUTE_LINE = /direct_host_fixture: search route production, embedding model ([^,\s]+)/;
 
@@ -666,6 +808,86 @@ export function readDaemonRoutes(path: string): DaemonRouteObservation {
         }
     });
     out.models = [...models].sort();
+    return out;
+}
+
+const count = (v: unknown): number | null =>
+    typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
+
+/**
+ * The daemon status readings in `resources.jsonl`: each sample of a live daemon, the
+ * `process_memory` blocks, and the `progress` blocks of `search.lifecycle.status`. A projection
+ * counts as served in a sample when its lifecycle record is Current, its admission is `admitted`,
+ * and it trails the kernel tip by at most `FIXTURE_READER_LAG_COMMITS` commits.
+ */
+export function readDaemonStatus(path: string): DaemonStatusObservation {
+    const out: DaemonStatusObservation = {
+        samples: 0,
+        process_memory: 0,
+        max_rss_anon_bytes: null,
+        c_heap_releases: null,
+        search_progress: {
+            samples: 0,
+            served: 0,
+            max_lag_commits: null,
+            last_lag_commits: null,
+            rebuilds: null,
+            blocked: 0,
+        },
+    };
+    const progress = out.search_progress;
+    eachLine(path, (line) => {
+        let sample: {
+            pid?: unknown;
+            daemon_status?: {
+                process_memory?: Record<string, unknown> | null;
+                search?: {
+                    state?: unknown;
+                    admission?: unknown;
+                    progress?: Record<string, unknown> | null;
+                } | null;
+            } | null;
+        };
+        try {
+            sample = JSON.parse(line);
+        } catch {
+            return;
+        }
+        if (typeof sample?.pid !== "number") return;
+        out.samples++;
+        const memory = sample.daemon_status?.process_memory;
+        if (memory && typeof memory === "object") {
+            out.process_memory++;
+            const anon = count(memory.rss_anon_bytes);
+            if (anon !== null) out.max_rss_anon_bytes = Math.max(out.max_rss_anon_bytes ?? 0, anon);
+            out.c_heap_releases = count(memory.c_heap_releases) ?? out.c_heap_releases;
+        }
+        const search = sample.daemon_status?.search;
+        const p = search?.progress;
+        if (!search || !p || typeof p !== "object") return;
+        progress.samples++;
+        const lag = count(p.lag_commits);
+        progress.last_lag_commits = lag;
+        if (lag !== null) progress.max_lag_commits = Math.max(progress.max_lag_commits ?? 0, lag);
+        if (
+            search.state === "current" &&
+            search.admission === "admitted" &&
+            lag !== null &&
+            lag <= FIXTURE_READER_LAG_COMMITS
+        ) {
+            progress.served++;
+        }
+        if (typeof p.blocked === "string") progress.blocked++;
+        const r = p.rebuilds as Record<string, unknown> | undefined;
+        const [recorded, completed, renewed] = [r?.recorded, r?.completed, r?.renewed].map(count);
+        if (recorded !== null && completed !== null && renewed !== null) {
+            progress.rebuilds = { recorded, completed, renewed } as {
+                recorded: number;
+                completed: number;
+                renewed: number;
+            };
+        }
+    });
     return out;
 }
 
@@ -752,6 +974,7 @@ export function observeArm(
         },
         statements: readStatements(join(armRoot, "..", "final-store", "kernel.sqlite")),
         daemon_routes: readDaemonRoutes(join(armRoot, "..", "daemon.log")),
+        daemon_status: readDaemonStatus(join(armRoot, "..", "resources.jsonl")),
     };
 }
 
@@ -784,9 +1007,16 @@ export function bootMismatches(profile: ArmProfile, o: Pick<ArmObservation, "boo
     return out;
 }
 
-/** Every difference between what the arm's profile declares and what its run evidence shows. */
-export function armMismatches(o: ArmObservation): string[] {
+/**
+ * Every difference between what the arm's profile declares and what its run evidence shows, read
+ * against the capabilities the arm's daemon variant has on `build`, the audited build the run bound.
+ */
+export function armMismatches(
+    o: ArmObservation,
+    build: AuditedBuild = AUDITED_BUILDS[0],
+): string[] {
     const profile = armProfile(o.arm);
+    const caps = profile.daemon === null ? undefined : build.variants[profile.daemon];
     const out = [...bootMismatches(profile, o), ...deliveryMismatches(profile, o.delivery ?? null)];
     const count = (component: string) => o.components[component] ?? 0;
     if (!profile.plugin) {
@@ -824,6 +1054,7 @@ export function armMismatches(o: ArmObservation): string[] {
     }
     out.push(...captureMismatches(profile, o), ...memoryMismatches(profile, o));
     out.push(...routeMismatches(profile, o));
+    if (caps) out.push(...buildMismatches(profile, o, caps, build.label));
     if (o.search) {
         if (profile.search !== "legacy-scan" && o.search.legacy_scan.length > 0) {
             const reasons = [...new Set(o.search.legacy_scan)].join(", ");
@@ -926,13 +1157,109 @@ function routeMismatches(profile: ArmProfile, o: ArmObservation): string[] {
             `the production search route ran embedding model ${other.join(", ")}, but the arm requires ${wanted}`,
         );
     }
-    if (
-        o.search &&
-        o.search.fused === 0 &&
-        o.search.legacy_scan.length === 0 &&
-        o.search.errored > 0
-    ) {
-        out.push(`all ${o.search.errored} eidnara_search results errored on the fused route`);
+    const share = fusedAnswerShare(o.search);
+    if (o.search && share !== null && share <= MIN_FUSED_ANSWER_SHARE) {
+        const total = o.search.fused + o.search.errored;
+        out.push(
+            `${o.search.errored} of ${total} eidnara_search results errored on the fused route (answered share ${share.toFixed(3)}, required above ${MIN_FUSED_ANSWER_SHARE})`,
+        );
+    }
+    return out;
+}
+
+/**
+ * The share of a fused arm's `eidnara_search` results the fused route must exceed: one half. The
+ * arm declares the fused route as its search path (`search: "fused"`), and an errored search
+ * carries no ranking from any route. The fused route is the arm's search path while it answers
+ * more of the arm's searches than it refuses; at one half or below, the arm's usual search has no
+ * answer, which is the `none` route's evidence. The bound follows from that declaration alone.
+ */
+export const MIN_FUSED_ANSWER_SHARE = 0.5;
+
+/** The share of fused-route searches (answered plus errored) the route answered; null with none. */
+export function fusedAnswerShare(search: ArmObservation["search"]): number | null {
+    if (!search) return null;
+    const total = search.fused + search.errored;
+    return total === 0 ? null : search.fused / total;
+}
+
+/**
+ * Evidence that contradicts what the bound build's variant declares for the w2 behaviours: the
+ * lineage of each statement record and the `decisions_approval_refused` counter, contested
+ * statements in the block and in search results, waiting lines outside a history block's newest
+ * summarized segment, the `process_memory` block in the daemon's status, and the lifecycle
+ * progress block on the fused route.
+ */
+function buildMismatches(
+    profile: ArmProfile,
+    o: ArmObservation,
+    caps: DaemonCapabilities,
+    label: string,
+): string[] {
+    const out: string[] = [];
+    const answered = (o.components.agent ?? 0) > 0;
+    const lineages = o.statements?.lineages;
+    const statements = o.statements?.count ?? 0;
+    if (lineages && statements > 0) {
+        const shared = statements - lineages.per_message;
+        if (caps.statement_lineage === "per-message" && shared > 0) {
+            out.push(
+                `${shared} of ${statements} user statements sit on a lineage shared across messages, but ${label} declares one lineage per user message`,
+            );
+        }
+        if (caps.statement_lineage === "shared" && lineages.per_message > 0) {
+            out.push(
+                `${lineages.per_message} of ${statements} user statements sit on a per-message lineage, but ${label} declares one shared lineage`,
+            );
+        }
+    }
+    const counters = o.source_capture?.counters;
+    if (profile.source_capture && counters) {
+        const counted = Object.hasOwn(counters, "decisions_approval_refused");
+        if (caps.statement_lineage === "per-message" && !counted) {
+            out.push(
+                `the source capture counters hold no decisions_approval_refused, which ${label} declares with its per-message statement lineage`,
+            );
+        }
+        if (caps.statement_lineage === "shared" && counted) {
+            out.push(
+                `the source capture counters hold decisions_approval_refused, which ${label} does not declare`,
+            );
+        }
+    }
+    const contested = (o.delivery?.contested_blocks ?? 0) + (o.search?.contested ?? 0);
+    if (!caps.contested_statements && contested > 0) {
+        out.push(
+            `${o.delivery?.contested_blocks ?? 0} agent requests and ${o.search?.contested ?? 0} eidnara_search results render a contested statement, which ${label} does not declare`,
+        );
+    }
+    const items = o.delivery?.open_items;
+    if (caps.keyed_open_items && items && items.stale_waiting_blocks > 0) {
+        out.push(
+            `${items.stale_waiting_blocks} of ${items.blocks} rendered history blocks hold a waiting line before a later summarized segment (first requests ${items.stale_requests.join(", ")}), but ${label} declares waiting lines in the newest segment alone`,
+        );
+    }
+    const status = o.daemon_status;
+    if (status && answered && status.samples > 0) {
+        if (caps.process_memory && status.process_memory === 0) {
+            out.push(
+                `none of ${status.samples} daemon samples carries the status process_memory block, which ${label} declares`,
+            );
+        }
+        if (!caps.process_memory && status.process_memory > 0) {
+            out.push(
+                `${status.process_memory} daemon samples carry a status process_memory block, which ${label} does not declare`,
+            );
+        }
+        if (
+            caps.search_progress &&
+            profile.search === "fused" &&
+            status.search_progress.samples === 0
+        ) {
+            out.push(
+                `none of ${status.samples} daemon samples carries a search.lifecycle.status progress block, which ${label} declares for the fused route`,
+            );
+        }
     }
     return out;
 }
@@ -974,41 +1301,53 @@ function captureMismatches(profile: ArmProfile, o: ArmObservation): string[] {
 }
 
 /**
- * The build clone's copies of every source that fixes a variant's capabilities match those at
- * `AUDITED_EIDNARA`, for each daemon variant the arms run; otherwise the recorded capabilities may
- * describe another daemon than the one built, and the run stops before it starts one.
+ * Binds the run to the audited build its clone holds: the first registered build whose commit the
+ * clone has, whose table registers every daemon variant the arms run, and whose copies of every
+ * source that fixes those variants' capabilities match the clone's working tree. With no such
+ * build the recorded capabilities may describe another daemon than the one built, and the run
+ * stops before it starts one. A run whose arms use no daemon binds none.
  */
 export function requireAuditedVariants(
     checkout: string,
     arms: readonly string[],
-    audited = AUDITED_EIDNARA,
-): void {
+    builds: readonly AuditedBuild[] = AUDITED_BUILDS,
+): AuditedBuild | null {
     const variants = [
         ...new Set(arms.map((a) => armProfile(a).daemon).filter((v) => v !== null)),
     ] as DaemonVariant[];
-    if (variants.length === 0) return;
+    if (variants.length === 0) return null;
     const git = (args: string[]) =>
         Bun.spawnSync(["git", "-C", checkout, ...args], { stdout: "pipe", stderr: "pipe" });
-    if (git(["cat-file", "-e", `${audited}^{commit}`]).exitCode !== 0) {
-        throw new Error(
-            `${checkout} lacks commit ${audited}, whose source the daemon capabilities in src/hosts/profiles.ts were read from`,
-        );
-    }
-    const manifest = payloadManifest(checkout);
-    if (variants.includes("direct-host-fixture-fused") && !existsSync(manifest)) {
-        throw new Error(
-            `direct-host-fixture-fused loads the payload's embedding lane, and ${manifest} is absent; build the development payload (bun run payload:dev) in the build clone`,
-        );
-    }
-    for (const variant of variants) {
-        const { sources } = DAEMON_VARIANTS[variant];
-        // Against the working tree, so an uncommitted edit to a source counts as a change too.
-        const diff = git(["diff", "--name-only", audited, "--", ...sources]);
-        const changed = diff.stdout.toString().trim();
-        if (diff.exitCode !== 0 || changed !== "") {
+    const refusal = (build: AuditedBuild): string | null => {
+        if (git(["cat-file", "-e", `${build.commit}^{commit}`]).exitCode !== 0) {
+            return `${checkout} lacks commit ${build.commit} (${build.label}), whose source the daemon capabilities in src/hosts/profiles.ts were read from`;
+        }
+        for (const variant of variants) {
+            const record = build.variants[variant];
+            if (!record) return `${build.label} (${build.commit}) registers no ${variant} variant`;
+            // Against the working tree, so an uncommitted edit to a source counts as a change too.
+            const diff = git(["diff", "--name-only", build.commit, "--", ...record.sources]);
+            const changed = diff.stdout.toString().trim().split("\n").join(", ");
+            if (diff.exitCode !== 0 || changed !== "") {
+                return `${variant} capabilities were read at ${build.commit} (${build.label}), and ${changed || "the comparison"} ${changed ? "changed" : "failed"} since; read them again in src/hosts/profiles.ts`;
+            }
+        }
+        return null;
+    };
+    const refusals: string[] = [];
+    for (const build of builds) {
+        const why = refusal(build);
+        if (why !== null) {
+            refusals.push(why);
+            continue;
+        }
+        const manifest = payloadManifest(checkout);
+        if (variants.includes("direct-host-fixture-fused") && !existsSync(manifest)) {
             throw new Error(
-                `${variant} capabilities were read at ${audited}, and ${changed || "the comparison"} ${changed ? "changed" : "failed"} since; read them again in src/hosts/profiles.ts`,
+                `direct-host-fixture-fused loads the payload's embedding lane, and ${manifest} is absent; build the development payload (bun run payload:dev) in the build clone`,
             );
         }
+        return build;
     }
+    throw new Error(refusals.join("; "));
 }

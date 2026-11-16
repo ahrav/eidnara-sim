@@ -25,6 +25,7 @@ import { GitBound, git } from "../git";
 import type { CallView, Command } from "../grade/artefacts";
 import { captureCountersProblem } from "../run/capabilities";
 import { processStart, running, stopOwnedTree } from "../run/procs";
+import type { DaemonStatusReading } from "../run/sampler";
 import {
     type ArmDriver,
     HarnessFailure,
@@ -431,6 +432,41 @@ export class HostDriver implements ArmDriver {
 
     daemonPid(): number | null {
         return this.daemon?.pid() ?? null;
+    }
+
+    private statusReading: DaemonStatusReading | null = null;
+    private statusRead: Promise<void> | null = null;
+
+    /**
+     * Hands over the daemon status reading that returned since the last call and, with no read
+     * in flight, starts the next one. A read's failure is a reading with `error` set, so a
+     * daemon that stops answering shows in the samples and leaves the sampler running.
+     */
+    daemonStatus(): DaemonStatusReading | null {
+        const reading = this.statusReading;
+        this.statusReading = null;
+        const daemon = this.daemon;
+        if (daemon && this.statusRead === null && !this.stopping && this.daemonAlive()) {
+            const fused = armProfile(this.o.arm).search === "fused";
+            this.statusRead = daemon
+                .status(fused)
+                .then(
+                    (read) => ({ ...read, error: null }),
+                    (caught: unknown) => ({
+                        process_memory: null,
+                        search: null,
+                        error: String(caught).slice(0, 500),
+                    }),
+                )
+                .then((read) => {
+                    this.statusRead = null;
+                    // A reading of a replaced or stopped daemon describes no live process.
+                    if (this.daemon === daemon) {
+                        this.statusReading = { wall_ms: Date.now(), ...read };
+                    }
+                });
+        }
+        return reading;
     }
 
     /** The daemon lives while the pid its stack holds still names the process that started there. */

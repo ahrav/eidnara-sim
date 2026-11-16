@@ -11,12 +11,20 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AUDITED_EIDNARA, armProfile } from "../hosts/profiles";
+import {
+    AUDITED_BUILDS,
+    type AuditedBuild,
+    armProfile,
+    capabilityGaps,
+    DAEMON_VARIANTS,
+} from "../hosts/profiles";
 import {
     armMismatches,
     bootMismatches,
     logLength,
     observeArm,
+    openItemsOf,
+    readDaemonStatus,
     readPluginLog,
     requireAuditedVariants,
 } from "./capabilities";
@@ -63,16 +71,19 @@ function armRoot(log: string[], searches: string[] = []): string {
  * Writes the capture evidence a stopped daemon leaves beside an arm root: a final Kernel store
  * whose registry holds one descriptor per class named, and the counters the driver read.
  */
+/** The counters a w2 daemon reports: the capture totals and the refused-approval count. */
+const COUNTERS = { admitted: 1, completed: 1, units_published: 2, decisions_approval_refused: 0 };
+
 function captured(
     root: string,
     classes: string[] = ["messages"],
-    counters: Record<string, number> | null = { admitted: 1, completed: 1, units_published: 2 },
+    counters: Record<string, number> | null = COUNTERS,
 ): string {
     const store = join(root, "..", "final-store");
     mkdirSync(store, { recursive: true });
     const db = new Database(join(store, "kernel.sqlite"));
     db.run(
-        "create table object_registry(object_id text primary key, object_kind text, source_kind text, created_commit_seq integer, invalidated_commit_seq integer)",
+        "create table object_registry(object_id text primary key, object_kind text, source_kind text, created_commit_seq integer, invalidated_commit_seq integer, source_id text default '')",
     );
     db.run("create table commit_log(commit_seq integer primary key)");
     db.run("insert into commit_log values (1), (7)");
@@ -80,13 +91,13 @@ function captured(
         "create table decisions(object_id text, decision_payload blob, created_commit_seq integer)",
     );
     for (const [i, c] of classes.entries()) {
-        db.run("insert into object_registry values (?, 'observation', ?, 1, ?)", [
+        db.run("insert into object_registry values (?, 'observation', ?, 1, ?, '')", [
             `srcdesc:${c}${i}:1`,
             c,
             i === 0 ? null : 7,
         ]);
     }
-    db.run("insert into object_registry values ('decision:x', 'decision', 'memory', 1, null)");
+    db.run("insert into object_registry values ('decision:x', 'decision', 'memory', 1, null, '')");
     db.close();
     const error = counters ? null : "fixture control timed out";
     writeFileSync(join(root, "..", "source-capture.json"), JSON.stringify({ counters, error }));
@@ -175,7 +186,12 @@ test("search results are checked against the route the arm declares", () => {
         );
     const root = captured(searched());
     const fallback = observeArm("eidnara", "pi", root, { agent: 1 });
-    expect(fallback.search).toEqual({ legacy_scan: ["disabled"], fused: 2, errored: 1 });
+    expect(fallback.search).toEqual({
+        legacy_scan: ["disabled"],
+        fused: 2,
+        errored: 1,
+        contested: 0,
+    });
     expect(armMismatches(fallback)).toEqual([
         "2 eidnara_search results came from the fused route, but the arm declares legacy-scan",
     ]);
@@ -231,7 +247,22 @@ test("every daemon start of the fused arm logs the production route over its emb
     const errored = captured(armRoot([PI_ON, PASS], ["Error: the memory search route refused"]));
     daemonLog(errored, [READY, ROUTE]);
     expect(armMismatches(observeArm("eidnara-hybrid", "pi", errored, { agent: 1 }))).toEqual([
-        "all 1 eidnara_search results errored on the fused route",
+        "1 of 1 eidnara_search results errored on the fused route (answered share 0.000, required above 0.5)",
+    ]);
+    // The fused route is the arm's search path while it answers more searches than it refuses.
+    const share = (results: string[]) => {
+        const root = captured(armRoot([PI_ON, PASS], results));
+        daemonLog(root, [READY, ROUTE]);
+        return armMismatches(observeArm("eidnara-hybrid", "pi", root, { agent: 1 }));
+    };
+    const refused =
+        "Error: Memory results may lag recent changes; the projector has not caught up.";
+    expect(share([FUSED, FUSED, refused])).toEqual([]);
+    expect(share([FUSED, refused])).toEqual([
+        "1 of 2 eidnara_search results errored on the fused route (answered share 0.500, required above 0.5)",
+    ]);
+    expect(share([FUSED, refused, refused])).toEqual([
+        "2 of 3 eidnara_search results errored on the fused route (answered share 0.333, required above 0.5)",
     ]);
 });
 
@@ -256,6 +287,12 @@ test("delivery evidence must match the statements the final store holds", () => 
             payload("sim-s-0009"),
         ],
     );
+    // Two statements quote one user message and a third quotes another; stm_e's commit is absent.
+    const message = (digit: string) => `memory_capture_statement:${digit.repeat(32)}`;
+    db.run(
+        "insert into object_registry values ('stm_a', 'decision', 'user', 1, null, ?), ('stm_b', 'decision', 'user', 1, null, ?), ('stm_c', 'decision', 'user', 7, null, ?), ('stm_e', 'decision', 'user', 99, null, ?)",
+        [message("a"), message("a"), message("b"), message("c")],
+    );
     db.close();
     const observe = (arm: string, components: Record<string, number>) =>
         observeArm(arm, "pi", root, components);
@@ -265,6 +302,7 @@ test("delivery evidence must match the statements the final store holds", () => 
         sessions: ["sim-s-0001"],
         unattributed: 1,
         error: null,
+        lineages: { count: 2, largest: 2, per_message: 3 },
     });
     const delivery = (memory_blocks: number, memory_due = true, due_blocks = memory_blocks) => ({
         requests: 3,
@@ -334,7 +372,7 @@ test("the capability check reads the counter total over an arm's daemon generati
     const root = captured(armRoot([PI_ON, PASS]), ["messages"]);
     const write = (record: object) =>
         writeFileSync(join(root, "..", "source-capture.json"), JSON.stringify(record));
-    const total = { admitted: 4, completed: 4 };
+    const total = { admitted: 4, completed: 4, decisions_approval_refused: 0 };
     write({ counters: total, error: null, unread_generations: 1, generations: [] });
     const read = observeArm("eidnara", "pi", root, { agent: 1 });
     expect(read.source_capture).toMatchObject({
@@ -371,7 +409,7 @@ test("an arm that consents to source capture must leave message descriptors and 
     expect(ok.source_capture).toEqual({
         descriptors: { messages: 1, raw_tool_spans: 1 },
         live: 1,
-        counters: { admitted: 1, completed: 1, units_published: 2 },
+        counters: COUNTERS,
         counters_error: null,
         unread_generations: null,
     });
@@ -413,7 +451,14 @@ test("an arm that consents to source capture must leave message descriptors and 
                 { agent: 2 },
             ),
         );
-    expect(nulls({ admitted: 1, completed: 1, oldest_deferred_age_ms: null })).toEqual([]);
+    expect(
+        nulls({
+            admitted: 1,
+            completed: 1,
+            decisions_approval_refused: 0,
+            oldest_deferred_age_ms: null,
+        }),
+    ).toEqual([]);
     const both = captured(armRoot([PI_ON, PASS]));
     writeFileSync(
         join(both, "..", "source-capture.json"),
@@ -440,7 +485,7 @@ test("an arm that consents to source capture must leave message descriptors and 
     const orphaned = captured(armRoot([PI_ON, PASS]));
     const db = new Database(join(orphaned, "..", "final-store", "kernel.sqlite"));
     db.run(
-        "insert into object_registry values ('srcdesc:z:1', 'observation', 'messages', 9, null)",
+        "insert into object_registry values ('srcdesc:z:1', 'observation', 'messages', 9, null, '')",
     );
     db.close();
     expect(armMismatches(observeArm("eidnara", "pi", orphaned, { agent: 2 }))).toEqual([
@@ -529,18 +574,24 @@ describe("audited daemon capabilities", () => {
         const repo = tmp();
         git(repo, "init", "-q");
         commit(repo, "crates/daemon/examples/direct_host_fixture.rs", "fn main() {}\n");
-        expect(() => requireAuditedVariants(repo, ["eidnara"])).toThrow(
-            new RegExp(`lacks commit ${AUDITED_EIDNARA}`),
-        );
-        expect(() => requireAuditedVariants(repo, ["host"])).not.toThrow();
+        // Each registered build names why the clone cannot bind it.
+        for (const build of AUDITED_BUILDS) {
+            expect(() => requireAuditedVariants(repo, ["eidnara"])).toThrow(
+                new RegExp(`lacks commit ${build.commit} \\(${build.label}\\)`),
+            );
+        }
+        expect(requireAuditedVariants(repo, ["host"])).toBeNull();
     });
 
     test("a fixture source that changed since the audited commit is refused; other files pass", () => {
         const repo = tmp();
         git(repo, "init", "-q");
-        const audited = commit(repo, "crates/daemon/examples/direct_host_fixture.rs", "a\n");
+        const head = commit(repo, "crates/daemon/examples/direct_host_fixture.rs", "a\n");
+        const audited = [{ commit: head, label: "test", variants: DAEMON_VARIANTS }];
         commit(repo, "README.md", "unrelated\n");
-        expect(() => requireAuditedVariants(repo, ["eidnara", "host"], audited)).not.toThrow();
+        expect(requireAuditedVariants(repo, ["eidnara", "host"], audited)).toBe(
+            audited[0] as AuditedBuild,
+        );
         writeFileSync(join(repo, "crates/daemon/examples/direct_host_fixture.rs"), "edited\n");
         expect(() => requireAuditedVariants(repo, ["eidnara"], audited)).toThrow(
             /direct_host_fixture.rs changed since/,
@@ -550,6 +601,216 @@ describe("audited daemon capabilities", () => {
             /direct-host-fixture capabilities were read at .*crates\/daemon\/examples\/direct_host_fixture.rs changed since/,
         );
     });
+
+    test("a clone binds the registered build its sources match, and a build without the arm's variant is passed over", () => {
+        const repo = tmp();
+        git(repo, "init", "-q");
+        const fixture = "crates/daemon/examples/direct_host_fixture.rs";
+        const old = commit(repo, fixture, "old\n");
+        const now = commit(repo, fixture, "new\n");
+        const legacy = DAEMON_VARIANTS["direct-host-fixture"];
+        const builds: AuditedBuild[] = [
+            { commit: now, label: "new", variants: DAEMON_VARIANTS },
+            { commit: old, label: "old", variants: { "direct-host-fixture": legacy } },
+        ];
+        expect(requireAuditedVariants(repo, ["eidnara"], builds)?.label).toBe("new");
+        git(repo, "checkout", "-q", old);
+        expect(requireAuditedVariants(repo, ["eidnara"], builds)?.label).toBe("old");
+        // The old build registers the legacy fixture alone, so a fused arm binds neither build.
+        mkdirSync(join(repo, "packages/host-linux-x64-gnu"), { recursive: true });
+        writeFileSync(join(repo, "packages/host-linux-x64-gnu/payload-manifest.json"), "{}\n");
+        expect(() => requireAuditedVariants(repo, ["eidnara-hybrid"], builds)).toThrow(
+            /direct_host_fixture.rs changed since; .*old \(.*\) registers no direct-host-fixture-fused variant/,
+        );
+        expect(capabilityGaps("eidnara-hybrid", builds[1])).toEqual([
+            expect.stringContaining("which the audited build old"),
+        ]);
+        expect(capabilityGaps("eidnara", builds[1])).toEqual([]);
+    });
+});
+
+test("open-item lines follow the renderer's grammar inside one history block", () => {
+    const block = (...segments: string[]) =>
+        `<session-history>\n${segments.join("\n")}\n</session-history>`;
+    const waiting = "## 1-2 \u00b7 A\n* Waiting on user (scope.next): continue in that order?";
+    // A body line that starts with `## ` renders indented, and prose that mentions a form is no status line.
+    const prose =
+        "## 3-4 \u00b7 B\n ## 9-9 \u00b7 nested\nStill open: Waiting on user (scope.next): same.";
+    const lifted = "## 5-6 \u00b7 C\nLifted (bugs.freeze): product fixes are allowed again.";
+    expect(openItemsOf(block(waiting, prose))).toEqual({ blocks: 1, waiting: 1, stale: 0 });
+    expect(openItemsOf(block(waiting, prose, lifted))).toEqual({ blocks: 1, waiting: 1, stale: 1 });
+    expect(openItemsOf(block(lifted, waiting))).toEqual({ blocks: 1, waiting: 1, stale: 0 });
+    expect(openItemsOf("<session-history></session-history>")).toEqual({
+        blocks: 0,
+        waiting: 0,
+        stale: 0,
+    });
+});
+
+test("daemon status readings are totalled from the resource samples", () => {
+    const dir = tmp();
+    const path = join(dir, "resources.jsonl");
+    const memory = (anon: number, releases: number) => ({
+        rss_anon_bytes: anon,
+        c_heap: { in_use_bytes: 1, free_bytes: 2, mmapped_bytes: 3 },
+        c_heap_arena_limit: 4,
+        c_heap_releases: releases,
+    });
+    const progress = (lag: number | null, blocked: string | null = null) => ({
+        tip: 900,
+        checkpoint: lag === null ? null : 900 - lag,
+        lag_commits: lag,
+        rebuilds: { recorded: 2, completed: 1, renewed: 1 },
+        blocked,
+    });
+    const search = (state: string, admission: string, lag: number | null, blocked?: string) => ({
+        state,
+        admission,
+        progress: progress(lag, blocked),
+    });
+    const samples = [
+        { pid: null, daemon_status: null },
+        { pid: 7, daemon_status: null },
+        {
+            pid: 7,
+            daemon_status: {
+                process_memory: memory(100, 0),
+                search: search("current", "admitted", 0),
+            },
+        },
+        // One commit past the fixture's reader bound, a rebuild in progress, and a refused admission are not served.
+        {
+            pid: 7,
+            daemon_status: {
+                process_memory: memory(300, 2),
+                search: search("current", "admitted", 1025),
+            },
+        },
+        {
+            pid: 7,
+            daemon_status: { process_memory: null, search: search("intent", "admitted", 3) },
+        },
+        {
+            pid: 7,
+            daemon_status: {
+                process_memory: memory(200, 3),
+                search: search("current", "refused", 1024, "the database occupies too many bytes"),
+            },
+        },
+        { pid: 7, daemon_status: { process_memory: null, search: null, error: "timed out" } },
+    ];
+    writeFileSync(path, `${samples.map((s) => JSON.stringify(s)).join("\n")}\nnot json\n`);
+    expect(readDaemonStatus(path)).toEqual({
+        samples: 6,
+        process_memory: 3,
+        max_rss_anon_bytes: 300,
+        c_heap_releases: 3,
+        search_progress: {
+            samples: 4,
+            served: 1,
+            max_lag_commits: 1025,
+            last_lag_commits: 1024,
+            rebuilds: { recorded: 2, completed: 1, renewed: 1 },
+            blocked: 1,
+        },
+    });
+    expect(readDaemonStatus(join(dir, "absent.jsonl")).samples).toBe(0);
+});
+
+test("evidence is read against the capabilities of the build the run bound", () => {
+    const w2 = AUDITED_BUILDS[0];
+    const c8 = AUDITED_BUILDS.find((b) => b.label === "eval/c8") as AuditedBuild;
+    const root = captured(armRoot([PI_ON, PASS]));
+    daemonLog(root, []);
+    const base = observeArm("eidnara", "pi", root, { agent: 2, memory_capture: 1 });
+    expect(armMismatches(base, w2)).toEqual([]);
+    // The c8 daemon reports no refused-approval counter, so the w2 counters contradict it.
+    expect(armMismatches(base, c8)).toEqual([
+        "the source capture counters hold decisions_approval_refused, which eval/c8 does not declare",
+    ]);
+    const old = { admitted: 1, completed: 1 };
+    const c8Root = captured(armRoot([PI_ON, PASS]), ["messages"], old);
+    daemonLog(c8Root, []);
+    const reference = observeArm("eidnara", "pi", c8Root, { agent: 2, memory_capture: 1 });
+    expect(armMismatches(reference, c8)).toEqual([]);
+    expect(armMismatches(reference, w2)).toEqual([
+        "the source capture counters hold no decisions_approval_refused, which eval/w2 declares with its per-message statement lineage",
+    ]);
+
+    const statements = (per_message: number) => ({
+        count: 70,
+        sessions: ["sim-s-0001"],
+        unattributed: 0,
+        error: null,
+        lineages: { count: per_message === 0 ? 1 : 9, largest: 64, per_message },
+    });
+    expect(armMismatches({ ...base, statements: statements(70) }, w2)).toEqual([]);
+    expect(armMismatches({ ...base, statements: statements(6) }, w2)).toEqual([
+        "64 of 70 user statements sit on a lineage shared across messages, but eval/w2 declares one lineage per user message",
+    ]);
+    expect(armMismatches({ ...reference, statements: statements(0) }, c8)).toEqual([]);
+    expect(armMismatches({ ...reference, statements: statements(6) }, c8)).toEqual([
+        "6 of 70 user statements sit on a per-message lineage, but eval/c8 declares one shared lineage",
+    ]);
+
+    const delivery = (contested_blocks: number, stale: number) => ({
+        requests: 3,
+        unreadable: 0,
+        injected_blocks: 1,
+        notes: { expected: 0, delivered: 0, missing: [], misplaced: [] },
+        contested_blocks,
+        open_items: {
+            blocks: 5,
+            waiting_blocks: 2,
+            stale_waiting_blocks: stale,
+            stale_requests: stale > 0 ? [41] : [],
+        },
+    });
+    expect(armMismatches({ ...base, delivery: delivery(2, 0) }, w2)).toEqual([]);
+    expect(armMismatches({ ...base, delivery: delivery(0, 1) }, w2)).toEqual([
+        "1 of 5 rendered history blocks hold a waiting line before a later summarized segment (first requests 41), but eval/w2 declares waiting lines in the newest segment alone",
+    ]);
+    // The c8 renderer keeps a settled waiting line across segments, and renders no contest.
+    expect(armMismatches({ ...reference, delivery: delivery(0, 1) }, c8)).toEqual([]);
+    expect(armMismatches({ ...reference, delivery: delivery(2, 0) }, c8)).toEqual([
+        "2 agent requests and 0 eidnara_search results render a contested statement, which eval/c8 does not declare",
+    ]);
+
+    const status = (process_memory: number, progress: number) => ({
+        samples: 9,
+        process_memory,
+        max_rss_anon_bytes: null,
+        c_heap_releases: null,
+        search_progress: {
+            samples: progress,
+            served: progress,
+            max_lag_commits: null,
+            last_lag_commits: null,
+            rebuilds: null,
+            blocked: 0,
+        },
+    });
+    expect(armMismatches({ ...base, daemon_status: status(8, 0) }, w2)).toEqual([]);
+    expect(armMismatches({ ...base, daemon_status: status(0, 0) }, w2)).toEqual([
+        "none of 9 daemon samples carries the status process_memory block, which eval/w2 declares",
+    ]);
+    expect(armMismatches({ ...reference, daemon_status: status(0, 0) }, c8)).toEqual([]);
+    expect(armMismatches({ ...reference, daemon_status: status(8, 0) }, c8)).toEqual([
+        "8 daemon samples carry a status process_memory block, which eval/c8 does not declare",
+    ]);
+    const fused = captured(armRoot([PI_ON, PASS], [FUSED]));
+    daemonLog(fused, [READY, ROUTE]);
+    const hybrid = observeArm("eidnara-hybrid", "pi", fused, { agent: 1 });
+    expect(armMismatches({ ...hybrid, daemon_status: status(8, 8) }, w2)).toEqual([]);
+    expect(armMismatches({ ...hybrid, daemon_status: status(8, 0) }, w2)).toEqual([
+        "none of 9 daemon samples carries a search.lifecycle.status progress block, which eval/w2 declares for the fused route",
+    ]);
+});
+
+test("a search result that renders a contest is counted", () => {
+    const contested = `Found 1 result\n[1] [memory] id=mem_a\nUser stated: The limit is 300.\nContested by mem_b: "Assistant reported: the file holds 500."`;
+    const root = captured(armRoot([PI_ON, PASS], [`${LEGACY}\n${contested}`, LEGACY]));
+    expect(observeArm("eidnara", "pi", root, { agent: 1 }).search).toMatchObject({ contested: 1 });
 });
 
 test("a transcript directory the agent replaced with a link is refused rather than walked", () => {

@@ -8,7 +8,7 @@ import {
     readSync,
     statfsSync,
 } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { sameSet } from "../prereg/validate";
 import { interruptions } from "./interruptions";
 import { type Entry, readJournal } from "./journal";
@@ -23,8 +23,12 @@ export const C7_PRICES: Prices = PRICE_TABLE.rates;
 export interface CampaignSpec {
     schema: "sim-campaign/v1";
     out: string;
-    /** `group` names the runs that launch together; a run without one is its own group. */
-    runs: { name: string; args: string[]; group?: string }[];
+    /**
+     * `group` names the runs that launch together; a run without one is its own group. `config`
+     * is the sim config file the run and its finalize steps read (`SIM_CONFIG`), so one campaign
+     * can run arms on more than one Eidnara build; a run without one reads the supervisor's.
+     */
+    runs: { name: string; args: string[]; group?: string; config?: string }[];
     args: string[];
     max_resumes: number;
     poll_ms: number;
@@ -44,6 +48,14 @@ export interface CampaignSpec {
     prices: Prices;
     /** The total spend past which the supervisor raises an alert, or null for none. */
     spend_cap_usd: number | null;
+}
+
+/** The environment a run's processes start with: the supervisor's, with the run's own `SIM_CONFIG` when it names one. */
+export function runEnv(
+    run: CampaignSpec["runs"][number] | undefined,
+    env: Record<string, string | undefined> = process.env,
+): Record<string, string | undefined> {
+    return run?.config === undefined ? env : { ...env, SIM_CONFIG: run.config };
 }
 
 export const DEFAULT_RUN = ["bun", "scripts/run-tier.ts"];
@@ -82,6 +94,9 @@ export function parseCampaign(raw: unknown): CampaignSpec {
         if (!strings(r?.args)) problems.push(`run ${r?.name} args are not strings`);
         if (r?.group !== undefined && !(typeof r.group === "string" && NAME.test(r.group))) {
             problems.push(`run ${r?.name} group is not a plain name`);
+        }
+        if (r?.config !== undefined && !(typeof r.config === "string" && isAbsolute(r.config))) {
+            problems.push(`run ${r?.name} config is no absolute path`);
         }
         for (const flag of ["--out", "--sim-upgrade"]) {
             if ((r?.args ?? []).includes(flag))

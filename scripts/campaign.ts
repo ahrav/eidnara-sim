@@ -28,6 +28,7 @@ import {
     type RunRecord,
     readSpend,
     runDir,
+    runEnv,
     runProgress,
     type Spend,
     STALL_LIMIT,
@@ -269,7 +270,7 @@ function launch(run: CampaignSpec["runs"][number], record: RunRecord, progress: 
     try {
         const child = Bun.spawn(command, {
             cwd: ROOT,
-            env: process.env,
+            env: runEnv(run),
             stdin: "ignore",
             stdout: fd,
             stderr: fd,
@@ -300,7 +301,7 @@ async function finalize(name: string, record: RunRecord) {
             try {
                 const child = Bun.spawn(argv(command), {
                     cwd: ROOT,
-                    env: process.env,
+                    env: runEnv(spec.runs.find((r) => r.name === name)),
                     stdin: "ignore",
                     stdout: fd,
                     stderr: fd,

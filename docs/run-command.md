@@ -456,6 +456,23 @@ this invocation's preflight wrote and probed. A periodic sample that fails
 (for example, a full disk under `resources.jsonl`) stops the sampler and the
 run the same way a signal does, so the teardown runs.
 
+On an arm with a daemon, each sample of a live daemon also carries
+`daemon_status`: the daemon status reading that returned since the previous
+sample, or null with none. The driver reads the status over one
+observational Context route per daemon generation (harness `cli`, session
+`sim-status`, which Eidnara excludes from every background view): the
+`process_memory` block of the module's `status` answer, and on a fused-route
+arm the lifecycle record state, the admission state, and the `progress`
+block of `search.lifecycle.status` (`tip`, `checkpoint`, `lag_commits`,
+`rebuilds`, `blocked`). The route stays open between reads, so a read binds
+and tears down no session. Each sample starts the next read when none is in
+flight, so a reading is at most one sample interval old and carries its own
+`wall_ms`. A read that fails or exceeds its 10-second deadline is a reading
+with `error` set; the driver closes the connection and the next sample opens
+a new one. A field the answer lacks is null, as `process_memory` is on a
+build without it. The run's arm check totals the readings
+(`docs/hosts.md`, Capability evidence).
+
 ## Campaign supervisor
 
 `scripts/campaign.ts <campaign.json> [--once]` runs a list of `run-tier`
@@ -480,6 +497,13 @@ campaign file:
     "spend_cap_usd": 204000
 }
 ```
+
+A run may name a `config`: the absolute path of the sim config file its
+`run-tier` process and its finalize steps read, passed as `SIM_CONFIG`. A
+run without one reads the supervisor's own `SIM_CONFIG`. One campaign can
+therefore run arms on two Eidnara builds, each config naming its build
+clone; every run binds the registered audited build its clone matches and
+records it in its manifest as `eidnara_build` (`docs/hosts.md`).
 
 A run may name a `group` (a plain name); a run without one is its own
 group, apart from any named group. With `max_concurrent` set, a run holds a

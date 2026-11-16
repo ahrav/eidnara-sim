@@ -53,6 +53,11 @@ const VARIANT: VariantRecord = {
     failure_lines_captured: true,
     stream_tags_stripped: true,
     settled_lines_retired: true,
+    statement_lineage: "shared",
+    contested_statements: false,
+    keyed_open_items: false,
+    process_memory: false,
+    search_progress: false,
     evidence: "test",
     sources: ["fixture.rs", "config.rs"],
     probes: [

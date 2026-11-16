@@ -181,3 +181,42 @@ test("a CPU baseline belongs to one process lifetime, so a reused pid starts a f
     expect(lines.map((l) => l.start)).toEqual(["100", "200", "200"]);
     expect(lines[1]?.cpu_fraction).toBeNull();
 });
+
+test("a daemon status reading is written into the sample that follows it, for a live daemon alone", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-sampler-"));
+    const path = join(dir, "resources.jsonl");
+    let pid: number | null = process.pid;
+    let asked = 0;
+    const reading = {
+        wall_ms: 5,
+        process_memory: { rss_anon_bytes: 4096 },
+        search: null,
+        error: null,
+    };
+    const sampler = new ResourceSampler({
+        path,
+        intervalMs: 60_000,
+        busyFraction: 0.5,
+        pid: () => pid,
+        status: () => (asked++ === 0 ? null : reading),
+        storeDir: dir,
+        scenarioMs: () => 0,
+        onBusy: () => {},
+    });
+    expect(sampler.sample().daemon_status).toBeNull();
+    expect(sampler.sample().daemon_status).toEqual(reading);
+    pid = null;
+    expect(sampler.sample().daemon_status).toBeNull();
+    expect(asked).toBe(2);
+    const plain = new ResourceSampler({
+        path: join(dir, "plain.jsonl"),
+        intervalMs: 60_000,
+        busyFraction: 0.5,
+        pid: () => process.pid,
+        storeDir: dir,
+        scenarioMs: () => 0,
+        onBusy: () => {},
+    });
+    expect(Object.hasOwn(plain.sample(), "daemon_status")).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+});

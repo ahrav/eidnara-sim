@@ -24,6 +24,7 @@ import type { Entry } from "./journal";
 import type { Preflight } from "./preflight";
 import {
     armOrder,
+    bindEidnaraBuild,
     corpusIdentity,
     faultOverride,
     loadManifest,
@@ -934,6 +935,57 @@ describe("run inputs", () => {
             "host",
             "eidnara-kl",
         ]);
+    });
+
+    test("a run binds the audited build its clone holds and records the capabilities its arms' variants have there", () => {
+        const repo = dir();
+        const git = (...args: string[]) => {
+            const r = Bun.spawnSync(["git", "-C", repo, ...args], { stderr: "pipe" });
+            if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+            return r.stdout.toString().trim();
+        };
+        git("init", "-q");
+        writeFileSync(join(repo, "README.md"), "a build clone\n");
+        git("add", "-A");
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c");
+        const head = git("rev-parse", "HEAD");
+        const legacy = DAEMON_VARIANTS["direct-host-fixture"];
+        const reference = {
+            ...legacy,
+            statement_lineage: "shared" as const,
+            process_memory: false,
+        };
+        const builds = [
+            { commit: "0".repeat(40), label: "new", variants: DAEMON_VARIANTS },
+            { commit: head, label: "ref", variants: { "direct-host-fixture": reference } },
+        ];
+        // The clone lacks the first build's commit, so it binds the second.
+        const bound = bindEidnaraBuild(repo, ["host", "eidnara"], builds);
+        expect(bound).toMatchObject({ commit: head, label: "ref" });
+        expect(Object.keys(bound?.capabilities ?? {})).toEqual(["direct-host-fixture"]);
+        expect(bound?.capabilities["direct-host-fixture"]).toMatchObject({
+            search: "legacy-scan",
+            statement_lineage: "shared",
+            process_memory: false,
+        });
+        expect(bound?.capabilities["direct-host-fixture"]).not.toHaveProperty("probes");
+        expect(bindEidnaraBuild(repo, ["host"], builds)).toBeNull();
+        // A variant on the bound build that lacks what the arm declares refuses the run.
+        const gapped = [
+            {
+                commit: head,
+                label: "ref",
+                variants: {
+                    "direct-host-fixture": { ...legacy, user_statement_delivery: false },
+                },
+            },
+        ];
+        expect(() => bindEidnaraBuild(repo, ["eidnara"], gapped)).toThrow(
+            /arm capability refused: eidnara \(fallback-search\) needs user_statement_delivery=true/,
+        );
+        expect(() => bindEidnaraBuild(repo, ["eidnara-hybrid"], builds)).toThrow(
+            /ref \(.*\) registers no direct-host-fixture-fused variant/,
+        );
     });
 
     test("a resume is refused when an executable's content changed, whatever its version", async () => {

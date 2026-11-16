@@ -23,6 +23,7 @@ import {
     DaemonStack,
     fixtureDaemonConfig,
     type HostContext,
+    lifecycleReading,
     nodeInstall,
     OpencodeSimHost,
     opencodeInstall,
@@ -307,6 +308,49 @@ test("the OpenCode wrapper stops before the launcher when its launch record cann
     const r = Bun.spawnSync([path], { cwd: run, stdout: "pipe", stderr: "pipe" });
     expect(r.exitCode).toBe(70);
     expect(existsSync(join(run, "ran"))).toBe(false);
+});
+
+test("a search lifecycle status answer is recorded by its state, admission, and progress", () => {
+    const answer = {
+        kind: "status",
+        record: { state: "current", attempt_id: "rebuild-search-projection-3" },
+        admission: { state: "admitted" },
+        progress: {
+            tip: 5120,
+            checkpoint: 5100,
+            lag_commits: 20,
+            rebuilds: { recorded: 3, completed: 2, renewed: 1 },
+            blocked: null,
+        },
+    };
+    expect(lifecycleReading(answer)).toEqual({
+        state: "current",
+        admission: "admitted",
+        progress: {
+            tip: 5120,
+            checkpoint: 5100,
+            lag_commits: 20,
+            rebuilds: { recorded: 3, completed: 2, renewed: 1 },
+            blocked: null,
+        },
+    });
+    // A build before the progress block answers the record and admission alone.
+    expect(lifecycleReading({ kind: "status", record: { state: "intent" } })).toEqual({
+        state: "intent",
+        admission: null,
+        progress: null,
+    });
+    // A field of another shape reads as null, and a blocking reason is bounded.
+    const odd = lifecycleReading({
+        progress: {
+            tip: -1,
+            lag_commits: "7",
+            rebuilds: { recorded: 1 },
+            blocked: "x".repeat(900),
+        },
+    });
+    expect(odd.progress).toMatchObject({ tip: null, lag_commits: null, rebuilds: null });
+    expect(odd.progress?.blocked).toHaveLength(512);
 });
 
 test("the daemon's harness runtime lives beside the arm, outside what the host can write", () => {

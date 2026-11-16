@@ -22,6 +22,7 @@ import { nodeInstall } from "../run/interception";
 import { launch, plainPath, shellQuote } from "../run/launcher";
 import { piCli } from "../run/preflight";
 import { parentPid, processStart, stopOwnedTree } from "../run/procs";
+import type { DaemonStatusReading, SearchProgress } from "../run/sampler";
 import { FAKETIME_LIB, faketimeEnv } from "../run/timeinject";
 import { sandboxPath, toolbinDir, toolchainEnv } from "../run/toolchain";
 import { ARM_PROFILES, type ArmName, deliveryOf } from "./profiles";
@@ -390,6 +391,74 @@ export class DaemonStack {
         return await read.call(this.stack, timeoutMs);
     }
 
+    /** The session the status route binds; the daemon excludes a `cli` binding from every background view. */
+    private static readonly STATUS_SESSION = "sim-status";
+
+    /** The connection and the Context route status reads use, open for one daemon generation. */
+    private statusRoute: { client: Untyped; route: Untyped } | null = null;
+
+    private async closeStatus(): Promise<void> {
+        const open = this.statusRoute;
+        this.statusRoute = null;
+        await open?.client.closeAsync().catch(() => undefined);
+    }
+
+    /**
+     * Reads the daemon's own status over an observational route (harness `cli`, Eidnara
+     * `OBSERVATIONAL_HARNESS`): the `process_memory` block of the Context module's `status`
+     * answer and, with `lifecycle`, the record state, admission, and `progress` block of
+     * `search.lifecycle.status`. The route stays open between reads, so a read binds and tears
+     * down no session. A failed read closes the connection, and the next read opens a new one.
+     */
+    async status(
+        lifecycle: boolean,
+        timeoutMs = 10_000,
+    ): Promise<Pick<DaemonStatusReading, "process_memory" | "search">> {
+        const identity = {
+            project_root: this.ctx.root,
+            harness: "cli",
+            session: DaemonStack.STATUS_SESSION,
+        };
+        try {
+            if (!this.statusRoute) {
+                const { HostClient } = await v1(
+                    this.ctx.config,
+                    "packages/opencode-plugin/src/shared/host-client/index.ts",
+                );
+                const client = await HostClient.connect({
+                    connectionFile: this.connectionFile,
+                    identity,
+                    targetKind: "tool_provider",
+                    credentialSource: DUMMY_AWS,
+                });
+                this.statusRoute = { client, route: null };
+                this.statusRoute.route = await client.routeOpen(
+                    { kind: "tool_provider", module_id: "context" },
+                    identity,
+                );
+            }
+            const { client, route } = this.statusRoute;
+            const ask = (body: Record<string, unknown>): Promise<Untyped> =>
+                client.request(route, body, { timeoutMs });
+            const status = await ask({ method: "status" });
+            const memory = status?.process_memory;
+            const answer = lifecycle
+                ? await ask({
+                      method: "search.lifecycle.status",
+                      session_id: DaemonStack.STATUS_SESSION,
+                      project_root: this.ctx.root,
+                  })
+                : null;
+            return {
+                process_memory: memory && typeof memory === "object" ? memory : null,
+                search: answer?.kind === "status" ? lifecycleReading(answer) : null,
+            };
+        } catch (caught) {
+            await this.closeStatus();
+            throw caught;
+        }
+    }
+
     /** Set between `crash` and the `restart` that starts the replacement. */
     private crashed = false;
 
@@ -398,12 +467,14 @@ export class DaemonStack {
      * the replacement. The dead generation's last bytes stream to the log while it dies.
      */
     async crash(): Promise<void> {
+        await this.closeStatus();
         await this.stack.crashHost();
         this.crashed = true;
     }
 
     /** Starts the replacement daemon, killing the current one first unless `crash` already did. */
     async restart(): Promise<void> {
+        await this.closeStatus();
         if (!this.crashed) await this.stack.crashHost();
         this.crashed = false;
         // A start that fails still captured the new generation's output; it reaches the log too.
@@ -415,6 +486,7 @@ export class DaemonStack {
     }
 
     async stop(): Promise<void> {
+        await this.closeStatus();
         const stack = this.stack;
         if (!stack) return;
         const failures: unknown[] = [];
@@ -437,6 +509,37 @@ export class DaemonStack {
             throw new Error(`daemon stop failed: ${failures.map(String).join("; ")}`);
         }
     }
+}
+
+const uint = (v: unknown): number | null =>
+    typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
+
+/** The `status` answer of `search.lifecycle.status` as a sample records it; a field of another shape reads as null. */
+export function lifecycleReading(answer: Untyped): NonNullable<DaemonStatusReading["search"]> {
+    const p = answer?.progress;
+    const r = p?.rebuilds;
+    const recorded = uint(r?.recorded);
+    const completed = uint(r?.completed);
+    const renewed = uint(r?.renewed);
+    const progress: SearchProgress | null =
+        p && typeof p === "object"
+            ? {
+                  tip: uint(p.tip),
+                  checkpoint: uint(p.checkpoint),
+                  lag_commits: uint(p.lag_commits),
+                  rebuilds:
+                      recorded !== null && completed !== null && renewed !== null
+                          ? { recorded, completed, renewed }
+                          : null,
+                  blocked: typeof p.blocked === "string" ? p.blocked.slice(0, 512) : null,
+              }
+            : null;
+    const text = (v: unknown) => (typeof v === "string" ? v : null);
+    return {
+        state: text(answer?.record?.state),
+        admission: text(answer?.admission?.state),
+        progress,
+    };
 }
 
 /** How long a close whose launch is confirmed gone waits for the runtime to report the exit. */
