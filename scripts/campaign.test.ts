@@ -314,6 +314,32 @@ test("alerts name a silent running run and a filesystem past 80% inode use", () 
     expect(alertKey("run s101 GAVE UP: x")).not.toBe(alertKey("run s102 GAVE UP: x"));
 });
 
+test("a campaign whose output lies inside a run config's Eidnara checkout creates nothing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
+    const out = join(dir, "runs");
+    const config = join(dir, "ref.config.json");
+    const own = JSON.parse(readFileSync(join(ROOT, "sim.config.json"), "utf8"));
+    writeFileSync(config, JSON.stringify({ ...own, eidnara_checkout: dir }));
+    const spec = {
+        schema: "sim-campaign/v1",
+        out,
+        inode_paths: [],
+        run_command: ["bun", "-e", "process.exit(0)"],
+        runs: [
+            { name: "new", args: [] },
+            { name: "ref", args: [], config },
+        ],
+    };
+    writeFileSync(join(dir, "campaign.json"), JSON.stringify(spec));
+    const r = Bun.spawnSync(
+        [process.execPath, "scripts/campaign.ts", join(dir, "campaign.json"), "--once"],
+        { cwd: ROOT, timeout: 60_000 },
+    );
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain(dir);
+    expect(existsSync(out)).toBe(false);
+});
+
 test("a run reads the sim config its campaign entry names, and the supervisor's otherwise", () => {
     const base = { schema: "sim-campaign/v1", out: "/x" };
     const spec = parseCampaign({

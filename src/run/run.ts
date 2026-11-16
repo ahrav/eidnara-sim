@@ -2727,6 +2727,8 @@ async function runArms(
                         if (driver.daemon && driver.daemonPid() === null) {
                             scheduler.daemonExited({ after: "last event" });
                         }
+                        // The final sample records the status read in flight, once it has returned.
+                        await driver.statusSettled();
                         sampler.stop();
                     } catch (caught) {
                         stopped = caught;

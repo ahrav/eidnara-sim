@@ -189,6 +189,8 @@ test("a daemon status reading is written into the sample that follows it, for a 
     let asked = 0;
     const reading = {
         wall_ms: 5,
+        pid: process.pid,
+        start: null,
         process_memory: { rss_anon_bytes: 4096 },
         search: null,
         error: null,

@@ -105,6 +105,9 @@ export interface SearchProgress {
 export interface DaemonStatusReading {
     /** The wall time the reading returned at. */
     wall_ms: number;
+    /** The daemon process the reading was taken from: its pid and its start time. */
+    pid: number;
+    start: string | null;
     process_memory: Record<string, unknown> | null;
     search: {
         state: string | null;

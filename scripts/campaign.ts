@@ -48,11 +48,16 @@ if (files.length !== 1 || files.some((a) => a.startsWith("--"))) {
     process.exit(2);
 }
 const spec: CampaignSpec = parseCampaign(JSON.parse(readFileSync(files[0] as string, "utf8")));
-const config = loadConfig();
-requireOutsideCheckout(spec.out, config.eidnara_checkout);
-requireOutsideCheckout(spec.out, config.pi_install, "the Pi install");
-if (config.upgrade?.pi_install) {
-    requireOutsideCheckout(spec.out, config.upgrade.pi_install, "the upgrade Pi install");
+// The supervisor's own config and every config a run names: the campaign's output lies outside
+// each one's Eidnara checkout and Pi installs before any directory, lease, or log is created.
+const configs = [undefined, ...new Set(spec.runs.flatMap((r) => (r.config ? [r.config] : [])))];
+for (const path of configs) {
+    const config = loadConfig(path);
+    requireOutsideCheckout(spec.out, config.eidnara_checkout);
+    requireOutsideCheckout(spec.out, config.pi_install, "the Pi install");
+    if (config.upgrade?.pi_install) {
+        requireOutsideCheckout(spec.out, config.upgrade.pi_install, "the upgrade Pi install");
+    }
 }
 requireOutsideIdentity(spec.out);
 // Every resume names `sim_upgrade`, which run-tier accepts only from a checkout at that commit.
