@@ -109,7 +109,12 @@ export function auditEidnara(
 const shellQuote = (s: string) =>
     /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`;
 
-export function renderAudit(r: AuditReport): string {
+/** `build` labels the registered build the report audits against; absent, the current one. */
+export function renderAudit(r: AuditReport, build?: string): string {
+    const entry =
+        build === undefined
+            ? "AUDITED_EIDNARA (the first entry of AUDITED_BUILDS)"
+            : `the ${build} entry of AUDITED_BUILDS`;
     const lines = [`audited:   ${r.audited}`, `candidate: ${r.candidate}`];
     for (const v of r.variants) {
         lines.push("", `${v.variant}:`);
@@ -133,12 +138,12 @@ export function renderAudit(r: AuditReport): string {
         );
     } else if (r.verdict === "reread") {
         lines.push(
-            "Every probe holds. Read the changes, then set AUDITED_EIDNARA to the candidate:",
+            `Every probe holds. Read the changes, then set the commit of ${entry} in src/hosts/profiles.ts to the candidate:`,
             `  ${["git", "--no-replace-objects", "-C", r.checkout, "diff", r.audited, r.candidate, "--", ...files].map(shellQuote).join(" ")}`,
         );
     } else {
         lines.push(
-            "A probe fails: revise DAEMON_VARIANTS in src/hosts/profiles.ts before the pin moves.",
+            `A probe fails: revise the variants of ${entry} in src/hosts/profiles.ts before the pin moves.`,
         );
     }
     return lines.join("\n");

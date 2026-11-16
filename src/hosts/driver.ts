@@ -24,7 +24,9 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { GitBound, git } from "../git";
 import type { CallView, Command } from "../grade/artefacts";
 import { captureCountersProblem } from "../run/capabilities";
+import { withDeadline } from "../run/deadline";
 import { processStart, running, stopOwnedTree } from "../run/procs";
+import type { DaemonStatusReading } from "../run/sampler";
 import {
     type ArmDriver,
     HarnessFailure,
@@ -431,6 +433,60 @@ export class HostDriver implements ArmDriver {
 
     daemonPid(): number | null {
         return this.daemon?.pid() ?? null;
+    }
+
+    private statusReading: DaemonStatusReading | null = null;
+    private statusRead: Promise<void> | null = null;
+
+    /** Whether `pid` and `start` still name the arm's live daemon process. */
+    private isDaemon(pid: number, start: string | null): boolean {
+        return this.daemonPid() === pid && this.procStart(pid) === start;
+    }
+
+    /**
+     * Hands over the reading of the live daemon process that returned since the last call and,
+     * with no read in flight, starts the next one. A reading names the process it was taken from,
+     * and a read that returns after a crash, a restart, or a stop replaced that process is
+     * dropped, so a sample never carries another generation's status. A read's failure is a
+     * reading with `error` set, so a daemon that stops answering shows in the samples and leaves
+     * the sampler running.
+     */
+    daemonStatus(): DaemonStatusReading | null {
+        const held = this.statusReading;
+        this.statusReading = null;
+        const reading = held && this.isDaemon(held.pid, held.start) ? held : null;
+        const daemon = this.daemon;
+        const pid = this.daemonPid();
+        if (daemon && pid !== null && this.statusRead === null && !this.stopping) {
+            const start = this.procStart(pid);
+            if (start === null) return reading;
+            const fused = armProfile(this.o.arm).search === "fused";
+            this.statusRead = daemon
+                .status(fused)
+                .then(
+                    (read) => ({ ...read, error: null }),
+                    (caught: unknown) => ({
+                        process_memory: null,
+                        search: null,
+                        error: String(caught).slice(0, 500),
+                    }),
+                )
+                .then((read) => {
+                    this.statusRead = null;
+                    if (this.daemon === daemon && this.isDaemon(pid, start)) {
+                        this.statusReading = { wall_ms: Date.now(), pid, start, ...read };
+                    }
+                });
+        }
+        return reading;
+    }
+
+    /**
+     * Resolves once the status read in flight has returned, or after `ms`; at once with none. A
+     * read makes up to two requests of 10 seconds each, which the default bound covers.
+     */
+    async statusSettled(ms = 22_000): Promise<void> {
+        if (this.statusRead) await withDeadline(this.statusRead, ms);
     }
 
     /** The daemon lives while the pid its stack holds still names the process that started there. */

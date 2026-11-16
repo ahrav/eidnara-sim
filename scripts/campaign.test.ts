@@ -26,7 +26,9 @@ import {
     parseCampaign,
     type RunRecord,
     readSpend,
+    runEnv,
     runProgress,
+    sameLaunch,
 } from "../src/run/campaign";
 import { Journal } from "../src/run/journal";
 
@@ -310,6 +312,63 @@ test("alerts name a silent running run and a filesystem past 80% inode use", () 
         alertKey("run r finished no event for 51 min"),
     );
     expect(alertKey("run s101 GAVE UP: x")).not.toBe(alertKey("run s102 GAVE UP: x"));
+});
+
+test("a campaign whose output lies inside a run config's Eidnara checkout creates nothing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
+    const out = join(dir, "runs");
+    const config = join(dir, "ref.config.json");
+    const own = JSON.parse(readFileSync(join(ROOT, "sim.config.json"), "utf8"));
+    writeFileSync(config, JSON.stringify({ ...own, eidnara_checkout: dir }));
+    const spec = {
+        schema: "sim-campaign/v1",
+        out,
+        inode_paths: [],
+        run_command: ["bun", "-e", "process.exit(0)"],
+        runs: [
+            { name: "new", args: [] },
+            { name: "ref", args: [], config },
+        ],
+    };
+    writeFileSync(join(dir, "campaign.json"), JSON.stringify(spec));
+    const r = Bun.spawnSync(
+        [process.execPath, "scripts/campaign.ts", join(dir, "campaign.json"), "--once"],
+        { cwd: ROOT, timeout: 60_000 },
+    );
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain(dir);
+    expect(existsSync(out)).toBe(false);
+});
+
+test("a run reads the sim config its campaign entry names, and the supervisor's otherwise", () => {
+    const base = { schema: "sim-campaign/v1", out: "/x" };
+    const spec = parseCampaign({
+        ...base,
+        runs: [
+            { name: "new", args: [] },
+            { name: "ref", args: [], config: "/w2/sim-ref.config.json" },
+        ],
+    });
+    const env = { PATH: "/bin", SIM_CONFIG: "/w2/sim.config.json" };
+    expect(runEnv(spec.runs[0], env)).toBe(env);
+    expect(runEnv(spec.runs[1], env)).toEqual({
+        PATH: "/bin",
+        SIM_CONFIG: "/w2/sim-ref.config.json",
+    });
+    expect(runEnv(undefined, env)).toBe(env);
+    expect(() =>
+        parseCampaign({ ...base, runs: [{ name: "r", args: [], config: "sim.config.json" }] }),
+    ).toThrow("run r config is no absolute path");
+    // The config is part of a run record's identity: a saved record stands for the same command and config alone.
+    const saved = { argv: ["bun", "scripts/run-tier.ts"], config: "/w2/sim-ref.config.json" };
+    expect(sameLaunch(saved, { ...saved })).toBe(true);
+    expect(sameLaunch(saved, { ...saved, config: "/w2/sim.config.json" })).toBe(false);
+    expect(sameLaunch(saved, { ...saved, config: null })).toBe(false);
+    expect(
+        sameLaunch(saved, { ...saved, argv: ["bun", "scripts/run-tier.ts", "--seed", "1"] }),
+    ).toBe(false);
+    // A record written before runs could name a config reads as one without.
+    expect(sameLaunch({ argv: saved.argv }, { argv: saved.argv, config: null })).toBe(true);
 });
 
 test("a campaign file that lets a run pick its own --out, or repeats a name, is refused", () => {

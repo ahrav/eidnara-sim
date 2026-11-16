@@ -28,9 +28,11 @@ import {
     type RunRecord,
     readSpend,
     runDir,
+    runEnv,
     runProgress,
     type Spend,
     STALL_LIMIT,
+    sameLaunch,
 } from "../src/run/campaign";
 import { leaseHeld, releaseLease, takeLease } from "../src/run/journal";
 import { requireOutsideCheckout, requireOutsideIdentity } from "../src/run/run";
@@ -46,11 +48,16 @@ if (files.length !== 1 || files.some((a) => a.startsWith("--"))) {
     process.exit(2);
 }
 const spec: CampaignSpec = parseCampaign(JSON.parse(readFileSync(files[0] as string, "utf8")));
-const config = loadConfig();
-requireOutsideCheckout(spec.out, config.eidnara_checkout);
-requireOutsideCheckout(spec.out, config.pi_install, "the Pi install");
-if (config.upgrade?.pi_install) {
-    requireOutsideCheckout(spec.out, config.upgrade.pi_install, "the upgrade Pi install");
+// The supervisor's own config and every config a run names: the campaign's output lies outside
+// each one's Eidnara checkout and Pi installs before any directory, lease, or log is created.
+const configs = [undefined, ...new Set(spec.runs.flatMap((r) => (r.config ? [r.config] : [])))];
+for (const path of configs) {
+    const config = loadConfig(path);
+    requireOutsideCheckout(spec.out, config.eidnara_checkout);
+    requireOutsideCheckout(spec.out, config.pi_install, "the Pi install");
+    if (config.upgrade?.pi_install) {
+        requireOutsideCheckout(spec.out, config.upgrade.pi_install, "the upgrade Pi install");
+    }
 }
 requireOutsideIdentity(spec.out);
 // Every resume names `sim_upgrade`, which run-tier accepts only from a checkout at that commit.
@@ -153,6 +160,7 @@ const say = (line: string, loud = false) => {
 const fresh = (name: string): RunRecord => ({
     name,
     argv: launchArgv(spec, spec.runs.find((r) => r.name === name) as CampaignSpec["runs"][number]),
+    config: spec.runs.find((r) => r.name === name)?.config ?? null,
     state: "pending",
     launches: 0,
     stalled: 0,
@@ -192,6 +200,7 @@ function savedRuns(): Record<string, unknown>[] {
             (k) => r[k] === undefined || stamp(r[k]),
         ) &&
         Array.isArray(r.argv) &&
+        (r.config === undefined || r.config === null || typeof r.config === "string") &&
         (r.finalize === undefined ||
             (Array.isArray(r.finalize) &&
                 r.finalize.every(
@@ -218,16 +227,24 @@ const records = new Map(
         const record = fresh(r.name);
         const found = saved.find((s) => s.name === r.name);
         const old =
-            found && JSON.stringify(found.argv) === JSON.stringify(record.argv) ? found : undefined;
+            found && sameLaunch(found as Pick<RunRecord, "argv" | "config">, record)
+                ? found
+                : undefined;
         if (found && !old) {
-            // A started run keeps the identity its manifest pins, so its command stays fixed.
+            const what =
+                JSON.stringify(found.argv) === JSON.stringify(record.argv)
+                    ? "config"
+                    : "command line";
+            // A started run keeps the identity its manifest pins, so its command and its config
+            // file stay fixed: the config names the Eidnara build and the provider profile the
+            // run and its finalize steps use.
             if (existsSync(join(runDir(spec, r.name), "journal.jsonl"))) {
                 console.error(
-                    `${r.name}: its command line changed after the run started; restore it or give the run a new name`,
+                    `${r.name}: its ${what} changed after the run started; restore it or give the run a new name`,
                 );
                 process.exit(2);
             }
-            say(`${r.name}: its command line changed, so its record starts over`);
+            say(`${r.name}: its ${what} changed, so its record starts over`);
         }
         for (const k of KEPT) {
             if (old && old[k] !== undefined) Object.assign(record, { [k]: old[k] });
@@ -269,7 +286,7 @@ function launch(run: CampaignSpec["runs"][number], record: RunRecord, progress: 
     try {
         const child = Bun.spawn(command, {
             cwd: ROOT,
-            env: process.env,
+            env: runEnv(run),
             stdin: "ignore",
             stdout: fd,
             stderr: fd,
@@ -300,7 +317,7 @@ async function finalize(name: string, record: RunRecord) {
             try {
                 const child = Bun.spawn(argv(command), {
                     cwd: ROOT,
-                    env: process.env,
+                    env: runEnv(spec.runs.find((r) => r.name === name)),
                     stdin: "ignore",
                     stdout: fd,
                     stderr: fd,

@@ -29,8 +29,12 @@ import {
 import { driverSupports, HostDriver } from "../hosts/driver";
 import {
     type ArmProfile,
+    type AuditedBuild,
     armProfile,
+    auditedBuild,
+    capabilitiesOf,
     capabilityGaps,
+    type DaemonCapabilities,
     deliveryOf,
     isArmName,
 } from "../hosts/profiles";
@@ -195,6 +199,12 @@ export interface Manifest {
      * load; a resume must present the same.
      */
     binaries: Record<string, string>;
+    /**
+     * The audited Eidnara build the run bound (`AUDITED_BUILDS` in `src/hosts/profiles.ts`): its
+     * commit, its label, and the capabilities of each daemon variant the arms run, as the run's
+     * evidence checks read them. Null when no arm runs a daemon. A resume must bind the same.
+     */
+    eidnara_build: EidnaraBuild | null;
     /** Each ordered arm's profile and the Eidnara and daemon configuration it writes. */
     arms: Record<string, ArmConfig>;
     fault_override: FaultEpisode[] | null;
@@ -1425,6 +1435,44 @@ function binaryDigests(config: SimConfig): Record<string, string> {
     );
 }
 
+/** The audited build a run bound and the capabilities its evidence checks read. */
+export interface EidnaraBuild {
+    commit: string;
+    label: string;
+    capabilities: Record<string, DaemonCapabilities>;
+}
+
+/**
+ * Binds the build clone to a registered audited build for the arms in `order` and returns what
+ * the manifest records of it; refuses a clone that matches no registered build, and an arm whose
+ * profile declares a capability its variant lacks on the bound build.
+ */
+export function bindEidnaraBuild(
+    checkout: string,
+    order: readonly string[],
+    builds?: readonly AuditedBuild[],
+): EidnaraBuild | null {
+    let build: AuditedBuild | null;
+    try {
+        build = requireAuditedVariants(checkout, order, builds);
+    } catch (caught) {
+        throw new HarnessFailure((caught as Error).message);
+    }
+    if (build === null) return null;
+    const gaps = order
+        .filter((a) => isArmName(armBase(a)))
+        .flatMap((a) => capabilityGaps(a, build));
+    if (gaps.length > 0) throw new HarnessFailure(`arm capability refused: ${gaps.join("; ")}`);
+    const capabilities: Record<string, DaemonCapabilities> = {};
+    for (const arm of order) {
+        const variant = armProfile(arm).daemon;
+        const record = variant === null ? undefined : build.variants[variant];
+        if (variant === null || !record) continue;
+        capabilities[variant] = capabilitiesOf(record);
+    }
+    return { commit: build.commit, label: build.label, capabilities };
+}
+
 export interface ArmConfig {
     profile: ArmProfile;
     /** The user-tier `eidnara.jsonc` the arm's host loads, its connection path elided; null without the plugin. */
@@ -1487,13 +1535,13 @@ export async function loadManifest(
 ): Promise<{ manifest: Manifest; checks: Preflight; revision?: SimRevision }> {
     const path = join(o.out, "manifest.json");
     /** Preflight probes the environment once the build is known to match the audited daemon capabilities. */
+    const supplied = checks !== undefined;
+    /** The audited build the clone binds for `order`; a caller that supplies its own preflight result binds none. */
+    const bind = (order: readonly string[]) =>
+        supplied ? null : bindEidnaraBuild(o.config.eidnara_checkout, order);
     const probe = async (order: readonly string[]) => {
         if (checks) return checks;
-        try {
-            requireAuditedVariants(o.config.eidnara_checkout, order);
-        } catch (caught) {
-            throw new HarnessFailure((caught as Error).message);
-        }
+        bind(order);
         return await preflight(o.config, o.out);
     };
     const wanted = {
@@ -1610,6 +1658,7 @@ export async function loadManifest(
             ...current,
             tape_sha256: tapeDigests(manifest.tapes),
             arms: armConfigs(manifest.order, manifest.side_model ?? manifest.models[0] ?? ""),
+            eidnara_build: bind(manifest.order),
         })
             .filter(([k]) => k !== "sim_commit" && k !== "sim_worktree")
             .filter(([k, v]) => !sameJson(manifest[k as keyof Manifest], v))
@@ -1672,6 +1721,7 @@ export async function loadManifest(
         ...wanted,
         ...digests(),
         arms: armConfigs(wanted.order, wanted.side_model ?? wanted.models[0] ?? ""),
+        eidnara_build: bind(wanted.order),
         tape_sha256: tapeDigests(wanted.tapes),
         base_wall_ms: Date.now(),
         price_table: PRICE_TABLE,
@@ -2435,8 +2485,19 @@ async function runArms(
                 parts.close();
             }
         }
-        const mismatches = armMismatches(observed);
-        const record = { profile: armProfile(arm), observed, mismatches };
+        const build = auditedBuild(manifest.eidnara_build?.commit ?? "");
+        if (armProfile(arm).daemon !== null && !build) {
+            throw new HarnessFailure(
+                `manifest.json eidnara_build ${manifest.eidnara_build?.commit} names no audited build`,
+            );
+        }
+        const mismatches = armMismatches(observed, build);
+        const record = {
+            profile: armProfile(arm),
+            eidnara_build: manifest.eidnara_build,
+            observed,
+            mismatches,
+        };
         writeAtomic(join(o.out, arm, "capabilities.json"), `${JSON.stringify(record, null, 2)}\n`);
         if (mismatches.length > 0) {
             throw new HarnessFailure(`arm ${arm} capability mismatch: ${mismatches.join("; ")}`);
@@ -2502,6 +2563,7 @@ async function runArms(
             intervalMs: prereg.leak_bound.sample_interval_ms,
             busyFraction: Number(prereg.liveness_bounds.daemon_busy_cpu_fraction),
             pid: () => driver.daemonPid(),
+            ...(armProfile(arm).daemon !== null ? { status: () => driver.daemonStatus() } : {}),
             storeDir: driver.dataDir,
             scenarioMs: now,
             onBusy,
@@ -2665,6 +2727,8 @@ async function runArms(
                         if (driver.daemon && driver.daemonPid() === null) {
                             scheduler.daemonExited({ after: "last event" });
                         }
+                        // The final sample records the status read in flight, once it has returned.
+                        await driver.statusSettled();
                         sampler.stop();
                     } catch (caught) {
                         stopped = caught;

@@ -149,8 +149,25 @@ opening `Background from earlier sessions on ` or a note carries a marker
 earlier user message does; the next session starts without it.
 
 Each daemon variant provides a fixed capability set, read from the Eidnara
-source at commit `837c3bab3` (`AUDITED_EIDNARA`, the `eval/c8h` integration
-head: `eval/c8` `8e6265d2c` plus Eidnara #1208):
+source at an audited commit. `AUDITED_BUILDS` in `src/hosts/profiles.ts`
+registers every build a run may bind, each with its commit, its label, and
+the variants read there:
+
+| Build | Commit | Variants | Read for |
+|---|---|---|---|
+| `eval/w2` (`AUDITED_EIDNARA`, the current build) | `84282f549` | all three | the w2 rework: `main` `9b7bdddbd` plus Eidnara #1209, #1211, #1210, #1212, #1213, #1214, #1215, #1217 |
+| `eval/c8` | `8e6265d2c` | `direct_host_fixture` (legacy route) | the c8 reference arm |
+
+A run binds the first registered build whose commit its build clone holds,
+whose table registers every daemon variant its arms run, and whose copies of
+those variants' source files match the clone's working tree. The manifest
+records the bound build as `eidnara_build` (`commit`, `label`, and the
+capability values of each variant the arms run), a resume must bind the same
+build, and the arm's evidence is checked against that build's values. One
+sim revision therefore runs the reworked arms on the `eval/w2` build and a
+reference arm on the `eval/c8` build, each run with its own `SIM_CONFIG`
+(`docs/run-command.md`, campaign `config`). The table below is the current
+build's:
 
 | Variant | Search route | Embeddings | Memory reviewer | Side calls | Memory injection | Source capture |
 |---|---|---|---|---|---|---|
@@ -158,15 +175,29 @@ head: `eval/c8` `8e6265d2c` plus Eidnara #1208):
 | `direct_host_fixture` fused (`direct-host-fixture-fused`) | fused: `--query-route production --local-embeddings-manifest <payload-manifest.json>` | `gte-modernbert-base-f32`, the payload's local embedding lane | none | through the proxy | switchable | on the consent key |
 | production `eidnara-host` | fused | `gte-modernbert-base-f32` | yes | straight to Bedrock | switchable | on the consent key |
 
-Every variant also records the c8 behaviours the arms run on, each with
-its own probes: captured whole user statements delivered in later sessions'
-`<project-memory>` (`user_statement_delivery`, accepted `stm_*` decisions in
-the `user-statements` domain), small tool outputs whole in the history
-summarizer's digest (`whole_small_tool_outputs`), error lines kept with a
-captured failure report (`failure_lines_captured`), block tags stripped
-from Pi's streamed message events (`stream_tags_stripped`), and keyed open
-items in the history summarizer whose settled waiting and constraint lines
-validation retires (`settled_lines_retired`, `retire_settled_lines`).
+Every variant also records the behaviours the arms run on, each with its
+own probes. Both builds share four: captured whole user statements delivered
+in later sessions' `<project-memory>` (`user_statement_delivery`, accepted
+`stm_*` decisions in the `user-statements` domain), small tool outputs whole
+in the history summarizer's digest (`whole_small_tool_outputs`), error lines
+kept with a captured failure report (`failure_lines_captured`), and block
+tags stripped from Pi's streamed message events (`stream_tags_stripped`).
+The builds differ in six:
+
+| Capability | `eval/c8` | `eval/w2` |
+|---|---|---|
+| `settled_lines_retired` | `true`: summarizer validation retires a settled waiting or constraint line inside its segment (`retire_settled_lines`) | `false` |
+| `keyed_open_items` | `false` | `true`: the history renderer derives open items from the stored segments (`history_open_items.rs`), so a `Waiting on user (key)` line renders only in the newest summarized segment of the rows rendered together |
+| `statement_lineage` | `shared`: every statement record has source id `memory_capture_statement`, so the Kernel's 64 authority bearers per lineage bound a data home's accepted statements | `per-message`: the source id is `memory_capture_statement:<32 hex digits of the capture job id>`, and a refused approval stores the statement labeled and counts it in `decisions_approval_refused` |
+| `contested_statements` | `false` | `true`: a statement an observation contradicts renders as `<statement> (stated <date>; contested <date> by <memory>: "<excerpt>")` in `<project-memory>` and with a `Contested by <memory>: "<excerpt>"` line in an `eidnara_search` result |
+| `process_memory` | `false` | `true`: the Context module's `status` answer carries `process_memory` (anonymous, file, and shared resident bytes, threads, glibc C-heap bytes, the arena limit of 4, and the C-heap release counts) |
+| `search_progress` | not registered (no fused variant) | `true` on the fused variants: `search.lifecycle.status` answers with `progress` (`tip`, `checkpoint`, `lag_commits`, `rebuilds`, `blocked`); `false` on the legacy fixture, which starts no lifecycle owner |
+
+The fused fixture's projection is served to readers while it trails the
+kernel tip by at most `FIXTURE_READER_LAG_COMMITS` (1,024) commits, the
+`catchup_lag_commits` bound of the fixture's admission records
+(`crates/daemon/examples/search_admission_records/records.rs`); a probe pins
+the value.
 
 The fused variant is the fixture started with the production query route
 over the build clone's development payload,
@@ -224,17 +255,22 @@ script prints the `git diff` to read, and after that reading the pin moves to
 the commit. Exit 2 (`broken`): a probe fails, so `DAEMON_VARIANTS` needs
 revising before the pin moves. The pin names only merged commits, so a run
 built from an unmerged branch stops at preflight once its fixture sources
-differ from the pin's. At `837c3bab3` the verdict is `unchanged`. Audited
-from the previous pin `8e6265d2c` to `837c3bab3` it is `reread`, for the two
-fused-variant sources #1208 changed (`canonical_memory.rs` and
-`search_lifecycle_owner.rs`), with every probe held; the legacy fixture's
-sources are identical at both commits. Audited
-against the current pin, `8e6265d2c` returns `broken`: its
-`canonical_memory.rs` gates the read on `decide_for_tip_read`, and its
-`search_lifecycle_owner.rs` has no `SliceOutcome::Expired`. A commit before
-E6 also returns `broken`, since the `settled_lines_retired` probes need
-`history_summarizer_open_items.rs` and the summarizer prompt's open-items
-section.
+differ from the pin's. A third argument names another registered build to
+audit against, by label or commit:
+
+```sh
+bun scripts/audit-eidnara.ts <eidnara checkout> <commit> eval/c8
+```
+
+At `84282f549` the verdict against `eval/w2` is `unchanged`, and at
+`8e6265d2c` the verdict against `eval/c8` is `unchanged`. Each build's
+commit returns `broken` against the other build's table: `8e6265d2c` has no
+`history_open_items.rs`, `process_memory.rs`, `contested_line`, or
+per-message statement source id, and `84282f549` has no
+`retire_settled_lines`. Audited from the previous pin `837c3bab3`
+(`eval/c8h`) to `84282f549`, the two `settled_lines_retired` probes of that
+pin break, because Eidnara #1215 replaces #1207's validation-time retirement
+with render-time open items.
 
 ## Capability evidence
 
@@ -366,9 +402,70 @@ complete evidence only when the two agree:
   route line follows before the next ready record; `models` lists the
   embedding models the route lines name. A fused-route arm is a mismatch
   when a ready generation logged no route line, when the daemon never
-  became ready while the agent made calls, when a route ran an embedding
-  model other than the one the arm requires, and when its searches all
-  errored; any other daemon arm is a mismatch when a route line appears.
+  became ready while the agent made calls, and when a route ran an embedding
+  model other than the one the arm requires; any other daemon arm is a
+  mismatch when a route line appears.
+- A fused-route arm must also show a served projection: of its
+  `eidnara_search` results the fused route handled (answered or errored), the
+  answered share must exceed `MIN_FUSED_ANSWER_SHARE` (0.5). The arm declares
+  the fused route as its search path, and an errored search carries no
+  ranking from any route, so the fused route is the arm's search path while
+  it answers more of the arm's searches than it refuses; at one half or
+  below, the arm's usual search has no answer. The bound follows from the
+  arm's declaration and is not fitted to any run. The mismatch names the
+  errored count and the share; the share itself stays in
+  `capabilities.json` (`search.fused`, `search.errored`) for the analysis,
+  which judges registered expectations on it.
+- The checks below read the capabilities of the arm's variant on the bound
+  build (`eidnara_build` in `capabilities.json`):
+  - `statements.lineages` counts the Kernel lineages (`object_registry`
+    source ids) the committed statement records join, the statements on the
+    largest, and the statements on a per-message lineage. A `per-message`
+    build is a mismatch when a statement sits on another lineage, and a
+    `shared` build when one sits on a per-message lineage or the statements
+    sit on more than one lineage. A source-capture
+    arm on a `per-message` build is a mismatch when its counters hold no
+    `decisions_approval_refused`, and on a `shared` build when they hold it.
+    The count of statements on the largest lineage and the counter show
+    whether a run passed the old ceiling of 64 statements or met a refusal.
+  - `delivery.contested_blocks` counts agent requests whose
+    `<project-memory>` block renders a contested statement, and
+    `search.contested` the `eidnara_search` results with a `Contested by`
+    line. Either above zero is a mismatch on a build without
+    `contested_statements`; a build with it may show none, since a contest
+    needs an observation that contradicts a delivered statement.
+  - `delivery.open_items` reads the `<session-history>` and
+    `<session-history-since>` blocks of each agent request: the blocks with a
+    rendered segment, those with a `Waiting on user (key)` line, and those
+    where a segment with a waiting line is followed in the same block by a
+    segment holding a status line (`Waiting on user`, `Constraint`,
+    `Decided`, `Lifted`, each after at most one `- ` or `* ` bullet). A later
+    segment with a status line is a summarized one, so that waiting line is
+    outside the block's newest summarized segment. One such block is a
+    mismatch on a build with `keyed_open_items`, and the record lists the
+    first requests. The baseline block keeps its bytes between rebuilds and
+    the rows above it render as their own block, so a waiting line in the
+    baseline beside its answer in `<session-history-since>` is the build's
+    documented behaviour and is counted in neither.
+  - `daemon_status` totals the status readings in `<arm>/resources.jsonl`
+    (`docs/run-command.md`): the samples of a live daemon, the readings that
+    returned (`readings`) and the reads that failed (`read_errors`), the
+    readings carrying `process_memory`, the largest `rss_anon_bytes`, the
+    last `c_heap_releases`, and for `search.lifecycle.status` the readings
+    with a `progress` block, those of a served projection (record `current`,
+    admission `admitted`, `lag_commits` at most
+    `FIXTURE_READER_LAG_COMMITS`), the largest and the last lag, the last
+    rebuild counts, and the readings naming a blocking reason. A read
+    returns after the sample that started it, so only readings that returned
+    count as evidence. An arm that answered agent calls and has at least one
+    reading is a mismatch when its build declares `process_memory` and no
+    reading carries the block, when its build lacks the capability and a
+    reading carries it, and, on a fused arm whose build declares
+    `search_progress`, when no reading carries a `progress` block. An arm
+    with no reading and at least one failed read is a mismatch, since the
+    declared status is unverified; an arm too short for any read to return
+    owes none. The lag and rebuild totals are recorded for the analysis and
+    decide no mismatch.
 
 The plugin writes its log inside the arm root, which the agent's tools can
 write too, so the evidence holds against an agent that leaves the log alone;

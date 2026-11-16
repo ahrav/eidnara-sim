@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
     appendFileSync,
     closeSync,
@@ -2321,6 +2321,55 @@ describe("HostDriver faults", () => {
         expect(await plain.fault(episode("two_hosts_one_daemon"), at)).toEqual({
             skipped: "arm runs no daemon",
         });
+    });
+
+    test("a status reading reaches the sample of the daemon process it was read from, and no other", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(process.pid);
+        const gates: Array<(answer: unknown) => void> = [];
+        const asked: boolean[] = [];
+        Object.assign(daemon, {
+            status: (fused: boolean) => {
+                asked.push(fused);
+                return new Promise((answer, refuse) => {
+                    gates.push((a) => (a instanceof Error ? refuse(a) : answer(a)));
+                });
+            },
+        });
+        driver.daemon = daemon as unknown as DaemonStack;
+        const memory = { process_memory: { rss_anon_bytes: 1 }, search: null };
+        // The first call starts a read; while it is in flight no second one starts.
+        expect(driver.daemonStatus()).toBeNull();
+        expect(driver.daemonStatus()).toBeNull();
+        expect(asked).toEqual([false]);
+        gates[0]?.(memory);
+        await driver.statusSettled();
+        expect(driver.daemonStatus()).toMatchObject({ pid: process.pid, ...memory, error: null });
+        expect(asked).toHaveLength(2);
+        // A restart replaces the process while the second read is in flight: its answer is dropped.
+        const next = spawn("sleep", ["30"]);
+        try {
+            daemon.current = next.pid as number;
+            gates[1]?.(memory);
+            await driver.statusSettled();
+            expect(driver.daemonStatus()).toBeNull();
+            // The read that call started is the replacement's, and its failure is a reading with the error.
+            gates[2]?.(new Error("status request timed out"));
+            await driver.statusSettled();
+            expect(driver.daemonStatus()).toMatchObject({
+                pid: next.pid,
+                process_memory: null,
+                error: "Error: status request timed out",
+            });
+            // A reading held when the process is replaced is dropped at the hand-over.
+            gates[3]?.(memory);
+            await driver.statusSettled();
+            daemon.current = process.pid;
+            expect(driver.daemonStatus()).toBeNull();
+        } finally {
+            next.kill("SIGKILL");
+        }
+        expect(await driver.statusSettled(1)).toBeUndefined();
     });
 
     test("a daemon fault on a daemon already gone stops the run instead of restarting it", async () => {

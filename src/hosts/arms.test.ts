@@ -23,11 +23,14 @@ import {
     DaemonStack,
     fixtureDaemonConfig,
     type HostContext,
+    lifecycleReading,
     nodeInstall,
     OpencodeSimHost,
     opencodeInstall,
     PI_EXIT_EVENT_MS,
     PiSimHost,
+    processMemoryBlock,
+    progressBlock,
 } from "./arms";
 
 type Untyped = any;
@@ -307,6 +310,81 @@ test("the OpenCode wrapper stops before the launcher when its launch record cann
     const r = Bun.spawnSync([path], { cwd: run, stdout: "pipe", stderr: "pipe" });
     expect(r.exitCode).toBe(70);
     expect(existsSync(join(run, "ran"))).toBe(false);
+});
+
+test("a search lifecycle status answer is recorded by its state, admission, and progress", () => {
+    const answer = {
+        kind: "status",
+        record: { state: "current", attempt_id: "rebuild-search-projection-3" },
+        admission: { state: "admitted" },
+        progress: {
+            tip: 5120,
+            checkpoint: 5100,
+            lag_commits: 20,
+            rebuilds: { recorded: 3, completed: 2, renewed: 1 },
+            blocked: null,
+        },
+    };
+    expect(lifecycleReading(answer)).toEqual({
+        state: "current",
+        admission: "admitted",
+        progress: {
+            tip: 5120,
+            checkpoint: 5100,
+            lag_commits: 20,
+            rebuilds: { recorded: 3, completed: 2, renewed: 1 },
+            blocked: null,
+        },
+    });
+    // A build before the progress block answers the record and admission alone.
+    expect(lifecycleReading({ kind: "status", record: { state: "intent" } })).toEqual({
+        state: "intent",
+        admission: null,
+        progress: null,
+    });
+    // The block counts only in the wire's shape: each position an integer or null, whole rebuild
+    // counts, and a blocking reason that is a string or null, bounded to 512 characters.
+    const whole = answer.progress;
+    expect(progressBlock({ ...whole, tip: null, checkpoint: null, lag_commits: null })).toEqual({
+        ...whole,
+        tip: null,
+        checkpoint: null,
+        lag_commits: null,
+    });
+    expect(progressBlock({ ...whole, blocked: "x".repeat(900) })?.blocked).toHaveLength(512);
+    const { lag_commits: _lag, ...lagless } = whole;
+    for (const malformed of [
+        [],
+        {},
+        lagless,
+        { ...whole, tip: -1 },
+        { ...whole, lag_commits: "7" },
+        { ...whole, rebuilds: { recorded: 1 } },
+        { ...whole, rebuilds: [1, 2, 3] },
+        { ...whole, blocked: 4 },
+    ]) {
+        expect(progressBlock(malformed)).toBeNull();
+        expect(lifecycleReading({ record: { state: "current" }, progress: malformed })).toEqual({
+            state: "current",
+            admission: null,
+            progress: null,
+        });
+    }
+    const memory = {
+        rss_anon_bytes: 4096,
+        rss_file_bytes: null,
+        rss_shmem_bytes: 0,
+        threads: 12,
+        c_heap: null,
+        c_heap_arena_limit: 4,
+        c_heap_releases: 2,
+        c_heap_release_resident_drop_bytes: 1024,
+    };
+    expect(processMemoryBlock(memory)).toBe(memory);
+    const { c_heap_releases: _releases, ...untotalled } = memory;
+    for (const malformed of [[], {}, null, untotalled, { ...memory, rss_anon_bytes: "4096" }]) {
+        expect(processMemoryBlock(malformed)).toBeNull();
+    }
 });
 
 test("the daemon's harness runtime lives beside the arm, outside what the host can write", () => {
