@@ -895,13 +895,11 @@ export function readDaemonStatus(path: string): DaemonStatusObservation {
         if (typeof p.blocked === "string") progress.blocked++;
         const r = p.rebuilds as Record<string, unknown> | undefined;
         const [recorded, completed, renewed] = [r?.recorded, r?.completed, r?.renewed].map(count);
-        if (recorded !== null && completed !== null && renewed !== null) {
-            progress.rebuilds = { recorded, completed, renewed } as {
-                recorded: number;
-                completed: number;
-                renewed: number;
-            };
-        }
+        // The last reading's counts: a reading without whole counts leaves none on record.
+        progress.rebuilds =
+            recorded != null && completed != null && renewed != null
+                ? { recorded, completed, renewed }
+                : null;
     });
     return out;
 }

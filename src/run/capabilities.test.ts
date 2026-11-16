@@ -716,6 +716,11 @@ test("daemon status readings are totalled from the resource samples", () => {
             blocked: 1,
         },
     });
+    // The rebuild counts are the last reading's: one without whole counts leaves none on record.
+    const partial = { pid: 7, daemon_status: { search: search("current", "admitted", 0) } };
+    (partial.daemon_status.search.progress.rebuilds as Record<string, unknown>).renewed = null;
+    appendFileSync(path, `${JSON.stringify(partial)}\n`);
+    expect(readDaemonStatus(path).search_progress).toMatchObject({ samples: 5, rebuilds: null });
     expect(readDaemonStatus(join(dir, "absent.jsonl")).samples).toBe(0);
 });
 
