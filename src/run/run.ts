@@ -39,7 +39,12 @@ import {
     isArmName,
 } from "../hosts/profiles";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
-import { type Qualification, qualificationHash, qualificationSeed } from "../prereg/qualification";
+import {
+    buildRefusal,
+    type Qualification,
+    qualificationHash,
+    qualificationSeed,
+} from "../prereg/qualification";
 import type { Preregistration, Tier } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import { bedrockUpstream, Gateway } from "../proxy/gateway";
@@ -1537,8 +1542,14 @@ export async function loadManifest(
     /** Preflight probes the environment once the build is known to match the audited daemon capabilities. */
     const supplied = checks !== undefined;
     /** The audited build the clone binds for `order`; a caller that supplies its own preflight result binds none. */
-    const bind = (order: readonly string[]) =>
-        supplied ? null : bindEidnaraBuild(o.config.eidnara_checkout, order);
+    const bind = (order: readonly string[]) => {
+        if (supplied) return null;
+        const build = bindEidnaraBuild(o.config.eidnara_checkout, order);
+        const q = qualificationOf(o);
+        const refusal = q ? buildRefusal(q, build, order) : null;
+        if (refusal !== null) throw new HarnessFailure(refusal);
+        return build;
+    };
     const probe = async (order: readonly string[]) => {
         if (checks) return checks;
         bind(order);

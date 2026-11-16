@@ -158,6 +158,10 @@ the variants read there:
 | `eval/w2` (`AUDITED_EIDNARA`, the current build) | `8beaa1219` | all three | the w2 rework: `main` `da360026c` (which holds Eidnara #1210, #1211, and #1219) plus the open heads of #1209, #1212, #1213, #1214, #1215, #1217 |
 | `eval/c8` | `8e6265d2c` | `direct_host_fixture` (legacy route) | the c8 reference arm |
 
+A qualification may name two of these builds in its `builds` section, the
+current one and a reference, so one arm on each is a registered contrast
+(`docs/run-command.md`); its runs then bind one of those two.
+
 A run binds the first registered build whose commit its build clone holds,
 whose table registers every daemon variant its arms run, and whose copies of
 those variants' source files match the clone's working tree. The manifest

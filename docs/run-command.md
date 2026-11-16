@@ -118,6 +118,21 @@ also carry these optional sections and fields:
   same `run-tier` command with another `--out`), launched together with the
   first, so the pair measures run-to-run variance inside one time window
   (NOISE.md). The seeds must be registered seeds and the arms run arms.
+- `builds` (`current`, `reference`, `contrasts`): the two audited Eidnara
+  builds the registration compares, each named by its `label` and full
+  `commit` in `AUDITED_BUILDS` (`docs/hosts.md`). Every run arm with a daemon
+  runs on `current`. Each `contrasts` pair is `[treatment, reference]`: a
+  run arm on `current` against an arm on `reference`, which runs as its own
+  run directory over the same seed, so both sides meet the same scenario
+  under one registration hash. The builds differ, so a pair may name one
+  arm twice (`["eidnara", "eidnara"]`); `contrasts` itself still pairs arms
+  that differ in delivery mode or search route. A run under such a
+  registration binds one of the two builds: `current` for any registered
+  arm, or `reference` for the reference arms of `builds.contrasts` alone.
+  `run-tier` refuses any other bound build, and a non-reference arm on the
+  reference build, before it starts a daemon. A host-only run starts no
+  daemon and binds no build. The manifest's `eidnara_build` says which
+  side a run is.
 - `analysis` (`unit`, `reference`, `harm_probes`, `budget_usd`,
   `cost_per_arm_seed_usd`): the analysis plan, fixed before any measured
   run. `unit` is `run` (one arm on one seed); `reference` names an earlier
@@ -179,6 +194,26 @@ pooled with it. The budget is the c8 campaign's remaining $46k (low bound
 eight arm-seeds at c7's cheapest `eidnara` spend, $3,932), at c7's
 $5,489 per `eidnara-hybrid` arm-seed.
 
+`--qualification W2S` (`prereg/W2S.json`, revision 1) and
+`--qualification W2SH` (`prereg/W2SH.json`, revision 1) run the focused
+re-evaluation of the w2 Eidnara rework on whole tier S scenarios, Pi only:
+W2S over the fresh diagnosed seeds 104 and 105, W2SH over the held-out seed
+610 (chi and chi-twin), which reports apart and is never pooled with W2S.
+No earlier campaign ran these seeds (`docs/scenario.md`). Both run `host`,
+`eidnara`, and `eidnara-hybrid`, with contrasts `eidnara` vs `host`,
+`eidnara-hybrid` vs `eidnara`, and `eidnara-hybrid` vs `host`, the
+`wrong-project-lookup` control, and `host` as the no-source control. Their
+`builds` section names `eval/w2` as the current build and `eval/c8`
+(`8e6265d2c`) as the reference, with build contrasts `eidnara` on
+`eval/w2` against `eidnara` on `eval/c8`, and `eidnara-hybrid` on `eval/w2`
+against the same reference. Each seed is four runs launched together:
+`host`, `eidnara`, and `eidnara-hybrid` under the current build's config,
+and `eidnara` under the reference build's config (a campaign run's
+`config`). The analysis plan is the run unit, c8 at the seed level, and the
+harm probes P2, P5, P9, P10, P11, and P8-twin. The budget is $4k to $12k
+for W2S's eight runs and $2k to $6k for W2SH's four, from c7's S spend per
+event ($1.15 to $1.65) over 590, 677, and 751 events.
+
 `--qualification H` runs the held-out registration `prereg/H.json`
 (revision 2, which re-pins the M digest after tier revision 9). It binds tier M, selects the `held-out` corpus split, runs
 `host` and `eidnara` on both hosts over seeds 601 to 609 and 611, with the
@@ -198,8 +233,14 @@ exceeds its `high` or whose costs do not name each run arm once; a hold-out seed
 outside the run arms, or a hold-out order that does not permute
 `holdout.arms`; and a ranking gate whose order is not one run arm per mode in
 that order or whose items differ from `RANKING_GATE_ITEMS`; and a
-no-source control that is not a run arm or delivers memory. The run refuses
-a qualification over another tier, a seed or host it does not list, an arm
+no-source control that is not a run arm or delivers memory; and a `builds`
+section whose `current` or `reference` is not an `AUDITED_BUILDS` entry under
+its own label, whose two builds are one commit, or whose contrast names a
+treatment outside the run arms, an arm without a daemon, or a reference arm
+whose daemon variant the reference build does not provide; a run arm is
+read against the registration's `current` build. The run refuses
+a qualification over another tier, a seed or host it does not list, a build
+clone bound outside its `builds` section, an arm
 outside the seed's order, and an A/A control label the seed does not
 register; the tier pre-registration still supplies the liveness bounds,
 user-sim, and grading rules. The manifest records
