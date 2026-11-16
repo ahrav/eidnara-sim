@@ -146,16 +146,21 @@ const BEHAVIOUR_SOURCES = [
     "crates/daemon/src/decay_render.rs",
     "crates/daemon/src/lib.rs",
 ];
+/** The plugin files that render an `eidnara_search` result and resolve the contest a statement names. */
+const SEARCH_RENDER = "packages/opencode-plugin/src/tools/eidnara-search/render.ts";
+const SEARCH_ROWS = "packages/opencode-plugin/src/tools/eidnara-search/kernel-memory-search.ts";
 const C8_BEHAVIOUR_SOURCES = [
     ...BEHAVIOUR_SOURCES,
     "crates/daemon/src/history_summarizer_open_items.rs",
+    SEARCH_RENDER,
+    SEARCH_ROWS,
 ];
 const W2_BEHAVIOUR_SOURCES = [
     ...BEHAVIOUR_SOURCES,
     "crates/daemon/src/history_open_items.rs",
     "crates/daemon/src/process_memory.rs",
-    "packages/opencode-plugin/src/tools/eidnara-search/render.ts",
-    "packages/opencode-plugin/src/tools/eidnara-search/kernel-memory-search.ts",
+    SEARCH_RENDER,
+    SEARCH_ROWS,
 ];
 /** Source capture requires both `source_capture.enabled` and `memory.enabled` in the daemon's effective config. */
 const SOURCE_CAPTURE_SOURCES = ["crates/daemon/src/source_capture.rs"];
@@ -234,6 +239,8 @@ const C8_PROBES = [
         false,
     ),
     probe("contested_statements", "crates/daemon/src/canonical_memory.rs", "contested_line", false),
+    probe("contested_statements", SEARCH_RENDER, "Contested by ", false),
+    probe("contested_statements", SEARCH_ROWS, "resolveContests", false),
     probe("keyed_open_items", "crates/daemon/src/decay_render.rs", "history_open_items", false),
     probe("process_memory", "crates/daemon/src/lib.rs", "pub mod process_memory", false),
 ];
@@ -267,16 +274,8 @@ const W2_PROBES = [
         "\\(stated \\{\\}; contested \\{\\} by \\{memory\\}: \\{\\}\\)",
     ),
     probe("contested_statements", "crates/daemon/src/memory_capture.rs", '"contested_by"'),
-    probe(
-        "contested_statements",
-        "packages/opencode-plugin/src/tools/eidnara-search/render.ts",
-        "Contested by ",
-    ),
-    probe(
-        "contested_statements",
-        "packages/opencode-plugin/src/tools/eidnara-search/kernel-memory-search.ts",
-        "export async function resolveContests\\(",
-    ),
+    probe("contested_statements", SEARCH_RENDER, "Contested by "),
+    probe("contested_statements", SEARCH_ROWS, "export async function resolveContests\\("),
     probe(
         "keyed_open_items",
         "crates/daemon/src/history_open_items.rs",
