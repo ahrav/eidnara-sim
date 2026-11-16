@@ -554,7 +554,7 @@ const C8_BUILD: AuditedBuild = {
  */
 export const AUDITED_BUILDS: readonly [AuditedBuild, ...AuditedBuild[]] = [
     {
-        commit: "8beaa12190b07aa0c3d6a00801787ae79aba1148",
+        commit: "7901aae3962825be247cc30f2682b6aec39c7ea8",
         label: "eval/w2",
         variants: DAEMON_VARIANTS,
     },

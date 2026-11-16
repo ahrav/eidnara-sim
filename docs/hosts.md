@@ -155,7 +155,7 @@ the variants read there:
 
 | Build | Commit | Variants | Read for |
 |---|---|---|---|
-| `eval/w2` (`AUDITED_EIDNARA`, the current build) | `8beaa1219` | all three | the w2 rework: `main` `da360026c` (which holds Eidnara #1210, #1211, and #1219) plus the open heads of #1209, #1212, #1213, #1214, #1215, #1217 |
+| `eval/w2` (`AUDITED_EIDNARA`, the current build) | `7901aae39` | all three | the w2 rework: `main` `da360026c` (which holds Eidnara #1210, #1211, and #1219) plus the open heads of #1209, #1212, #1213, #1214, #1215, #1217 |
 | `eval/c8` | `8e6265d2c` | `direct_host_fixture` (legacy route) | the c8 reference arm |
 
 A qualification may name two of these builds in its `builds` section, the
@@ -266,22 +266,25 @@ audit against, by label or commit:
 bun scripts/audit-eidnara.ts <eidnara checkout> <commit> eval/c8
 ```
 
-At `8beaa1219` the verdict against `eval/w2` is `unchanged`, and at
+At `7901aae39` the verdict against `eval/w2` is `unchanged`, and at
 `8e6265d2c` the verdict against `eval/c8` is `unchanged`. Each build's
 commit returns `broken` against the other build's table: `8e6265d2c` has no
 `history_open_items.rs`, `process_memory.rs`, `contested_line`, or
-per-message statement source id, and `8beaa1219` has no
+per-message statement source id, and `7901aae39` has no
 `retire_settled_lines`. Audited from the previous pin `837c3bab3`
 (`eval/c8h`) to `84282f549`, the first `eval/w2` head, the two
 `settled_lines_retired` probes of that pin break, because Eidnara #1215
 replaces #1207's validation-time retirement with render-time open items.
-From `84282f549` to `8beaa1219` every probe holds and two audited sources
-change, `crates/daemon/src/lib.rs` and `crates/daemon/src/tool_outcome.rs`:
-Eidnara #1219 scans a tool output as printed before the store keeps the
-chunk transcript, and the text the summarizer model reads is the same, so
-`whole_small_tool_outputs` and every other capability value stand. The head
-also moves #1209 to `a799977eb`, whose chunked `kernel.read` lies outside
-the audited sources.
+From `84282f549` to `7901aae39` every probe holds and three audited sources
+change: `crates/daemon/src/lib.rs`, `crates/daemon/src/tool_outcome.rs`,
+and `crates/daemon/src/memory_capture.rs`. Eidnara #1219 scans a tool
+output as printed before the store keeps the chunk transcript, and the text
+the summarizer model reads is the same. The later heads of #1212
+(`2c28cc809`) and #1213 (`ebaabdafe`) change how `memory_capture.rs` reads
+paragraph whitespace, classifies quotation marks, and looks up summary
+words when ranking candidates, with the same results. Every capability
+value stands. The head also holds #1209 at `aebeb0bd8`, whose chunked
+`kernel.read` lies outside the audited sources.
 
 ## Capability evidence
 
