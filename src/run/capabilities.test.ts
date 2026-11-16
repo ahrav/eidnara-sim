@@ -702,6 +702,8 @@ test("daemon status readings are totalled from the resource samples", () => {
     writeFileSync(path, `${samples.map((s) => JSON.stringify(s)).join("\n")}\nnot json\n`);
     expect(readDaemonStatus(path)).toEqual({
         samples: 6,
+        readings: 4,
+        read_errors: 1,
         process_memory: 3,
         max_rss_anon_bytes: 300,
         c_heap_releases: 3,
@@ -776,8 +778,10 @@ test("evidence is read against the capabilities of the build the run bound", () 
         "2 agent requests and 0 eidnara_search results render a contested statement, which eval/c8 does not declare",
     ]);
 
-    const status = (process_memory: number, progress: number) => ({
+    const status = (process_memory: number, progress: number, readings = 8, read_errors = 0) => ({
         samples: 9,
+        readings,
+        read_errors,
         process_memory,
         max_rss_anon_bytes: null,
         c_heap_releases: null,
@@ -792,18 +796,24 @@ test("evidence is read against the capabilities of the build the run bound", () 
     });
     expect(armMismatches({ ...base, daemon_status: status(8, 0) }, w2)).toEqual([]);
     expect(armMismatches({ ...base, daemon_status: status(0, 0) }, w2)).toEqual([
-        "none of 9 daemon samples carries the status process_memory block, which eval/w2 declares",
+        "none of 8 daemon status readings carries the process_memory block, which eval/w2 declares",
+    ]);
+    // A read returns after the sample that started it: an arm too short for one owes no block,
+    // and an arm whose every read failed leaves the status unverified.
+    expect(armMismatches({ ...base, daemon_status: status(0, 0, 0) }, w2)).toEqual([]);
+    expect(armMismatches({ ...base, daemon_status: status(0, 0, 0, 5) }, w2)).toEqual([
+        "all 5 daemon status reads failed, so the status eval/w2 declares is unverified",
     ]);
     expect(armMismatches({ ...reference, daemon_status: status(0, 0) }, c8)).toEqual([]);
     expect(armMismatches({ ...reference, daemon_status: status(8, 0) }, c8)).toEqual([
-        "8 daemon samples carry a status process_memory block, which eval/c8 does not declare",
+        "8 daemon status readings carry a process_memory block, which eval/c8 does not declare",
     ]);
     const fused = captured(armRoot([PI_ON, PASS], [FUSED]));
     daemonLog(fused, [READY, ROUTE]);
     const hybrid = observeArm("eidnara-hybrid", "pi", fused, { agent: 1 });
     expect(armMismatches({ ...hybrid, daemon_status: status(8, 8) }, w2)).toEqual([]);
     expect(armMismatches({ ...hybrid, daemon_status: status(8, 0) }, w2)).toEqual([
-        "none of 9 daemon samples carries a search.lifecycle.status progress block, which eval/w2 declares for the fused route",
+        "none of 8 daemon status readings carries a search.lifecycle.status progress block, which eval/w2 declares for the fused route",
     ]);
 });
 

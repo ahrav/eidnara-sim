@@ -58,6 +58,17 @@ export function runEnv(
     return run?.config === undefined ? env : { ...env, SIM_CONFIG: run.config };
 }
 
+/** Whether a saved record describes the launch a campaign entry now names: the same command line and the same config file. */
+export function sameLaunch(
+    saved: Pick<RunRecord, "argv" | "config">,
+    current: Pick<RunRecord, "argv" | "config">,
+): boolean {
+    return (
+        JSON.stringify(saved.argv) === JSON.stringify(current.argv) &&
+        (saved.config ?? null) === (current.config ?? null)
+    );
+}
+
 export const DEFAULT_RUN = ["bun", "scripts/run-tier.ts"];
 export const DEFAULT_FINALIZE = [
     ["bun", "scripts/grade-run.ts", "{dir}"],
@@ -447,6 +458,12 @@ export interface RunRecord {
     name: string;
     /** The launch command line the record describes; a changed one starts a fresh record. */
     argv: string[];
+    /**
+     * The sim config file the run's processes read (the campaign entry's `config`), or null for
+     * the supervisor's own; part of the record's identity beside `argv`. Absent on a record
+     * written before runs could name one, which reads as null.
+     */
+    config?: string | null;
     state: "pending" | "running" | "finalizing" | "finalized" | "gave-up";
     launches: number;
     stalled: number;

@@ -447,19 +447,24 @@ complete evidence only when the two agree:
     baseline beside its answer in `<session-history-since>` is the build's
     documented behaviour and is counted in neither.
   - `daemon_status` totals the status readings in `<arm>/resources.jsonl`
-    (see Resource samples): the samples of a live daemon, those carrying
-    `process_memory`, the largest `rss_anon_bytes`, the last
-    `c_heap_releases`, and for `search.lifecycle.status` the samples with a
-    `progress` block, those of a served projection (record `current`,
+    (`docs/run-command.md`): the samples of a live daemon, the readings that
+    returned (`readings`) and the reads that failed (`read_errors`), the
+    readings carrying `process_memory`, the largest `rss_anon_bytes`, the
+    last `c_heap_releases`, and for `search.lifecycle.status` the readings
+    with a `progress` block, those of a served projection (record `current`,
     admission `admitted`, `lag_commits` at most
     `FIXTURE_READER_LAG_COMMITS`), the largest and the last lag, the last
-    rebuild counts, and the samples naming a blocking reason. An arm that
-    answered agent calls is a mismatch when its build declares
-    `process_memory` and no sample carries the block, when its build lacks
-    the capability and a sample carries it, and, on a fused arm whose build
-    declares `search_progress`, when no sample carries a `progress` block.
-    The lag and rebuild totals are recorded for the analysis and decide no
-    mismatch.
+    rebuild counts, and the readings naming a blocking reason. A read
+    returns after the sample that started it, so only readings that returned
+    count as evidence. An arm that answered agent calls and has at least one
+    reading is a mismatch when its build declares `process_memory` and no
+    reading carries the block, when its build lacks the capability and a
+    reading carries it, and, on a fused arm whose build declares
+    `search_progress`, when no reading carries a `progress` block. An arm
+    with no reading and at least one failed read is a mismatch, since the
+    declared status is unverified; an arm too short for any read to return
+    owes none. The lag and rebuild totals are recorded for the analysis and
+    decide no mismatch.
 
 The plugin writes its log inside the arm root, which the agent's tools can
 write too, so the evidence holds against an agent that leaves the log alone;

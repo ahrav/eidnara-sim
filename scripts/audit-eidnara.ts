@@ -17,7 +17,7 @@ try {
         build.commit,
         build.variants as Record<string, VariantRecord>,
     );
-    console.log(`build:     ${build.label}\n${renderAudit(report)}`);
+    console.log(`build:     ${build.label}\n${renderAudit(report, build.label)}`);
     process.exit({ unchanged: 0, reread: 1, broken: 2 }[report.verdict]);
 } catch (caught) {
     console.error(`${(caught as Error).message}\n${USAGE}`);

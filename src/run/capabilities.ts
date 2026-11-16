@@ -91,6 +91,11 @@ export interface ArmObservation {
 export interface DaemonStatusObservation {
     /** Samples that name a live daemon process. */
     samples: number;
+    /** Of those, the samples carrying a status reading that returned without an error. */
+    readings: number;
+    /** Of those, the samples carrying a status reading whose read failed. */
+    read_errors: number;
+    /** Readings whose `status` answer carries a `process_memory` block. */
     process_memory: number;
     /** The largest anonymous resident bytes a `process_memory` block reported, or null with none. */
     max_rss_anon_bytes: number | null;
@@ -823,6 +828,8 @@ const count = (v: unknown): number | null =>
 export function readDaemonStatus(path: string): DaemonStatusObservation {
     const out: DaemonStatusObservation = {
         samples: 0,
+        readings: 0,
+        read_errors: 0,
         process_memory: 0,
         max_rss_anon_bytes: null,
         c_heap_releases: null,
@@ -840,6 +847,7 @@ export function readDaemonStatus(path: string): DaemonStatusObservation {
         let sample: {
             pid?: unknown;
             daemon_status?: {
+                error?: unknown;
                 process_memory?: Record<string, unknown> | null;
                 search?: {
                     state?: unknown;
@@ -855,6 +863,13 @@ export function readDaemonStatus(path: string): DaemonStatusObservation {
         }
         if (typeof sample?.pid !== "number") return;
         out.samples++;
+        const reading = sample.daemon_status;
+        if (!reading || typeof reading !== "object") return;
+        if (typeof reading.error === "string") {
+            out.read_errors++;
+            return;
+        }
+        out.readings++;
         const memory = sample.daemon_status?.process_memory;
         if (memory && typeof memory === "object") {
             out.process_memory++;
@@ -1239,16 +1254,18 @@ function buildMismatches(
             `${items.stale_waiting_blocks} of ${items.blocks} rendered history blocks hold a waiting line before a later summarized segment (first requests ${items.stale_requests.join(", ")}), but ${label} declares waiting lines in the newest segment alone`,
         );
     }
+    // A status read returns after the sample that started it, so a short arm can end with samples
+    // and no reading; only readings that returned are evidence of what the answer carries.
     const status = o.daemon_status;
-    if (status && answered && status.samples > 0) {
+    if (status && answered && status.readings > 0) {
         if (caps.process_memory && status.process_memory === 0) {
             out.push(
-                `none of ${status.samples} daemon samples carries the status process_memory block, which ${label} declares`,
+                `none of ${status.readings} daemon status readings carries the process_memory block, which ${label} declares`,
             );
         }
         if (!caps.process_memory && status.process_memory > 0) {
             out.push(
-                `${status.process_memory} daemon samples carry a status process_memory block, which ${label} does not declare`,
+                `${status.process_memory} daemon status readings carry a process_memory block, which ${label} does not declare`,
             );
         }
         if (
@@ -1257,9 +1274,13 @@ function buildMismatches(
             status.search_progress.samples === 0
         ) {
             out.push(
-                `none of ${status.samples} daemon samples carries a search.lifecycle.status progress block, which ${label} declares for the fused route`,
+                `none of ${status.readings} daemon status readings carries a search.lifecycle.status progress block, which ${label} declares for the fused route`,
             );
         }
+    } else if (status && answered && status.read_errors > 0) {
+        out.push(
+            `all ${status.read_errors} daemon status reads failed, so the status ${label} declares is unverified`,
+        );
     }
     return out;
 }

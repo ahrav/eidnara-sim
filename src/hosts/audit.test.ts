@@ -102,6 +102,14 @@ test("a changed source whose probes hold asks for a reading of exactly the chang
     expect(renderAudit(report)).toContain(
         `git --no-replace-objects -C ${r.dir} diff ${audited} ${candidate} -- fixture.rs`,
     );
+    // The remedy names the registered build the report was audited against.
+    expect(renderAudit(report)).toContain("set the commit of AUDITED_EIDNARA");
+    expect(renderAudit(report, "eval/c8")).toContain(
+        "set the commit of the eval/c8 entry of AUDITED_BUILDS in src/hosts/profiles.ts",
+    );
+    expect(renderAudit({ ...report, verdict: "broken" }, "eval/c8")).toContain(
+        "revise the variants of the eval/c8 entry of AUDITED_BUILDS",
+    );
 });
 
 test("a probe that reads differently at the candidate, or a removed file, breaks the table", () => {

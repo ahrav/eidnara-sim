@@ -503,7 +503,10 @@ A run may name a `config`: the absolute path of the sim config file its
 run without one reads the supervisor's own `SIM_CONFIG`. One campaign can
 therefore run arms on two Eidnara builds, each config naming its build
 clone; every run binds the registered audited build its clone matches and
-records it in its manifest as `eidnara_build` (`docs/hosts.md`).
+records it in its manifest as `eidnara_build` (`docs/hosts.md`). The `config`
+is part of a run record's identity beside its command line: the supervisor
+refuses to start when a run that has a journal names another `config` than
+its saved record, and starts the record over for a run that has none.
 
 A run may name a `group` (a plain name); a run without one is its own
 group, apart from any named group. With `max_concurrent` set, a run holds a

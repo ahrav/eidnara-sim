@@ -28,6 +28,7 @@ import {
     readSpend,
     runEnv,
     runProgress,
+    sameLaunch,
 } from "../src/run/campaign";
 import { Journal } from "../src/run/journal";
 
@@ -332,6 +333,16 @@ test("a run reads the sim config its campaign entry names, and the supervisor's 
     expect(() =>
         parseCampaign({ ...base, runs: [{ name: "r", args: [], config: "sim.config.json" }] }),
     ).toThrow("run r config is no absolute path");
+    // The config is part of a run record's identity: a saved record stands for the same command and config alone.
+    const saved = { argv: ["bun", "scripts/run-tier.ts"], config: "/w2/sim-ref.config.json" };
+    expect(sameLaunch(saved, { ...saved })).toBe(true);
+    expect(sameLaunch(saved, { ...saved, config: "/w2/sim.config.json" })).toBe(false);
+    expect(sameLaunch(saved, { ...saved, config: null })).toBe(false);
+    expect(
+        sameLaunch(saved, { ...saved, argv: ["bun", "scripts/run-tier.ts", "--seed", "1"] }),
+    ).toBe(false);
+    // A record written before runs could name a config reads as one without.
+    expect(sameLaunch({ argv: saved.argv }, { argv: saved.argv, config: null })).toBe(true);
 });
 
 test("a campaign file that lets a run pick its own --out, or repeats a name, is refused", () => {
