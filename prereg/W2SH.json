@@ -1,0 +1,92 @@
+{
+    "schema": "sim-qualification/v1",
+    "id": "W2SH",
+    "revision": 1,
+    "frozen": true,
+    "tier": "S",
+    "tier_preregistration_sha256": "2a9773e79ed87853d02a758ae1cadf817871fefd98e3577de2dada71e0858d5e",
+    "corpus": "held-out",
+    "seeds": [
+        610
+    ],
+    "hosts": [
+        "pi"
+    ],
+    "arms": {
+        "run": [
+            "host",
+            "eidnara",
+            "eidnara-hybrid"
+        ],
+        "order_by_seed": [
+            [
+                "eidnara",
+                "eidnara-hybrid",
+                "host"
+            ]
+        ]
+    },
+    "contrasts": [
+        [
+            "eidnara",
+            "host"
+        ],
+        [
+            "eidnara-hybrid",
+            "eidnara"
+        ],
+        [
+            "eidnara-hybrid",
+            "host"
+        ]
+    ],
+    "controls": [
+        "wrong-project-lookup"
+    ],
+    "no_source_control": "host",
+    "builds": {
+        "current": {
+            "label": "eval/w2",
+            "commit": "7901aae3962825be247cc30f2682b6aec39c7ea8"
+        },
+        "reference": {
+            "label": "eval/c8",
+            "commit": "8e6265d2ccc12c9e9fddd602e4d206c57b6eb52d"
+        },
+        "contrasts": [
+            [
+                "eidnara",
+                "eidnara"
+            ],
+            [
+                "eidnara-hybrid",
+                "eidnara"
+            ]
+        ]
+    },
+    "analysis": {
+        "unit": "run",
+        "reference": {
+            "campaign": "c8",
+            "level": "seed"
+        },
+        "harm_probes": [
+            "P2",
+            "P5",
+            "P9",
+            "P10",
+            "P11",
+            "P8-twin"
+        ],
+        "budget_usd": {
+            "low": 2000,
+            "high": 6000
+        },
+        "cost_per_arm_seed_usd": {
+            "host": 1000,
+            "eidnara": 900,
+            "eidnara-hybrid": 900
+        }
+    },
+    "claim": "descriptive"
+}

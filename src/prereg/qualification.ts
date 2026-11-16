@@ -5,7 +5,14 @@
  */
 
 import { SPLITS, type Split } from "../corpus/repos";
-import { armProfile, capabilityGaps, deliveryOf, isArmName } from "../hosts/profiles";
+import {
+    type AuditedBuild,
+    armProfile,
+    auditedBuild,
+    capabilityGaps,
+    deliveryOf,
+    isArmName,
+} from "../hosts/profiles";
 import { canonicalJson, sha256Hex } from "./canonical";
 import { HOSTS, type Preregistration, TIERS, type Tier } from "./schema";
 import {
@@ -22,7 +29,7 @@ import {
 } from "./validate";
 
 export const QUALIFICATION_SCHEMA = "sim-qualification/v1";
-export const QUALIFICATIONS = ["Q", "H", "C8", "C8H", "C8X", "C8XH"] as const;
+export const QUALIFICATIONS = ["Q", "H", "C8", "C8H", "C8X", "C8XH", "W2S", "W2SH"] as const;
 /**
  * Control items a qualification adds to its scenarios. `wrong-project-lookup` asks each P8 lookup
  * again in the twin project (`P8-twin`), where the right answer is that the value belongs to the
@@ -100,6 +107,14 @@ export interface Qualification {
      */
     reference_runs?: { registration: string; contrasts: string[][] };
     /**
+     * The two audited Eidnara builds the registration compares, each named by its label and commit
+     * in `AUDITED_BUILDS`. Every run arm with a daemon runs on `current`. Each `contrasts` pair is
+     * `[treatment, reference]`: a run arm on `current` against a run arm on `reference`, which
+     * runs as its own run over the same seed and scenario. The two builds differ, so a pair may
+     * name one arm twice.
+     */
+    builds?: { current: BuildRef; reference: BuildRef; contrasts: string[][] };
+    /**
      * Run-level A/A replicates: on each listed seed, each listed arm runs a second time as its own
      * run, launched together with the first.
      */
@@ -107,6 +122,12 @@ export interface Qualification {
     /** The analysis plan the registration fixes before any measured run. */
     analysis?: Analysis;
     claim: "descriptive";
+}
+
+/** One audited Eidnara build as a registration names it: the integration branch and its commit. */
+export interface BuildRef {
+    label: string;
+    commit: string;
 }
 
 /**
@@ -121,6 +142,9 @@ export interface Analysis {
     budget_usd: { low: number; high: number };
     cost_per_arm_seed_usd: Record<string, number>;
 }
+
+const commitHash = (v: unknown) =>
+    typeof v === "string" && /^[0-9a-f]{40}$/.test(v) ? null : "expected a full commit hash";
 
 /** The probe types a registration may name: P1 to P14 and the wrong-project control P8-twin. */
 const PROBE_TYPES = [...Array.from({ length: 14 }, (_, i) => `P${i + 1}`), "P8-twin"];
@@ -152,6 +176,12 @@ const SECTIONS: Record<string, Shape> = {
     ranking_gate: { order: list(text), items: list(oneOf(RANKING_GATE_ITEMS)) },
     replicates: { seeds: list(uint32), arms: list(text) },
     reference_runs: { registration: oneOf(QUALIFICATIONS), contrasts: list(list(text)) },
+    builds: {
+        current: { label: text, commit: commitHash },
+        reference: { label: text, commit: commitHash },
+        // A pair may name one arm twice, since its two sides run on different builds.
+        contrasts: list(list(text, false)),
+    },
     analysis: {
         unit: literal("run"),
         reference: { campaign: text, level: literal("seed") },
@@ -222,12 +252,13 @@ export function validateQualification(value: unknown, tier: Preregistration): st
     for (const host of q.hosts.filter((h) => !tier.hosts.includes(h))) {
         errors.push(`hosts: ${tier.tier} runs no ${host} host`);
     }
+    const builds = registeredBuilds(q, errors);
     for (const arm of q.arms.run) {
         if (!isArmName(arm)) {
             errors.push(`arms.run: ${arm} has no profile`);
             continue;
         }
-        for (const gap of capabilityGaps(arm)) errors.push(`arms.run: ${gap}`);
+        for (const gap of capabilityGaps(arm, builds?.current)) errors.push(`arms.run: ${gap}`);
     }
     if (q.arms.order_by_seed.length !== q.seeds.length) {
         errors.push("arms.order_by_seed: needs one order per seed");
@@ -238,6 +269,7 @@ export function validateQualification(value: unknown, tier: Preregistration): st
         }
     });
     checkSections(q, errors);
+    if (builds) checkBuildContrasts(q, builds.reference, errors);
     if (q.contrasts.length === 0 && q.arms.run.length > 1) {
         errors.push("contrasts: a registration that runs two or more arms names a contrast");
     }
@@ -259,6 +291,92 @@ export function validateQualification(value: unknown, tier: Preregistration): st
         }
     });
     return errors;
+}
+
+/**
+ * The audited builds `q.builds` names, or undefined without the section or when a name is refused:
+ * each of `current` and `reference` is an `AUDITED_BUILDS` entry under its own label, and the two
+ * are different commits.
+ */
+function registeredBuilds(
+    q: Qualification,
+    errors: string[],
+): { current: AuditedBuild; reference: AuditedBuild } | undefined {
+    if (!q.builds) return undefined;
+    const resolve = (role: "current" | "reference"): AuditedBuild | undefined => {
+        const named = q.builds?.[role] as BuildRef;
+        const build = auditedBuild(named.commit);
+        if (!build) {
+            errors.push(`builds.${role}: ${named.commit} is not an audited build`);
+        } else if (build.label !== named.label) {
+            errors.push(
+                `builds.${role}: ${named.commit} is the audited build ${build.label}, not ${named.label}`,
+            );
+        } else {
+            return build;
+        }
+        return undefined;
+    };
+    const current = resolve("current");
+    const reference = resolve("reference");
+    if (!current || !reference) return undefined;
+    if (current.commit === reference.commit) {
+        errors.push("builds.reference: names the current build");
+        return undefined;
+    }
+    return { current, reference };
+}
+
+/**
+ * `builds.contrasts` against the run arms and the reference build's table: both sides are run
+ * arms with a daemon, so the seed's registered order launches each, and the reference arm's
+ * daemon variant is registered on the reference build with every capability the arm declares.
+ */
+function checkBuildContrasts(q: Qualification, reference: AuditedBuild, errors: string[]): void {
+    q.builds?.contrasts.forEach((pair, i) => {
+        const at = `builds.contrasts[${i}]`;
+        const [a, b] = pair;
+        if (pair.length !== 2 || a === undefined || b === undefined) {
+            errors.push(`${at}: expected a [treatment, reference] pair`);
+        } else if (!q.arms.run.includes(a) || !q.arms.run.includes(b)) {
+            errors.push(`${at}: ${q.arms.run.includes(a) ? b : a} is not a run arm`);
+        } else if (!isArmName(a) || !isArmName(b)) {
+            errors.push(`${at}: ${isArmName(a) ? b : a} has no profile`);
+        } else if (armProfile(a).daemon === null || armProfile(b).daemon === null) {
+            errors.push(`${at}: ${armProfile(a).daemon === null ? a : b} runs no Eidnara build`);
+        } else {
+            for (const gap of capabilityGaps(b, reference)) errors.push(`${at}: ${gap}`);
+        }
+    });
+}
+
+/** The arms `q` runs on its reference build: the reference side of each build contrast. */
+export const referenceBuildArms = (q: Qualification): string[] => [
+    ...new Set((q.builds?.contrasts ?? []).map(([, arm]) => arm as string)),
+];
+
+/**
+ * Why a run of `order` whose build clone bound `bound` is outside `q.builds`, or null: the run
+ * binds the current build, or it binds the reference build and runs reference arms alone. A
+ * registration without the section accepts any audited build, and a run without a daemon binds
+ * none.
+ */
+export function buildRefusal(
+    q: Qualification,
+    bound: BuildRef | null,
+    order: readonly string[],
+): string | null {
+    if (!q.builds || bound === null) return null;
+    const { current, reference } = q.builds;
+    if (bound.commit === current.commit) return null;
+    const name = (b: BuildRef) => `${b.label} (${b.commit})`;
+    if (bound.commit !== reference.commit) {
+        return `qualification ${q.id} runs on ${name(current)} and its reference arms on ${name(reference)}; the build clone holds ${name(bound)}`;
+    }
+    const allowed = referenceBuildArms(q);
+    const extra = order.filter((arm) => !allowed.includes(arm.split("~")[0] as string));
+    if (extra.length === 0) return null;
+    return `qualification ${q.id} runs ${allowed.join(", ")} on its reference build ${name(reference)}; ${extra.join(", ")} runs on ${name(current)}`;
 }
 
 /**

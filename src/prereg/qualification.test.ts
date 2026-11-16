@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
-import { DAEMON_VARIANTS } from "../hosts/profiles";
+import { AUDITED_BUILDS, auditedBuild, DAEMON_VARIANTS } from "../hosts/profiles";
 import { loadPrereg, loadQualification } from "../scenario/inputs";
 import {
+    buildRefusal,
     qualificationHash,
     qualificationSeed,
     RANKING_GATE_ITEMS,
+    referenceBuildArms,
     referenceErrors,
     validateQualification,
 } from "./qualification";
@@ -355,4 +357,115 @@ test("fresh seeds, replicates, and the analysis plan are checked against the reg
     expect(editC((q) => (q.analysis = { ...analysis, unit: "item" }))[0]).toMatch(
         /^analysis\.unit/,
     );
+});
+
+test("W2S and W2SH compare one arm across two audited builds on fresh S seeds", () => {
+    const S = loadPrereg("S");
+    const Q = loadQualification("Q");
+    const H = loadQualification("H");
+    const W2S = loadQualification("W2S");
+    const W2SH = loadQualification("W2SH");
+    const used = [...S.seeds, ...Q.seeds, ...(Q.holdout?.seeds ?? [])];
+    for (const q of [W2S, W2SH]) {
+        expect(validateQualification(q, S)).toEqual([]);
+        expect(q.arms.run).toEqual(["host", "eidnara", "eidnara-hybrid"]);
+        expect(q.controls).toEqual(["wrong-project-lookup"]);
+        expect(q.no_source_control).toBe("host");
+        expect(q.seeds.filter((s) => used.includes(s) || H.seeds.includes(s))).toEqual([]);
+        // The registration names the builds its runs bind by the commits the capability tables hold.
+        expect(q.builds?.current).toEqual({
+            label: AUDITED_BUILDS[0].label,
+            commit: AUDITED_BUILDS[0].commit,
+        });
+        expect(q.builds?.reference).toEqual({
+            label: "eval/c8",
+            commit: auditedBuild("eval/c8")?.commit as string,
+        });
+        expect(q.builds?.contrasts).toEqual([
+            ["eidnara", "eidnara"],
+            ["eidnara-hybrid", "eidnara"],
+        ]);
+        expect(referenceBuildArms(q)).toEqual(["eidnara"]);
+    }
+    expect(W2S.corpus).toBe("diagnosed");
+    expect(W2S.fresh_seeds).toBe(true);
+    expect(W2S.seeds).toHaveLength(2);
+    expect(W2SH.corpus).toBe("held-out");
+    expect(W2SH.seeds).toHaveLength(1);
+});
+
+test("a build contrast needs two registered builds, a run arm, and a reference arm its build provides", () => {
+    const S = loadPrereg("S");
+    const W2S = loadQualification("W2S");
+    const builds = W2S.builds as NonNullable<typeof W2S.builds>;
+    const edit = (patch: (b: Record<string, unknown>) => void) => {
+        const q = structuredClone(W2S) as unknown as Record<string, unknown>;
+        patch(q.builds as Record<string, unknown>);
+        return validateQualification(q, S);
+    };
+    // The arm contrasts take one arm per side, so only `builds.contrasts` can pair an arm with itself.
+    const plain = structuredClone(W2S) as unknown as Record<string, unknown>;
+    delete plain.builds;
+    plain.contrasts = [["eidnara", "eidnara"]];
+    expect(validateQualification(plain, S)).toEqual(["contrasts: duplicate entries"]);
+    expect(edit((b) => (b.current = { label: "eval/w2", commit: "0".repeat(40) }))).toEqual([
+        `builds.current: ${"0".repeat(40)} is not an audited build`,
+    ]);
+    const short = builds.current.commit.slice(0, 9);
+    expect(edit((b) => (b.current = { label: "eval/w2", commit: short }))[0]).toMatch(
+        /^builds\.current\.commit: expected a full commit hash/,
+    );
+    expect(edit((b) => (b.reference = { ...builds.reference, label: "eval/w2" }))).toEqual([
+        `builds.reference: ${builds.reference.commit} is the audited build eval/c8, not eval/w2`,
+    ]);
+    expect(edit((b) => (b.reference = builds.current))).toEqual([
+        "builds.reference: names the current build",
+    ]);
+    expect(edit((b) => (b.contrasts = [["eidnara-search", "eidnara"]]))).toEqual([
+        "builds.contrasts[0]: eidnara-search is not a run arm",
+    ]);
+    // The reference side launches under the seed's registered order, so it is a run arm too.
+    expect(edit((b) => (b.contrasts = [["eidnara", "eidnara-search"]]))).toEqual([
+        "builds.contrasts[0]: eidnara-search is not a run arm",
+    ]);
+    expect(edit((b) => (b.contrasts = [["eidnara", "nope"]]))).toEqual([
+        "builds.contrasts[0]: nope is not a run arm",
+    ]);
+    expect(edit((b) => (b.contrasts = [["host", "eidnara"]]))).toEqual([
+        "builds.contrasts[0]: host runs no Eidnara build",
+    ]);
+    expect(edit((b) => (b.contrasts = [["eidnara", "eidnara", "host"]]))).toEqual([
+        "builds.contrasts[0]: expected a [treatment, reference] pair",
+    ]);
+    // The c8 build registers the legacy fixture alone, so it cannot carry the fused arm.
+    const fused = edit((b) => (b.contrasts = [["eidnara-hybrid", "eidnara-hybrid"]]));
+    expect(fused).toHaveLength(1);
+    expect(fused[0]).toMatch(
+        /^builds\.contrasts\[0\]: eidnara-hybrid \(production-hybrid\) runs direct-host-fixture-fused, which the audited build eval\/c8 /,
+    );
+    // A run arm is read against the registration's current build, so the fused arm is refused
+    // when the current build is the one without the fused fixture.
+    const swapped = edit((b) => {
+        b.current = builds.reference;
+        b.reference = builds.current;
+    });
+    expect(swapped.some((e) => /^arms\.run: eidnara-hybrid .* eval\/c8 /.test(e))).toBe(true);
+});
+
+test("a run binds the registration's current build, or its reference build for reference arms alone", () => {
+    const W2S = loadQualification("W2S");
+    const { current, reference } = W2S.builds as NonNullable<typeof W2S.builds>;
+    expect(buildRefusal(W2S, current, ["host", "eidnara", "eidnara-hybrid"])).toBeNull();
+    expect(buildRefusal(W2S, reference, ["eidnara"])).toBeNull();
+    // A host-only run starts no daemon and binds no build.
+    expect(buildRefusal(W2S, null, ["host"])).toBeNull();
+    expect(buildRefusal(W2S, reference, ["eidnara", "eidnara-hybrid"])).toBe(
+        `qualification W2S runs eidnara on its reference build eval/c8 (${reference.commit}); eidnara-hybrid runs on eval/w2 (${current.commit})`,
+    );
+    const other = { label: "eval/c8h", commit: "837c3bab3".padEnd(40, "0") };
+    expect(buildRefusal(W2S, other, ["eidnara"])).toBe(
+        `qualification W2S runs on eval/w2 (${current.commit}) and its reference arms on eval/c8 (${reference.commit}); the build clone holds eval/c8h (${other.commit})`,
+    );
+    // A registration without the section accepts whichever audited build the clone binds.
+    expect(buildRefusal(loadQualification("C8H"), reference, ["eidnara-hybrid"])).toBeNull();
 });

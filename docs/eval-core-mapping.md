@@ -224,6 +224,19 @@ rerun's contrast reads runs another campaign recorded. eval-core's
 cross-campaign reference; carrying it needs `eval-manifest/v10` with a
 reference run set beside `run_identity`. No extension is made here.
 
+## Qualification build contrasts
+
+A qualification's `builds` (`src/prereg/qualification.ts`) names two audited
+Eidnara builds by label and commit and pairs a run arm on the current build
+with a run arm on the reference build, each side its own run over the same
+seed and scenario. The manifest's `eidnara_build` records which build a run
+bound, with the capability values its evidence checks read. eval-core's
+`Manifest` pairs the `aged` and `fresh` arms of one run identity, and its
+`run_identity` carries one build sub-record; a contrast whose two sides
+differ in the build under test needs `eval-manifest/v10` with a build
+sub-record per arm and a build pair in the paired statistics' contrast key.
+No extension is made here.
+
 ## Run settings outside the pre-registration
 
 `manifest.turns_await_jobs` records whether each user turn waited for
