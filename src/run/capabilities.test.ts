@@ -698,11 +698,13 @@ test("daemon status readings are totalled from the resource samples", () => {
             },
         },
         { pid: 7, daemon_status: { process_memory: null, search: null, error: "timed out" } },
+        // An array where a block belongs is no block.
+        { pid: 7, daemon_status: { process_memory: [], search: { progress: [] } } },
     ];
     writeFileSync(path, `${samples.map((s) => JSON.stringify(s)).join("\n")}\nnot json\n`);
     expect(readDaemonStatus(path)).toEqual({
-        samples: 6,
-        readings: 4,
+        samples: 7,
+        readings: 5,
         read_errors: 1,
         process_memory: 3,
         max_rss_anon_bytes: 300,
@@ -758,6 +760,10 @@ test("evidence is read against the capabilities of the build the run bound", () 
     expect(armMismatches({ ...reference, statements: statements(0) }, c8)).toEqual([]);
     expect(armMismatches({ ...reference, statements: statements(6) }, c8)).toEqual([
         "6 of 70 user statements sit on a per-message lineage, but eval/c8 declares one shared lineage",
+    ]);
+    const split = { ...statements(0), lineages: { count: 2, largest: 40, per_message: 0 } };
+    expect(armMismatches({ ...reference, statements: split }, c8)).toEqual([
+        "70 user statements sit on 2 lineages, but eval/c8 declares one shared lineage",
     ]);
 
     const delivery = (contested_blocks: number, stale: number) => ({

@@ -422,7 +422,8 @@ complete evidence only when the two agree:
     source ids) the committed statement records join, the statements on the
     largest, and the statements on a per-message lineage. A `per-message`
     build is a mismatch when a statement sits on another lineage, and a
-    `shared` build when one sits on a per-message lineage. A source-capture
+    `shared` build when one sits on a per-message lineage or the statements
+    sit on more than one lineage. A source-capture
     arm on a `per-message` build is a mismatch when its counters hold no
     `decisions_approval_refused`, and on a `shared` build when they hold it.
     The count of statements on the largest lineage and the counter show

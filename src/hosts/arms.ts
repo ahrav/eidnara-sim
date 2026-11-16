@@ -450,7 +450,7 @@ export class DaemonStack {
                   })
                 : null;
             return {
-                process_memory: memory && typeof memory === "object" ? memory : null,
+                process_memory: isRecord(memory) ? memory : null,
                 search: answer?.kind === "status" ? lifecycleReading(answer) : null,
             };
         } catch (caught) {
@@ -511,6 +511,10 @@ export class DaemonStack {
     }
 }
 
+/** A JSON object: the shape of a status block, which an array or a scalar in its place is not. */
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+
 const uint = (v: unknown): number | null =>
     typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
 
@@ -521,19 +525,18 @@ export function lifecycleReading(answer: Untyped): NonNullable<DaemonStatusReadi
     const recorded = uint(r?.recorded);
     const completed = uint(r?.completed);
     const renewed = uint(r?.renewed);
-    const progress: SearchProgress | null =
-        p && typeof p === "object"
-            ? {
-                  tip: uint(p.tip),
-                  checkpoint: uint(p.checkpoint),
-                  lag_commits: uint(p.lag_commits),
-                  rebuilds:
-                      recorded !== null && completed !== null && renewed !== null
-                          ? { recorded, completed, renewed }
-                          : null,
-                  blocked: typeof p.blocked === "string" ? p.blocked.slice(0, 512) : null,
-              }
-            : null;
+    const progress: SearchProgress | null = isRecord(p)
+        ? {
+              tip: uint(p.tip),
+              checkpoint: uint(p.checkpoint),
+              lag_commits: uint(p.lag_commits),
+              rebuilds:
+                  recorded !== null && completed !== null && renewed !== null
+                      ? { recorded, completed, renewed }
+                      : null,
+              blocked: typeof p.blocked === "string" ? p.blocked.slice(0, 512) : null,
+          }
+        : null;
     const text = (v: unknown) => (typeof v === "string" ? v : null);
     return {
         state: text(answer?.record?.state),

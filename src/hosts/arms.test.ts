@@ -351,6 +351,8 @@ test("a search lifecycle status answer is recorded by its state, admission, and 
     });
     expect(odd.progress).toMatchObject({ tip: null, lag_commits: null, rebuilds: null });
     expect(odd.progress?.blocked).toHaveLength(512);
+    // An array where the progress block belongs is no block.
+    expect(lifecycleReading({ record: { state: "current" }, progress: [] }).progress).toBeNull();
 });
 
 test("the daemon's harness runtime lives beside the arm, outside what the host can write", () => {

@@ -871,7 +871,7 @@ export function readDaemonStatus(path: string): DaemonStatusObservation {
         }
         out.readings++;
         const memory = sample.daemon_status?.process_memory;
-        if (memory && typeof memory === "object") {
+        if (memory && typeof memory === "object" && !Array.isArray(memory)) {
             out.process_memory++;
             const anon = count(memory.rss_anon_bytes);
             if (anon !== null) out.max_rss_anon_bytes = Math.max(out.max_rss_anon_bytes ?? 0, anon);
@@ -879,7 +879,7 @@ export function readDaemonStatus(path: string): DaemonStatusObservation {
         }
         const search = sample.daemon_status?.search;
         const p = search?.progress;
-        if (!search || !p || typeof p !== "object") return;
+        if (!search || !p || typeof p !== "object" || Array.isArray(p)) return;
         progress.samples++;
         const lag = count(p.lag_commits);
         progress.last_lag_commits = lag;
@@ -1223,6 +1223,10 @@ function buildMismatches(
         if (caps.statement_lineage === "shared" && lineages.per_message > 0) {
             out.push(
                 `${lineages.per_message} of ${statements} user statements sit on a per-message lineage, but ${label} declares one shared lineage`,
+            );
+        } else if (caps.statement_lineage === "shared" && lineages.count > 1) {
+            out.push(
+                `${statements} user statements sit on ${lineages.count} lineages, but ${label} declares one shared lineage`,
             );
         }
     }
