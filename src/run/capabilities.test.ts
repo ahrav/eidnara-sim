@@ -652,13 +652,17 @@ test("daemon status readings are totalled from the resource samples", () => {
     const path = join(dir, "resources.jsonl");
     const memory = (anon: number, releases: number) => ({
         rss_anon_bytes: anon,
+        rss_file_bytes: 2048,
+        rss_shmem_bytes: null,
+        threads: 11,
+        c_heap_release_resident_drop_bytes: 0,
         c_heap: { in_use_bytes: 1, free_bytes: 2, mmapped_bytes: 3 },
         c_heap_arena_limit: 4,
         c_heap_releases: releases,
     });
     const progress = (lag: number | null, blocked: string | null = null) => ({
-        tip: 900,
-        checkpoint: lag === null ? null : 900 - lag,
+        tip: 5000,
+        checkpoint: lag === null ? null : 5000 - lag,
         lag_commits: lag,
         rebuilds: { recorded: 2, completed: 1, renewed: 1 },
         blocked,
@@ -718,11 +722,23 @@ test("daemon status readings are totalled from the resource samples", () => {
             blocked: 1,
         },
     });
-    // The rebuild counts are the last reading's: one without whole counts leaves none on record.
-    const partial = { pid: 7, daemon_status: { search: search("current", "admitted", 0) } };
+    // A block counts only in the shape Eidnara writes it: a progress block without a whole
+    // rebuild count, and a process_memory block without its release totals, are no evidence.
+    const partial = {
+        pid: 7,
+        daemon_status: {
+            process_memory: { rss_anon_bytes: 9_000 },
+            search: search("current", "admitted", 0),
+        },
+    };
     (partial.daemon_status.search.progress.rebuilds as Record<string, unknown>).renewed = null;
     appendFileSync(path, `${JSON.stringify(partial)}\n`);
-    expect(readDaemonStatus(path).search_progress).toMatchObject({ samples: 5, rebuilds: null });
+    expect(readDaemonStatus(path)).toMatchObject({
+        readings: 6,
+        process_memory: 3,
+        max_rss_anon_bytes: 300,
+        search_progress: { samples: 4, rebuilds: { recorded: 2, completed: 1, renewed: 1 } },
+    });
     expect(readDaemonStatus(join(dir, "absent.jsonl")).samples).toBe(0);
 });
 

@@ -450,7 +450,7 @@ export class DaemonStack {
                   })
                 : null;
             return {
-                process_memory: isRecord(memory) ? memory : null,
+                process_memory: processMemoryBlock(memory),
                 search: answer?.kind === "status" ? lifecycleReading(answer) : null,
             };
         } catch (caught) {
@@ -518,30 +518,57 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 const uint = (v: unknown): number | null =>
     typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
 
+/** `value` when it is a non-negative integer or null, the wire's `i64 | null`; undefined for anything else, an absent key included. */
+const nullableUint = (value: unknown): number | null | undefined =>
+    value === null ? null : (uint(value) ?? undefined);
+
+/**
+ * The `progress` block `P` of `search.lifecycle.status` (Eidnara host wire protocol, Search
+ * lifecycle operations) when `p` has that shape: `tip`, `checkpoint`, and `lag_commits` each an
+ * integer or null, the three rebuild counts, and `blocked` a string or null. Any other value is
+ * no progress block.
+ */
+export function progressBlock(p: unknown): SearchProgress | null {
+    if (!isRecord(p) || !isRecord(p.rebuilds)) return null;
+    const [tip, checkpoint, lag] = [p.tip, p.checkpoint, p.lag_commits].map(nullableUint);
+    const [recorded, completed, renewed] = ["recorded", "completed", "renewed"].map((k) =>
+        uint((p.rebuilds as Record<string, unknown>)[k]),
+    );
+    const blocked = p.blocked;
+    if (tip === undefined || checkpoint === undefined || lag === undefined) return null;
+    if (recorded == null || completed == null || renewed == null) return null;
+    if (blocked !== null && typeof blocked !== "string") return null;
+    return {
+        tip,
+        checkpoint,
+        lag_commits: lag,
+        rebuilds: { recorded, completed, renewed },
+        blocked: blocked === null ? null : blocked.slice(0, 512),
+    };
+}
+
+/**
+ * The `process_memory` block of the Context module's `status` answer when `m` has the fields
+ * Eidnara's `process_memory.rs` writes: the resident byte counts and the thread count each an
+ * integer or null, and the two C-heap release totals. Any other value is no block.
+ */
+export function processMemoryBlock(m: unknown): Record<string, unknown> | null {
+    if (!isRecord(m)) return null;
+    const nullable = ["rss_anon_bytes", "rss_file_bytes", "rss_shmem_bytes", "threads"];
+    const totals = ["c_heap_releases", "c_heap_release_resident_drop_bytes"];
+    return nullable.every((k) => nullableUint(m[k]) !== undefined) &&
+        totals.every((k) => uint(m[k]) !== null)
+        ? m
+        : null;
+}
+
 /** The `status` answer of `search.lifecycle.status` as a sample records it; a field of another shape reads as null. */
 export function lifecycleReading(answer: Untyped): NonNullable<DaemonStatusReading["search"]> {
-    const p = answer?.progress;
-    const r = p?.rebuilds;
-    const recorded = uint(r?.recorded);
-    const completed = uint(r?.completed);
-    const renewed = uint(r?.renewed);
-    const progress: SearchProgress | null = isRecord(p)
-        ? {
-              tip: uint(p.tip),
-              checkpoint: uint(p.checkpoint),
-              lag_commits: uint(p.lag_commits),
-              rebuilds:
-                  recorded !== null && completed !== null && renewed !== null
-                      ? { recorded, completed, renewed }
-                      : null,
-              blocked: typeof p.blocked === "string" ? p.blocked.slice(0, 512) : null,
-          }
-        : null;
     const text = (v: unknown) => (typeof v === "string" ? v : null);
     return {
         state: text(answer?.record?.state),
         admission: text(answer?.admission?.state),
-        progress,
+        progress: progressBlock(answer?.progress),
     };
 }
 

@@ -481,8 +481,11 @@ export class HostDriver implements ArmDriver {
         return reading;
     }
 
-    /** Resolves once the status read in flight has returned, or after `ms`; at once with none. */
-    async statusSettled(ms = 12_000): Promise<void> {
+    /**
+     * Resolves once the status read in flight has returned, or after `ms`; at once with none. A
+     * read makes up to two requests of 10 seconds each, which the default bound covers.
+     */
+    async statusSettled(ms = 22_000): Promise<void> {
         if (this.statusRead) await withDeadline(this.statusRead, ms);
     }
 

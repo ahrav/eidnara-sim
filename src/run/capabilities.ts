@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { bodyText, injectedBlocks } from "../evidence/stages";
-import { payloadManifest } from "../hosts/arms";
+import { payloadManifest, processMemoryBlock, progressBlock } from "../hosts/arms";
 import {
     type ArmProfile,
     AUDITED_BUILDS,
@@ -821,7 +821,8 @@ const count = (v: unknown): number | null =>
 
 /**
  * The daemon status readings in `resources.jsonl`: each sample of a live daemon, the
- * `process_memory` blocks, and the `progress` blocks of `search.lifecycle.status`. A projection
+ * `process_memory` blocks, and the `progress` blocks of `search.lifecycle.status`, each counted
+ * only in the shape Eidnara writes it (`processMemoryBlock`, `progressBlock`). A projection
  * counts as served in a sample when its lifecycle record is Current, its admission is `admitted`,
  * and it trails the kernel tip by at most `FIXTURE_READER_LAG_COMMITS` commits.
  */
@@ -870,18 +871,18 @@ export function readDaemonStatus(path: string): DaemonStatusObservation {
             return;
         }
         out.readings++;
-        const memory = sample.daemon_status?.process_memory;
-        if (memory && typeof memory === "object" && !Array.isArray(memory)) {
+        const memory = processMemoryBlock(sample.daemon_status?.process_memory);
+        if (memory) {
             out.process_memory++;
             const anon = count(memory.rss_anon_bytes);
             if (anon !== null) out.max_rss_anon_bytes = Math.max(out.max_rss_anon_bytes ?? 0, anon);
             out.c_heap_releases = count(memory.c_heap_releases) ?? out.c_heap_releases;
         }
         const search = sample.daemon_status?.search;
-        const p = search?.progress;
-        if (!search || !p || typeof p !== "object" || Array.isArray(p)) return;
+        const p = progressBlock(search?.progress);
+        if (!search || !p) return;
         progress.samples++;
-        const lag = count(p.lag_commits);
+        const lag = p.lag_commits;
         progress.last_lag_commits = lag;
         if (lag !== null) progress.max_lag_commits = Math.max(progress.max_lag_commits ?? 0, lag);
         if (
@@ -892,14 +893,8 @@ export function readDaemonStatus(path: string): DaemonStatusObservation {
         ) {
             progress.served++;
         }
-        if (typeof p.blocked === "string") progress.blocked++;
-        const r = p.rebuilds as Record<string, unknown> | undefined;
-        const [recorded, completed, renewed] = [r?.recorded, r?.completed, r?.renewed].map(count);
-        // The last reading's counts: a reading without whole counts leaves none on record.
-        progress.rebuilds =
-            recorded != null && completed != null && renewed != null
-                ? { recorded, completed, renewed }
-                : null;
+        if (p.blocked !== null) progress.blocked++;
+        progress.rebuilds = p.rebuilds;
     });
     return out;
 }
