@@ -515,8 +515,8 @@ registration hash, and with it the `scenario_hash`, differs:
 
 ## w2 focused run seeds
 
-Qualifications W2S (`prereg/W2S.json`, revision 1, `01af633c`, diagnosed
-split, fresh seeds) and W2SH (`prereg/W2SH.json`, revision 1, `a427e412`,
+Qualifications W2S (`prereg/W2S.json`, revision 1, `c3a0a2df`, diagnosed
+split, fresh seeds) and W2SH (`prereg/W2SH.json`, revision 1, `8802f2ac`,
 held-out split) bind tier S and compile these scenarios under Titan, each
 within the thresholds. Seeds 104 and 105 are the two lowest S seeds above
 Q's 101, 102, and 103. Seed 610 is the lowest held-out seed that no
@@ -528,9 +528,9 @@ when it was applied.
 
 | Registration | Seed | `scenario_hash` | Events | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|---|
-| W2S | 104 | `0368ecd8` | 590 | 0.2739 | 0.5181 |
-| W2S | 105 | `2ddd1a61` | 677 | 0.2809 | 0.5238 |
-| W2SH | 610 | `1f6f8f72` | 751 | 0.3198 | 0.5188 |
+| W2S | 104 | `d2e4b2d7` | 590 | 0.2739 | 0.5181 |
+| W2S | 105 | `cc45464f` | 677 | 0.2809 | 0.5238 |
+| W2SH | 610 | `2dc00e16` | 751 | 0.3198 | 0.5188 |
 
 A W2S scenario issues 6 items per probe type, a tier S scenario's count,
 over mini-redis, elysia, and their twins (50 sessions). A W2SH scenario

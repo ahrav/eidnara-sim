@@ -411,7 +411,8 @@ test("a build contrast needs two registered builds, a run arm, and a reference a
     expect(edit((b) => (b.current = { label: "eval/w2", commit: "0".repeat(40) }))).toEqual([
         `builds.current: ${"0".repeat(40)} is not an audited build`,
     ]);
-    expect(edit((b) => (b.current = { label: "eval/w2", commit: "8beaa1219" }))[0]).toMatch(
+    const short = builds.current.commit.slice(0, 9);
+    expect(edit((b) => (b.current = { label: "eval/w2", commit: short }))[0]).toMatch(
         /^builds\.current\.commit: expected a full commit hash/,
     );
     expect(edit((b) => (b.reference = { ...builds.reference, label: "eval/w2" }))).toEqual([

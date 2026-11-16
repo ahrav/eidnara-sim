@@ -47,7 +47,7 @@
     "builds": {
         "current": {
             "label": "eval/w2",
-            "commit": "8beaa12190b07aa0c3d6a00801787ae79aba1148"
+            "commit": "7901aae3962825be247cc30f2682b6aec39c7ea8"
         },
         "reference": {
             "label": "eval/c8",
