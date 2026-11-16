@@ -109,9 +109,9 @@ export interface Qualification {
     /**
      * The two audited Eidnara builds the registration compares, each named by its label and commit
      * in `AUDITED_BUILDS`. Every run arm with a daemon runs on `current`. Each `contrasts` pair is
-     * `[treatment, reference]`: a run arm on `current` against an arm on `reference`, which runs
-     * as its own run over the same seed and scenario. The two builds differ, so a pair may name
-     * one arm twice.
+     * `[treatment, reference]`: a run arm on `current` against a run arm on `reference`, which
+     * runs as its own run over the same seed and scenario. The two builds differ, so a pair may
+     * name one arm twice.
      */
     builds?: { current: BuildRef; reference: BuildRef; contrasts: string[][] };
     /**
@@ -328,9 +328,9 @@ function registeredBuilds(
 }
 
 /**
- * `builds.contrasts` against the run arms and the reference build's table: the treatment is a run
- * arm with a daemon, and the reference arm's daemon variant is registered on the reference build
- * with every capability the arm declares.
+ * `builds.contrasts` against the run arms and the reference build's table: both sides are run
+ * arms with a daemon, so the seed's registered order launches each, and the reference arm's
+ * daemon variant is registered on the reference build with every capability the arm declares.
  */
 function checkBuildContrasts(q: Qualification, reference: AuditedBuild, errors: string[]): void {
     q.builds?.contrasts.forEach((pair, i) => {
@@ -338,10 +338,10 @@ function checkBuildContrasts(q: Qualification, reference: AuditedBuild, errors: 
         const [a, b] = pair;
         if (pair.length !== 2 || a === undefined || b === undefined) {
             errors.push(`${at}: expected a [treatment, reference] pair`);
-        } else if (!q.arms.run.includes(a)) {
-            errors.push(`${at}: ${a} is not a run arm`);
-        } else if (!isArmName(b)) {
-            errors.push(`${at}: ${b} has no profile`);
+        } else if (!q.arms.run.includes(a) || !q.arms.run.includes(b)) {
+            errors.push(`${at}: ${q.arms.run.includes(a) ? b : a} is not a run arm`);
+        } else if (!isArmName(a) || !isArmName(b)) {
+            errors.push(`${at}: ${isArmName(a) ? b : a} has no profile`);
         } else if (armProfile(a).daemon === null || armProfile(b).daemon === null) {
             errors.push(`${at}: ${armProfile(a).daemon === null ? a : b} runs no Eidnara build`);
         } else {

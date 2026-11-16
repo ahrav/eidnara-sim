@@ -122,7 +122,7 @@ also carry these optional sections and fields:
   builds the registration compares, each named by its `label` and full
   `commit` in `AUDITED_BUILDS` (`docs/hosts.md`). Every run arm with a daemon
   runs on `current`. Each `contrasts` pair is `[treatment, reference]`: a
-  run arm on `current` against an arm on `reference`, which runs as its own
+  run arm on `current` against a run arm on `reference`, which runs as its own
   run directory over the same seed, so both sides meet the same scenario
   under one registration hash. The builds differ, so a pair may name one
   arm twice (`["eidnara", "eidnara"]`); `contrasts` itself still pairs arms
@@ -236,7 +236,7 @@ that order or whose items differ from `RANKING_GATE_ITEMS`; and a
 no-source control that is not a run arm or delivers memory; and a `builds`
 section whose `current` or `reference` is not an `AUDITED_BUILDS` entry under
 its own label, whose two builds are one commit, or whose contrast names a
-treatment outside the run arms, an arm without a daemon, or a reference arm
+side outside the run arms, an arm without a daemon, or a reference arm
 whose daemon variant the reference build does not provide; a run arm is
 read against the registration's `current` build. The run refuses
 a qualification over another tier, a seed or host it does not list, a build

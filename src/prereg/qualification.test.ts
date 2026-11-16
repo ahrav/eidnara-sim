@@ -423,8 +423,12 @@ test("a build contrast needs two registered builds, a run arm, and a reference a
     expect(edit((b) => (b.contrasts = [["eidnara-search", "eidnara"]]))).toEqual([
         "builds.contrasts[0]: eidnara-search is not a run arm",
     ]);
+    // The reference side launches under the seed's registered order, so it is a run arm too.
+    expect(edit((b) => (b.contrasts = [["eidnara", "eidnara-search"]]))).toEqual([
+        "builds.contrasts[0]: eidnara-search is not a run arm",
+    ]);
     expect(edit((b) => (b.contrasts = [["eidnara", "nope"]]))).toEqual([
-        "builds.contrasts[0]: nope has no profile",
+        "builds.contrasts[0]: nope is not a run arm",
     ]);
     expect(edit((b) => (b.contrasts = [["host", "eidnara"]]))).toEqual([
         "builds.contrasts[0]: host runs no Eidnara build",
