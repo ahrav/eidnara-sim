@@ -538,6 +538,25 @@ issues 3 over chi and chi-twin (25 sessions). A registration's hash covers
 its `builds` section, so the `scenario_hash` changes when the registered
 `eval/w2` commit moves, and the items stay the same.
 
+Qualifications W2S2 (`prereg/W2S2.json`, revision 1, `c2621c57`, diagnosed
+split, fresh seeds) and W2S2H (`prereg/W2S2H.json`, revision 1, `1023e9ad`,
+held-out split) rerun the focused run on the `eval/w2b` build. Seeds 104,
+105, and 610 are W2S's and W2SH's: their events, facts, and probes equal
+the first run's, and their hashes differ with the registration. Seed 106 is
+the lowest diagnosed S seed that no registration lists and no run used.
+Seed 613 is the lowest held-out seed that no registration lists, no run
+used, and tier S places: H lists 611, and 612 refuses as above. The rule
+read no outcome data, and no run of seed 106 or 613 existed when it was
+applied.
+
+| Registration | Seed | `scenario_hash` | Events | Largest BM25 ratio | Largest cosine |
+|---|---|---|---|---|---|
+| W2S2 | 104 | `31428ea5` | 590 | 0.2739 | 0.5181 |
+| W2S2 | 105 | `4db00b69` | 677 | 0.2809 | 0.5238 |
+| W2S2 | 106 | `cef4972c` | 747 | 0.2680 | 0.4964 |
+| W2S2H | 610 | `a36f753b` | 751 | 0.3198 | 0.5188 |
+| W2S2H | 613 | `9adb4af5` | 323 | 0.3246 | 0.5368 |
+
 ## Known limits
 
 - A revised decision (P3) asks its task again in the workspace the agent

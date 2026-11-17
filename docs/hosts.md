@@ -155,7 +155,8 @@ the variants read there:
 
 | Build | Commit | Variants | Read for |
 |---|---|---|---|
-| `eval/w2` (`AUDITED_EIDNARA`, the current build) | `7901aae39` | all three | the w2 rework: `main` `da360026c` (which holds Eidnara #1210, #1211, and #1219) plus the open heads of #1209, #1212, #1213, #1214, #1215, #1217 |
+| `eval/w2b` (`AUDITED_EIDNARA`, the current build) | `ae1b673b7` | all three | the S rerun (W2S2, W2S2H): `main` `1bf1ae612` (which holds the merged heads of Eidnara #1209, #1212, #1213, #1214, and #1215) plus the open heads of #1220 and #1217 |
+| `eval/w2` | `7901aae39` | all three | the first focused S run (W2S, W2SH): `main` `da360026c` (which holds Eidnara #1210, #1211, and #1219) plus the open heads of #1209, #1212, #1213, #1214, #1215, #1217 |
 | `eval/c8` | `8e6265d2c` | `direct_host_fixture` (legacy route) | the c8 reference arm |
 
 A qualification may name two of these builds in its `builds` section, the
@@ -168,10 +169,11 @@ those variants' source files match the clone's working tree. The manifest
 records the bound build as `eidnara_build` (`commit`, `label`, and the
 capability values of each variant the arms run), a resume must bind the same
 build, and the arm's evidence is checked against that build's values. One
-sim revision therefore runs the reworked arms on the `eval/w2` build and a
+sim revision therefore runs the reworked arms on the `eval/w2b` build and a
 reference arm on the `eval/c8` build, each run with its own `SIM_CONFIG`
-(`docs/run-command.md`, campaign `config`). The table below is the current
-build's:
+(`docs/run-command.md`, campaign `config`). The `eval/w2` entry keeps the
+first focused run's registrations bound to the commit they name; it shares
+the current build's table. The table below is the current build's:
 
 | Variant | Search route | Embeddings | Memory reviewer | Side calls | Memory injection | Source capture |
 |---|---|---|---|---|---|---|
@@ -186,9 +188,9 @@ in later sessions' `<project-memory>` (`user_statement_delivery`, accepted
 in the history summarizer's digest (`whole_small_tool_outputs`), error lines
 kept with a captured failure report (`failure_lines_captured`), and block
 tags stripped from Pi's streamed message events (`stream_tags_stripped`).
-The builds differ in six:
+The c8 build and the two w2 builds differ in six:
 
-| Capability | `eval/c8` | `eval/w2` |
+| Capability | `eval/c8` | `eval/w2`, `eval/w2b` |
 |---|---|---|
 | `settled_lines_retired` | `true`: summarizer validation retires a settled waiting or constraint line inside its segment (`retire_settled_lines`) | `false` |
 | `keyed_open_items` | `false` | `true`: the history renderer derives open items from the stored segments (`history_open_items.rs`), so a `Waiting on user (key)` line renders only in the newest summarized segment of the rows rendered together |
@@ -285,6 +287,25 @@ paragraph whitespace, classifies quotation marks, and looks up summary
 words when ranking candidates, with the same results. Every capability
 value stands. The head also holds #1209 at `aebeb0bd8`, whose chunked
 `kernel.read` lies outside the audited sources.
+
+At `ae1b673b7` the verdict against `eval/w2b` is `unchanged`. From
+`7901aae39` to `ae1b673b7` every probe holds with one probe widened: the
+contested-line probe reads the format string
+`(stated {}; contested {} by {}: {})`, because Eidnara `1ac2d933c` passes
+the contesting id through `contest_id`, which shows a plain id bare and
+quotes any other; `7901aae39` names the id inline as `{memory}`, and the
+probe accepts both. The rendered line of a plain memory id is the same
+text. Eight audited sources change: `canonical_memory.rs`,
+`history_open_items.rs`, `history_summarizer_citations.rs`,
+`memory_capture.rs`, `memory_capture/native.rs`, and `transform.rs` under
+`crates/daemon/src/`, and `kernel-memory-search.ts` and `render.ts` under
+`packages/opencode-plugin/src/tools/eidnara-search/`. Eidnara #1220 joins
+the sentences of a statement a colon introduces into one statement and
+reads a quotation mark inside an inline code span as code; #1215's final
+head keeps a constraint in force unless a lift claim cites text the user
+wrote; #1212's and #1213's final heads leave quoted and code text out of a
+widened statement and drop a contest whose observation the same commit
+retires. Every capability value stands.
 
 ## Capability evidence
 

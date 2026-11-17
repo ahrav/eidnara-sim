@@ -374,8 +374,8 @@ test("W2S and W2SH compare one arm across two audited builds on fresh S seeds", 
         expect(q.seeds.filter((s) => used.includes(s) || H.seeds.includes(s))).toEqual([]);
         // The registration names the builds its runs bind by the commits the capability tables hold.
         expect(q.builds?.current).toEqual({
-            label: AUDITED_BUILDS[0].label,
-            commit: AUDITED_BUILDS[0].commit,
+            label: "eval/w2",
+            commit: auditedBuild("eval/w2")?.commit as string,
         });
         expect(q.builds?.reference).toEqual({
             label: "eval/c8",
@@ -392,6 +392,49 @@ test("W2S and W2SH compare one arm across two audited builds on fresh S seeds", 
     expect(W2S.seeds).toHaveLength(2);
     expect(W2SH.corpus).toBe("held-out");
     expect(W2SH.seeds).toHaveLength(1);
+});
+
+test("W2S2 and W2S2H rerun the focused run's seeds on the current build and add one fresh seed each", () => {
+    const S = loadPrereg("S");
+    const Q = loadQualification("Q");
+    const H = loadQualification("H");
+    const pairs = [
+        [loadQualification("W2S2"), loadQualification("W2S")],
+        [loadQualification("W2S2H"), loadQualification("W2SH")],
+    ] as const;
+    const used = [...S.seeds, ...Q.seeds, ...(Q.holdout?.seeds ?? []), ...H.seeds];
+    for (const [rerun, first] of pairs) {
+        expect(validateQualification(rerun, S)).toEqual([]);
+        expect(rerun.corpus).toBe(first.corpus);
+        expect(rerun.arms.run).toEqual(first.arms.run);
+        expect(rerun.contrasts).toEqual(first.contrasts);
+        expect(rerun.controls).toEqual(first.controls);
+        expect(rerun.no_source_control).toBe(first.no_source_control);
+        expect(rerun.arms.order_by_seed).toHaveLength(rerun.seeds.length);
+        // The first run's seeds lead, and exactly one seed follows that no registration lists.
+        expect(rerun.seeds.slice(0, first.seeds.length)).toEqual(first.seeds);
+        const added = rerun.seeds.slice(first.seeds.length);
+        expect(added).toHaveLength(1);
+        expect(added.filter((s) => used.includes(s))).toEqual([]);
+        expect(rerun.builds?.current).toEqual({
+            label: AUDITED_BUILDS[0].label,
+            commit: AUDITED_BUILDS[0].commit,
+        });
+        expect(rerun.builds?.reference).toEqual(first.builds?.reference);
+        expect(rerun.builds?.contrasts).toEqual(first.builds?.contrasts);
+        expect(referenceBuildArms(rerun)).toEqual(["eidnara"]);
+        const { current, reference } = rerun.builds as NonNullable<typeof rerun.builds>;
+        expect(buildRefusal(rerun, current, ["host", "eidnara", "eidnara-hybrid"])).toBeNull();
+        expect(buildRefusal(rerun, reference, ["eidnara"])).toBeNull();
+        // A clone that holds the first focused run's build is refused for the rerun.
+        const earlier = first.builds?.current as NonNullable<typeof first.builds>["current"];
+        expect(buildRefusal(rerun, earlier, ["eidnara"])).toBe(
+            `qualification ${rerun.id} runs on eval/w2b (${current.commit}) and its reference arms on eval/c8 (${reference.commit}); the build clone holds eval/w2 (${earlier.commit})`,
+        );
+    }
+    expect(pairs[0][0].fresh_seeds).toBe(true);
+    expect(pairs[0][0].seeds).toEqual([104, 105, 106]);
+    expect(pairs[1][0].seeds).toEqual([610, 613]);
 });
 
 test("a build contrast needs two registered builds, a run arm, and a reference arm its build provides", () => {
