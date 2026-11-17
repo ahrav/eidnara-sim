@@ -14,7 +14,7 @@ A snapshot holds the artefacts the harness captured at a probe turn's first
 
 | Class | Contents |
 |---|---|
-| `diff` | A unified diff: `turn` for the probe turn, `prior-session` for the project's previous session |
+| `diff` | A unified diff: `turn` for the probe turn, `prior-session` for the project's previous session. `self_ignored` lists the directories that hold a path of the patch and whose own `.gitignore` ignores every path below them; a grader reads the patch without their files ([Self-ignoring directories](#self-ignoring-directories)) |
 | `command-log` | Each command the agent ran, with its exit code and scenario time: `turn` for the probe turn, `session` for every turn of its session so far, `source` for the turns that exposed a tool-result P12 item's check (grade-run builds it from the arm's `tools.jsonl`) |
 | `test-result` | A test command, its exit code, and its summary lines |
 | `workspace-state` | Selected workspace files by path |
@@ -157,7 +157,8 @@ so trees and diffs of earlier campaigns compare with later ones. A workspace
 that holds a rule file the source does not track differs: a tool cache that
 writes its own `.gitignore` holding `*` (`.pytest_cache`, `.ruff_cache`, a
 virtualenv) is in the tree with its files unless the baseline rules ignore
-the directory, as any other untracked directory is. The clone's
+the directory, as any other untracked directory is, and the diff artefact
+names the directory ([Self-ignoring directories](#self-ignoring-directories)). The clone's
 `.git/info/exclude` and `.git/info/attributes` shape the agent's own git
 commands and reach no recorder run, since git reads those two files from the
 repository `GIT_DIR` names. The baseline directory and attribute tree are
@@ -204,14 +205,69 @@ deleted in the tree. Snapshot diffs run with
 
 | Artefact | Source |
 |---|---|
-| `diff` (`turn`) | A git tree of the workspace's files that the project's baseline `.gitignore` rules leave in, untracked files included, taken before the prompt and after it, and diffed |
+| `diff` (`turn`) | A git tree of the workspace's files that the project's baseline `.gitignore` rules leave in, untracked files included, taken before the prompt and after it, and diffed; `self_ignored` when a changed path lies under a self-ignoring directory |
 | `diff` (`prior-session`) | The same trees at the start and end of the project's previous session |
 | `command-log` | The host's tool runs, each a bash command or the tool name, its path, and its scalar arguments as `name=value` (a `read`'s offset and limit) followed by the text and structured arguments it was given (a `write`'s content, an `edit`'s edits), with a 0 or 1 error flag (null for a run that never finished) and the scenario time the run started. The recorder saves each run as the host logs it, so a harness kill mid-turn keeps the runs logged so far in the session log. Pi reports `tool_execution_start` and `tool_execution_end` events as they happen, and a run is timed from its start event and reaches the recorder at that start with a null exit, which its end report replaces, so a harness kill mid-run keeps the run on record; OpenCode's tool parts come from the session messages the turn added, read after the turn whatever its outcome, each timed from its start relative to the turn's first new message, both in OpenCode's own clock, with a pending or running part's exit null, and keyed by the part's id; on reattaching to a session after a kill, the host reports every tool part the session's messages hold, so a turn that was running at the kill still contributes its runs, timed at the resume when the recorder has no earlier record of them; the listings and the turn share one absolute turn deadline (a turn whose listing used it up fails without prompting, and a turn that used it up skips the post-turn listing as a capture gap), a listing that stalls is aborted and fails the turn as a capture gap, and the tool parts a failed post-turn listing missed are reported before the next turn |
 | `proxy-call` | The session's call records from `calls.jsonl`, each with the index of the user turn it belongs to (a call recorded between turns takes the preceding turn's, and a background call carrying `origin_turn` takes that turn's), a `failed` flag on a call that ended in an error status, a recorded error, or a cut stream (such a call is no fold for P13), and the response text the proxy records for agent, user-sim, and judge calls (the first 262,144 characters, with `response_text_truncated` on a longer reply) |
 
+### Self-ignoring directories
+
+A tool can leave a directory that carries its own `.gitignore` ignoring every
+path below it: pytest's `.pytest_cache`, `.ruff_cache`, `.mypy_cache`, a
+virtualenv, an agent's scratch directory. The project's own git lists none of
+its files, so the agent's `git status` is clean and no commit of the agent's
+holds them, while the recorder's tree, built under the baseline rules, holds
+every one. Read as the agent's change, such a file moves verdicts in both
+directions: any file under it is a non-prose path, so a P2, P5, or P11 turn
+that changed no code file grades as a pass, and a P10 turn counts as having
+written something; its first line fails a `first_line_must` rule that covers
+every created file (P13, and the user sim's rule check, which then sends a
+pushback that a P14 item counts); its content can match a `must_not` pattern
+or break a quote-style rule outside a P4 scope.
+
+The recorder therefore states, on each diff artefact and on the watched-turn
+work the user sim reads, which directories are self-ignoring, and every
+reader of the agent's change leaves their files out. The stored tree and the
+stored patch keep every file, so a replay applies the patch as recorded and
+an audit sees what the turn left behind.
+
+- The recorder lists a directory in `self_ignored` when it holds a path the
+  patch names and its own `.gitignore`, a regular file in the tree after the
+  change, holds a pattern that matches every path (`*`, `**`, `/*`, `/**`,
+  `**/*`, `/**/*`) and no `!` pattern (`ignoresEveryPath`; comment lines,
+  blank lines, a trailing carriage return, and trailing spaces are read as
+  git reads them). A directory the change removed is read by the rule file it
+  held before. Of nested directories the outermost is listed. A patch with no
+  such directory carries no `self_ignored` key, so its artefact is
+  byte-for-byte the one earlier recorders wrote.
+- The workspace root and every directory of the project's fresh clone (the
+  tree the recorder takes at reset, `baseTrees` in `snapshot-state.json`) are
+  never listed. Git keeps showing the files it tracks under an ignore rule,
+  so a rule file an agent writes into a project directory hides no edit
+  there. A recorder state with no base tree for a project lists nothing.
+- `ArtefactReader.diff` is the one place a grader gets a patch from, and it
+  returns the patch without the files that lie under a listed directory
+  (`withoutFilesUnder`: a file is the text from its `diff --git` line to the
+  next, and it stays when one of its paths lies outside every listed
+  directory, as a rename out of one does). Every diff reader goes through it:
+  the P1, P2, P3, P4, P5, P6, P10, P11, and P12 graders, a P13 item whose
+  check names a diff channel, the code-change test of P2, P5, and P11, P10's
+  written-work test, P6's prior-session paths, and `breaksRule`.
+- A file the item's check names is read wherever it lies (`namedBy`): the
+  check's `scope` lies in the listed directory, or a `paths_must` or
+  `paths_must_not` pattern matches the file's path. Work the ground truth
+  asks for by path is graded even when the agent put a catch-all rule file
+  beside it.
+
+A new directory an agent creates with a catch-all rule file and fills with
+its own code is read the same way as a tool cache: git keeps it out of the
+project, so it earns no credit under a positive rule and carries no harm
+under a negative one, unless the check names it. A directory the scenario's
+own commits create after the clone counts as new.
+
 The recorder keeps each project's session-start tree, the last session's
-tree pair, the last ended session, each project's baseline rule files, and
-each workspace's index generation (a restored generation must be a
+tree pair, the last ended session, each project's baseline rule files, its
+base tree, and each workspace's index generation (a restored generation must be a
 nonnegative integer) in
 `<arm>/snapshot-state.json` (written through a freshly created staging file
 and renamed into place), and the open session's commands in
@@ -417,7 +473,9 @@ scenario time when the turn made none), with a fractional sequence number
 between the two calls around it, so user-sim turns and folds share one
 increasing order.
 
-The check channels apply to the turn's work. `must` and `must_not` match the
+The check channels apply to the turn's work: the turn diff without the files
+under its self-ignoring directories
+([Self-ignoring directories](#self-ignoring-directories)). `must` and `must_not` match the
 surviving paths and added lines; `paths_must` and `paths_must_not` match the
 surviving paths; `first_line_must` and `first_line_must_not` match the first
 line of each file the diff creates, notes and prose files included

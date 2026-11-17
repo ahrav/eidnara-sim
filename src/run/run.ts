@@ -2368,7 +2368,12 @@ async function runArms(
         brokeRule: (arm, t) => {
             const checks = rulesInForce(t) ?? [];
             const work = checks.length > 0 ? hostDrivers.get(arm)?.lastTurnWork(t.session) : null;
-            return !!work && checks.some((c) => breaksRule(work.patch, work.commands, c as Check));
+            return (
+                !!work &&
+                checks.some((c) =>
+                    breaksRule(work.patch, work.commands, c as Check, work.self_ignored),
+                )
+            );
         },
     });
     const scriptedById = new Map(scripted.map((t) => [t.id, t]));

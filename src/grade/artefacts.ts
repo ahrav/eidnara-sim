@@ -1,5 +1,5 @@
 import { COMPONENTS } from "../proxy/records";
-import { unifiedDiff } from "./text";
+import { unifiedDiff, withoutFilesUnder } from "./text";
 export const ARTEFACT_CLASSES = [
     "diff",
     "command-log",
@@ -17,6 +17,13 @@ export interface DiffArtefact {
     patch: string;
     /** The recorder's reason for refusing the diff; reading a diff with this reason raises EvidenceRefused. */
     refused?: string;
+    /**
+     * The directories whose own `.gitignore` ignores every path below them, among the ones
+     * that hold a path the patch names: a tool cache or scratch directory, which git keeps out
+     * of the project. The patch holds their files, and `ArtefactReader.diff` reads it without
+     * them.
+     */
+    self_ignored?: string[];
 }
 
 export interface Command {
@@ -127,6 +134,10 @@ export const oneOf =
     (values: readonly string[]): Field =>
     (v) =>
         values.includes(v as string);
+/** A relative directory path: non-empty parts, none of them `.` or `..`. */
+const directory: Field = (v) =>
+    text(v) &&
+    (v as string).split("/").every((part) => part !== "" && part !== "." && part !== "..");
 const listOf = (shape: Record<string, Field>, path: string, v: unknown): string | null => {
     if (!Array.isArray(v)) return path;
     for (const [i, item] of v.entries()) {
@@ -197,6 +208,7 @@ const PAYLOADS: Record<ArtefactClass, (a: Record<string, unknown>, path: string)
                     role: oneOf(["turn", "prior-session"]),
                     patch: unifiedDiff,
                     refused: optional(text),
+                    self_ignored: optional((v) => Array.isArray(v) && v.every(directory)),
                 },
                 a,
                 p,
@@ -278,10 +290,20 @@ export function assertArtefactsOnly(snapshot: Snapshot): void {
     }
 }
 
+/**
+ * Whether a grader reads the file at `path` although it lies under the self-ignoring directory
+ * `dir`: the item's check names it.
+ */
+export type Named = (dir: string, path: string) => boolean;
+
 export class ArtefactReader {
     readonly read = new Set<string>();
+    private readonly work = new Map<string, string>();
 
-    constructor(private readonly snapshot: Snapshot) {}
+    constructor(
+        private readonly snapshot: Snapshot,
+        private readonly named: Named = () => false,
+    ) {}
 
     private find<T extends Artefact>(label: string, test: (a: Artefact) => a is T): T {
         const matches = this.snapshot.artefacts.filter(test);
@@ -294,6 +316,13 @@ export class ArtefactReader {
         return found;
     }
 
+    /**
+     * The agent's change to the project: the diff's patch without the files under the
+     * directories the artefact lists as self-ignoring (`self_ignored`), which git keeps out of
+     * the project, so a tool's cache stays out of the agent's change. A file the item's check
+     * names (`named`) is read wherever it lies. Every judgement of what a turn or session
+     * changed reads the patch through here; the stored patch keeps every file.
+     */
     diff(role: DiffArtefact["role"] = "turn"): string {
         const d = this.find(
             `${role} diff`,
@@ -304,7 +333,10 @@ export class ArtefactReader {
                 `snapshot ${this.snapshot.id}: ${role} diff unrecorded: ${d.refused}`,
             );
         }
-        return d.patch;
+        const read =
+            this.work.get(role) ?? withoutFilesUnder(d.patch, d.self_ignored ?? [], this.named);
+        this.work.set(role, read);
+        return read;
     }
 
     commands(role: CommandLog["role"] = "turn"): Command[] {

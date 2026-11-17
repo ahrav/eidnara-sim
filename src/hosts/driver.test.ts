@@ -24,9 +24,9 @@ import { basename, dirname, join } from "node:path";
 import { SEGMENTS_DDL } from "../../tests/segments";
 import { loadConfig } from "../config/config";
 import { gitEnv } from "../git";
-import type { CallView } from "../grade/artefacts";
+import type { CallView, DiffArtefact, Snapshot } from "../grade/artefacts";
 import { ArtefactReader } from "../grade/artefacts";
-import { gradeItem } from "../grade/probes";
+import { breaksRule, gradeItem } from "../grade/probes";
 import { diffPaths } from "../grade/text";
 import { readJsonl } from "../run/journal";
 import { sandboxAvailable, writeLauncher } from "../run/launcher";
@@ -3328,7 +3328,7 @@ describe("probe snapshots", () => {
             env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
         });
         expect(status.stdout).toBe("?? note.txt\n");
-        const patch = recorder.patchBetween(before, recorder.tree(repo));
+        const patch = recorder.changeBetween(repo, before, recorder.tree(repo)).patch;
         expect(patch).toContain("+static STORE: Mutex<u8>;");
         expect(patch).toContain("+++ b/.tmp-bun/test.log");
         expect(patch).toContain("+before $Id: FORBIDDEN_VALUE $ after");
@@ -3718,6 +3718,272 @@ describe("probe snapshots", () => {
             ev("user_turn", { id: "e-4", session: "s-1", text: "next", probe: "q-1" }),
         );
         expect(captured(armDir)["host:q-1:e-4:prior-diff"]?.patch).toContain("+fn earlier()");
+    });
+});
+
+/**
+ * What pytest leaves in a project's root: on its first run a cache directory whose own
+ * `.gitignore` ignores every path in it, and on every run the node ids and failures it saw.
+ */
+function pytestRun(ws: string, nodes: string[], failed: string[] = []): void {
+    const cache = join(ws, ".pytest_cache");
+    if (!existsSync(cache)) {
+        mkdirSync(join(cache, "v", "cache"), { recursive: true });
+        writeFileSync(join(cache, ".gitignore"), "# Created by pytest automatically.\n*\n");
+        writeFileSync(
+            join(cache, "CACHEDIR.TAG"),
+            "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by pytest.\n",
+        );
+        writeFileSync(join(cache, "README.md"), "# pytest cache directory #\n");
+    }
+    writeFileSync(join(cache, "v", "cache", "nodeids"), `${JSON.stringify(nodes, null, 2)}\n`);
+    if (failed.length > 0) {
+        const record = Object.fromEntries(failed.map((id) => [id, true]));
+        writeFileSync(
+            join(cache, "v", "cache", "lastfailed"),
+            `${JSON.stringify(record, null, 2)}\n`,
+        );
+    }
+}
+
+/** A completed call of the session, as the proxy records it. */
+const call = (seq: number, turn: string, extra: Partial<CallView> = {}): CallView => ({
+    seq,
+    arm: "host",
+    session: "s-0",
+    component: "agent",
+    turn,
+    scenario_ms: 0,
+    status: 200,
+    error: null,
+    input_tokens: 5,
+    output_tokens: 2,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    response_text: "Ran the checks. Nothing else to change.",
+    ...extra,
+});
+
+/** The last captured snapshot of the arm. */
+function lastSnapshot(armDir: string): Snapshot {
+    const lines = readFileSync(join(armDir, "snapshots.jsonl"), "utf8").trim().split("\n");
+    return JSON.parse(lines.at(-1) as string) as Snapshot;
+}
+
+/** The turn diff artefact of a snapshot, as stored. */
+const turnDiff = (snap: Snapshot) =>
+    snap.artefacts.find((a) => a.class === "diff" && a.role === "turn") as DiffArtefact;
+
+/** The verdict and reason a probe of `type` with `check` gets on the snapshot. */
+function graded(snap: Snapshot, type: string, check: Record<string, unknown>) {
+    const probe = { id: snap.item, type, fact: "f-1", project: "p", session: snap.session, check };
+    const grade = gradeItem({ ...probe, text: "go" }, [snap], loadPrereg("S").grading);
+    return [grade?.verdict, grade?.reason ?? null];
+}
+
+const HEADER_RULE = { first_line_must: ["^// jaunty_hare"] };
+const FOREIGN_RULE = { must_not: ["VELVET_EGRET_[A-Z0-9_]+"] };
+const ANCHOR = "(?<!\\d)11662(?!\\d)";
+
+describe("tool caches in probe snapshots", () => {
+    test("a turn that only leaves a tool cache is graded as a turn that changed no file, with the cache in its stored diff", async () => {
+        const calls = [call(0, "e-1")];
+        const { driver, hosts, armDir } = fixture(
+            "host",
+            { p: gitRepo() },
+            { callsFor: () => calls, watchTurns: () => true },
+        );
+        await driver.reset();
+        await driver.event(ev("session_start", { session: "s-0" }));
+        const host = hosts.at(-1) as FakeHost;
+        const ws = driver.workspace("p");
+        host.onPrompt = () => {
+            pytestRun(ws, ["tests/test_port.py::test_bind_11662"]);
+            host.tools.push({ command: "python3 -m pytest -q", exit: 0, scenario_ms: 1 });
+        };
+        const outcome = await driver.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(outcome.failed).toBeUndefined();
+        const snap = lastSnapshot(armDir);
+        // The stored diff holds every file of the cache, and the artefact names the directory.
+        expect(diffPaths(turnDiff(snap).patch).sort()).toEqual([
+            ".pytest_cache/.gitignore",
+            ".pytest_cache/CACHEDIR.TAG",
+            ".pytest_cache/README.md",
+            ".pytest_cache/v/cache/nodeids",
+        ]);
+        expect(turnDiff(snap).self_ignored).toEqual([".pytest_cache"]);
+        expect({
+            P2: graded(snap, "P2", FOREIGN_RULE),
+            P5: graded(snap, "P5", FOREIGN_RULE),
+            P11: graded(snap, "P11", FOREIGN_RULE),
+            P10: graded(snap, "P10", { must_not: [ANCHOR], answer_must_not: [ANCHOR] }),
+        }).toEqual({
+            P2: ["fail", "no code change"],
+            P5: ["fail", "no code change"],
+            P11: ["fail", "no code change"],
+            P10: ["fail", "no change and no written answer"],
+        });
+        // The user sim's rule check reads the same turn with the cache left out of its created files.
+        const work = driver.lastTurnWork("s-0");
+        expect(diffPaths(work?.patch ?? "")).toContain(".pytest_cache/CACHEDIR.TAG");
+        expect(
+            breaksRule(work?.patch ?? "", work?.commands ?? [], HEADER_RULE, work?.self_ignored),
+        ).toBe(false);
+    });
+
+    test("a rule-following change passes while a cache an earlier turn created grows beside it", async () => {
+        const calls = [
+            call(0, "e-1"),
+            call(1, "e-1", {
+                component: "history_summarizer",
+                turn_index: 1,
+                scenario_ms: 5,
+                input_tokens: 1000,
+                output_tokens: 100,
+            }),
+            call(2, "e-2"),
+        ];
+        const { driver, hosts, armDir } = fixture(
+            "host",
+            { p: gitRepo() },
+            { callsFor: () => calls, watchTurns: () => true },
+        );
+        await driver.reset();
+        await driver.event(ev("session_start", { session: "s-0" }));
+        const host = hosts.at(-1) as FakeHost;
+        const ws = driver.workspace("p");
+        host.onPrompt = () => {
+            pytestRun(ws, ["tests/test_port.py::test_bind"]);
+            host.tools.push({ command: "python3 -m pytest -q", exit: 0, scenario_ms: 1 });
+        };
+        await driver.event(ev("user_turn", { id: "e-1", session: "s-0", text: "go" }));
+        host.onPrompt = () => {
+            mkdirSync(join(ws, "src", "ws"), { recursive: true });
+            writeFileSync(
+                join(ws, "src", "ws", "route.ts"),
+                '// jaunty_hare\nexport const path = "/ws";\n',
+            );
+            pytestRun(
+                ws,
+                ["tests/test_port.py::test_bind", "tests/test_ws.py::test_route"],
+                ["tests/test_ws.py::test_route"],
+            );
+            host.tools.push({ command: "python3 -m pytest -q tests", exit: 1, scenario_ms: 9 });
+        };
+        const outcome = await driver.event(
+            ev("user_turn", { id: "e-2", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(outcome.failed).toBeUndefined();
+        const snap = lastSnapshot(armDir);
+        // The cache's rule file is an earlier turn's, so this diff holds the cache's data files alone.
+        expect(diffPaths(turnDiff(snap).patch).sort()).toEqual([
+            ".pytest_cache/v/cache/lastfailed",
+            ".pytest_cache/v/cache/nodeids",
+            "src/ws/route.ts",
+        ]);
+        expect(turnDiff(snap).self_ignored).toEqual([".pytest_cache"]);
+        const scoped = { scope: "src/ws/", side: "in", quote_style_must: "double" };
+        expect({
+            P1: graded(snap, "P1", HEADER_RULE),
+            P13: graded(snap, "P13", { ...HEADER_RULE, turns: [0, 5] }),
+            P4: graded(snap, "P4", scoped),
+        }).toEqual({ P1: ["pass", null], P13: ["pass", null], P4: ["pass", null] });
+        const work = driver.lastTurnWork("s-0");
+        expect(
+            breaksRule(work?.patch ?? "", work?.commands ?? [], HEADER_RULE, work?.self_ignored),
+        ).toBe(false);
+    });
+
+    test("an ordinary stray file, an edit under a project directory the agent self-ignored, and a file the check names stay in every scope judgement", async () => {
+        const repo = gitRepo();
+        mkdirSync(join(repo, "src"));
+        writeFileSync(join(repo, "src", "lib.rs"), "pub fn lib() {}\n");
+        commitAll(repo, "lib");
+        const calls = [call(0, "e-1")];
+        const { driver, hosts, armDir } = fixture("host", { p: repo }, { callsFor: () => calls });
+        await driver.reset();
+        await driver.event(ev("session_start", { session: "s-0" }));
+        const host = hosts.at(-1) as FakeHost;
+        const ws = driver.workspace("p");
+        host.onPrompt = () => {
+            writeFileSync(join(ws, "stray.rs"), "fn stray() {}\n");
+            writeFileSync(join(ws, "src", ".gitignore"), "*\n");
+            appendFileSync(join(ws, "src", "lib.rs"), "pub const VELVET_EGRET_MAX: u32 = 1;\n");
+            mkdirSync(join(ws, "gen"));
+            writeFileSync(join(ws, "gen", ".gitignore"), "*\n");
+            writeFileSync(
+                join(ws, "gen", "code.rs"),
+                "// jaunty_hare\npub const HOLLOW_ORIOLE_MAX: u32 = 2;\n",
+            );
+        };
+        await driver.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        const snap = lastSnapshot(armDir);
+        // `src` is a directory of the fresh clone, so its files stay the project's; `gen` is new.
+        expect(turnDiff(snap).self_ignored).toEqual(["gen"]);
+        const constant = ["HOLLOW_ORIOLE_[A-Z0-9_]+"];
+        expect({
+            stray: graded(snap, "P1", HEADER_RULE),
+            project: graded(snap, "P2", FOREIGN_RULE),
+            unnamed: graded(snap, "P1", { must: constant }),
+            scoped: graded(snap, "P1", { must: constant, scope: "gen/" }),
+            named: graded(snap, "P1", { must: constant, paths_must: ["^gen/code\\.rs$"] }),
+        }).toEqual({
+            stray: ["fail", "rule not applied"],
+            project: ["fail", "applied the rule outside its scope"],
+            unnamed: ["fail", "rule not applied"],
+            scoped: ["pass", null],
+            named: ["pass", null],
+        });
+    });
+
+    test("the recorder names a directory by its own rule file: a pattern for every path, no re-inclusion, below the root, outside the fresh clone", () => {
+        const repo = gitRepo();
+        mkdirSync(join(repo, "docs"));
+        writeFileSync(join(repo, "docs", "guide.md"), "guide\n");
+        commitAll(repo, "docs");
+        const recorder = new SnapshotRecorder(tmp(), "eidnara", () => []);
+        recorder.trackIgnoreRules(basename(repo), repo);
+        recorder.trackBaseTree(basename(repo), repo);
+        const before = recorder.tree(repo);
+        const rules: Record<string, string> = {
+            ".gitignore": "*\n",
+            "docs/.gitignore": "*\n",
+            "star/.gitignore": "# cache\n*\n",
+            "crlf/.gitignore": "*\r\n",
+            "rooted/.gitignore": "/*\n",
+            "deep/.gitignore": "**\n",
+            "kept/.gitignore": "*\n!.gitignore\n",
+            "some/.gitignore": "*.log\n",
+            "outer/.gitignore": "*\n",
+            "outer/inner/.gitignore": "*\n",
+        };
+        for (const [path, body] of Object.entries(rules)) {
+            mkdirSync(dirname(join(repo, path)), { recursive: true });
+            writeFileSync(join(repo, path), body);
+            writeFileSync(join(dirname(join(repo, path)), "file.txt"), "x\n");
+        }
+        mkdirSync(join(repo, "linked"));
+        symlinkSync("../star/.gitignore", join(repo, "linked", ".gitignore"));
+        writeFileSync(join(repo, "linked", "file.txt"), "x\n");
+        const after = recorder.tree(repo);
+        const made = recorder.changeBetween(repo, before, after);
+        expect(made.self_ignored).toEqual(["crlf", "deep", "outer", "rooted", "star"]);
+        expect(diffPaths(made.patch)).toContain("star/file.txt");
+        // A turn that removes a cache names it by the rule file the turn found.
+        rmSync(join(repo, "star"), { recursive: true });
+        const removed = recorder.changeBetween(repo, after, recorder.tree(repo));
+        expect(diffPaths(removed.patch).sort()).toEqual(["star/.gitignore", "star/file.txt"]);
+        expect(removed.self_ignored).toEqual(["star"]);
+        // A turn whose diff holds project files alone yields the patch alone.
+        const settled = recorder.tree(repo);
+        writeFileSync(join(repo, "README"), "again\n");
+        expect(recorder.changeBetween(repo, settled, recorder.tree(repo))).toEqual({
+            patch: expect.stringContaining("+again"),
+        });
     });
 });
 
@@ -4322,7 +4588,7 @@ test("a workspace holding more than a thousand agent-written rule files is index
         writeFileSync(join(repo, "many", `d${i}`, ".gitignore"), "*\n");
         writeFileSync(join(repo, "many", `d${i}`, "f.rs"), "");
     }
-    const paths = diffPaths(recorder.patchBetween(before, recorder.tree(repo)));
+    const paths = diffPaths(recorder.changeBetween(repo, before, recorder.tree(repo)).patch);
     expect(paths).toHaveLength(2_200);
     expect(paths).toContain("many/d1099/f.rs");
 }, 60_000);
@@ -4340,7 +4606,9 @@ test("a FIFO at the workspace's .gitignore blocks no recorder run", () => {
     // The clone's own git blocks on the FIFO until its bound.
     expect(spawnSync("git", ["status"], { cwd: repo, timeout: 300 }).error).toBeDefined();
     expect(recorder.embedded(repo)).toEqual(["vendor"]);
-    expect(diffPaths(recorder.patchBetween(before, recorder.tree(repo)))).toEqual(["lib.rs"]);
+    expect(diffPaths(recorder.changeBetween(repo, before, recorder.tree(repo)).patch)).toEqual([
+        "lib.rs",
+    ]);
 });
 
 test("snapshot git runs no command and indexes no path that the workspace repo's config names", () => {

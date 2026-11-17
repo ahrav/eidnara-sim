@@ -686,6 +686,32 @@ function parseDiff(patch: string): Scan {
 export const unifiedDiff = (v: unknown): boolean =>
     typeof v === "string" && (v.length === 0 || scanDiff(v).ok);
 
+/**
+ * `patch` without the files that lie under one of the `hidden` directories, each file being
+ * the text from its `diff --git` line to the next. A file stays when `kept` holds for one of
+ * its paths, or when one of its paths lies outside every hidden directory, as a rename into
+ * or out of one does. Hunk lines start with a space, `+`, `-`, or a backslash, so a line that
+ * starts with `diff --git ` is a file's first line.
+ */
+export function withoutFilesUnder(
+    patch: string,
+    hidden: readonly string[],
+    kept: (dir: string, path: string) => boolean = () => false,
+): string {
+    const starts = [...patch.matchAll(/^diff --git /gm)].map((m) => m.index);
+    if (hidden.length === 0 || starts.length === 0) return patch;
+    const dropped = (path: string) => {
+        const dir = hidden.find((d) => path.startsWith(`${d}/`));
+        return dir !== undefined && !kept(dir, path);
+    };
+    const files = starts.map((at, i) => patch.slice(at, starts[i + 1] ?? patch.length));
+    const read = files.filter((file) => {
+        const scan = scanDiff(file);
+        return !scan.ok || scan.paths.length === 0 || !scan.paths.every(dropped);
+    });
+    return patch.slice(0, starts[0]) + read.join("");
+}
+
 export function addedLines(patch: string): string {
     return parseDiff(patch).added.join("\n");
 }

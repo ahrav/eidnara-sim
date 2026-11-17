@@ -62,7 +62,10 @@ item's check (`breaksRule` in `src/grade/probes.ts`): a forbidden pattern in
 the turn's diff or commands, or a created file whose first line misses a
 `first_line_must` rule. The driver snapshots every turn of a windowed session
 (`watchTurns`), and `lastTurnWork` gives the patch from that turn's start tree
-to the workspace and the tool runs the host reported. A reactive pushback is
+to the workspace, the self-ignoring directories among its paths, and the tool
+runs the host reported. The check reads the patch without the files under
+those directories, as a grader does (`docs/grading.md`, Self-ignoring
+directories), so a tool cache a turn leaves behind breaks no rule. A reactive pushback is
 the fixed line `That last change goes against a rule I gave you earlier in
 this session. Check your work against it before moving on.` ahead of the
 script text, so it restates no rule; it makes no model call. The journal and

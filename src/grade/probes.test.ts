@@ -15,8 +15,15 @@ import { join } from "node:path";
 import { compileScenario, type ProbeItem } from "../scenario/compile";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { hashEmbedder } from "../scenario/similarity";
-import { type CallView, type Command, GradeRefused, type Snapshot } from "./artefacts";
+import {
+    ArtefactReader,
+    type CallView,
+    type Command,
+    GradeRefused,
+    type Snapshot,
+} from "./artefacts";
 import { deltaMem, GradeLog, type GradeRecord, gradeItem, graderDigest, graderFor } from "./probes";
+import { diffPaths, withoutFilesUnder } from "./text";
 
 const DIR = join(import.meta.dir, "../../tests/fixtures/grade");
 const rules = loadPrereg("S").grading;
@@ -2482,4 +2489,86 @@ test("appendAll writes a batch whose versions follow each key in order, and refu
         /not a grade record/,
     );
     expect(log.all()).toHaveLength(2);
+});
+
+/** One created file as `git diff` writes it. */
+const created = (path: string, lines: string[]) =>
+    `diff --git a/${path} b/${path}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}\n`).join("")}`;
+
+describe("self-ignoring directories", () => {
+    const cache = created(".venv/lib/site.py", ["DROWSY_EGRET_MAX = 1"]);
+    const code = created("src/limits.rs", ["const MAX_RECONNECTS: u32 = 5;"]);
+    /** The P2 fixture's snapshot with `patch` as its turn diff and `dirs` as its self-ignoring directories. */
+    const withDiff = (patch: string, dirs?: unknown): Snapshot => {
+        const snap = structuredClone(fixture("P2-pass").snapshots[0]) as Snapshot;
+        const diff = { id: "d1", class: "diff", role: "turn", patch };
+        snap.artefacts = [
+            (dirs === undefined
+                ? diff
+                : { ...diff, self_ignored: dirs }) as Snapshot["artefacts"][number],
+            ...fixture("P10-pass").snapshots[0]!.artefacts.filter((a) => a.class === "proxy-call"),
+        ];
+        for (const a of snap.artefacts) {
+            if (a.class !== "proxy-call") continue;
+            for (const c of a.calls)
+                Object.assign(c, { arm: snap.arm, session: snap.session, turn: snap.turn });
+        }
+        return snap;
+    };
+    const p2 = (snap: Snapshot, check = fixture("P2-pass").probe.check) => {
+        const g = gradeItem({ ...fixture("P2-pass").probe, check }, [snap], rules) as GradeRecord;
+        return [g.verdict, g.reason ?? null, g.metrics["P2.harm"]];
+    };
+
+    test("a file under a listed directory is no change of the agent's, and the same file unlisted is", () => {
+        expect(p2(withDiff(cache + code))).toEqual([
+            "fail",
+            "applied the rule outside its scope",
+            true,
+        ]);
+        expect(p2(withDiff(cache + code, [".venv"]))).toEqual(["pass", null, false]);
+        expect(p2(withDiff(cache, [".venv"]))).toEqual(["fail", "no code change", false]);
+        expect(p2(withDiff(cache))).toEqual(["fail", "applied the rule outside its scope", true]);
+    });
+
+    test("a file the check names is read under a listed directory: by its scope or by a path pattern", () => {
+        const rule = fixture("P2-pass").probe.check as Record<string, unknown>;
+        const listed = withDiff(cache + code, [".venv"]);
+        const harm = ["fail", "applied the rule outside its scope", true];
+        expect(p2(listed, { ...rule, scope: ".venv/lib/" })).toEqual(harm);
+        expect(p2(listed, { ...rule, scope: ".venv/lib/site.py" })).toEqual(harm);
+        expect(p2(listed, { ...rule, paths_must_not: ["^\\.venv/lib/site\\.py$"] })).toEqual(harm);
+        expect(p2(listed, { ...rule, scope: "src/" })).toEqual(["pass", null, false]);
+        const reader = new ArtefactReader(
+            listed,
+            (dir, path) => dir === ".venv" && path.endsWith(".py"),
+        );
+        expect(diffPaths(reader.diff())).toEqual([".venv/lib/site.py", "src/limits.rs"]);
+    });
+
+    test("the stored patch keeps every file, and a listing that is no list of relative directories is refused", () => {
+        const listed = withDiff(cache + code, [".venv"]);
+        gradeItem(fixture("P2-pass").probe, [listed], rules);
+        expect(listed.artefacts[0]).toMatchObject({ patch: cache + code, self_ignored: [".venv"] });
+        for (const bad of [".venv", [""], ["../out"], ["a//b"], [7]]) {
+            expect(() => gradeItem(fixture("P2-pass").probe, [withDiff(code, bad)], rules)).toThrow(
+                "self_ignored is missing or malformed",
+            );
+        }
+    });
+
+    test("a patch is cut per file: a sibling directory and a rename out of the directory stay, a quoted path and a binary file go", () => {
+        const sibling = created(".venv2/site.py", ["x = 1"]);
+        const moved =
+            "diff --git a/.venv/tool.rs b/src/tool.rs\nsimilarity index 100%\nrename from .venv/tool.rs\nrename to src/tool.rs\n";
+        const quoted =
+            'diff --git "a/.venv/caf\\303\\251.py" "b/.venv/caf\\303\\251.py"\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ "b/.venv/caf\\303\\251.py"\n@@ -0,0 +1 @@\n+x = 1\n';
+        const binary =
+            "diff --git a/.venv/bin/python b/.venv/bin/python\nnew file mode 100755\nindex 0000000..1111111\nBinary files /dev/null and b/.venv/bin/python differ\n";
+        const patch = cache + sibling + quoted + moved + binary + code;
+        expect(withoutFilesUnder(patch, [".venv"])).toBe(sibling + moved + code);
+        expect(withoutFilesUnder(patch, [])).toBe(patch);
+        expect(withoutFilesUnder(patch, ["src", ".venv", ".venv2"])).toBe("");
+        expect(withoutFilesUnder("", [".venv"])).toBe("");
+    });
 });
