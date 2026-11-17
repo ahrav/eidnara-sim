@@ -111,11 +111,26 @@ such a guard names that input and the check that shows the measurement reads
 it. An action on any other file is agent behaviour: the harness records it,
 the turn keeps its outcome, and every arm gets the same treatment.
 
-The probe snapshot is the worked case (`docs/grading.md`). The recorder's git
-reads in-tree `.gitignore` and `.gitattributes` files, so a changed one fails
-the probe turn on every arm. The recorder reads `info/exclude` and
-`info/attributes` from its own repository, so an agent edit of the clone's
-`.git/info/exclude` or `.git/info/attributes` fails no turn on any arm.
+A guard that fails a turn removes graded items, and it removes them where the
+agent acted, so the loss falls unevenly on arms and seeds. Before adding such
+a guard, move the measurement's input out of the agent's reach: have the
+harness read the input from a copy it controls, taken before the agent ran.
+The agent's action is then an ordinary recorded change and the turn stays
+gradable. Keep a guard only for the case where the harness cannot control the
+input, and name that case in the record.
+
+The probe snapshot is the worked case (`docs/grading.md`). Git reads ignore
+rules and attributes from in-tree `.gitignore` and `.gitattributes` files, so
+under the workspace's own rules an agent edit could keep new files out of the
+recorder's tree or change the bytes it stores. The recorder builds every tree
+under the project's baseline rule files, held in its own repository: ignore
+rules through `check-ignore` in a directory that holds only the baseline
+`.gitignore` files, attributes through `GIT_ATTR_SOURCE`. An agent edit of an
+in-tree rule file is in the diff like any other file change, an edit under
+the clone's `.git/info/` reaches no recorder run, and neither fails a turn on
+any arm. The case the recorder cannot
+control is a git that ignores `GIT_ATTR_SOURCE`; the recorder checks for it
+once and builds no tree with such a git.
 
 ## Evidence file structure
 

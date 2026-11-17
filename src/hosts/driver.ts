@@ -939,14 +939,7 @@ export class HostDriver implements ArmDriver {
         const tracked = ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"];
         const forced = git(source, tracked).split("\0").filter(Boolean);
         this.snapshots.trackIgnored(project, forced);
-        const rules: Record<string, string> = {};
-        const names = [".gitignore", "**/.gitignore", ".gitattributes", "**/.gitattributes"];
-        const listed = git(source, ["ls-files", "-s", "-z", "--", ...names]);
-        for (const row of listed.split("\0").filter(Boolean)) {
-            const [meta, path] = row.split("\t") as [string, string];
-            rules[path] = meta.split(" ")[1] as string;
-        }
-        this.snapshots.trackIgnoreRules(project, rules);
+        this.snapshots.trackIgnoreRules(project, source);
     }
 
     async resume(open: ScenarioEvent | null, interrupted: readonly string[] = []): Promise<void> {
@@ -1243,14 +1236,10 @@ export class HostDriver implements ArmDriver {
         } else if (e.probe && before !== null) {
             await this.o.settle?.();
             try {
-                const { nested, ignoreFiles } = this.snapshots.survey(dir);
-                const changed = this.snapshots.ignoreChanges(dir, project, ignoreFiles);
-                const after = changed.length > 0 ? before : this.snapshots.tree(dir, nested);
-                const reasons = [
-                    nested.length > 0 ? `embedded repository at ${nested.join(", ")}` : null,
-                    changed.length > 0 ? `rule files changed: ${changed.join(", ")}` : null,
-                ].filter((r): r is string => r !== null);
-                for (const reason of reasons) {
+                const nested = this.snapshots.embedded(dir);
+                const after = this.snapshots.tree(dir, nested);
+                if (nested.length > 0) {
+                    const reason = `embedded repository at ${nested.join(", ")}`;
                     outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
                 }
                 const probe = { probe: e.probe, session: e.session, id: e.id };
