@@ -232,7 +232,7 @@ divergence index. `scripts/pairing-check.ts <run>` reports those
 mismatches, the divergences, each arm's reply sources and fallbacks, probe
 or paste text that differs from the script, non-filler turns left unsent,
 and each arm's rates; it exits 1 on any of them or, on a whole-scenario
-run, on a rate outside its band (Journal, below). It also lists under `unwitnessed_clarify` each delivered `clarify`
+run, on a rate break (Journal, below). It also lists under `unwitnessed_clarify` each delivered `clarify`
 turn whose session's last agent reply recorded in `calls.jsonl` before the
 turn began (its tail when cut) ends without a question; it reads the call
 log once and keeps one reply per `clarify` turn. A turn a stop cut, journaled `failed(interrupted)` by an
@@ -256,9 +256,38 @@ and `interrupted`) before its `EndTurn`, so a resume that reads the
 and the rates outside their band. A run cut short of its scenario can leave
 a band and is flagged. `scripts/pairing-check.ts` fails a run that lacks an
 arm's `UserSimRates` or whose recomputed rates differ from it, and fails a
-whole-scenario run with a rate outside its band; a run over an `--events`
-prefix reports its flagged rates (`rates_scope: "prefix"`) and passes on
-them, since the bands bound a whole scenario's draws. `scripts/grade-run.ts` grades each P14 item from
+whole-scenario run on each rate break it lists under `rate_breaks`; a run
+over an `--events` prefix reports its flagged rates and rate breaks
+(`rates_scope: "prefix"`) and passes on them, since the bands bound a whole
+scenario's draws.
+
+Pushback, redirect, and abandon reach the host as the plan scheduled them,
+so a flag on any of the three is a rate break. An interrupt is scheduled by
+the plan and realised by the host: the abort lands only when the agent is
+still working as the delay ends, so the realised interrupt rate follows each
+arm's turn lengths as well as the schedule. `pairing-check` reports, per arm
+under `interrupts`, the interrupts scheduled among the delivered turns (the
+journal's `interrupt` labels plus its `scheduled: "interrupt"` marks), the
+aborts that landed, the scheduled turns whose `EndTurn` `prompt_ms` is below
+the plan's delay (`finished_first`), and the rest (`unlanded`), whose abort
+was due; a scheduled turn with no recorded `prompt_ms` counts as due. The
+interrupt rate breaks in two cases. The scheduled rate lies outside the
+band: the schedule is the user-sim's own decision, equal on every arm of a
+seed, and exact. Or the realised rate is flagged and the due aborts landed
+less often than a landing chance of one half allows: the exact binomial
+probability of at most `landed` landings among the due aborts
+(`landing_p`) is below 0.01, which a run with seven or more due aborts and
+no landing meets. A flagged interrupt rate with neither cause stays under
+`flagged` and passes: the arm's agent ended those turns before the user's
+delay, an outcome of the arm under the same schedule. On the w2 S runs the
+plan scheduled 20, 24, and 30 interrupts on seeds 104, 105, and 610, the
+same on all four runs of a seed; 167 of the 178 due aborts landed, and ten
+of the eleven others ended within 1.7 s of the delay. On held-out seed 610
+the host run landed 19 of 30 and the three Eidnara-arm runs 12, 12, and 10,
+with 16, 16, and 20 turns ended before their delays, which put their
+realised rates (0.018, 0.018, 0.015) below the band's 0.02.
+
+`scripts/grade-run.ts` grades each P14 item from
 a session view of its calls with these labels placed among them
 (`docs/grading.md`).
 

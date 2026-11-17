@@ -10,6 +10,7 @@ import { readCallLog, referenceArm, requireAdmittedOrder } from "../src/run/run"
 import type { Scenario } from "../src/scenario/compile";
 import { scenarioHash } from "../src/scenario/compile";
 import { admittedArms, corpusInputsSha256, loadPrereg } from "../src/scenario/inputs";
+import { binomialCdf } from "../src/stats/dist";
 import {
     behaviourPlan,
     deliveredTurns,
@@ -520,6 +521,66 @@ const ratesMismatch = (manifest.order as string[]).filter((arm) => {
     };
     return JSON.stringify(summary) !== JSON.stringify(expected);
 });
+/**
+ * A scheduled interrupt aborts its turn only when the agent is still working as the planned
+ * delay ends, so an arm's realised interrupt rate follows its turn lengths as well as the
+ * schedule. Per arm, over its delivered turns: the interrupts the plan scheduled, the ones whose
+ * abort landed, the ones whose turn ended before the planned delay (`finished_first`), and the
+ * rest (`unlanded`), whose abort was due. `landing_p` is the exact binomial probability of at
+ * most `landed` landings among the due aborts when each lands with probability
+ * `ABORT_LANDING_FLOOR`.
+ */
+const ABORT_LANDING_FLOOR = 0.5;
+const ABORT_ALPHA = 0.01;
+const promptMs = new Map(
+    journal.filter((e) => e.kind === "EndTurn").map((e) => [`${e.arm} ${e.event}`, e.prompt_ms]),
+);
+const interrupts = new Map(
+    (manifest.order as string[]).map((arm) => {
+        const delivered = deliveredTurns(journal, arm);
+        const landed = delivered.filter((e) => e.label === "interrupt").length;
+        const missed = delivered.filter(
+            (e) => e.label !== "interrupt" && e.scheduled === "interrupt",
+        );
+        const finishedFirst = missed.filter((e) => {
+            const delay = plan.interruptMs.get(String(e.event));
+            const ran = promptMs.get(`${arm} ${e.event}`);
+            return delay !== undefined && typeof ran === "number" && ran < delay;
+        }).length;
+        const scheduled = landed + missed.length;
+        const due = scheduled - finishedFirst;
+        const counts = {
+            scheduled,
+            landed,
+            finished_first: finishedFirst,
+            unlanded: due - landed,
+            scheduled_rate: delivered.length === 0 ? 0 : scheduled / delivered.length,
+            landing_p: binomialCdf(landed, due, ABORT_LANDING_FLOOR),
+        };
+        return [arm, counts] as const;
+    }),
+);
+// The rates that fail a whole-scenario run. Pushback, redirect, and abandon are delivered as
+// scheduled, so each one's flag is a break. The interrupt rate breaks through its two harness
+// causes: a schedule outside the band, or a flagged rate whose due aborts landed less often than
+// the floor allows at `ABORT_ALPHA`. A flagged interrupt rate whose scheduled turns ended before
+// their delays is the arm's own outcome and stays reported under `flagged`.
+const interruptBand = prereg.user_sim.bands.interrupt_per_turn;
+const rateBreaks = [...interrupts].flatMap(([arm, i]) => {
+    const flagged = journal
+        .filter((e) => e.kind === "UserSimRates" && e.arm === arm)
+        .flatMap((e) => e.outside as string[]);
+    const breaks = flagged.filter((r) => r !== "interrupt_per_turn");
+    if (
+        i.scheduled_rate < Number(interruptBand.min) ||
+        i.scheduled_rate > Number(interruptBand.max)
+    ) {
+        breaks.push(`interrupt_per_turn scheduled at ${i.scheduled_rate}`);
+    } else if (flagged.includes("interrupt_per_turn") && i.landing_p < ABORT_ALPHA) {
+        breaks.push(`interrupt_per_turn aborts landed ${i.landed} of ${i.landed + i.unlanded} due`);
+    }
+    return breaks.length > 0 ? [`${arm}: ${breaks.join(", ")}`] : [];
+});
 // A delivered turn's label must be one the plan can assign.
 const invalidLabels = (manifest.order as string[]).flatMap((arm) =>
     deliveredTurns(journal, arm)
@@ -571,6 +632,8 @@ const report = {
     flagged: journal
         .filter((e) => e.kind === "UserSimRates" && (e.outside as string[]).length > 0)
         .map((e) => `${e.arm}: ${(e.outside as string[]).join(", ")}`),
+    interrupts: Object.fromEntries(interrupts),
+    rate_breaks: rateBreaks,
     rates_mismatch: ratesMismatch,
     invalid_labels: invalidLabels,
     missing_rates: (manifest.order as string[]).filter(
@@ -611,7 +674,7 @@ const failed =
     provenance.length +
     scriptAltered.length +
     outOfPrefix.length +
-    (wholeScenario ? report.flagged.length : 0) +
+    (wholeScenario ? rateBreaks.length : 0) +
     report.missing_rates.length +
     report.rates_mismatch.length +
     report.invalid_labels.length +

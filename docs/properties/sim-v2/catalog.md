@@ -385,7 +385,9 @@ Confidence: low -
 M6 (#1031) samples labels from the pre-registered rates and journals
 `UserSimRates` per arm; verified in `src/usersim/usersim.test.ts`.
 Existing check: `realisedRates` journals each arm's rates and the ones outside
-their band; `scripts/pairing-check.ts` fails a flagged or missing summary
+their band; `scripts/pairing-check.ts` fails a missing summary, a flagged
+pushback, redirect, or abandon rate, an interrupt schedule outside its band,
+and a flagged interrupt rate whose due aborts stayed unlanded
 Impact: Results generalise to a user population the corpus does not describe.
 Open questions: None.
 
