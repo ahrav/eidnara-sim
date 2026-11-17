@@ -3,6 +3,7 @@ import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
 import {
     appendFileSync,
+    chmodSync,
     closeSync,
     existsSync,
     linkSync,
@@ -22,6 +23,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { SEGMENTS_DDL } from "../../tests/segments";
 import { loadConfig } from "../config/config";
+import { gitEnv } from "../git";
 import type { CallView } from "../grade/artefacts";
 import { ArtefactReader } from "../grade/artefacts";
 import { gradeItem } from "../grade/probes";
@@ -259,6 +261,44 @@ function gitRepo(): string {
     g("add", "README");
     g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
     return dir;
+}
+
+/** Runs the repository's own git, the one an agent's shell runs in a clone. */
+function ownGit(dir: string, ...args: string[]) {
+    return spawnSync("git", args, {
+        cwd: dir,
+        encoding: "utf8",
+        env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+    });
+}
+
+function commitAll(dir: string, message: string): void {
+    ownGit(dir, "add", "--all", "--force");
+    ownGit(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", message);
+}
+
+function cloneStatus(dir: string): string {
+    return ownGit(dir, "status", "--porcelain", "--untracked-files=all").stdout;
+}
+
+/** The bytes the clone's own git stores for `path` under the clone's attribute rules. */
+function cloneBlob(dir: string, path: string): string {
+    const id = ownGit(dir, "hash-object", "-w", "--", path).stdout.trim();
+    return ownGit(dir, "cat-file", "blob", id).stdout;
+}
+
+function cloneAdd(dir: string, path: string): string {
+    const index = join(tmp(), "index");
+    return spawnSync("git", ["add", "--", path], {
+        cwd: dir,
+        encoding: "utf8",
+        env: {
+            ...process.env,
+            GIT_CONFIG_GLOBAL: "/dev/null",
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_INDEX_FILE: index,
+        },
+    }).stderr;
 }
 
 describe("expandTemplate", () => {
@@ -3099,13 +3139,15 @@ describe("probe snapshots", () => {
         ]);
     });
 
-    test("an embedded repository inside an already-indexed directory, or empty, is found; an ignored one is not", () => {
+    test("an embedded repository inside an already-indexed directory, or empty, is found; one the baseline rules ignore is left alone", () => {
         const repo = gitRepo();
         mkdirSync(join(repo, "src"));
         writeFileSync(join(repo, "src", "lib.rs"), "fn lib() {}\n");
         writeFileSync(join(repo, ".gitignore"), "target/\n");
+        commitAll(repo, "ignore target");
         const armDir = tmp();
         const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+        recorder.trackIgnoreRules(basename(repo), repo);
         recorder.sessionStart("s-1", "p", repo);
         recorder.tree(repo);
         spawnSync("git", ["init", "-q"], { cwd: join(repo, "src") });
@@ -3115,10 +3157,13 @@ describe("probe snapshots", () => {
         spawnSync("git", ["init", "-q"], { cwd: join(repo, "target") });
         expect(recorder.embedded(repo)).toEqual(["empty", "src"]);
         expect(recorder.tree(repo)).toMatch(/^[0-9a-f]{40}$/);
+        // The agent's rule file now ignores `empty` and `src` and keeps `target`.
+        writeFileSync(join(repo, ".gitignore"), "empty/\nsrc/\n");
+        expect(recorder.embedded(repo)).toEqual(["empty", "src"]);
     });
 
-    test("a probe turn that changes the ignore rules ends failed, naming the rule file", async () => {
-        const { driver, hosts } = fixture("host", { p: gitRepo() });
+    test("a probe turn that adds an ignore rule for its own file ends ok with both in its diff", async () => {
+        const { driver, hosts, armDir } = fixture("host", { p: gitRepo() });
         const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
         await fresh.reset();
         const host = hosts.at(-1) as FakeHost;
@@ -3131,24 +3176,141 @@ describe("probe snapshots", () => {
         const hidden = await fresh.event(
             ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
         );
-        expect(hidden.failed).toBe("rule files changed: .gitignore (added)");
-        // The rule file stays on disk, so the next probe turn in the project fails on it too.
+        expect(hidden.failed).toBeUndefined();
+        const patch = captured(armDir)["host:q-1:e-1:diff"]?.patch ?? "";
+        expect(diffPaths(patch).sort()).toEqual([".gitignore", "cache.rs"]);
+        expect(patch).toContain("+static STORE: Mutex<u8>;");
+        // The rule file stays on disk through the next probe turn.
         host.onPrompt = () => writeFileSync(join(ws, "plain.rs"), "fn ok() {}\n");
-        const stillChanged = await fresh.event(
+        const later = await fresh.event(
             ev("user_turn", { id: "e-2", session: "s-0", text: "go", probe: "q-2" }),
         );
-        expect(stillChanged.failed).toBe("rule files changed: .gitignore (added)");
-        rmSync(join(ws, ".gitignore"));
-        const restored = await fresh.event(
-            ev("user_turn", { id: "e-3", session: "s-0", text: "go", probe: "q-3" }),
+        expect(later.failed).toBeUndefined();
+        expect(diffPaths(captured(armDir)["host:q-2:e-2:diff"]?.patch ?? "")).toEqual(["plain.rs"]);
+    });
+
+    test("a plain turn that adds ignore patterns leaves later probe turns ok with the files the patterns name in their diffs, across a resume", async () => {
+        const source = gitRepo();
+        writeFileSync(join(source, ".gitignore"), "target/\n");
+        commitAll(source, "ignore target");
+        const { driver, hosts, armDir, transcripts } = fixture("host", { p: source });
+        await driver.reset();
+        mkdirSync(join(transcripts, "sessions"), { recursive: true });
+        const ws = driver.workspace("p");
+        const start = ev("session_start", { id: "e-0", session: "s-0" });
+        await driver.event(start);
+        (hosts.at(-1) as FakeHost).onPrompt = () =>
+            appendFileSync(join(ws, ".gitignore"), "/examples/rest-example\n*.gen.rs\nout/\n");
+        const plain = await driver.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "ignore the binary" }),
         );
-        expect(restored.failed).toBeUndefined();
+        expect(plain.failed).toBeUndefined();
+        (hosts.at(-1) as FakeHost).onPrompt = () => {
+            mkdirSync(join(ws, "examples"));
+            writeFileSync(join(ws, "examples", "rest-example"), "built\n");
+            writeFileSync(join(ws, "api.gen.rs"), "fn api() {}\n");
+            mkdirSync(join(ws, "out"));
+            writeFileSync(join(ws, "out", "report.txt"), "3 pass\n");
+            mkdirSync(join(ws, "target"));
+            writeFileSync(join(ws, "target", "debug.o"), "object\n");
+        };
+        const first = await driver.event(
+            ev("user_turn", { id: "e-2", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(first.failed).toBeUndefined();
+        expect(first.snapshot).toBe("host:q-1:e-2");
+        // The clone's own `git status` lists none of the four new files.
+        expect(cloneStatus(ws)).toBe(" M .gitignore\n");
+        expect(diffPaths(captured(armDir)["host:q-1:e-2:diff"]?.patch ?? "").sort()).toEqual([
+            "api.gen.rs",
+            "examples/rest-example",
+            "out/report.txt",
+        ]);
+
+        const resumed = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await resumed.resume(start);
+        (hosts.at(-1) as FakeHost).onPrompt = () => {
+            writeFileSync(join(ws, "db.gen.rs"), "fn db() {}\n");
+            writeFileSync(join(ws, "target", "release.o"), "object\n");
+        };
+        const second = await resumed.event(
+            ev("user_turn", { id: "e-3", session: "s-0", text: "go", probe: "q-2" }),
+        );
+        expect(second.failed).toBeUndefined();
+        expect(diffPaths(captured(armDir)["host:q-2:e-3:diff"]?.patch ?? "")).toEqual([
+            "db.gen.rs",
+        ]);
+
+        await resumed.event(ev("session_end", { id: "e-4", session: "s-0" }));
+        await resumed.event(ev("session_start", { id: "e-5", session: "s-1" }));
+        const next = await resumed.event(
+            ev("user_turn", { id: "e-6", session: "s-1", text: "next", probe: "q-3" }),
+        );
+        expect(next.failed).toBeUndefined();
+        const prior = captured(armDir)["host:q-3:e-6:prior-diff"] as {
+            patch?: string;
+            refused?: string;
+        };
+        expect(prior.refused).toBeUndefined();
+        expect(diffPaths(prior.patch ?? "").sort()).toEqual([
+            ".gitignore",
+            "api.gen.rs",
+            "db.gen.rs",
+            "examples/rest-example",
+            "out/report.txt",
+        ]);
+    });
+
+    test("a plain turn that adds eol, ident, filter, and encoding attributes leaves later probe turns ok with each file's bytes on disk in their diffs, across a resume", async () => {
+        const { driver, hosts, armDir, transcripts } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        mkdirSync(join(transcripts, "sessions"), { recursive: true });
+        const ws = driver.workspace("p");
+        const start = ev("session_start", { id: "e-0", session: "s-0" });
+        await driver.event(start);
+        (hosts.at(-1) as FakeHost).onPrompt = () =>
+            writeFileSync(
+                join(ws, ".gitattributes"),
+                "*.txt text eol=lf ident\n*.rs filter=fmt\n*.bad working-tree-encoding=NO-SUCH-ENCODING\n",
+            );
+        const plain = await driver.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "normalize line endings" }),
+        );
+        expect(plain.failed).toBeUndefined();
+        (hosts.at(-1) as FakeHost).onPrompt = () => {
+            writeFileSync(join(ws, "note.txt"), "first\r\n$Id: FORBIDDEN_VALUE $\r\n");
+            writeFileSync(join(ws, "lib.rs"), "fn lib() {}\n");
+            writeFileSync(join(ws, "data.bad"), "hello\n");
+        };
+        const first = await driver.event(
+            ev("user_turn", { id: "e-2", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(first.failed).toBeUndefined();
+        const turn = captured(armDir)["host:q-1:e-2:diff"]?.patch ?? "";
+        expect(diffPaths(turn).sort()).toEqual(["data.bad", "lib.rs", "note.txt"]);
+        // The clone's own git stores `note.txt` as `first\n$Id$\n` and fails to add `data.bad`.
+        expect(cloneBlob(ws, "note.txt")).toBe("first\n$Id$\n");
+        expect(cloneAdd(ws, "data.bad")).toContain("NO-SUCH-ENCODING");
+        expect(turn).toContain("+first\r\n+$Id: FORBIDDEN_VALUE $\r\n");
+        expect(turn).toContain("+hello");
+
+        const resumed = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await resumed.resume(start);
+        (hosts.at(-1) as FakeHost).onPrompt = () =>
+            writeFileSync(join(ws, "later.txt"), "second\r\n");
+        const second = await resumed.event(
+            ev("user_turn", { id: "e-3", session: "s-0", text: "go", probe: "q-2" }),
+        );
+        expect(second.failed).toBeUndefined();
+        const later = captured(armDir)["host:q-2:e-3:diff"]?.patch ?? "";
+        expect(diffPaths(later)).toEqual(["later.txt"]);
+        expect(later).toContain("+second\r\n");
     });
 
     test("the recorder's tree holds a path the clone's .git/info/exclude names, with the bytes on disk under a .git/info/attributes rule", () => {
         const repo = gitRepo();
         const recorder = new SnapshotRecorder(tmp(), "eidnara", () => []);
-        recorder.trackIgnoreRules(basename(repo), {});
+        recorder.trackIgnoreRules(basename(repo), repo);
         recorder.sessionStart("s-1", basename(repo), repo);
         const before = recorder.tree(repo);
         const info = join(repo, ".git", "info");
@@ -3166,7 +3328,6 @@ describe("probe snapshots", () => {
             env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
         });
         expect(status.stdout).toBe("?? note.txt\n");
-        expect(recorder.ignoreChanges(repo, basename(repo))).toEqual([]);
         const patch = recorder.patchBetween(before, recorder.tree(repo));
         expect(patch).toContain("+static STORE: Mutex<u8>;");
         expect(patch).toContain("+++ b/.tmp-bun/test.log");
@@ -3228,8 +3389,8 @@ describe("probe snapshots", () => {
         expect(prior.patch).toContain("+fn later() {}");
     });
 
-    test("a .gitignore that ignores itself still fails the probe turn as a rule change", async () => {
-        const { driver, hosts } = fixture("host", { p: gitRepo() });
+    test("a probe turn that writes rule files ignoring every path ends ok with every file it wrote in its diff", async () => {
+        const { driver, hosts, armDir } = fixture("host", { p: gitRepo() });
         const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
         await fresh.reset();
         const host = hosts.at(-1) as FakeHost;
@@ -3240,25 +3401,26 @@ describe("probe snapshots", () => {
             writeFileSync(join(ws, ".gitignore"), "*\n");
             mkdirSync(join(ws, "deep", "er"), { recursive: true });
             writeFileSync(join(ws, "deep", "er", ".gitignore"), "*\n");
+            writeFileSync(join(ws, "deep", "er", "notes.md"), "kept\n");
         };
         const outcome = await fresh.event(
             ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
         );
-        // The root rule ignores deep/er, so the rule file there is inert; the root one fails the turn.
-        expect(outcome.failed).toBe("rule files changed: .gitignore (added)");
+        expect(outcome.failed).toBeUndefined();
+        expect(cloneStatus(ws)).toBe("");
+        expect(diffPaths(captured(armDir)["host:q-1:e-1:diff"]?.patch ?? "").sort()).toEqual([
+            ".gitignore",
+            "cache.rs",
+            "deep/er/.gitignore",
+            "deep/er/notes.md",
+        ]);
     });
 
-    test("a rule file added inside an ignored directory fails no probe turn, then or later", async () => {
+    test("files under a directory the baseline rules ignore stay out of every diff, whatever rule files the agent adds", async () => {
         const repo = gitRepo();
         writeFileSync(join(repo, ".gitignore"), "target/\n");
-        const g = (...args: string[]) =>
-            spawnSync("git", args, {
-                cwd: repo,
-                env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
-            });
-        g("add", ".gitignore");
-        g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "ignore target");
-        const { driver, hosts } = fixture("host", { p: repo });
+        commitAll(repo, "ignore target");
+        const { driver, hosts, armDir } = fixture("host", { p: repo });
         const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
         await fresh.reset();
         const host = hosts.at(-1) as FakeHost;
@@ -3274,32 +3436,31 @@ describe("probe snapshots", () => {
             ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
         );
         expect(first.failed).toBeUndefined();
-        host.onPrompt = () => writeFileSync(join(ws, "more.rs"), "fn more() {}\n");
+        expect(diffPaths(captured(armDir)["host:q-1:e-1:diff"]?.patch ?? "")).toEqual(["lib.rs"]);
+        // The agent's root rule file re-includes `target/`; the baseline rule still applies.
+        host.onPrompt = () => {
+            writeFileSync(join(ws, ".gitignore"), "!target/\n");
+            writeFileSync(join(ws, "target", "debug.o"), "object\n");
+            writeFileSync(join(ws, "more.rs"), "fn more() {}\n");
+        };
         const later = await fresh.event(
             ev("user_turn", { id: "e-2", session: "s-0", text: "go", probe: "q-2" }),
         );
         expect(later.failed).toBeUndefined();
-        // A rule file outside the ignored directory still fails the turn that adds it.
-        host.onPrompt = () => writeFileSync(join(ws, ".gitattributes"), "*.rs -diff\n");
-        const effective = await fresh.event(
-            ev("user_turn", { id: "e-3", session: "s-0", text: "go", probe: "q-3" }),
-        );
-        expect(effective.failed).toBe("rule files changed: .gitattributes (added)");
+        expect(cloneStatus(ws)).toContain("?? target/debug.o");
+        expect(diffPaths(captured(armDir)["host:q-2:e-2:diff"]?.patch ?? "").sort()).toEqual([
+            ".gitignore",
+            "more.rs",
+        ]);
     });
 
-    test("an edit to a tracked rule file inside an ignored directory still fails the probe turn", async () => {
+    test("an edit to a rule file the source tracks inside an ignored directory is in the probe turn's diff", async () => {
         const repo = gitRepo();
         writeFileSync(join(repo, ".gitignore"), "vendor/\n");
         mkdirSync(join(repo, "vendor"));
         writeFileSync(join(repo, "vendor", ".gitignore"), "*.o\n");
-        const g = (...args: string[]) =>
-            spawnSync("git", args, {
-                cwd: repo,
-                env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
-            });
-        g("add", "-f", ".gitignore", "vendor/.gitignore");
-        g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "rules");
-        const { driver, hosts } = fixture("host", { p: repo });
+        commitAll(repo, "rules");
+        const { driver, hosts, armDir } = fixture("host", { p: repo });
         const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
         await fresh.reset();
         const host = hosts.at(-1) as FakeHost;
@@ -3309,7 +3470,10 @@ describe("probe snapshots", () => {
         const outcome = await fresh.event(
             ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
         );
-        expect(outcome.failed).toBe("rule files changed: vendor/.gitignore (changed)");
+        expect(outcome.failed).toBeUndefined();
+        const patch = captured(armDir)["host:q-1:e-1:diff"]?.patch ?? "";
+        expect(diffPaths(patch)).toEqual(["vendor/.gitignore"]);
+        expect(patch).toContain("-*.o\n+*\n");
     });
 
     test("a FIFO or an oversized file at .git/info/exclude fails no probe turn and blocks no recorder run", async () => {
@@ -3342,8 +3506,8 @@ describe("probe snapshots", () => {
         expect(large.failed).toBeUndefined();
     });
 
-    test("a probe turn that adds a .gitattributes rule ends failed, since attributes rewrite indexed content", async () => {
-        const { driver, hosts } = fixture("host", { p: gitRepo() });
+    test("a probe turn that adds an ident attribute ends ok with the file's bytes on disk in its diff", async () => {
+        const { driver, hosts, armDir } = fixture("host", { p: gitRepo() });
         const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
         await fresh.reset();
         const host = hosts.at(-1) as FakeHost;
@@ -3356,7 +3520,11 @@ describe("probe snapshots", () => {
         const outcome = await fresh.event(
             ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
         );
-        expect(outcome.failed).toBe("rule files changed: .gitattributes (added)");
+        expect(outcome.failed).toBeUndefined();
+        expect(cloneBlob(ws, "note.txt")).toBe("before $Id$ after\n");
+        const patch = captured(armDir)["host:q-1:e-1:diff"]?.patch ?? "";
+        expect(diffPaths(patch).sort()).toEqual([".gitattributes", "note.txt"]);
+        expect(patch).toContain("+before $Id: FORBIDDEN_VALUE $ after");
     });
 
     test("a probe turn that leaves an embedded repository in the workspace ends failed, naming it", async () => {
@@ -3635,16 +3803,15 @@ test("a recorder rebuilt over an index lock moves the workspace to a fresh index
     expect(existsSync(join(gitDir, `${basename(repo)}.2.index`))).toBe(true);
 });
 
-test("a session that changed a rule file leaves the next session a refused prior-session diff", () => {
+test("a session that changed a rule file leaves the next session a prior-session diff with the rule file and the files it names", () => {
     const repo = gitRepo();
     const armDir = tmp();
     const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
-    recorder.trackIgnoreRules(basename(repo), {});
+    recorder.trackIgnoreRules(basename(repo), repo);
     recorder.sessionStart("s-1", basename(repo), repo);
     writeFileSync(join(repo, ".gitignore"), "secret.txt\n");
-    writeFileSync(join(repo, "secret.txt"), "hidden");
+    writeFileSync(join(repo, "secret.txt"), "hidden\n");
     recorder.sessionEnd("s-1", basename(repo), repo);
-    rmSync(join(repo, ".gitignore"));
     recorder.sessionStart("s-2", basename(repo), repo);
     const before = recorder.tree(repo);
     recorder.capture(
@@ -3656,12 +3823,9 @@ test("a session that changed a rule file leaves the next session a refused prior
         false,
     );
     const snap = JSON.parse(readFileSync(join(armDir, "snapshots.jsonl"), "utf8"));
-    const prior = snap.artefacts.find((a: { role?: string }) => a.role === "prior-session");
-    expect(prior.patch).toBe("");
-    expect(prior.refused).toContain(".gitignore (added)");
-    expect(() => new ArtefactReader(snap).diff("prior-session")).toThrow(
-        "prior-session diff unrecorded",
-    );
+    const prior = new ArtefactReader(snap).diff("prior-session");
+    expect(diffPaths(prior).sort()).toEqual([".gitignore", "secret.txt"]);
+    expect(prior).toContain("+hidden");
 });
 
 test("the workspace walk checks its deadline once per directory, so a forest of empty directories ends in time", () => {
@@ -3669,7 +3833,7 @@ test("the workspace walk checks its deadline once per directory, so a forest of 
     for (let i = 0; i < 3_000; i++) mkdirSync(join(repo, "empties", `d${i}`), { recursive: true });
     const recorder = new SnapshotRecorder(tmp(), "eidnara", () => [], 0);
     const started = Date.now();
-    expect(() => recorder.survey(repo)).toThrow("timed out");
+    expect(() => recorder.embedded(repo)).toThrow("timed out");
     expect(Date.now() - started).toBeLessThan(2_000);
 });
 
@@ -3703,9 +3867,9 @@ test("a symlink planted at the saved git-config path is never written through on
     expect(readFileSync(join(armDir, "p.gitconfig"), "utf8")).toContain("[core]");
 });
 
-test("a probe that writes an attribute rule git cannot apply fails the turn instead of the run", async () => {
+test("a probe that writes an attribute rule the clone's git cannot apply ends ok, and so does the next probe", async () => {
     const source = gitRepo();
-    const { driver, hosts } = fixture("host", { p: source });
+    const { driver, hosts, armDir } = fixture("host", { p: source });
     await driver.reset();
     await driver.event(ev("session_start", { id: "e-0", session: "s-0" }));
     const ws = driver.workspace("p");
@@ -3717,12 +3881,31 @@ test("a probe that writes an attribute rule git cannot apply fails the turn inst
     const outcome = await driver.event(
         ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
     );
-    expect(outcome.failed).toContain("rule files changed");
-    expect(outcome.snapshot).toBeDefined();
+    expect(outcome.failed).toBeUndefined();
+    expect(cloneAdd(ws, "note.txt")).toContain("NO-SUCH-ENCODING");
+    const patch = captured(armDir)["host:q-1:e-1:diff"]?.patch ?? "";
+    expect(diffPaths(patch).sort()).toEqual([".gitattributes", "note.txt"]);
+    host.onPrompt = () => writeFileSync(join(ws, "more.txt"), "again");
     const again = await driver.event(
         ev("user_turn", { id: "e-2", session: "s-0", text: "again", probe: "q-2" }),
     );
-    expect(again.failed).toContain("git add failed under changed rule files");
+    expect(again.failed).toBeUndefined();
+    expect(diffPaths(captured(armDir)["host:q-2:e-2:diff"]?.patch ?? "")).toEqual(["more.txt"]);
+});
+
+test("a restored state that names a rule path outside the baseline mirror, or a non-blob id, is refused", () => {
+    for (const files of [
+        { "../../escape/.gitignore": "ba22c99a99eedad8a95a9958ec1b3982843d5e1c" },
+        { "notes.md": "ba22c99a99eedad8a95a9958ec1b3982843d5e1c" },
+        { ".gitignore": "--output=/tmp/x" },
+    ]) {
+        const armDir = tmp();
+        writeFileSync(
+            join(armDir, "snapshot-state.json"),
+            JSON.stringify({ session: null, starts: {}, last: {}, ignores: { p: { files } } }),
+        );
+        expect(() => new SnapshotRecorder(armDir, "eidnara", () => [])).toThrow("names rule file");
+    }
 });
 
 test("a restored state whose index generation is not a nonnegative integer is refused", () => {
@@ -3909,38 +4092,255 @@ test("a session end that leaves a nested repository where indexed files were dro
     expect(prior).not.toContain("fresh");
 });
 
-test("rule-file hashing is bounded by count and by the recorder deadline", () => {
+/**
+ * The tree `git add --all` writes for `work` under the work tree's own rule files, from an index
+ * kept in `gitDir`, with the paths in `forced` added over the ignore rules.
+ */
+function plainAddTree(gitDir: string, work: string, forced: string[]): string {
+    const scope = {
+        GIT_DIR: gitDir,
+        GIT_WORK_TREE: work,
+        GIT_INDEX_FILE: join(gitDir, "plain.index"),
+    };
+    const run = (...args: string[]) => {
+        const r = spawnSync("git", args, { cwd: work, env: gitEnv(scope), encoding: "utf8" });
+        if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+        return r.stdout;
+    };
+    if (!existsSync(gitDir)) {
+        spawnSync("git", ["init", "--quiet", "--bare", gitDir], { env: gitEnv() });
+    }
+    run("add", "--all", "--", ".");
+    const present = forced.filter((path) => existsSync(join(work, path)));
+    if (present.length > 0) run("add", "--force", "--", ...present);
+    return run("write-tree").trim();
+}
+
+test("in a workspace whose rule files equal the source's, each recorder tree has the id of the tree git add --all writes", () => {
+    const repo = gitRepo();
+    const put = (path: string | Buffer, content: string, mode = 0o644) => {
+        const at =
+            typeof path === "string"
+                ? join(repo, path)
+                : Buffer.concat([Buffer.from(`${repo}/`), path]);
+        if (typeof path === "string") mkdirSync(dirname(join(repo, path)), { recursive: true });
+        writeFileSync(at, content, { mode });
+    };
+    put(".gitignore", "target/\n*.log\n!keep.log\n/rooted\nbuild\n");
+    put("sub/.gitignore", "*.tmp\n!important.tmp\nlocal/\n");
+    put(".gitattributes", "*.txt text eol=lf\n*.bin -text\n*.id ident\n");
+    put("sub/.gitattributes", "*.txt -text\n");
+    put("sub/forced.tmp", "tracked although ignored\n");
+    put("ta\tb/.gitignore", "secret\n");
+    commitAll(repo, "rules and a file tracked over them");
+    const recorder = new SnapshotRecorder(tmp(), "eidnara", () => []);
+    recorder.trackIgnored(basename(repo), ["sub/forced.tmp"]);
+    recorder.trackIgnoreRules(basename(repo), repo);
+    const plainGit = join(tmp(), "plain.git");
+    const both = () => {
+        const tree = recorder.tree(repo);
+        expect(tree).toBe(plainAddTree(plainGit, repo, ["sub/forced.tmp"]));
+        return tree;
+    };
+    const names = (tree: string) =>
+        spawnSync("git", ["ls-tree", "-r", "-z", "--name-only", tree], {
+            env: { ...process.env, GIT_DIR: plainGit },
+        })
+            .stdout.toString("latin1")
+            .split("\0")
+            .filter(Boolean);
+    both();
+
+    put("target/debug/x.o", "object\n");
+    put("a.log", "noise\n");
+    put("keep.log", "kept\n");
+    put("rooted", "ignored at the root\n");
+    put("deep/rooted", "kept below the root\n");
+    put("build/out", "ignored\n");
+    put("deep/build", "ignored as a file too\n");
+    put("sub/a.tmp", "ignored\n");
+    put("sub/important.tmp", "kept\n");
+    put("sub/local/f", "ignored\n");
+    put("sub/forced.tmp", "changed\n");
+    put("note.txt", "stored with LF\r\n");
+    put("sub/note.txt", "stored with CRLF\r\n");
+    put("data.bin", "stored with CRLF\r\n");
+    put("stamp.id", "$Id: expanded $\n");
+    put("run.sh", "#!/bin/sh\n", 0o755);
+    put(":colon.txt", "kept\n");
+    put(":(glob)x.log", "ignored\n");
+    put("spa ce/new\nline.rs", "kept\n");
+    put("ta\tb/secret", "ignored by the rule file in a directory named with a tab\n");
+    put("ta\tb/shown", "kept\n");
+    put(Buffer.from("caf\xe9.rs", "latin1"), "kept under a Latin-1 name\n");
+    put(Buffer.from("caf\xe9.log", "latin1"), "ignored under a Latin-1 name\n");
+    symlinkSync("README", join(repo, "link"));
+    symlinkSync("target", join(repo, "build-link"));
+    const filled = both();
+    expect(names(filled).sort()).toEqual(
+        [
+            ".gitattributes",
+            ".gitignore",
+            ":colon.txt",
+            "README",
+            "build-link",
+            "caf\xe9.rs",
+            "data.bin",
+            "deep/rooted",
+            "keep.log",
+            "link",
+            "note.txt",
+            "run.sh",
+            "spa ce/new\nline.rs",
+            "stamp.id",
+            "sub/.gitattributes",
+            "sub/.gitignore",
+            "sub/forced.tmp",
+            "sub/important.tmp",
+            "sub/note.txt",
+            "ta\tb/.gitignore",
+            "ta\tb/shown",
+        ].sort(),
+    );
+
+    const stored = (path: string) =>
+        spawnSync("git", ["cat-file", "blob", `${filled}:${path}`], {
+            env: { ...process.env, GIT_DIR: plainGit },
+        }).stdout.toString();
+    expect(stored("note.txt")).toBe("stored with LF\n");
+    expect(stored("sub/note.txt")).toBe("stored with CRLF\r\n");
+    expect(stored("data.bin")).toBe("stored with CRLF\r\n");
+    expect(stored("stamp.id")).toBe("$Id$\n");
+
+    // A second pass over a warm index: edits, removals, a file where a directory was, and the reverse.
+    put("keep.log", "edited\n");
+    rmSync(join(repo, "sub", "important.tmp"));
+    rmSync(join(repo, "deep"), { recursive: true });
+    put("deep", "a file now\n");
+    rmSync(join(repo, "run.sh"));
+    put("run.sh/inner.rs", "a directory now\n");
+    rmSync(join(repo, "sub", "forced.tmp"));
+    chmodSync(join(repo, "note.txt"), 0o755);
+    const edited = both();
+    expect(edited).not.toBe(filled);
+    expect(names(edited)).toContain("run.sh/inner.rs");
+    expect(names(edited)).not.toContain("sub/forced.tmp");
+});
+
+test("the baseline rules are the rule files' bytes in the fresh clone, where checkout expanded an ident keyword", () => {
+    const source = gitRepo();
+    writeFileSync(join(source, ".gitattributes"), ".gitignore ident\n");
+    writeFileSync(join(source, ".gitignore"), "$Id$\n*.log\n");
+    commitAll(source, "an ignore rule that checkout rewrites");
+    const clone = join(tmp(), "clone");
+    ownGit(source, "clone", "--quiet", source, clone);
+    const expanded = readFileSync(join(clone, ".gitignore"), "utf8");
+    expect(expanded).toMatch(/^\$Id: [0-9a-f]{40} \$\n\*\.log\n$/);
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.trackIgnoreRules(basename(clone), clone);
+    const plainGit = join(tmp(), "plain.git");
+    expect(recorder.tree(clone)).toBe(plainAddTree(plainGit, clone, []));
+    writeFileSync(
+        join(clone, "$Id$"),
+        "a file the source's blob names and the clone's rule file leaves in\n",
+    );
+    writeFileSync(join(clone, "a.log"), "ignored\n");
+    const tree = recorder.tree(clone);
+    expect(tree).toBe(plainAddTree(plainGit, clone, []));
+    const listed = spawnSync("git", ["ls-tree", "-r", "--name-only", tree], {
+        env: { ...process.env, GIT_DIR: plainGit },
+        encoding: "utf8",
+    }).stdout;
+    expect(listed.trim().split("\n")).toEqual(["$Id$", ".gitattributes", ".gitignore", "README"]);
+});
+
+test("a file or a directory standing where the source holds a rule file, and a file where it holds a rule directory, are indexed as git add --all indexes them", () => {
+    const repo = gitRepo();
+    mkdirSync(join(repo, "vendor", "lib"), { recursive: true });
+    writeFileSync(join(repo, ".gitignore"), "vendor/\ncache/\n");
+    writeFileSync(join(repo, "vendor", ".gitignore"), "*.o\n");
+    writeFileSync(join(repo, "vendor", "lib", ".gitignore"), "*.a\n");
+    writeFileSync(join(repo, "vendor", "lib", "code.rs"), "fn vendored() {}\n");
+    commitAll(repo, "a rule directory the root rules ignore");
+    const forced = ["vendor/.gitignore", "vendor/lib/.gitignore", "vendor/lib/code.rs"];
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.trackIgnored(basename(repo), forced);
+    recorder.trackIgnoreRules(basename(repo), repo);
+    const plainGit = join(tmp(), "plain.git");
+    const names = (tree: string) =>
+        spawnSync("git", ["ls-tree", "-r", "--name-only", tree], {
+            env: { ...process.env, GIT_DIR: join(armDir, "snapshot.git") },
+            encoding: "utf8",
+        })
+            .stdout.trim()
+            .split("\n")
+            .sort();
+    const both = () => {
+        const tree = recorder.tree(repo);
+        expect(tree).toBe(plainAddTree(plainGit, repo, forced));
+        return names(tree);
+    };
+    expect(both()).toContain("vendor/lib/code.rs");
+
+    // `vendor/` matches a directory only, so a file of that name is in the tree.
+    rmSync(join(repo, "vendor"), { recursive: true });
+    writeFileSync(join(repo, "vendor"), "a file now\n");
+    expect(both()).toEqual([".gitignore", "README", "vendor"]);
+
+    // The directory returns, and the rule file the source tracks inside it applies again.
+    rmSync(join(repo, "vendor"));
+    mkdirSync(join(repo, "vendor", "lib"), { recursive: true });
+    writeFileSync(join(repo, "vendor", "lib", ".gitignore"), "*.a\n");
+    writeFileSync(join(repo, "vendor", "lib", "code.rs"), "fn back() {}\n");
+    writeFileSync(join(repo, "vendor", "lib", "new.rs"), "fn ignored() {}\n");
+    expect(both()).toEqual([".gitignore", "README", "vendor/lib/.gitignore", "vendor/lib/code.rs"]);
+
+    // A directory stands at the root rule file's path; the baseline rules still ignore `cache/`.
+    rmSync(join(repo, ".gitignore"));
+    mkdirSync(join(repo, ".gitignore"));
+    writeFileSync(join(repo, ".gitignore", "notes.md"), "a directory now\n");
+    mkdirSync(join(repo, "cache"));
+    writeFileSync(join(repo, "cache", "hit"), "ignored\n");
+    expect(names(recorder.tree(repo))).toEqual([
+        ".gitignore/notes.md",
+        "README",
+        "vendor/lib/.gitignore",
+        "vendor/lib/code.rs",
+    ]);
+});
+
+test("a workspace holding more than a thousand agent-written rule files is indexed whole", () => {
     const repo = gitRepo();
     const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => [], 60_000);
+    recorder.trackIgnoreRules(basename(repo), repo);
+    const before = recorder.tree(repo);
     for (let i = 0; i < 1_100; i++) {
         mkdirSync(join(repo, "many", `d${i}`), { recursive: true });
-        writeFileSync(join(repo, "many", `d${i}`, ".gitignore"), "x\n");
+        writeFileSync(join(repo, "many", `d${i}`, ".gitignore"), "*\n");
+        writeFileSync(join(repo, "many", `d${i}`, "f.rs"), "");
     }
-    const recorder = new SnapshotRecorder(armDir, "eidnara", () => [], 60_000);
-    expect(() => recorder.survey(repo)).toThrow("more than 1000 rule files");
-    const few = gitRepo();
-    for (let i = 0; i < 50; i++) {
-        mkdirSync(join(few, "some", `d${i}`), { recursive: true });
-        writeFileSync(join(few, "some", `d${i}`, ".gitignore"), "x\n");
-    }
-    const slow = new SnapshotRecorder(tmp(), "eidnara", () => [], 0);
-    slow.trackIgnoreRules(basename(few), {});
-    const files = Array.from({ length: 50 }, (_, i) => `some/d${i}/.gitignore`);
-    expect(() => slow.ignoreChanges(few, basename(few), files)).toThrow("hashing timed out");
+    const paths = diffPaths(recorder.patchBetween(before, recorder.tree(repo)));
+    expect(paths).toHaveLength(2_200);
+    expect(paths).toContain("many/d1099/f.rs");
 }, 60_000);
 
-test("the nested-repository check is bounded like the other snapshot git runs", () => {
+test("a FIFO at the workspace's .gitignore blocks no recorder run", () => {
     const repo = gitRepo();
     const armDir = tmp();
-    const recorder = new SnapshotRecorder(armDir, "eidnara", () => [], 300);
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => [], 5_000);
     recorder.sessionStart("s-1", "p", repo);
+    const before = recorder.tree(repo);
     mkdirSync(join(repo, "vendor"));
     spawnSync("git", ["init", "-q"], { cwd: join(repo, "vendor") });
-    rmSync(join(repo, ".gitignore"), { force: true });
     spawnSync("mkfifo", [join(repo, ".gitignore")]);
-    const started = Date.now();
-    expect(() => recorder.embedded(repo)).toThrow("timed out");
-    expect(Date.now() - started).toBeLessThan(5_000);
+    writeFileSync(join(repo, "lib.rs"), "fn lib() {}\n");
+    // The clone's own git blocks on the FIFO until its bound.
+    expect(spawnSync("git", ["status"], { cwd: repo, timeout: 300 }).error).toBeDefined();
+    expect(recorder.embedded(repo)).toEqual(["vendor"]);
+    expect(diffPaths(recorder.patchBetween(before, recorder.tree(repo)))).toEqual(["lib.rs"]);
 });
 
 test("snapshot git runs no command and indexes no path that the workspace repo's config names", () => {

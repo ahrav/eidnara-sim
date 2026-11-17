@@ -42,11 +42,27 @@ export function git(
     timeoutMs?: number,
     maxBuffer = GIT_OUTPUT_CAP,
 ): string {
+    return gitBytes(cwd, args, extra, timeoutMs, { maxBuffer }).toString("utf8");
+}
+
+/**
+ * Git paths can contain invalid UTF-8; `gitBytes` preserves bytes that UTF-8 decoding would
+ * replace. `accept` lists the exit statuses the caller takes as an answer (`check-ignore`
+ * exits 1 when it matches no path); any other status throws.
+ */
+export function gitBytes(
+    cwd: string,
+    args: string[],
+    extra: Record<string, string> = {},
+    timeoutMs?: number,
+    o: { input?: Buffer | undefined; accept?: readonly number[]; maxBuffer?: number } = {},
+): Buffer {
+    const maxBuffer = o.maxBuffer ?? GIT_OUTPUT_CAP;
     const r = spawnSync("git", args, {
         cwd,
         env: gitEnv(extra),
-        encoding: "utf8",
         maxBuffer,
+        ...(o.input ? { input: o.input } : {}),
         ...(timeoutMs ? { timeout: timeoutMs, killSignal: "SIGKILL" } : {}),
     });
     const code = (r.error as NodeJS.ErrnoException | undefined)?.code;
@@ -60,6 +76,8 @@ export function git(
         throw new GitOverflow(`git ${args[0]}: ${args.length} arguments passed the OS limit`);
     }
     if (r.error) throw new Error(`git ${args.join(" ")}: ${r.error.message}`);
-    if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+    if (!(o.accept ?? [0]).includes(r.status as number)) {
+        throw new Error(`git ${args.join(" ")}: ${r.stderr.toString("utf8")}`);
+    }
     return r.stdout;
 }

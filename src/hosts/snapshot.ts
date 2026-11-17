@@ -1,5 +1,4 @@
-import { spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import {
     appendFileSync,
     type Dirent,
@@ -14,8 +13,8 @@ import {
     rmSync,
     writeFileSync,
 } from "node:fs";
-import { basename, join, relative, sep } from "node:path";
-import { GitBound, git, gitEnv } from "../git";
+import { basename, dirname, join, relative, sep } from "node:path";
+import { GitBound, git, gitBytes } from "../git";
 import type { Artefact, CallView, Command, Snapshot } from "../grade/artefacts";
 import { keepCompleteLines } from "../run/journal";
 
@@ -35,8 +34,9 @@ interface RecorderState {
     /** Per project, the generation of its index file; a lock a killed git left behind moves the project to the next. */
     indexGenerations?: Record<string, number>;
     /**
-     * Per project, the blob ids of the source's `.gitignore` and `.gitattributes` files: the rule
-     * files the recorder's git reads from the work tree when it indexes the workspace.
+     * Per project, the blob ids of the `.gitignore` and `.gitattributes` files of its fresh
+     * clone: the baseline rules every tree of that project is built under. The blobs are in
+     * the recorder's repository.
      */
     ignores?: Record<string, { files: Record<string, string> }>;
 }
@@ -44,8 +44,10 @@ interface RecorderState {
 const EMPTY: RecorderState = { session: null, ended: null, starts: {}, last: {} };
 
 /**
- * A restored state's index generations are the only values that reach a path: each must be a
- * nonnegative safe integer, so `GIT_INDEX_FILE` stays under the recorder's repository.
+ * A restored state's index generations and baseline rule paths reach a path. Each generation
+ * must be a nonnegative safe integer, so `GIT_INDEX_FILE` stays under the recorder's repository;
+ * each rule path must be a relative path to a rule file, and its id a blob id, so the baseline
+ * mirror stays under the recorder's repository.
  */
 function restoredState(raw: unknown): RecorderState {
     const state = raw as RecorderState;
@@ -56,22 +58,48 @@ function restoredState(raw: unknown): RecorderState {
             );
         }
     }
+    for (const [project, baseline] of Object.entries(state.ignores ?? {})) {
+        for (const [path, id] of Object.entries(baseline?.files ?? {})) {
+            const parts = path.split("/");
+            const plain = parts.every((part) => part !== "" && part !== "." && part !== "..");
+            if (!plain || !RULE_FILES.has(parts.at(-1) as string) || !OBJECT_ID.test(String(id))) {
+                throw new Error(
+                    `snapshot state names rule file ${JSON.stringify(path)} at ${JSON.stringify(id)} for ${project}`,
+                );
+            }
+        }
+    }
     return state;
 }
-
-/** A git run the workspace's own rule files made fail: the probe turn fails and the run goes on. */
-export class WorkspaceRefused extends GitBound {}
 
 /** Entries a workspace walk visits at most; a wider forest fails the probe turn. */
 const WORKSPACE_ENTRY_CAP = 200_000;
 /** Nested repositories a workspace may hold at most; more fail the probe turn before git runs. */
 const NESTED_REPO_CAP = 1_000;
-/** Bytes an ignore-rule file may hold before it reads as an unreadable, changed rule. */
-const RULE_FILE_CAP = 1 << 20;
-/** Rule files a workspace may hold at most; more fail the probe turn during the walk. */
-const RULE_FILE_COUNT_CAP = 1_000;
-/** In-tree files whose rules shape what the snapshot tree holds: ignore rules and attributes (filters, `ident`, eol). */
+/** In-tree files whose rules shape what a git tree holds: ignore rules and attributes (filters, `ident`, eol). */
 const RULE_FILES = new Set([".gitignore", ".gitattributes"]);
+const OBJECT_ID = /^[0-9a-f]{40}$/;
+/** Git's blob id of the two bytes `a\n`: what `a\r\n` is stored as under `* text eol=lf`. */
+const LF_BLOB = "78981922613b2afb6025042ff6bd878ac1994e85";
+/** Whether this process has seen its git read attributes from `GIT_ATTR_SOURCE`. */
+let attributeSourceHonored = false;
+
+/** One project's baseline rules as the recorder's git reads them; `SnapshotRecorder.baseline` builds it. */
+interface BaselineRules {
+    mirror: string;
+    attributes: string;
+    directories: Set<string>;
+}
+
+/** The NUL-terminated fields of a git `-z` listing, one JS character per byte. */
+function fields(listing: Buffer): string[] {
+    return listing.toString("latin1").split("\0").filter(Boolean);
+}
+
+/** The bytes of a path the workspace walk read as UTF-8, one JS character per byte. */
+function bytesOf(path: string): string {
+    return Buffer.from(path, "utf8").toString("latin1");
+}
 
 /**
  * Yields a directory's entries one at a time through `opendirSync`, so a caller's count and
@@ -84,17 +112,6 @@ export function* entriesOf(dir: string): Generator<Dirent> {
     } finally {
         handle.closeSync();
     }
-}
-
-/**
- * Git's blob id of a regular file under the size cap, computed without git; any other shape
- * reads as `unreadable`, which differs from every recorded baseline.
- */
-function blobId(path: string): string {
-    const stat = lstatSync(path, { throwIfNoEntry: false });
-    if (stat === undefined || !stat.isFile() || stat.size > RULE_FILE_CAP) return "unreadable";
-    const content = readFileSync(path);
-    return createHash("sha1").update(`blob ${content.length}\0`).update(content).digest("hex");
 }
 
 export class SnapshotRecorder {
@@ -200,25 +217,142 @@ export class SnapshotRecorder {
      * Runs git against the recorder's own bare repository under the arm directory, outside
      * the sandbox. The agent can write the workspace's `.git`, so its config (filters,
      * fsmonitor, external diff, textconv, `core.worktree`) never applies: `GIT_DIR` names the
-     * recorder's repository and `GIT_WORK_TREE` the workspace. Each workspace keeps its own
-     * index there, so a later tree rehashes only the files whose stat data changed.
+     * recorder's repository and `GIT_WORK_TREE` the workspace. The agent can write the
+     * workspace's `.gitattributes` files too, so `GIT_ATTR_SOURCE` names the project's baseline
+     * attribute tree and git reads attributes from that tree alone. Each workspace keeps its
+     * own index there, so a later tree rehashes only the files whose stat data changed.
      */
-    private git(args: string[], work?: string): string {
+    private bytes(args: string[], work?: string, input?: Buffer): Buffer {
         if (work) this.requireRealDir(work);
-        if (!existsSync(this.gitDir)) git(this.armDir, ["init", "--quiet", "--bare", this.gitDir]);
+        this.init();
         const scope: Record<string, string> = { GIT_DIR: this.gitDir, GIT_NO_REPLACE_OBJECTS: "1" };
         if (work) {
             scope.GIT_WORK_TREE = work;
             scope.GIT_INDEX_FILE = this.indexFile(work);
+            scope.GIT_ATTR_SOURCE = this.baseline(basename(work)).attributes;
         }
         try {
-            return git(work ?? this.armDir, args, scope, this.gitTimeoutMs);
+            return gitBytes(work ?? this.armDir, args, scope, this.gitTimeoutMs, { input });
         } catch (caught) {
             if (caught instanceof GitBound && scope.GIT_INDEX_FILE) {
                 rmSync(`${scope.GIT_INDEX_FILE}.lock`, { force: true });
             }
             throw caught;
         }
+    }
+
+    private git(args: string[], work?: string): string {
+        return this.bytes(args, work).toString("utf8");
+    }
+
+    private init(): void {
+        if (!existsSync(this.gitDir)) git(this.armDir, ["init", "--quiet", "--bare", this.gitDir]);
+    }
+
+    /**
+     * The project's baseline rules in the two forms the recorder's git reads. `mirror` is a
+     * directory under the recorder's repository that holds the baseline `.gitignore` files at
+     * their paths and nothing else, so `check-ignore` run there answers for any workspace path
+     * under the baseline ignore rules. `attributes` is a tree of the baseline `.gitattributes`
+     * files, the value of `GIT_ATTR_SOURCE`. Both are rebuilt from the recorded blob ids on the
+     * first use by each recorder, so a resumed or copied arm directory reads the rules its
+     * state names. A project with no recorded rule files has an empty mirror and an empty tree.
+     * `directories` lists the mirror's directories, one JS character per byte.
+     */
+    private baseline(project: string): BaselineRules {
+        const built = this.baselines.get(project);
+        if (built) return built;
+        this.init();
+        this.requireAttributeSource();
+        const scope = { GIT_DIR: this.gitDir, GIT_NO_REPLACE_OBJECTS: "1" };
+        const run = (args: string[], extra: Record<string, string> = {}, input?: Buffer) =>
+            gitBytes(this.armDir, args, { ...scope, ...extra }, this.gitTimeoutMs, { input });
+        const mirror = join(this.gitDir, "baseline-rules", project);
+        rmSync(mirror, { recursive: true, force: true });
+        mkdirSync(mirror, { recursive: true });
+        const attributeEntries: string[] = [];
+        const directories = new Set<string>();
+        for (const [path, id] of Object.entries(this.state.ignores?.[project]?.files ?? {})) {
+            if (basename(path) === ".gitattributes") {
+                attributeEntries.push(`100644 ${id}\t${path}\0`);
+                continue;
+            }
+            const parts = path.split("/").slice(0, -1);
+            parts.forEach((_, depth) => {
+                directories.add(bytesOf(parts.slice(0, depth + 1).join("/")));
+            });
+            mkdirSync(dirname(join(mirror, path)), { recursive: true });
+            writeFileSync(join(mirror, path), run(["cat-file", "blob", id]));
+        }
+        const index = join(this.gitDir, "baseline-attributes.staging");
+        for (const stale of [index, `${index}.lock`]) rmSync(stale, { force: true });
+        const staged = { GIT_INDEX_FILE: index };
+        run(["update-index", "-z", "--index-info"], staged, Buffer.from(attributeEntries.join("")));
+        const attributes = run(["write-tree"], staged).toString("utf8").trim();
+        rmSync(index, { force: true });
+        const rules = { mirror, attributes, directories };
+        this.baselines.set(project, rules);
+        return rules;
+    }
+
+    private readonly baselines = new Map<string, BaselineRules>();
+
+    /**
+     * Checks once per process that git reads attributes from `GIT_ATTR_SOURCE`: under a tree
+     * whose only rule is `* text eol=lf`, `a\r\n` hashes as `a\n`. A git that reads the
+     * variable as nothing would index each file under the workspace's own attributes, so the
+     * recorder builds no tree with it.
+     */
+    private requireAttributeSource(): void {
+        if (attributeSourceHonored) return;
+        const run = (args: string[], input: string, extra: Record<string, string> = {}) =>
+            gitBytes(this.armDir, args, { GIT_DIR: this.gitDir, ...extra }, this.gitTimeoutMs, {
+                input: Buffer.from(input),
+            })
+                .toString("utf8")
+                .trim();
+        const rule = run(["hash-object", "-w", "--stdin"], "* text eol=lf\n");
+        const tree = run(["mktree"], `100644 blob ${rule}\t.gitattributes\n`);
+        const stored = run(["hash-object", "--stdin", "--path=probe"], "a\r\n", {
+            GIT_ATTR_SOURCE: tree,
+        });
+        if (stored !== LF_BLOB) {
+            throw new Error(
+                "git reads no attributes from GIT_ATTR_SOURCE; the snapshot recorder needs a git that does",
+            );
+        }
+        attributeSourceHonored = true;
+    }
+
+    /**
+     * The paths among `paths` that the project's baseline ignore rules match, asked of
+     * `check-ignore` in the baseline mirror. A path ending in `/` is matched as a directory.
+     * Each path goes in behind `./`, which keeps a name that starts with `:` a plain path
+     * instead of pathspec magic. `check-ignore` takes a path's type from the mirror when the
+     * mirror holds the path, so a workspace file at the path of a mirror directory is asked
+     * with that directory removed: the rule files below it apply to no workspace path while a
+     * file stands there. The next call rebuilds the mirror.
+     */
+    private baselineIgnored(project: string, paths: readonly string[]): Set<string> {
+        if (paths.length === 0) return new Set();
+        const { mirror, directories } = this.baseline(project);
+        const files = paths.filter((path) => directories.has(path));
+        for (const path of files) {
+            const at = join(mirror, Buffer.from(path, "latin1").toString("utf8"));
+            rmSync(at, { recursive: true, force: true });
+        }
+        if (files.length > 0) this.baselines.delete(project);
+        const listing = gitBytes(
+            mirror,
+            ["check-ignore", "-z", "--no-index", "--stdin"],
+            { GIT_DIR: this.gitDir, GIT_WORK_TREE: mirror },
+            this.gitTimeoutMs,
+            {
+                input: Buffer.from(paths.map((path) => `./${path}\0`).join(""), "latin1"),
+                accept: [0, 1],
+            },
+        );
+        return new Set(fields(listing).map((path) => path.slice(2)));
     }
 
     /** Writes the state through a fresh, exclusively created staging file, so a symlink planted at a fixed staging path is never followed. */
@@ -242,6 +376,7 @@ export class SnapshotRecorder {
 
     clear(): void {
         this.state = structuredClone(EMPTY);
+        this.baselines.clear();
         this.commands = [];
         this.commandAt.clear();
         rmSync(this.commandsFile, { force: true });
@@ -252,25 +387,14 @@ export class SnapshotRecorder {
     }
 
     /**
-     * Directories under `dir` that hold a `.git` entry of their own and that the workspace's
-     * ignore rules keep: git would index a committed one as a gitlink and refuse an
-     * uncommitted one, so the tree leaves them out. An ignored one is outside the evidence
-     * either way.
+     * Directories under `dir` that hold a `.git` entry of their own and that the project's
+     * baseline ignore rules keep: git would index a committed one as a gitlink and refuse an
+     * uncommitted one, so the tree leaves them out. One the baseline rules ignore is outside
+     * the evidence either way. The walk runs under the recorder bound and an entry cap.
      */
     embedded(dir: string): string[] {
-        return this.survey(dir).nested;
-    }
-
-    /**
-     * Walks the workspace once, under the recorder bound and an entry cap, for the two things
-     * the ignore rules must not hide: directories holding a `.git` of their own (kept when the
-     * workspace's ignore rules leave them alone) and every `.gitignore` file, found by name on
-     * disk so that a rule which ignores its own file still surfaces it.
-     */
-    survey(dir: string): { nested: string[]; ignoreFiles: string[] } {
         this.requireRealDir(dir);
         const found: string[] = [];
-        const ignoreFiles: string[] = [];
         const deadline = Date.now() + (this.gitTimeoutMs ?? Number.POSITIVE_INFINITY);
         let seen = 0;
         const pending = [dir];
@@ -285,21 +409,9 @@ export class SnapshotRecorder {
                             : "timed out";
                     throw new GitBound(`workspace walk of ${dir}: ${why}`);
                 }
-                const rel =
-                    at === dir
-                        ? entry.name
-                        : `${relative(dir, at).split(sep).join("/")}/${entry.name}`;
                 if (entry.name === ".git") {
                     if (at !== dir) found.push(relative(dir, at).split(sep).join("/"));
                     continue;
-                }
-                if (RULE_FILES.has(entry.name)) {
-                    ignoreFiles.push(rel);
-                    if (ignoreFiles.length > RULE_FILE_COUNT_CAP) {
-                        throw new GitBound(
-                            `workspace walk of ${dir}: more than ${RULE_FILE_COUNT_CAP} rule files`,
-                        );
-                    }
                 }
                 if (entry.isDirectory()) pending.push(join(at, entry.name));
             }
@@ -309,22 +421,9 @@ export class SnapshotRecorder {
                 `workspace walk of ${dir}: more than ${NESTED_REPO_CAP} nested repositories`,
             );
         }
-        if (found.length === 0) return { nested: [], ignoreFiles: ignoreFiles.sort() };
-        const ignored = spawnSync("git", ["check-ignore", "-z", "--stdin"], {
-            cwd: dir,
-            env: gitEnv({ GIT_DIR: this.gitDir, GIT_WORK_TREE: dir }),
-            encoding: "utf8",
-            input: found.map((path) => `${path}\0`).join(""),
-            ...(this.gitTimeoutMs ? { timeout: this.gitTimeoutMs, killSignal: "SIGKILL" } : {}),
-        });
-        if ((ignored.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
-            throw new GitBound(`git check-ignore: timed out after ${this.gitTimeoutMs} ms`);
-        }
-        const skipped = new Set(ignored.stdout.split("\0").filter(Boolean));
-        return {
-            nested: found.filter((path) => !skipped.has(path)).sort(),
-            ignoreFiles: ignoreFiles.sort(),
-        };
+        const asDirectory = (path: string) => `${bytesOf(path)}/`;
+        const skipped = this.baselineIgnored(basename(dir), found.map(asDirectory));
+        return found.filter((path) => !skipped.has(asDirectory(path))).sort();
     }
 
     /**
@@ -338,93 +437,31 @@ export class SnapshotRecorder {
     }
 
     /**
-     * Records the project's baseline rule files: the blob id of every `.gitignore` and
-     * `.gitattributes` the source tracks. Git reads these in-tree files from the work tree, and
-     * reads `info/exclude` and `info/attributes` from the repository `GIT_DIR` names, which for
-     * every recorder run is the recorder's own.
+     * Records the project's baseline rules from its fresh clone, before any agent turn: every
+     * `.gitignore` and `.gitattributes` the clone tracks and holds as a regular file, with the
+     * bytes on disk, which are the bytes git reads rules from in that clone. Each is stored as
+     * a blob in the recorder's repository and recorded by blob id. Every later tree of the
+     * project is built under these rules.
      */
-    trackIgnoreRules(project: string, files: Record<string, string>): void {
+    trackIgnoreRules(project: string, clone: string): void {
+        const names = [".gitignore", "**/.gitignore", ".gitattributes", "**/.gitattributes"];
+        const files: Record<string, string> = {};
+        for (const raw of fields(gitBytes(clone, ["ls-files", "-z", "--", ...names]))) {
+            const path = Buffer.from(raw, "latin1").toString("utf8");
+            if (bytesOf(path) !== raw) {
+                throw new Error(
+                    `rule file ${JSON.stringify(path)} of ${clone} has a path outside UTF-8`,
+                );
+            }
+            // Git opens an in-tree rule file without following links, so a symlinked one carries no rules.
+            if (!lstatSync(join(clone, path), { throwIfNoEntry: false })?.isFile()) continue;
+            const content = readFileSync(join(clone, path));
+            const stored = this.bytes(["hash-object", "-w", "--stdin"], undefined, content);
+            files[path] = stored.toString("utf8").trim();
+        }
         this.state.ignores = { ...this.state.ignores, [project]: { files } };
+        this.baselines.delete(project);
         this.save();
-    }
-
-    /**
-     * The in-tree rule files in `dir` that differ from the project's baseline, after `tree` has
-     * indexed the workspace: a `.gitignore` or `.gitattributes` the agent added, changed, or
-     * removed. An ignore rule added during a turn excludes matching untracked files from that
-     * turn's diff. The clone's `.git/info/exclude` and `.git/info/attributes` apply to git runs
-     * on the clone's own repository, so an edit to either leaves the recorder's tree as it was.
-     */
-    ignoreChanges(
-        dir: string,
-        project: string,
-        ignoreFiles = this.survey(dir).ignoreFiles,
-    ): string[] {
-        const baseline = this.state.ignores?.[project];
-        if (!baseline) return [];
-        const now: Record<string, string> = {};
-        const deadline = Date.now() + (this.gitTimeoutMs ?? Number.POSITIVE_INFINITY);
-        for (const path of ignoreFiles) {
-            if (Date.now() >= deadline)
-                throw new GitBound(`rule files of ${dir}: hashing timed out`);
-            now[path] = blobId(join(dir, path));
-        }
-        for (const path of this.inertRules(dir, project, ignoreFiles, baseline.files)) {
-            delete now[path];
-        }
-        const changes: string[] = [];
-        for (const path of new Set([
-            ...Object.keys(baseline.files),
-            ...Object.keys(now),
-        ]).values()) {
-            const was = baseline.files[path];
-            const is = now[path];
-            if (was === is) continue;
-            changes.push(
-                `${path} (${was === undefined ? "added" : is === undefined ? "removed" : "changed"})`,
-            );
-        }
-        return changes.sort();
-    }
-
-    /**
-     * Added rule files whose directory git ignores. Git skips traversal of excluded directories
-     * during `add --all` (gitignore(5)), so their contents stay out of the tree whatever their
-     * rule files say. Rule files the source tracks, root rule files, and rule files above a path
-     * `tree` adds with `--force` stay counted.
-     */
-    private inertRules(
-        dir: string,
-        project: string,
-        ignoreFiles: readonly string[],
-        tracked: Record<string, string>,
-    ): Set<string> {
-        const forced = this.state.forced?.[project] ?? this.state.forced?.[basename(dir)] ?? [];
-        const parentOf = (path: string) => path.slice(0, path.lastIndexOf("/") + 1);
-        const candidates = ignoreFiles.filter((path) => {
-            const parent = parentOf(path);
-            return (
-                tracked[path] === undefined &&
-                parent !== "" &&
-                !forced.some((f) => f.startsWith(parent) || parent.startsWith(`${f}/`))
-            );
-        });
-        if (candidates.length === 0) return new Set();
-        const parents = [...new Set(candidates.map(parentOf))];
-        const ignored = spawnSync("git", ["check-ignore", "-z", "--no-index", "--stdin"], {
-            cwd: dir,
-            env: gitEnv({ GIT_DIR: this.gitDir, GIT_WORK_TREE: dir }),
-            encoding: "utf8",
-            input: parents.map((path) => `${path}\0`).join(""),
-            ...(this.gitTimeoutMs ? { timeout: this.gitTimeoutMs, killSignal: "SIGKILL" } : {}),
-        });
-        if ((ignored.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
-            throw new GitBound(`git check-ignore: timed out after ${this.gitTimeoutMs} ms`);
-        }
-        // Only status 0 names ignored directories; on any other status every rule file counts.
-        if (ignored.status !== 0) return new Set();
-        const skipped = new Set(ignored.stdout.split("\0").filter(Boolean));
-        return new Set(candidates.filter((path) => skipped.has(parentOf(path))));
     }
 
     tree(dir: string, nested = this.embedded(dir)): string {
@@ -453,22 +490,24 @@ export class SnapshotRecorder {
     }
 
     /**
-     * Indexes the workspace. The workspace's own attribute rules shape how git reads each file,
-     * and a rule the agent wrote can make that read fail; such a failure under changed rule
-     * files fails the probe turn, as a changed rule file does, instead of stopping the run.
+     * Indexes the workspace under the project's baseline rules, so the tree holds what
+     * `git add --all` holds in a workspace whose rule files match the fresh clone's, whatever
+     * the workspace's rule files say now. Tracked files are refreshed first. Untracked files are
+     * listed with no ignore rules in force, which opens no workspace `.gitignore`, and the ones
+     * the baseline rules keep are added; a listed path ending in `/` is a nested repository,
+     * which `embedded` reports. A `.gitignore` or `.gitattributes` the agent wrote is a file
+     * like any other here: it enters the tree and changes nothing else the tree holds.
      */
     private addAll(dir: string, excluded: string[]): void {
-        try {
-            this.git(["add", "--all", "--", ".", ...excluded], dir);
-        } catch (caught) {
-            if (caught instanceof GitBound) throw caught;
-            const { ignoreFiles } = this.survey(dir);
-            const changed = this.ignoreChanges(dir, basename(dir), ignoreFiles);
-            if (changed.length === 0) throw caught;
-            throw new WorkspaceRefused(
-                `git add failed under changed rule files (${changed.join(", ")}): ${String(caught)}`,
-            );
-        }
+        this.git(["add", "--update"], dir);
+        const others = fields(
+            this.bytes(["ls-files", "--others", "-z", "--", ".", ...excluded], dir),
+        );
+        const ignored = this.baselineIgnored(basename(dir), others);
+        const kept = others.filter((path) => !path.endsWith("/") && !ignored.has(path));
+        if (kept.length === 0) return;
+        const listing = Buffer.from(kept.map((path) => `${path}\0`).join(""), "latin1");
+        this.bytes(["update-index", "--add", "--remove", "-z", "--stdin"], dir, listing);
     }
 
     /** The patch between two trees this recorder wrote, in the form a turn diff artefact holds. */
@@ -507,11 +546,9 @@ export class SnapshotRecorder {
     }
 
     /**
-     * Closes a session: its end tree completes the prior-session diff later sessions carry. The
-     * workspace's rule files are checked against the reset baseline first, as at a probe turn,
-     * since a rule the session added would shape that tree; a changed rule or a bounded git run
-     * leaves the project without a tree pair and records why, and the next session's snapshots
-     * carry that reason in place of the prior-session diff.
+     * Closes a session: its end tree completes the prior-session diff later sessions carry. A
+     * bounded git run leaves the project without a tree pair and records why, and the next
+     * session's snapshots carry that reason in place of the prior-session diff.
      */
     sessionEnd(session: string, project: string, dir: string): void {
         if (this.state.ended === session) return;
@@ -520,10 +557,7 @@ export class SnapshotRecorder {
         let gap: string | null = from ? null : "the session's start tree was not recorded";
         if (from) {
             try {
-                const { ignoreFiles } = this.survey(dir);
-                const changed = this.ignoreChanges(dir, project, ignoreFiles);
-                if (changed.length > 0) gap = `rule files changed: ${changed.join(", ")}`;
-                else to = this.tree(dir);
+                to = this.tree(dir);
             } catch (caught) {
                 if (!(caught instanceof GitBound)) throw caught;
                 console.error(`snapshot: ${caught.message}`);

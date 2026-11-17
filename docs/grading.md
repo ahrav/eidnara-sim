@@ -95,10 +95,8 @@ summarizer or compaction call the turn started) have ended, so the
 `proxy-call` artefact holds those calls. Each recorder git run against a
 workspace is bounded by the turn deadline; a run past it fails the probe turn
 with `snapshot: git ... timed out` and the item has no snapshot; a run past the
-bound at a session boundary leaves that session without a start or end tree;
-the session's end also checks the workspace's rule files against the reset
-baseline, as a probe turn does, and a changed rule leaves no end tree. Either
-way the next session's snapshots carry a `prior-session` diff artefact with an
+bound at a session boundary leaves that session without a start or end tree,
+and the next session's snapshots carry a `prior-session` diff artefact with an
 empty patch and a `refused` reason, and a P6 item reading it is skipped as
 `evidence refused`. The recorder refuses a
 restored state whose tree ids are not 40-hex object ids before any git run.
@@ -109,35 +107,68 @@ child that may still hold them.
 The nested-repository check and the recorder's workspace path check run
 before any walk of the workspace, and the walk itself stops at the bound or
 at 200,000 entries, failing the probe turn. A `git diff` past the 256 MiB
-output cap fails the probe turn the same way. A probe turn whose workspace holds an added,
-changed, or removed `.gitignore` or `.gitattributes` ends `failed` with
-`rule files changed: <paths>`: a rule added in the turn would hide that turn's
-files from the diff, and an attribute (`ident`, `eol`, a clean driver) would
-rewrite the content git indexes. The baseline is the source's `.gitignore` and
-`.gitattributes` blobs, recorded at reset, so a rule file changed in any
-earlier turn fails each later probe turn of that project until the file
-matches the baseline again. The check covers the rule files the recorder's
-git reads. Git reads in-tree rule files from the work tree, and reads
-`info/exclude` and `info/attributes` from the repository `GIT_DIR` names,
-which for every recorder run is the arm's `snapshot.git`. The clone's
+output cap fails the probe turn the same way.
+
+Every recorder tree is built under the project's baseline rules: the
+`.gitignore` and `.gitattributes` files the project's fresh clone tracks and
+holds as regular files, read from disk at reset, before any agent turn, so
+they are the bytes git reads rules from in that clone. Each is stored as a
+blob in the arm's `snapshot.git` and recorded by blob id in
+`snapshot-state.json`. The rule files in the workspace are files like
+any other to the recorder. Three harness inputs depend on which rules are in
+force when a tree is built: the turn diff (read by the P1, P2, P3, P4, P5,
+P6, P10, P11, and P12 graders, and by a P13 item whose check names a diff
+channel), the prior-session diff (read by P6), and the watched-turn patch the
+user sim checks a standing rule against. Under the workspace's own rules an
+agent could change all three: an ignore pattern added in any turn keeps a
+matching new file out of the tree, so the diff lacks it, and an attribute
+(`text`, `eol`, `ident`, `working-tree-encoding`) changes the bytes git
+stores for a file or makes the add fail. The recorder therefore reads the
+rules from its own repository:
+
+- Ignore rules. The recorder writes the baseline `.gitignore` blobs, at their
+  paths, into `snapshot.git/baseline-rules/<project>/`, a directory that holds
+  only those files. A tree is built in three steps: `git add --update`
+  refreshes the files the recorder's index tracks; `git ls-files --others`
+  lists every untracked file with no ignore rules in force, which opens no
+  `.gitignore` in the workspace; and `git check-ignore --no-index`, run in the
+  baseline directory, names the listed paths the baseline rules match. The
+  rest are added with `git update-index --add`. The same check decides which
+  nested repositories the baseline rules ignore.
+- Attributes. Every recorder git run against a workspace sets
+  `GIT_ATTR_SOURCE` to a tree that holds the baseline `.gitattributes` blobs
+  at their paths (the empty tree for a source with none), so git reads
+  attributes from that tree alone. The recorder checks once per process that
+  its git honors the variable (under a tree whose rule is `* text eol=lf`,
+  `a\r\n` must hash as `a\n`) and builds no tree with a git that fails the
+  check; the run stops there with the reason.
+
+An agent edit of a `.gitignore` or `.gitattributes`, in a plain turn or a
+probe turn, is therefore an ordinary file change: it is in the diff of the
+turn that made it, every other file the turn wrote is in the diff with the
+bytes git stores under the baseline attributes (the bytes on disk for a
+project whose baseline holds no `.gitattributes`), and the turn keeps its
+outcome on every arm. A file the edited
+rule hides from the clone's own `git status` is in the diff; a file the
+baseline rules ignore stays out whatever the workspace's rules say, including
+a `!` pattern that re-includes it. In a workspace whose rule files equal the
+baseline the tree is the one `git add --all` builds, with the same tree id,
+so trees and diffs of earlier campaigns compare with later ones. A workspace
+that holds a rule file the source does not track differs: a tool cache that
+writes its own `.gitignore` holding `*` (`.pytest_cache`, `.ruff_cache`, a
+virtualenv) is in the tree with its files unless the baseline rules ignore
+the directory, as any other untracked directory is. The clone's
 `.git/info/exclude` and `.git/info/attributes` shape the agent's own git
-commands and leave the recorder's tree as it was: a path the clone's exclude
-file names is in the turn diff, and a file under a clone-level attribute is
-stored with the bytes on disk. An agent edit of either file is workspace
-work like any other, on every arm, and fails no turn. A rule file the agent adds inside a directory git already
-ignores counts as no change: git skips traversal of an excluded directory, so
-nothing under it reaches the indexed tree whatever its rule files say (a
-`.gitignore` an agent writes under `target/` fails no turn). A rule file the
-source tracks, one at the workspace root, and one above a path the recorder
-adds with `--force` always count. The probe turn's rule check runs before the workspace is
-indexed, and a turn with changed rules keeps its start tree as its end tree;
-a `git add` that fails under changed rule files (an attribute that names an
-encoding git lacks) fails the turn the same way, at the turn's start or the
-session's end too. The rule files are found by name in the workspace walk and
-hashed from disk, so a rule that ignores its own file still surfaces it; a rule
-path that is a symlink, FIFO, or directory, or larger than 1 MiB, reads as a
-changed rule, a workspace with more than 1,000 rule files fails the probe
-turn during the walk, and hashing them runs under the recorder bound. A
+commands and reach no recorder run, since git reads those two files from the
+repository `GIT_DIR` names. The baseline directory and attribute tree are
+rebuilt from the recorded blob ids on a recorder's first use of a project,
+so a resumed run reads the rules its state names; a restored rule path must
+be a relative path to a `.gitignore` or `.gitattributes` with a 40-hex blob
+id. A project with no recorded rule files is indexed whole with the bytes on
+disk. A tracked rule file whose path is not UTF-8 stops the reset with the
+path.
+
+ A
 workspace with more than 1,000 nested repositories fails the probe turn
 before git runs. Each probe snapshot reads its session's call records by position from an
 index the proxy's writer keeps (seeded once from `calls.jsonl` on resume), so
@@ -153,7 +184,7 @@ the next snapshot or before `EndArm` and `EndRun` are journaled, so the run
 stays open for a resume and `calls.jsonl` never silently lacks a call the host
 made. Recorder git children run with global and system config disabled and
 the per-user excludes file (`$XDG_CONFIG_HOME/git/ignore`) pointed at
-`/dev/null`, so the workspace's own rules are the only ignore rules. The grade, judge-call, and judgment logs must be regular
+`/dev/null`, so the project's baseline rules are the only ignore rules. The grade, judge-call, and judgment logs must be regular
 files or absent, checked before the judge gateway starts; a symlink at any of those paths stops grading before a
 write.
 The snapshot tree adds, with `--force`, the paths the project's source
@@ -166,21 +197,22 @@ is excluded (SIM-P46) instead of graded on a diff that lacks that content.
 The recorder's git refuses a workspace path that is a symlink or lies behind
 one, and a tracked-but-ignored path whose parent became a symlink is left out
 of the tree. Nested repositories are found by their `.git` entries, with the
-ones the workspace's ignore rules match left alone; a nested repository is
+ones the baseline ignore rules match left alone; a nested repository is
 also removed from the recorder's index, so a directory it replaced reads as
 deleted in the tree. Snapshot diffs run with
 `--text`, so a NUL byte or a `-diff` attribute hides no added line.
 
 | Artefact | Source |
 |---|---|
-| `diff` (`turn`) | A git tree of the workspace's files that its `.gitignore` rules leave in, untracked files included, taken before the prompt and after it, and diffed |
+| `diff` (`turn`) | A git tree of the workspace's files that the project's baseline `.gitignore` rules leave in, untracked files included, taken before the prompt and after it, and diffed |
 | `diff` (`prior-session`) | The same trees at the start and end of the project's previous session |
 | `command-log` | The host's tool runs, each a bash command or the tool name, its path, and its scalar arguments as `name=value` (a `read`'s offset and limit) followed by the text and structured arguments it was given (a `write`'s content, an `edit`'s edits), with a 0 or 1 error flag (null for a run that never finished) and the scenario time the run started. The recorder saves each run as the host logs it, so a harness kill mid-turn keeps the runs logged so far in the session log. Pi reports `tool_execution_start` and `tool_execution_end` events as they happen, and a run is timed from its start event and reaches the recorder at that start with a null exit, which its end report replaces, so a harness kill mid-run keeps the run on record; OpenCode's tool parts come from the session messages the turn added, read after the turn whatever its outcome, each timed from its start relative to the turn's first new message, both in OpenCode's own clock, with a pending or running part's exit null, and keyed by the part's id; on reattaching to a session after a kill, the host reports every tool part the session's messages hold, so a turn that was running at the kill still contributes its runs, timed at the resume when the recorder has no earlier record of them; the listings and the turn share one absolute turn deadline (a turn whose listing used it up fails without prompting, and a turn that used it up skips the post-turn listing as a capture gap), a listing that stalls is aborted and fails the turn as a capture gap, and the tool parts a failed post-turn listing missed are reported before the next turn |
 | `proxy-call` | The session's call records from `calls.jsonl`, each with the index of the user turn it belongs to (a call recorded between turns takes the preceding turn's, and a background call carrying `origin_turn` takes that turn's), a `failed` flag on a call that ended in an error status, a recorded error, or a cut stream (such a call is no fold for P13), and the response text the proxy records for agent, user-sim, and judge calls (the first 262,144 characters, with `response_text_truncated` on a longer reply) |
 
 The recorder keeps each project's session-start tree, the last session's
-tree pair, the last ended session, and each workspace's index generation (a
-restored generation must be a nonnegative integer) in
+tree pair, the last ended session, each project's baseline rule files, and
+each workspace's index generation (a restored generation must be a
+nonnegative integer) in
 `<arm>/snapshot-state.json` (written through a freshly created staging file
 and renamed into place), and the open session's commands in
 `<arm>/commands.jsonl`, one appended line per tool report (a report whose
