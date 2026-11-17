@@ -385,9 +385,20 @@ Confidence: low -
 M6 (#1031) samples labels from the pre-registered rates and journals
 `UserSimRates` per arm; verified in `src/usersim/usersim.test.ts`.
 Existing check: `realisedRates` journals each arm's rates and the ones outside
-their band; `scripts/pairing-check.ts` fails a flagged or missing summary
+their band, and the report's SIM-P10 witness (`src/report/witness.ts`) marks
+an arm with a realised rate outside its band; `scripts/pairing-check.ts`
+lists that flag and fails a missing summary, a flagged pushback, redirect, or
+abandon rate, an interrupt schedule outside its band, and a flagged interrupt
+rate whose due aborts stayed unlanded, so a flagged interrupt rate whose
+scheduled turns ended before their delays is reported and passes that script
 Impact: Results generalise to a user population the corpus does not describe.
-Open questions: None.
+Open questions:
+- The realised interrupt rate counts the aborts that landed, which follow each
+  arm's turn lengths under one schedule. On w2 S seed 610 every run carried 30
+  scheduled interrupts (0.045 of 673 turns); 19 landed on the host run and 10
+  to 12 on the Eidnara-arm runs, whose realised rates (0.015 to 0.018) lie
+  below the band's 0.02. Does the guarantee bound the scheduled rate, the
+  realised rate, or both? (needs human input)
 
 ## Clock
 

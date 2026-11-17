@@ -598,8 +598,159 @@ test("rates outside their band fail a whole scenario only; a prefix run reports 
             ([k, v]) => k !== "rates" && k !== "divergences" && Array.isArray(v) && v.length > 0,
         )
         .map(([k]) => k);
-    expect(failing).toEqual(["flagged"]);
+    expect(failing).toEqual(["flagged", "rate_breaks"]);
     expect(whole.exit).toBe(1);
+});
+
+function wideEvents(sessions: number): Row[] {
+    const events: Row[] = [];
+    for (let s = 0; s < sessions; s++) {
+        for (let i = 0; i < 10; i++) {
+            events.push({
+                id: `e-${s}-${i}`,
+                kind: "user_turn",
+                session: `s-${s}`,
+                index: i,
+                role: "filler",
+                text: `Go ${s} ${i}.`,
+            });
+        }
+    }
+    return events;
+}
+
+/** Sets an arm's journaled rate summary to the rates of the turns its journal delivered. */
+function rerate(f: Fixture, arm: string): void {
+    const turns = f.journal
+        .filter((r) => r.kind === "UserTurn" && r.arm === arm && r.delivered === true)
+        .map((r) => ({ session: String(r.session), label: r.label as Label }));
+    Object.assign(
+        find(f.journal, (r) => r.kind === "UserSimRates" && r.arm === arm),
+        realisedRates(turns, prereg),
+    );
+}
+
+/**
+ * Journals each of `events` as a scheduled interrupt whose abort stayed unlanded: the label
+ * `task` with `scheduled: "interrupt"`, and an `EndTurn` whose `prompt_ms` is `ran(delay)` for
+ * the plan's delay, or absent when `ran` returns undefined.
+ */
+function unland(
+    f: Fixture,
+    arm: string,
+    events: string[],
+    ran: (delay: number) => number | undefined,
+): void {
+    const plan = planOf(f.events);
+    for (const event of events) {
+        const user = find(
+            f.journal,
+            (r) => r.kind === "UserTurn" && r.arm === arm && r.event === event,
+        );
+        user.label = "task";
+        user.scheduled = "interrupt";
+        delete user.interrupted;
+        const prompt_ms = ran(plan.interruptMs.get(event) as number);
+        f.journal.splice(f.journal.indexOf(user) + 1, 0, {
+            kind: "EndTurn",
+            arm,
+            event,
+            outcome: "ok",
+            ...(prompt_ms === undefined ? {} : { prompt_ms }),
+        });
+    }
+    rerate(f, arm);
+}
+
+const scheduledInterrupts = (events: Row[]): string[] =>
+    [...planOf(events).labels].filter(([, l]) => l === "interrupt").map(([id]) => id);
+
+type Interrupts = Record<string, Record<string, number>>;
+
+test("a flagged interrupt rate passes when the scheduled turns ended before their delays, races included", () => {
+    const events = wideEvents(40);
+    const scheduled = scheduledInterrupts(events);
+    expect(scheduled.length).toBeGreaterThanOrEqual(16);
+    const f = fixture(["host", "eidnara"], events);
+    // The eidnara arm's agent finished all but five scheduled turns before the user's delay,
+    // and two of its aborts reached the host as the turn ended.
+    unland(f, "eidnara", scheduled.slice(5, 7), (delay) => delay + 400);
+    unland(f, "eidnara", scheduled.slice(7), (delay) => delay - 1);
+    const r = run(f);
+    expect(r.report.flagged).toEqual(["eidnara: interrupt_per_turn"]);
+    expect(r.report.rate_breaks).toEqual([]);
+    const counts = r.report.interrupts as Interrupts;
+    expect(counts.eidnara).toMatchObject({
+        scheduled: scheduled.length,
+        landed: 5,
+        finished_first: scheduled.length - 7,
+        unlanded: 2,
+    });
+    expect(counts.host).toMatchObject({ scheduled: scheduled.length, landed: scheduled.length });
+    expect(counts.eidnara?.scheduled_rate).toBe(counts.host?.scheduled_rate as number);
+    expect(r.report.journal_pairing_mismatch).toEqual([]);
+    expect(r.report.rates_mismatch).toEqual([]);
+    expect(r.exit).toBe(0);
+});
+
+test("a flagged interrupt rate fails when the aborts were due and stayed unlanded", () => {
+    const events = wideEvents(40);
+    const scheduled = scheduledInterrupts(events);
+    const f = fixture(["host", "eidnara"], events);
+    // Every scheduled turn of the eidnara arm ran past its delay and ended without an abort;
+    // a turn with no recorded prompt time counts as due.
+    unland(f, "eidnara", scheduled.slice(0, 1), () => undefined);
+    unland(f, "eidnara", scheduled.slice(1), (delay) => delay + 20_000);
+    const r = run(f);
+    expect(r.report.flagged).toEqual(["eidnara: interrupt_per_turn"]);
+    expect(r.report.rate_breaks).toEqual([
+        `eidnara: interrupt_per_turn aborts landed 0 of ${scheduled.length} due`,
+    ]);
+    expect(r.exit).toBe(1);
+    // Three landings among the due aborts are still fewer than the floor allows.
+    const g = fixture(["host", "eidnara"], events);
+    unland(g, "eidnara", scheduled.slice(3), (delay) => delay + 20_000);
+    const few = run(g);
+    expect(few.report.rate_breaks).toEqual([
+        `eidnara: interrupt_per_turn aborts landed 3 of ${scheduled.length} due`,
+    ]);
+    expect(few.exit).toBe(1);
+});
+
+test("interrupt marks beyond the plan fail the check at each turn and through the scheduled rate", () => {
+    const events = wideEvents(40);
+    const scheduled = scheduledInterrupts(events);
+    const f = fixture(["host", "eidnara"], events);
+    // The journal marks plain task turns of the eidnara arm as scheduled interrupts.
+    const extra = f.journal
+        .filter((r) => r.kind === "UserTurn" && r.arm === "eidnara" && r.label === "task")
+        .slice(0, 2 * scheduled.length);
+    for (const row of extra) row.scheduled = "interrupt";
+    const r = run(f);
+    expect(r.report.flagged).toEqual([]);
+    expect(r.report.journal_pairing_mismatch).toEqual(
+        extra
+            .map((row) => String(row.event))
+            .sort()
+            .map((event) => `eidnara ${event}`),
+    );
+    const counts = r.report.interrupts as Interrupts;
+    expect(counts.eidnara?.scheduled).toBe(3 * scheduled.length);
+    expect(r.report.rate_breaks).toEqual([
+        `eidnara: interrupt_per_turn scheduled at ${counts.eidnara?.scheduled_rate}`,
+    ]);
+    expect(r.exit).toBe(1);
+    // One stray mark leaves the scheduled rate inside the band and still fails at its turn.
+    const g = fixture(["host", "eidnara"], events);
+    const stray = find(
+        g.journal,
+        (row) => row.kind === "UserTurn" && row.arm === "eidnara" && row.label === "task",
+    );
+    stray.scheduled = "interrupt";
+    const one = run(g);
+    expect(one.report.rate_breaks).toEqual([]);
+    expect(one.report.journal_pairing_mismatch).toEqual([`eidnara ${String(stray.event)}`]);
+    expect(one.exit).toBe(1);
 });
 
 test("every delivered scripted row carries the compiled text's hash", () => {
