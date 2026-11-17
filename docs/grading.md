@@ -109,14 +109,22 @@ child that may still hold them.
 The nested-repository check and the recorder's workspace path check run
 before any walk of the workspace, and the walk itself stops at the bound or
 at 200,000 entries, failing the probe turn. A `git diff` past the 256 MiB
-output cap fails the probe turn the same way. A probe turn that adds,
-changes, or removes a `.gitignore` or `.gitattributes`, or edits
-`.git/info/exclude` or `.git/info/attributes`, ends `failed` with
+output cap fails the probe turn the same way. A probe turn whose workspace holds an added,
+changed, or removed `.gitignore` or `.gitattributes` ends `failed` with
 `rule files changed: <paths>`: a rule added in the turn would hide that turn's
 files from the diff, and an attribute (`ident`, `eol`, a clean driver) would
 rewrite the content git indexes. The baseline is the source's `.gitignore` and
-`.gitattributes` blobs and the clone's `exclude` and `attributes` files,
-recorded at reset. A rule file the agent adds inside a directory git already
+`.gitattributes` blobs, recorded at reset, so a rule file changed in any
+earlier turn fails each later probe turn of that project until the file
+matches the baseline again. The check covers the rule files the recorder's
+git reads. Git reads in-tree rule files from the work tree, and reads
+`info/exclude` and `info/attributes` from the repository `GIT_DIR` names,
+which for every recorder run is the arm's `snapshot.git`. The clone's
+`.git/info/exclude` and `.git/info/attributes` shape the agent's own git
+commands and leave the recorder's tree as it was: a path the clone's exclude
+file names is in the turn diff, and a file under a clone-level attribute is
+stored with the bytes on disk. An agent edit of either file is workspace
+work like any other, on every arm, and fails no turn. A rule file the agent adds inside a directory git already
 ignores counts as no change: git skips traversal of an excluded directory, so
 nothing under it reaches the indexed tree whatever its rule files say (a
 `.gitignore` an agent writes under `target/` fails no turn). A rule file the

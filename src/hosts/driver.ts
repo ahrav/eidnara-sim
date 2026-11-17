@@ -930,16 +930,12 @@ export class HostDriver implements ArmDriver {
             const baseline = join(this.armDir, `${project}.gitconfig`);
             rmSync(baseline, { force: true });
             copyFileSync(join(target, ".git", "config"), baseline, constants.COPYFILE_EXCL);
-            this.trackRules(project, source, target);
+            this.trackRules(project, source);
         }
         await this.startArm(true);
     }
 
-    /**
-     * Records which paths the clone's source force-tracks past its ignore rules, and the rule
-     * files and exclude digests it starts with, so a probe snapshot sees what the agent changed.
-     */
-    private trackRules(project: string, source: string, target: string): void {
+    private trackRules(project: string, source: string): void {
         const tracked = ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"];
         const forced = git(source, tracked).split("\0").filter(Boolean);
         this.snapshots.trackIgnored(project, forced);
@@ -950,12 +946,7 @@ export class HostDriver implements ArmDriver {
             const [meta, path] = row.split("\t") as [string, string];
             rules[path] = meta.split(" ")[1] as string;
         }
-        this.snapshots.trackIgnoreRules(
-            project,
-            rules,
-            this.snapshots.excludeDigest(target),
-            this.snapshots.excludeDigest(target, "attributes"),
-        );
+        this.snapshots.trackIgnoreRules(project, rules);
     }
 
     async resume(open: ScenarioEvent | null, interrupted: readonly string[] = []): Promise<void> {
