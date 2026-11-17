@@ -47,7 +47,7 @@ import {
     type ToolRun,
 } from "./arms";
 import { armProfile } from "./profiles";
-import { entriesOf, SnapshotRecorder } from "./snapshot";
+import { type Change, entriesOf, SnapshotRecorder } from "./snapshot";
 import {
     checkStore,
     type Deletion,
@@ -883,16 +883,20 @@ export class HostDriver implements ArmDriver {
     }
 
     /**
-     * The work of the session's last watched turn: the patch from its start tree to the workspace
-     * now, and the tool runs the host reported for it. Null when this process ran no watched turn
-     * of the session since its start or resume, or when git runs past its bound.
+     * The work of the session's last watched turn: the change from its start tree to the
+     * workspace now, as a turn diff artefact holds it, and the tool runs the host reported for it.
+     * Null when this process ran no watched turn of the session since its start or resume, or
+     * when git runs past its bound.
      */
-    lastTurnWork(session: string): { patch: string; commands: Command[] } | null {
+    lastTurnWork(session: string): (Change & { commands: Command[] }) | null {
         const last = this.lastTurn.get(session);
         if (!last) return null;
         try {
-            const patch = this.snapshots.patchBetween(last.before, this.snapshots.tree(last.dir));
-            return { patch, commands: last.tools };
+            const now = this.snapshots.tree(last.dir);
+            return {
+                ...this.snapshots.changeBetween(last.dir, last.before, now),
+                commands: last.tools,
+            };
         } catch (caught) {
             if (caught instanceof GitBound) return null;
             throw caught;
@@ -940,6 +944,7 @@ export class HostDriver implements ArmDriver {
         const forced = git(source, tracked).split("\0").filter(Boolean);
         this.snapshots.trackIgnored(project, forced);
         this.snapshots.trackIgnoreRules(project, this.workspace(project));
+        this.snapshots.trackBaseTree(project, this.workspace(project));
     }
 
     async resume(open: ScenarioEvent | null, interrupted: readonly string[] = []): Promise<void> {

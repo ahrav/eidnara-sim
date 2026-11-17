@@ -132,6 +132,23 @@ any arm. The case the recorder cannot
 control is a git that ignores `GIT_ATTR_SOURCE`; the recorder checks for it
 once and builds no tree with such a git.
 
+Recording an action and judging it are separate steps. The recorder's tree
+holds every file the baseline rules leave in, including the cache a tool
+writes beside the code (`.pytest_cache`, a virtualenv), whose own
+`.gitignore` ignores every path below it. A measurement of what the agent
+changed reads the project as the project's git lists it, so the recorder
+names each self-ignoring directory on the diff artefact and the graders and
+the user sim's rule check read the patch without its files
+(`docs/grading.md`, Self-ignoring directories). The rule is stated on the
+directory's rule file, never on tool names, it holds for every arm, and the
+stored tree and patch stay whole. Its bounds are the cases where the files
+are the agent's work: a directory of the project's fresh clone is never
+self-ignoring, and a file the item's check names by scope or path pattern is
+read wherever it lies. The rule reads the fresh clone's directories and the
+rule file, so it differs from git in one case: a directory created after the
+clone by a commit that also adds a catch-all rule file is read as
+self-ignoring, while git still lists the files that commit tracks there.
+
 ## Evidence file structure
 
 One file per record at `evidence/<slug>.md`:

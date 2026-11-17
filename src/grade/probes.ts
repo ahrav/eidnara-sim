@@ -19,8 +19,10 @@ import {
     type CallView,
     type Command,
     completed,
+    type DiffArtefact,
     type Field,
     GradeRefused,
+    type Named,
     NO_RESPONSE,
     num,
     oneOf,
@@ -1740,22 +1742,44 @@ function proseOf(answer: string): string {
 }
 
 /**
+ * The files under a self-ignoring directory that a check names, which its grader reads all the
+ * same: the check's `scope` lies in the directory, or a `paths_must` or `paths_must_not`
+ * pattern matches the file's path. Work the ground truth asks for by path is therefore graded
+ * wherever the agent put it.
+ */
+export const namedBy =
+    (c: Check): Named =>
+    (dir, path) =>
+        (c.scope?.startsWith(`${dir}/`) ?? false) ||
+        matchesAny(path, [...(c.paths_must ?? []), ...(c.paths_must_not ?? [])]);
+
+/**
  * Whether a turn's work breaks a session rule's check, read as a P13 grade reads it: a forbidden
  * pattern occurs (`broken`), or the turn created a code file, which makes a `first_line_must`
  * rule apply, and some file it created misses that rule, as the P13 check reads it.
+ * `selfIgnored` lists the turn's self-ignoring directories, whose files stay out of the work.
  * A turn that did nothing the rule governs breaks nothing. The user-sim reads this inside a P14
  * window to decide a reactive pushback (`docs/user-sim.md`).
  */
-export function breaksRule(patch: string, commands: Command[], check: Check): boolean {
-    const reader = new ArtefactReader({
-        id: "turn",
-        item: "turn",
-        arm: "",
-        session: "",
-        turn: "",
-        turn_outcome: "ok",
-        artefacts: [{ id: "turn:diff", class: "diff", role: "turn", patch }],
-    });
+export function breaksRule(
+    patch: string,
+    commands: Command[],
+    check: Check,
+    selfIgnored: string[] = [],
+): boolean {
+    const diff = { id: "turn:diff", class: "diff", role: "turn", patch, self_ignored: selfIgnored };
+    const reader = new ArtefactReader(
+        {
+            id: "turn",
+            item: "turn",
+            arm: "",
+            session: "",
+            turn: "",
+            turn_outcome: "ok",
+            artefacts: [diff as DiffArtefact],
+        },
+        namedBy(check),
+    );
     const w = workFor(reader, check, commands);
     if (broken(w, check)) return true;
     const firstLines = check.first_line_must;
@@ -2049,7 +2073,7 @@ export function gradeItem(
     }
     const grader = graderFor(probe);
     requireEvidence(probe, first, sources);
-    const reader = new ArtefactReader(first);
+    const reader = new ArtefactReader(first, namedBy((probe.check ?? {}) as Check));
     let outcome: Outcome;
     if (probe.type !== "P14" && reader.responseIncomplete()) {
         outcome = { verdict: "excluded", reason: NO_RESPONSE, metrics: {} };

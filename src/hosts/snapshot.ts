@@ -39,6 +39,11 @@ interface RecorderState {
      * the recorder's repository.
      */
     ignores?: Record<string, { files: Record<string, string> }>;
+    /**
+     * Per project, the tree of its fresh clone, taken before any agent turn. A directory this
+     * tree holds is the project's own, whatever rule file a turn writes into it.
+     */
+    baseTrees?: Record<string, string>;
 }
 
 const EMPTY: RecorderState = { session: null, ended: null, starts: {}, last: {} };
@@ -69,6 +74,11 @@ function restoredState(raw: unknown): RecorderState {
             }
         }
     }
+    for (const [project, id] of Object.entries(state.baseTrees ?? {})) {
+        if (!OBJECT_ID.test(String(id))) {
+            throw new Error(`snapshot state names base tree ${JSON.stringify(id)} for ${project}`);
+        }
+    }
     return state;
 }
 
@@ -83,6 +93,48 @@ const OBJECT_ID = /^[0-9a-f]{40}$/;
 const LF_BLOB = "78981922613b2afb6025042ff6bd878ac1994e85";
 /** Whether this process has seen its git read attributes from `GIT_ATTR_SOURCE`. */
 let attributeSourceHonored = false;
+
+/** The ignore patterns that match every path below the rule file's directory. */
+const EVERY_PATH = new Set(["*", "**", "/*", "/**", "**/*", "/**/*"]);
+
+/**
+ * Whether a `.gitignore` body ignores every path of its directory: one of its patterns matches
+ * every path, and all of its patterns ignore (a `!` pattern re-includes a path, so a body with
+ * one keeps part of its directory in the project). Lines are read as git reads them: a leading
+ * byte-order mark, a trailing carriage return, and unescaped trailing spaces come off, and
+ * blank lines and `#` lines are skipped.
+ */
+export function ignoresEveryPath(rules: string): boolean {
+    let every = false;
+    for (const raw of rules.replace(/^\uFEFF/, "").split("\n")) {
+        const line = raw.replace(/\r$/, "").replace(/(?<!\\) +$/, "");
+        if (line === "" || line.startsWith("#")) continue;
+        if (line.startsWith("!")) return false;
+        if (EVERY_PATH.has(line)) every = true;
+    }
+    return every;
+}
+
+/** The directories above each path, one JS character per byte like the paths. */
+function directoriesOf(paths: Iterable<string>): Set<string> {
+    const found = new Set<string>();
+    for (const path of paths) {
+        for (let at = path.indexOf("/"); at >= 0; at = path.indexOf("/", at + 1)) {
+            found.add(path.slice(0, at));
+        }
+    }
+    return found;
+}
+
+/** A turn's or session's change as a diff artefact holds it. */
+export interface Change {
+    patch: string;
+    /**
+     * The directories whose own `.gitignore` ignores every path below them, among the ones
+     * that hold a path the patch names; present when there is at least one.
+     */
+    self_ignored?: string[];
+}
 
 /** One project's baseline rules as the recorder's git reads them; `SnapshotRecorder.baseline` builds it. */
 interface BaselineRules {
@@ -377,6 +429,7 @@ export class SnapshotRecorder {
     clear(): void {
         this.state = structuredClone(EMPTY);
         this.baselines.clear();
+        this.baseDirectories.clear();
         this.commands = [];
         this.commandAt.clear();
         rmSync(this.commandsFile, { force: true });
@@ -464,6 +517,130 @@ export class SnapshotRecorder {
         this.save();
     }
 
+    /**
+     * Records the tree of the project's fresh clone, before any agent turn. `selfIgnored`
+     * reads it: a directory the fresh clone holds stays the project's own. A git run past its
+     * bound leaves the project without a base tree, and every file of its diffs then counts as
+     * the agent's change.
+     */
+    trackBaseTree(project: string, clone: string): void {
+        const base = this.boundedTree(clone);
+        const { [project]: _, ...rest } = this.state.baseTrees ?? {};
+        this.state.baseTrees = base ? { ...rest, [project]: base } : rest;
+        this.baseDirectories.delete(project);
+        this.save();
+    }
+
+    private readonly baseDirectories = new Map<string, Set<string>>();
+
+    /** The directories of the project's fresh clone, listed once per recorder from its base tree. */
+    private projectDirectories(project: string, base: string): Set<string> {
+        const listed = this.baseDirectories.get(project);
+        if (listed) return listed;
+        const own = directoriesOf(this.filesOf(base).keys());
+        this.baseDirectories.set(project, own);
+        return own;
+    }
+
+    /** The files of a tree this recorder wrote: each path, one JS character per byte, with its mode and blob id. */
+    private filesOf(tree: string): Map<string, { mode: string; id: string }> {
+        const files = new Map<string, { mode: string; id: string }>();
+        for (const entry of fields(this.bytes(["ls-tree", "-r", "-z", tree]))) {
+            const tab = entry.indexOf("\t");
+            const [mode, , id] = entry.slice(0, tab).split(" ");
+            files.set(entry.slice(tab + 1), { mode: mode as string, id: id as string });
+        }
+        return files;
+    }
+
+    /**
+     * The directories whose own `.gitignore` ignores every path below them
+     * (`ignoresEveryPath`), among the directories that hold a path `from` and `to` differ in:
+     * a tool cache (`.pytest_cache`, `.ruff_cache`, a virtualenv) or a scratch directory,
+     * which git itself keeps out of the project. The rule file is the one in `to`, a regular
+     * file; a directory the change removed is read by the rule file `from` held. The workspace
+     * root and every directory of the project's fresh clone stay off the list: git keeps
+     * listing the files it tracks there, so an edit under a project directory counts as the
+     * agent's change whatever rule file the turn writes beside it. Of nested directories the
+     * outermost is named. The trees and the patch keep every file; the list tells a reader of
+     * the patch which files git leaves out of the project.
+     */
+    private selfIgnored(project: string, from: string, to: string): string[] {
+        const base = this.state.baseTrees?.[project];
+        if (!base) return [];
+        const changed = fields(this.bytes(["diff", "--name-only", "--no-renames", "-z", from, to]));
+        const candidates = [...directoriesOf(changed)];
+        if (candidates.length === 0) return [];
+        const after = this.filesOf(to);
+        const ruleOf = (files: Map<string, { mode: string; id: string }>, dir: string) => {
+            const rule = files.get(`${dir}/.gitignore`);
+            return rule && /^100/.test(rule.mode) ? rule.id : undefined;
+        };
+        const rules = new Map<string, string>();
+        for (const dir of candidates) {
+            const rule = ruleOf(after, dir);
+            if (rule) rules.set(dir, rule);
+        }
+        if (changed.some((path) => !after.has(path))) {
+            const before = this.filesOf(from);
+            const kept = directoriesOf(after.keys());
+            for (const dir of candidates) {
+                const rule = kept.has(dir) ? undefined : ruleOf(before, dir);
+                if (rule) rules.set(dir, rule);
+            }
+        }
+        if (rules.size === 0) return [];
+        const everyPath = this.catchAllRules(new Set(rules.values()));
+        const own = this.projectDirectories(project, base);
+        const named = new Set(
+            candidates.filter((dir) => everyPath.has(rules.get(dir) ?? "") && !own.has(dir)),
+        );
+        const outermost = [...named].filter((dir) => {
+            for (let at = dir.indexOf("/"); at >= 0; at = dir.indexOf("/", at + 1)) {
+                if (named.has(dir.slice(0, at))) return false;
+            }
+            return true;
+        });
+        // The artefact holds text, so a directory is listed when its name's bytes are UTF-8
+        // text, and two names of different bytes are two entries.
+        return outermost.sort().flatMap((dir) => {
+            const bytes = Buffer.from(dir, "latin1");
+            const name = bytes.toString("utf8");
+            return Buffer.from(name, "utf8").equals(bytes) ? [name] : [];
+        });
+    }
+
+    /**
+     * The rule blobs among `ids` whose patterns ignore every path (`ignoresEveryPath`), read
+     * through one `cat-file --batch`, so a change that names many rule files costs one git run
+     * under one timeout.
+     */
+    private catchAllRules(ids: Iterable<string>): Set<string> {
+        const wanted = [...ids];
+        const listing = Buffer.from(wanted.map((id) => `${id}\n`).join(""), "latin1");
+        const out = this.bytes(["cat-file", "--batch"], undefined, listing);
+        const found = new Set<string>();
+        let at = 0;
+        for (const id of wanted) {
+            const end = out.indexOf(0x0a, at);
+            const [, kind, size] = out.subarray(at, end).toString("latin1").split(" ");
+            if (end < 0 || kind !== "blob" || !/^\d+$/.test(size ?? "")) {
+                throw new Error(`snapshot repository holds no rule blob ${id}`);
+            }
+            const body = out.subarray(end + 1, end + 1 + Number(size));
+            if (ignoresEveryPath(body.toString("utf8"))) found.add(id);
+            at = end + 1 + Number(size) + 1;
+        }
+        return found;
+    }
+
+    /** The change between two trees of the workspace `dir` that this recorder wrote, as a diff artefact holds it. */
+    changeBetween(dir: string, from: string, to: string): Change {
+        const patch = this.diff(from, to);
+        const hidden = patch === "" ? [] : this.selfIgnored(basename(dir), from, to);
+        return hidden.length > 0 ? { patch, self_ignored: hidden } : { patch };
+    }
+
     tree(dir: string, nested = this.embedded(dir)): string {
         const excluded = nested.map((path) => `:(exclude,literal)${path}`);
         this.addAll(dir, excluded);
@@ -508,11 +685,6 @@ export class SnapshotRecorder {
         if (kept.length === 0) return;
         const listing = Buffer.from(kept.map((path) => `${path}\0`).join(""), "latin1");
         this.bytes(["update-index", "--add", "--remove", "-z", "--stdin"], dir, listing);
-    }
-
-    /** The patch between two trees this recorder wrote, in the form a turn diff artefact holds. */
-    patchBetween(from: string, to: string): string {
-        return this.diff(from, to);
     }
 
     /** `--text` diffs every file as text, so a NUL byte or a `-diff` attribute hides no added line. */
@@ -622,7 +794,7 @@ export class SnapshotRecorder {
                 id: `${id}:diff`,
                 class: "diff",
                 role: "turn",
-                patch: this.diff(before, after),
+                ...this.changeBetween(dir, before, after),
             },
             { id: `${id}:turn-commands`, class: "command-log", role: "turn", commands: turnTools },
             { id: `${id}:session-commands`, class: "command-log", role: "session", commands },
@@ -631,8 +803,13 @@ export class SnapshotRecorder {
         const prior = this.state.last[project];
         const gap = this.state.lastGap?.[project];
         if (prior) {
-            const patch = this.diff(prior.from, prior.to);
-            artefacts.push({ id: `${id}:prior-diff`, class: "diff", role: "prior-session", patch });
+            const change = this.changeBetween(dir, prior.from, prior.to);
+            artefacts.push({
+                id: `${id}:prior-diff`,
+                class: "diff",
+                role: "prior-session",
+                ...change,
+            });
         } else if (gap) {
             const role = "prior-session";
             artefacts.push({
