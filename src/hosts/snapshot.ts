@@ -590,17 +590,48 @@ export class SnapshotRecorder {
             }
         }
         if (rules.size === 0) return [];
-        const everyPath = new Map<string, boolean>();
-        for (const id of new Set(rules.values())) {
-            everyPath.set(id, ignoresEveryPath(this.git(["cat-file", "blob", id])));
-        }
+        const everyPath = this.catchAllRules(new Set(rules.values()));
         const own = this.projectDirectories(project, base);
-        const named = candidates
-            .filter((dir) => everyPath.get(rules.get(dir) ?? "") === true && !own.has(dir))
-            .sort();
-        return named
-            .filter((dir) => !named.some((outer) => dir.startsWith(`${outer}/`)))
-            .map((dir) => Buffer.from(dir, "latin1").toString("utf8"));
+        const named = new Set(
+            candidates.filter((dir) => everyPath.has(rules.get(dir) ?? "") && !own.has(dir)),
+        );
+        const outermost = [...named].filter((dir) => {
+            for (let at = dir.indexOf("/"); at >= 0; at = dir.indexOf("/", at + 1)) {
+                if (named.has(dir.slice(0, at))) return false;
+            }
+            return true;
+        });
+        // The artefact holds text, so a directory is listed when its name's bytes are UTF-8
+        // text, and two names of different bytes are two entries.
+        return outermost.sort().flatMap((dir) => {
+            const bytes = Buffer.from(dir, "latin1");
+            const name = bytes.toString("utf8");
+            return Buffer.from(name, "utf8").equals(bytes) ? [name] : [];
+        });
+    }
+
+    /**
+     * The rule blobs among `ids` whose patterns ignore every path (`ignoresEveryPath`), read
+     * through one `cat-file --batch`, so a change that names many rule files costs one git run
+     * under one timeout.
+     */
+    private catchAllRules(ids: Iterable<string>): Set<string> {
+        const wanted = [...ids];
+        const listing = Buffer.from(wanted.map((id) => `${id}\n`).join(""), "latin1");
+        const out = this.bytes(["cat-file", "--batch"], undefined, listing);
+        const found = new Set<string>();
+        let at = 0;
+        for (const id of wanted) {
+            const end = out.indexOf(0x0a, at);
+            const [, kind, size] = out.subarray(at, end).toString("latin1").split(" ");
+            if (end < 0 || kind !== "blob" || !/^\d+$/.test(size ?? "")) {
+                throw new Error(`snapshot repository holds no rule blob ${id}`);
+            }
+            const body = out.subarray(end + 1, end + 1 + Number(size));
+            if (ignoresEveryPath(body.toString("utf8"))) found.add(id);
+            at = end + 1 + Number(size) + 1;
+        }
+        return found;
     }
 
     /** The change between two trees of the workspace `dir` that this recorder wrote, as a diff artefact holds it. */

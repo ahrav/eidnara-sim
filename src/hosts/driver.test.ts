@@ -3985,6 +3985,45 @@ describe("tool caches in probe snapshots", () => {
             patch: expect.stringContaining("+again"),
         });
     });
+
+    test("many caches with their own rule files are read in one pass: the outermost of nested ones is named, and a sibling that shares a prefix stays", async () => {
+        const calls = [call(0, "e-1")];
+        const { driver, hosts, armDir } = fixture(
+            "host",
+            { p: gitRepo() },
+            { callsFor: () => calls, watchTurns: () => true },
+        );
+        await driver.reset();
+        await driver.event(ev("session_start", { session: "s-0" }));
+        const host = hosts.at(-1) as FakeHost;
+        const ws = driver.workspace("p");
+        const cacheDir = (path: string, rule: string) => {
+            mkdirSync(join(ws, path), { recursive: true });
+            writeFileSync(join(ws, path, ".gitignore"), rule);
+            writeFileSync(join(ws, path, "data"), "x\n");
+        };
+        host.onPrompt = () => {
+            // Each rule file has its own bytes, so each is a distinct blob for the batched read.
+            for (let i = 0; i < 40; i++) cacheDir(`c${i}`, `# cache ${i}\n*\n`);
+            cacheDir("a", "*\n");
+            cacheDir("a/b", "# inner\n*\n");
+            cacheDir("a-b", "/**\n");
+            cacheDir("kept", "*\n!data\n");
+        };
+        const outcome = await driver.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(outcome.failed).toBeUndefined();
+        const listed = turnDiff(lastSnapshot(armDir)).self_ignored ?? [];
+        const numbered = Array.from({ length: 40 }, (_, i) => `c${i}`);
+        expect(listed).toEqual(["a", "a-b", ...numbered].sort());
+        const read = diffPaths(new ArtefactReader(lastSnapshot(armDir)).diff());
+        expect(read.filter((path) => path.startsWith("kept/")).sort()).toEqual([
+            "kept/.gitignore",
+            "kept/data",
+        ]);
+        expect(read.filter((path) => !path.startsWith("kept/"))).toEqual([]);
+    });
 });
 
 test("a recorder rebuilt after a harness kill drops a tools.jsonl line the kill cut", () => {
