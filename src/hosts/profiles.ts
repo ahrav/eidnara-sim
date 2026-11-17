@@ -271,7 +271,7 @@ const W2_PROBES = [
     probe(
         "contested_statements",
         "crates/daemon/src/canonical_memory.rs",
-        "\\(stated \\{\\}; contested \\{\\} by \\{memory\\}: \\{\\}\\)",
+        "\\(stated \\{\\}; contested \\{\\} by \\{(?:memory)?\\}: \\{\\}\\)",
     ),
     probe("contested_statements", "crates/daemon/src/memory_capture.rs", '"contested_by"'),
     probe("contested_statements", SEARCH_RENDER, "Contested by "),
@@ -553,6 +553,11 @@ const C8_BUILD: AuditedBuild = {
  * commit against any of them, and a run records the one its build clone matches in its manifest.
  */
 export const AUDITED_BUILDS: readonly [AuditedBuild, ...AuditedBuild[]] = [
+    {
+        commit: "ae1b673b77651ce8a3b95892fe27f90d9287d869",
+        label: "eval/w2b",
+        variants: DAEMON_VARIANTS,
+    },
     {
         commit: "7901aae3962825be247cc30f2682b6aec39c7ea8",
         label: "eval/w2",

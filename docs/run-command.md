@@ -214,6 +214,20 @@ harm probes P2, P5, P9, P10, P11, and P8-twin. The budget is $4k to $12k
 for W2S's eight runs and $2k to $6k for W2SH's four, from c7's S spend per
 event ($1.15 to $1.65) over 590, 677, and 751 events.
 
+`--qualification W2S2` (`prereg/W2S2.json`, revision 1) and
+`--qualification W2S2H` (`prereg/W2S2H.json`, revision 1) rerun that
+re-evaluation on the `eval/w2b` build with the same arms, contrasts,
+controls, reference build, and build contrasts. W2S2 runs W2S's seeds 104
+and 105 again and adds the diagnosed seed 106; W2S2H runs W2SH's seed 610
+again and adds the held-out seed 613, and reports apart from W2S2. No
+campaign ran seeds 106 and 613 before (`docs/scenario.md`). Every arm of
+the rerun, `host` and the reference arm included, runs again at the
+rerun's sim revision, since the recorder and the probe rule guard changed
+after the first run. Each seed is four runs launched together, as for W2S.
+The budget is $7k to $16k for W2S2's twelve runs and $3k to $8k for
+W2S2H's eight, from the first focused run's $1.09 to $1.30 per event over
+590, 677, 747, 751, and 323 events.
+
 `--qualification H` runs the held-out registration `prereg/H.json`
 (revision 2, which re-pins the M digest after tier revision 9). It binds tier M, selects the `held-out` corpus split, runs
 `host` and `eidnara` on both hosts over seeds 601 to 609 and 611, with the

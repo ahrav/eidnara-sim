@@ -1,0 +1,105 @@
+{
+    "schema": "sim-qualification/v1",
+    "id": "W2S2",
+    "revision": 1,
+    "frozen": true,
+    "tier": "S",
+    "tier_preregistration_sha256": "2a9773e79ed87853d02a758ae1cadf817871fefd98e3577de2dada71e0858d5e",
+    "corpus": "diagnosed",
+    "fresh_seeds": true,
+    "seeds": [
+        104,
+        105,
+        106
+    ],
+    "hosts": [
+        "pi"
+    ],
+    "arms": {
+        "run": [
+            "host",
+            "eidnara",
+            "eidnara-hybrid"
+        ],
+        "order_by_seed": [
+            [
+                "host",
+                "eidnara",
+                "eidnara-hybrid"
+            ],
+            [
+                "eidnara-hybrid",
+                "host",
+                "eidnara"
+            ],
+            [
+                "eidnara",
+                "eidnara-hybrid",
+                "host"
+            ]
+        ]
+    },
+    "contrasts": [
+        [
+            "eidnara",
+            "host"
+        ],
+        [
+            "eidnara-hybrid",
+            "eidnara"
+        ],
+        [
+            "eidnara-hybrid",
+            "host"
+        ]
+    ],
+    "controls": [
+        "wrong-project-lookup"
+    ],
+    "no_source_control": "host",
+    "builds": {
+        "current": {
+            "label": "eval/w2b",
+            "commit": "ae1b673b77651ce8a3b95892fe27f90d9287d869"
+        },
+        "reference": {
+            "label": "eval/c8",
+            "commit": "8e6265d2ccc12c9e9fddd602e4d206c57b6eb52d"
+        },
+        "contrasts": [
+            [
+                "eidnara",
+                "eidnara"
+            ],
+            [
+                "eidnara-hybrid",
+                "eidnara"
+            ]
+        ]
+    },
+    "analysis": {
+        "unit": "run",
+        "reference": {
+            "campaign": "c8",
+            "level": "seed"
+        },
+        "harm_probes": [
+            "P2",
+            "P5",
+            "P9",
+            "P10",
+            "P11",
+            "P8-twin"
+        ],
+        "budget_usd": {
+            "low": 7000,
+            "high": 16000
+        },
+        "cost_per_arm_seed_usd": {
+            "host": 850,
+            "eidnara": 750,
+            "eidnara-hybrid": 750
+        }
+    },
+    "claim": "descriptive"
+}

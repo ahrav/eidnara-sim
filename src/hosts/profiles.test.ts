@@ -111,13 +111,17 @@ test("source capture is consented on every arm the c8 comparison contrasts with 
     }
 });
 
-test("the registered builds are the w2 build with every variant and the c8 reference with the legacy fixture", () => {
-    expect(AUDITED_BUILDS.map((b) => b.label)).toEqual(["eval/w2", "eval/c8"]);
-    expect(new Set(AUDITED_BUILDS.map((b) => b.commit)).size).toBe(2);
+test("the registered builds are the two w2 builds with every variant and the c8 reference with the legacy fixture", () => {
+    expect(AUDITED_BUILDS.map((b) => b.label)).toEqual(["eval/w2b", "eval/w2", "eval/c8"]);
+    expect(new Set(AUDITED_BUILDS.map((b) => b.commit)).size).toBe(3);
     for (const b of AUDITED_BUILDS) expect(b.commit).toMatch(/^[0-9a-f]{40}$/);
-    const [w2, c8] = AUDITED_BUILDS;
+    const [w2, first, c8] = AUDITED_BUILDS;
     expect(AUDITED_EIDNARA).toBe(w2.commit);
     expect(w2.variants).toBe(DAEMON_VARIANTS);
+    // The first focused run's build stays registered under its own label with the same table.
+    expect(first?.variants).toBe(DAEMON_VARIANTS);
+    expect(auditedBuild("eval/w2")).toBe(first);
+    expect(auditedBuild("eval/w2b")).toBe(w2);
     expect(auditedBuild("eval/c8")).toBe(c8);
     expect(auditedBuild(w2.commit)).toBe(w2);
     expect(auditedBuild("eval/c7")).toBeUndefined();

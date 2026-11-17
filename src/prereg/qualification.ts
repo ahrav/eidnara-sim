@@ -29,7 +29,18 @@ import {
 } from "./validate";
 
 export const QUALIFICATION_SCHEMA = "sim-qualification/v1";
-export const QUALIFICATIONS = ["Q", "H", "C8", "C8H", "C8X", "C8XH", "W2S", "W2SH"] as const;
+export const QUALIFICATIONS = [
+    "Q",
+    "H",
+    "C8",
+    "C8H",
+    "C8X",
+    "C8XH",
+    "W2S",
+    "W2SH",
+    "W2S2",
+    "W2S2H",
+] as const;
 /**
  * Control items a qualification adds to its scenarios. `wrong-project-lookup` asks each P8 lookup
  * again in the twin project (`P8-twin`), where the right answer is that the value belongs to the
@@ -96,8 +107,9 @@ export interface Qualification {
     corpus?: Split;
     /**
      * A diagnosed registration over seeds outside the tier's: they compile from the diagnosed
-     * split at the tier's per-scenario item count, and no earlier campaign ran them, or, with
-     * `reference_runs`, they are exactly the seeds of the registration it reruns.
+     * split at the tier's per-scenario item count. No earlier campaign ran them, or they are
+     * seeds of the registration it reruns: exactly those with `reference_runs`, and those plus
+     * added seeds for a rerun of every arm, which `docs/scenario.md` lists seed by seed.
      */
     fresh_seeds?: true;
     /**

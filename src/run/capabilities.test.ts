@@ -759,7 +759,7 @@ test("evidence is read against the capabilities of the build the run bound", () 
     const reference = observeArm("eidnara", "pi", c8Root, { agent: 2, memory_capture: 1 });
     expect(armMismatches(reference, c8)).toEqual([]);
     expect(armMismatches(reference, w2)).toEqual([
-        "the source capture counters hold no decisions_approval_refused, which eval/w2 declares with its per-message statement lineage",
+        `the source capture counters hold no decisions_approval_refused, which ${w2.label} declares with its per-message statement lineage`,
     ]);
 
     const statements = (per_message: number) => ({
@@ -771,7 +771,7 @@ test("evidence is read against the capabilities of the build the run bound", () 
     });
     expect(armMismatches({ ...base, statements: statements(70) }, w2)).toEqual([]);
     expect(armMismatches({ ...base, statements: statements(6) }, w2)).toEqual([
-        "64 of 70 user statements sit on a lineage shared across messages, but eval/w2 declares one lineage per user message",
+        `64 of 70 user statements sit on a lineage shared across messages, but ${w2.label} declares one lineage per user message`,
     ]);
     expect(armMismatches({ ...reference, statements: statements(0) }, c8)).toEqual([]);
     expect(armMismatches({ ...reference, statements: statements(6) }, c8)).toEqual([
@@ -797,7 +797,7 @@ test("evidence is read against the capabilities of the build the run bound", () 
     });
     expect(armMismatches({ ...base, delivery: delivery(2, 0) }, w2)).toEqual([]);
     expect(armMismatches({ ...base, delivery: delivery(0, 1) }, w2)).toEqual([
-        "1 of 5 rendered history blocks hold a waiting line before a later summarized segment (first requests 41), but eval/w2 declares waiting lines in the newest segment alone",
+        `1 of 5 rendered history blocks hold a waiting line before a later summarized segment (first requests 41), but ${w2.label} declares waiting lines in the newest segment alone`,
     ]);
     // The c8 renderer keeps a settled waiting line across segments, and renders no contest.
     expect(armMismatches({ ...reference, delivery: delivery(0, 1) }, c8)).toEqual([]);
@@ -823,13 +823,13 @@ test("evidence is read against the capabilities of the build the run bound", () 
     });
     expect(armMismatches({ ...base, daemon_status: status(8, 0) }, w2)).toEqual([]);
     expect(armMismatches({ ...base, daemon_status: status(0, 0) }, w2)).toEqual([
-        "none of 8 daemon status readings carries the process_memory block, which eval/w2 declares",
+        `none of 8 daemon status readings carries the process_memory block, which ${w2.label} declares`,
     ]);
     // A read returns after the sample that started it: an arm too short for one owes no block,
     // and an arm whose every read failed leaves the status unverified.
     expect(armMismatches({ ...base, daemon_status: status(0, 0, 0) }, w2)).toEqual([]);
     expect(armMismatches({ ...base, daemon_status: status(0, 0, 0, 5) }, w2)).toEqual([
-        "all 5 daemon status reads failed, so the status eval/w2 declares is unverified",
+        `all 5 daemon status reads failed, so the status ${w2.label} declares is unverified`,
     ]);
     expect(armMismatches({ ...reference, daemon_status: status(0, 0) }, c8)).toEqual([]);
     expect(armMismatches({ ...reference, daemon_status: status(8, 0) }, c8)).toEqual([
@@ -840,7 +840,7 @@ test("evidence is read against the capabilities of the build the run bound", () 
     const hybrid = observeArm("eidnara-hybrid", "pi", fused, { agent: 1 });
     expect(armMismatches({ ...hybrid, daemon_status: status(8, 8) }, w2)).toEqual([]);
     expect(armMismatches({ ...hybrid, daemon_status: status(8, 0) }, w2)).toEqual([
-        "none of 8 daemon status readings carries a search.lifecycle.status progress block, which eval/w2 declares for the fused route",
+        `none of 8 daemon status readings carries a search.lifecycle.status progress block, which ${w2.label} declares for the fused route`,
     ]);
 });
 
