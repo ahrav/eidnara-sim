@@ -4131,6 +4131,7 @@ test("in a workspace whose rule files equal the source's, each recorder tree has
     put(".gitattributes", "*.txt text eol=lf\n*.bin -text\n*.id ident\n");
     put("sub/.gitattributes", "*.txt -text\n");
     put("sub/forced.tmp", "tracked although ignored\n");
+    put("ta\tb/.gitignore", "secret\n");
     commitAll(repo, "rules and a file tracked over them");
     const recorder = new SnapshotRecorder(tmp(), "eidnara", () => []);
     recorder.trackIgnored(basename(repo), ["sub/forced.tmp"]);
@@ -4169,6 +4170,8 @@ test("in a workspace whose rule files equal the source's, each recorder tree has
     put(":colon.txt", "kept\n");
     put(":(glob)x.log", "ignored\n");
     put("spa ce/new\nline.rs", "kept\n");
+    put("ta\tb/secret", "ignored by the rule file in a directory named with a tab\n");
+    put("ta\tb/shown", "kept\n");
     put(Buffer.from("caf\xe9.rs", "latin1"), "kept under a Latin-1 name\n");
     put(Buffer.from("caf\xe9.log", "latin1"), "ignored under a Latin-1 name\n");
     symlinkSync("README", join(repo, "link"));
@@ -4195,6 +4198,8 @@ test("in a workspace whose rule files equal the source's, each recorder tree has
             "sub/forced.tmp",
             "sub/important.tmp",
             "sub/note.txt",
+            "ta\tb/.gitignore",
+            "ta\tb/shown",
         ].sort(),
     );
 
@@ -4220,6 +4225,34 @@ test("in a workspace whose rule files equal the source's, each recorder tree has
     expect(edited).not.toBe(filled);
     expect(names(edited)).toContain("run.sh/inner.rs");
     expect(names(edited)).not.toContain("sub/forced.tmp");
+});
+
+test("the baseline rules are the rule files' bytes in the fresh clone, where checkout expanded an ident keyword", () => {
+    const source = gitRepo();
+    writeFileSync(join(source, ".gitattributes"), ".gitignore ident\n");
+    writeFileSync(join(source, ".gitignore"), "$Id$\n*.log\n");
+    commitAll(source, "an ignore rule that checkout rewrites");
+    const clone = join(tmp(), "clone");
+    ownGit(source, "clone", "--quiet", source, clone);
+    const expanded = readFileSync(join(clone, ".gitignore"), "utf8");
+    expect(expanded).toMatch(/^\$Id: [0-9a-f]{40} \$\n\*\.log\n$/);
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.trackIgnoreRules(basename(clone), clone);
+    const plainGit = join(tmp(), "plain.git");
+    expect(recorder.tree(clone)).toBe(plainAddTree(plainGit, clone, []));
+    writeFileSync(
+        join(clone, "$Id$"),
+        "a file the source's blob names and the clone's rule file leaves in\n",
+    );
+    writeFileSync(join(clone, "a.log"), "ignored\n");
+    const tree = recorder.tree(clone);
+    expect(tree).toBe(plainAddTree(plainGit, clone, []));
+    const listed = spawnSync("git", ["ls-tree", "-r", "--name-only", tree], {
+        env: { ...process.env, GIT_DIR: plainGit },
+        encoding: "utf8",
+    }).stdout;
+    expect(listed.trim().split("\n")).toEqual(["$Id$", ".gitattributes", ".gitignore", "README"]);
 });
 
 test("a file or a directory standing where the source holds a rule file, and a file where it holds a rule directory, are indexed as git add --all indexes them", () => {

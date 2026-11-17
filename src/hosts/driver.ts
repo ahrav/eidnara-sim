@@ -939,7 +939,7 @@ export class HostDriver implements ArmDriver {
         const tracked = ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"];
         const forced = git(source, tracked).split("\0").filter(Boolean);
         this.snapshots.trackIgnored(project, forced);
-        this.snapshots.trackIgnoreRules(project, source);
+        this.snapshots.trackIgnoreRules(project, this.workspace(project));
     }
 
     async resume(open: ScenarioEvent | null, interrupted: readonly string[] = []): Promise<void> {

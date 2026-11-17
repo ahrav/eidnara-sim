@@ -110,9 +110,11 @@ at 200,000 entries, failing the probe turn. A `git diff` past the 256 MiB
 output cap fails the probe turn the same way.
 
 Every recorder tree is built under the project's baseline rules: the
-`.gitignore` and `.gitattributes` files the source tracks as regular files,
-recorded at reset by blob id in `snapshot-state.json` with each blob copied
-into the arm's `snapshot.git`. The rule files in the workspace are files like
+`.gitignore` and `.gitattributes` files the project's fresh clone tracks and
+holds as regular files, read from disk at reset, before any agent turn, so
+they are the bytes git reads rules from in that clone. Each is stored as a
+blob in the arm's `snapshot.git` and recorded by blob id in
+`snapshot-state.json`. The rule files in the workspace are files like
 any other to the recorder. Three harness inputs depend on which rules are in
 force when a tree is built: the turn diff (read by the P1, P2, P3, P4, P5,
 P6, P10, P11, and P12 graders, and by a P13 item whose check names a diff
@@ -144,7 +146,9 @@ rules from its own repository:
 An agent edit of a `.gitignore` or `.gitattributes`, in a plain turn or a
 probe turn, is therefore an ordinary file change: it is in the diff of the
 turn that made it, every other file the turn wrote is in the diff with the
-bytes on disk, and the turn keeps its outcome on every arm. A file the edited
+bytes git stores under the baseline attributes (the bytes on disk for a
+project whose baseline holds no `.gitattributes`), and the turn keeps its
+outcome on every arm. A file the edited
 rule hides from the clone's own `git status` is in the diff; a file the
 baseline rules ignore stays out whatever the workspace's rules say, including
 a `!` pattern that re-includes it. In a workspace whose rule files equal the
@@ -161,7 +165,8 @@ rebuilt from the recorded blob ids on a recorder's first use of a project,
 so a resumed run reads the rules its state names; a restored rule path must
 be a relative path to a `.gitignore` or `.gitattributes` with a 40-hex blob
 id. A project with no recorded rule files is indexed whole with the bytes on
-disk.
+disk. A tracked rule file whose path is not UTF-8 stops the reset with the
+path.
 
  A
 workspace with more than 1,000 nested repositories fails the probe turn

@@ -3,6 +3,7 @@ import {
     appendFileSync,
     type Dirent,
     existsSync,
+    lstatSync,
     mkdirSync,
     opendirSync,
     readdirSync,
@@ -33,9 +34,9 @@ interface RecorderState {
     /** Per project, the generation of its index file; a lock a killed git left behind moves the project to the next. */
     indexGenerations?: Record<string, number>;
     /**
-     * Per project, the blob ids of the source's `.gitignore` and `.gitattributes` files: the
-     * baseline rules every tree of that project is built under. The blobs are in the recorder's
-     * repository.
+     * Per project, the blob ids of the `.gitignore` and `.gitattributes` files of its fresh
+     * clone: the baseline rules every tree of that project is built under. The blobs are in
+     * the recorder's repository.
      */
     ignores?: Record<string, { files: Record<string, string> }>;
 }
@@ -250,9 +251,9 @@ export class SnapshotRecorder {
 
     /**
      * The project's baseline rules in the two forms the recorder's git reads. `mirror` is a
-     * directory under the recorder's repository that holds the source's `.gitignore` files at
+     * directory under the recorder's repository that holds the baseline `.gitignore` files at
      * their paths and nothing else, so `check-ignore` run there answers for any workspace path
-     * under the baseline ignore rules. `attributes` is a tree of the source's `.gitattributes`
+     * under the baseline ignore rules. `attributes` is a tree of the baseline `.gitattributes`
      * files, the value of `GIT_ATTR_SOURCE`. Both are rebuilt from the recorded blob ids on the
      * first use by each recorder, so a resumed or copied arm directory reads the rules its
      * state names. A project with no recorded rule files has an empty mirror and an empty tree.
@@ -436,24 +437,27 @@ export class SnapshotRecorder {
     }
 
     /**
-     * Records the project's baseline rules: every `.gitignore` and `.gitattributes` file the
-     * source tracks as a regular file, by blob id, with each blob copied into the recorder's
-     * repository. Every later tree of the project is built under these rules.
+     * Records the project's baseline rules from its fresh clone, before any agent turn: every
+     * `.gitignore` and `.gitattributes` the clone tracks and holds as a regular file, with the
+     * bytes on disk, which are the bytes git reads rules from in that clone. Each is stored as
+     * a blob in the recorder's repository and recorded by blob id. Every later tree of the
+     * project is built under these rules.
      */
-    trackIgnoreRules(project: string, source: string): void {
+    trackIgnoreRules(project: string, clone: string): void {
         const names = [".gitignore", "**/.gitignore", ".gitattributes", "**/.gitattributes"];
         const files: Record<string, string> = {};
-        for (const row of fields(gitBytes(source, ["ls-files", "-s", "-z", "--", ...names]))) {
-            const [meta, path] = row.split("\t") as [string, string];
-            const [mode, id] = meta.split(" ") as [string, string];
-            // Git opens an in-tree rule file without following links, so a symlinked one carries no rules.
-            if (!mode.startsWith("100")) continue;
-            const content = gitBytes(source, ["cat-file", "blob", id]);
-            const stored = this.bytes(["hash-object", "-w", "--stdin"], undefined, content);
-            if (stored.toString("utf8").trim() !== id) {
-                throw new Error(`rule file ${path} of ${source} stored under another blob id`);
+        for (const raw of fields(gitBytes(clone, ["ls-files", "-z", "--", ...names]))) {
+            const path = Buffer.from(raw, "latin1").toString("utf8");
+            if (bytesOf(path) !== raw) {
+                throw new Error(
+                    `rule file ${JSON.stringify(path)} of ${clone} has a path outside UTF-8`,
+                );
             }
-            files[Buffer.from(path, "latin1").toString("utf8")] = id;
+            // Git opens an in-tree rule file without following links, so a symlinked one carries no rules.
+            if (!lstatSync(join(clone, path), { throwIfNoEntry: false })?.isFile()) continue;
+            const content = readFileSync(join(clone, path));
+            const stored = this.bytes(["hash-object", "-w", "--stdin"], undefined, content);
+            files[path] = stored.toString("utf8").trim();
         }
         this.state.ignores = { ...this.state.ignores, [project]: { files } };
         this.baselines.delete(project);
@@ -487,8 +491,8 @@ export class SnapshotRecorder {
 
     /**
      * Indexes the workspace under the project's baseline rules, so the tree holds what
-     * `git add --all` holds in a workspace whose rule files match the source's, whatever the
-     * workspace's rule files say now. Tracked files are refreshed first. Untracked files are
+     * `git add --all` holds in a workspace whose rule files match the fresh clone's, whatever
+     * the workspace's rule files say now. Tracked files are refreshed first. Untracked files are
      * listed with no ignore rules in force, which opens no workspace `.gitignore`, and the ones
      * the baseline rules keep are added; a listed path ending in `/` is a nested repository,
      * which `embedded` reports. A `.gitignore` or `.gitattributes` the agent wrote is a file
