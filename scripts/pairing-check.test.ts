@@ -717,23 +717,40 @@ test("a flagged interrupt rate fails when the aborts were due and stayed unlande
     expect(few.exit).toBe(1);
 });
 
-test("an interrupt schedule outside the band fails a run whose realised rate sits inside it", () => {
+test("interrupt marks beyond the plan fail the check at each turn and through the scheduled rate", () => {
     const events = wideEvents(40);
     const scheduled = scheduledInterrupts(events);
     const f = fixture(["host", "eidnara"], events);
-    // The journal marks plain task turns of the eidnara arm as scheduled interrupts beyond the plan.
+    // The journal marks plain task turns of the eidnara arm as scheduled interrupts.
     const extra = f.journal
         .filter((r) => r.kind === "UserTurn" && r.arm === "eidnara" && r.label === "task")
         .slice(0, 2 * scheduled.length);
     for (const row of extra) row.scheduled = "interrupt";
     const r = run(f);
     expect(r.report.flagged).toEqual([]);
+    expect(r.report.journal_pairing_mismatch).toEqual(
+        extra
+            .map((row) => String(row.event))
+            .sort()
+            .map((event) => `eidnara ${event}`),
+    );
     const counts = r.report.interrupts as Interrupts;
     expect(counts.eidnara?.scheduled).toBe(3 * scheduled.length);
     expect(r.report.rate_breaks).toEqual([
         `eidnara: interrupt_per_turn scheduled at ${counts.eidnara?.scheduled_rate}`,
     ]);
     expect(r.exit).toBe(1);
+    // One stray mark leaves the scheduled rate inside the band and still fails at its turn.
+    const g = fixture(["host", "eidnara"], events);
+    const stray = find(
+        g.journal,
+        (row) => row.kind === "UserTurn" && row.arm === "eidnara" && row.label === "task",
+    );
+    stray.scheduled = "interrupt";
+    const one = run(g);
+    expect(one.report.rate_breaks).toEqual([]);
+    expect(one.report.journal_pairing_mismatch).toEqual([`eidnara ${String(stray.event)}`]);
+    expect(one.exit).toBe(1);
 });
 
 test("every delivered scripted row carries the compiled text's hash", () => {

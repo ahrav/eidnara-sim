@@ -305,6 +305,9 @@ const journalPairingMismatch = (manifest.order as string[]).flatMap((arm) => {
             u.interrupted !== true;
         if (u.session !== row.session || (u.label !== row.label && !relabel))
             off.add(String(u.event));
+        // A `scheduled` mark stands only for an interrupt the user-sim scheduled at this turn.
+        if (u.scheduled !== undefined && (u.scheduled !== "interrupt" || row.label !== "interrupt"))
+            off.add(String(u.event));
         if (u.delivered === true && !row.delivered) off.add(String(u.event));
         if (cut(String(u.event)) && u.delivered !== row.delivered) off.add(String(u.event));
         // The journal's window marker, which the realised rate reads, is the pairing row's.
@@ -526,9 +529,10 @@ const ratesMismatch = (manifest.order as string[]).filter((arm) => {
  * delay ends, so an arm's realised interrupt rate follows its turn lengths as well as the
  * schedule. Per arm, over its delivered turns: the interrupts the plan scheduled, the ones whose
  * abort landed, the ones whose turn ended before the planned delay (`finished_first`), and the
- * rest (`unlanded`), whose abort was due. `landing_p` is the exact binomial probability of at
- * most `landed` landings among the due aborts when each lands with probability
- * `ABORT_LANDING_FLOOR`.
+ * rest (`unlanded`), whose abort was due. `prompt_ms` spans the host's whole prompt call, so a
+ * turn that ended just before its delay and then settled counts as due. `landing_p` is the exact
+ * binomial probability of at most `landed` landings among the due aborts when each lands with
+ * probability `ABORT_LANDING_FLOOR`.
  */
 const ABORT_LANDING_FLOOR = 0.5;
 const ABORT_ALPHA = 0.01;

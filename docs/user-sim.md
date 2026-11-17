@@ -270,7 +270,14 @@ under `interrupts`, the interrupts scheduled among the delivered turns (the
 journal's `interrupt` labels plus its `scheduled: "interrupt"` marks), the
 aborts that landed, the scheduled turns whose `EndTurn` `prompt_ms` is below
 the plan's delay (`finished_first`), and the rest (`unlanded`), whose abort
-was due; a scheduled turn with no recorded `prompt_ms` counts as due. The
+was due; a scheduled turn with no recorded `prompt_ms` counts as due.
+`prompt_ms` spans the host's whole prompt call, so a turn that ended just
+before its delay and then settled counts as due, and the count errs toward
+`unlanded`; on Pi the call's time outside the turn, read from the 167 landed
+aborts of the w2 S runs as `prompt_ms` minus the delay, is 10 ms at the
+median and 57 ms at the ninth decile. A `scheduled` mark on a turn whose
+pairing row carries another label than `interrupt` fails
+`journal_pairing_mismatch`, so the scheduled count is the plan's. The
 interrupt rate breaks in two cases. The scheduled rate lies outside the
 band: the schedule is the user-sim's own decision, equal on every arm of a
 seed, and exact. Or the realised rate is flagged and the due aborts landed
@@ -279,7 +286,12 @@ probability of at most `landed` landings among the due aborts
 (`landing_p`) is below 0.01, which a run with seven or more due aborts and
 no landing meets. A flagged interrupt rate with neither cause stays under
 `flagged` and passes: the arm's agent ended those turns before the user's
-delay, an outcome of the arm under the same schedule. On the w2 S runs the
+delay, an outcome of the arm under the same schedule. The registered rule is
+the flag: `user_sim.bands` flags a run whose realised rate leaves its band,
+and `UserSimRates`, `flagged`, and the report's SIM-P10 witness carry that
+flag as before. `rate_breaks` decides the script's exit status alone, and
+the landing chance of one half and the 0.01 level are the script's own
+constants. On the w2 S runs the
 plan scheduled 20, 24, and 30 interrupts on seeds 104, 105, and 610, the
 same on all four runs of a seed; 167 of the 178 due aborts landed, and ten
 of the eleven others ended within 1.7 s of the delay. On held-out seed 610
