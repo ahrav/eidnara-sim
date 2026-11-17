@@ -65,7 +65,10 @@ the turn's diff or commands, or a created file whose first line misses a
 to the workspace, the self-ignoring directories among its paths, and the tool
 runs the host reported. The check reads the patch without the files under
 those directories, as a grader does (`docs/grading.md`, Self-ignoring
-directories), so a tool cache a turn leaves behind breaks no rule. A reactive pushback is
+directories), so the files of a tool cache a turn leaves behind break no
+rule, with two bounds: a file the rule's check names by scope or path
+pattern is read wherever it lies, and the tool's command is judged as any
+other command of the turn. A reactive pushback is
 the fixed line `That last change goes against a rule I gave you earlier in
 this session. Check your work against it before moving on.` ahead of the
 script text, so it restates no rule; it makes no model call. The journal and

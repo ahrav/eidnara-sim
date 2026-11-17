@@ -245,6 +245,12 @@ an audit sees what the turn left behind.
   never listed. Git keeps showing the files it tracks under an ignore rule,
   so a rule file an agent writes into a project directory hides no edit
   there. A recorder state with no base tree for a project lists nothing.
+  The list rests on the fresh clone's directories and on the rule file, and
+  it reads no index of the workspace's git, which the agent can write. A
+  directory that a commit after the clone creates together with a catch-all
+  rule file is therefore listed, although git still shows the files that
+  commit tracks there; the reader then leaves out later edits to them unless
+  the check names them.
 - `ArtefactReader.diff` is the one place a grader gets a patch from, and it
   returns the patch without the files that lie under a listed directory
   (`withoutFilesUnder`: a file is the text from its `diff --git` line to the
@@ -263,7 +269,8 @@ A new directory an agent creates with a catch-all rule file and fills with
 its own code is read the same way as a tool cache: git keeps it out of the
 project, so it earns no credit under a positive rule and carries no harm
 under a negative one, unless the check names it. A directory the scenario's
-own commits create after the clone counts as new.
+own commits create after the clone counts as new; the fact bank's diffs add
+no rule file, so no scenario directory is listed.
 
 The recorder keeps each project's session-start tree, the last session's
 tree pair, the last ended session, each project's baseline rule files, its

@@ -2571,4 +2571,13 @@ describe("self-ignoring directories", () => {
         expect(withoutFilesUnder(patch, ["src", ".venv", ".venv2"])).toBe("");
         expect(withoutFilesUnder("", [".venv"])).toBe("");
     });
+
+    test("a carriage return inside a hunk line starts no file, so the cache file goes whole", () => {
+        const log =
+            "diff --git a/.venv/run.log b/.venv/run.log\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/.venv/run.log\n@@ -0,0 +1,2 @@\n+x\rdiff --git a/src/fake.rs b/src/fake.rs\n+done\n";
+        expect(withoutFilesUnder(log + code, [".venv"])).toBe(code);
+        expect(diffPaths(withoutFilesUnder(code + log, [".venv"]))).toEqual(["src/limits.rs"]);
+        const listed = withDiff(log, [".venv"]);
+        expect(diffPaths(new ArtefactReader(listed).diff())).toEqual([]);
+    });
 });

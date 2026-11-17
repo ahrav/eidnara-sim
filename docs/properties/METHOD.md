@@ -144,7 +144,10 @@ directory's rule file, never on tool names, it holds for every arm, and the
 stored tree and patch stay whole. Its bounds are the cases where the files
 are the agent's work: a directory of the project's fresh clone is never
 self-ignoring, and a file the item's check names by scope or path pattern is
-read wherever it lies.
+read wherever it lies. The rule reads the fresh clone's directories and the
+rule file, so it differs from git in one case: a directory created after the
+clone by a commit that also adds a catch-all rule file is read as
+self-ignoring, while git still lists the files that commit tracks there.
 
 ## Evidence file structure
 

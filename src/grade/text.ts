@@ -691,14 +691,15 @@ export const unifiedDiff = (v: unknown): boolean =>
  * the text from its `diff --git` line to the next. A file stays when `kept` holds for one of
  * its paths, or when one of its paths lies outside every hidden directory, as a rename into
  * or out of one does. Hunk lines start with a space, `+`, `-`, or a backslash, so a line that
- * starts with `diff --git ` is a file's first line.
+ * starts with `diff --git ` is a file's first line. A line starts at the patch's first byte or
+ * after a line feed; a carriage return inside a hunk line starts none.
  */
 export function withoutFilesUnder(
     patch: string,
     hidden: readonly string[],
     kept: (dir: string, path: string) => boolean = () => false,
 ): string {
-    const starts = [...patch.matchAll(/^diff --git /gm)].map((m) => m.index);
+    const starts = [...patch.matchAll(/(?<=^|\n)diff --git /g)].map((m) => m.index);
     if (hidden.length === 0 || starts.length === 0) return patch;
     const dropped = (path: string) => {
         const dir = hidden.find((d) => path.startsWith(`${d}/`));
