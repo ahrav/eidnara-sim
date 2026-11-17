@@ -3132,18 +3132,100 @@ describe("probe snapshots", () => {
             ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
         );
         expect(hidden.failed).toBe("rule files changed: .gitignore (added)");
-        host.onPrompt = () => appendFileSync(join(ws, ".git", "info", "exclude"), "cache.rs\n");
-        const excluded = await fresh.event(
+        // The rule file stays on disk, so the next probe turn in the project fails on it too.
+        host.onPrompt = () => writeFileSync(join(ws, "plain.rs"), "fn ok() {}\n");
+        const stillChanged = await fresh.event(
             ev("user_turn", { id: "e-2", session: "s-0", text: "go", probe: "q-2" }),
         );
-        expect(excluded.failed).toContain(".git/info/exclude (changed)");
-        host.onPrompt = () => writeFileSync(join(ws, "plain.rs"), "fn ok() {}\n");
+        expect(stillChanged.failed).toBe("rule files changed: .gitignore (added)");
         rmSync(join(ws, ".gitignore"));
-        const stillChanged = await fresh.event(
+        const restored = await fresh.event(
             ev("user_turn", { id: "e-3", session: "s-0", text: "go", probe: "q-3" }),
         );
-        expect(stillChanged.failed).toContain(".git/info/exclude (changed)");
-        expect(stillChanged.failed).not.toContain(".gitignore");
+        expect(restored.failed).toBeUndefined();
+    });
+
+    test("the recorder's tree holds a path the clone's .git/info/exclude names, with the bytes on disk under a .git/info/attributes rule", () => {
+        const repo = gitRepo();
+        const recorder = new SnapshotRecorder(tmp(), "eidnara", () => []);
+        recorder.trackIgnoreRules(basename(repo), {});
+        recorder.sessionStart("s-1", basename(repo), repo);
+        const before = recorder.tree(repo);
+        const info = join(repo, ".git", "info");
+        mkdirSync(info, { recursive: true });
+        appendFileSync(join(info, "exclude"), "cache.rs\n.tmp-bun/\n");
+        writeFileSync(join(info, "attributes"), "*.txt ident\n*.rs -diff\n");
+        writeFileSync(join(repo, "cache.rs"), "static STORE: Mutex<u8>;\n");
+        mkdirSync(join(repo, ".tmp-bun"));
+        writeFileSync(join(repo, ".tmp-bun", "test.log"), "1 pass\n");
+        writeFileSync(join(repo, "note.txt"), "before $Id: FORBIDDEN_VALUE $ after\n");
+        // The clone's own git applies both files: its status hides the excluded paths.
+        const status = spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], {
+            cwd: repo,
+            encoding: "utf8",
+            env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+        });
+        expect(status.stdout).toBe("?? note.txt\n");
+        expect(recorder.ignoreChanges(repo, basename(repo))).toEqual([]);
+        const patch = recorder.patchBetween(before, recorder.tree(repo));
+        expect(patch).toContain("+static STORE: Mutex<u8>;");
+        expect(patch).toContain("+++ b/.tmp-bun/test.log");
+        expect(patch).toContain("+before $Id: FORBIDDEN_VALUE $ after");
+    });
+
+    test("a plain turn that appends to .git/info/exclude leaves later probe turns and the session's end recorded, across a resume", async () => {
+        const { driver, hosts, armDir, transcripts } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        mkdirSync(join(transcripts, "sessions"), { recursive: true });
+        const ws = driver.workspace("p");
+        const start = ev("session_start", { id: "e-0", session: "s-0" });
+        await driver.event(start);
+        // The agent keeps its scratch directory out of its own `git status`, in a plain turn.
+        (hosts.at(-1) as FakeHost).onPrompt = () => {
+            mkdirSync(join(ws, ".tmp-bun"));
+            writeFileSync(join(ws, ".tmp-bun", "test.log"), "1 pass\n");
+            appendFileSync(join(ws, ".git", "info", "exclude"), ".tmp-bun/\n");
+        };
+        const plain = await driver.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "run the tests" }),
+        );
+        expect(plain.failed).toBeUndefined();
+        (hosts.at(-1) as FakeHost).onPrompt = () => {
+            writeFileSync(join(ws, "cache.rs"), "fn cache() {}\n");
+            writeFileSync(join(ws, ".tmp-bun", "probe.log"), "2 pass\n");
+        };
+        const first = await driver.event(
+            ev("user_turn", { id: "e-2", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(first.failed).toBeUndefined();
+        expect(first.snapshot).toBe("host:q-1:e-2");
+        const turn = captured(armDir)["host:q-1:e-2:diff"]?.patch;
+        expect(turn).toContain("+fn cache() {}");
+        expect(turn).toContain("+++ b/.tmp-bun/probe.log");
+
+        // The harness stops and a fresh driver resumes the open session from the arm's files.
+        const resumed = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await resumed.resume(start);
+        (hosts.at(-1) as FakeHost).onPrompt = () =>
+            writeFileSync(join(ws, "later.rs"), "fn later() {}\n");
+        const second = await resumed.event(
+            ev("user_turn", { id: "e-3", session: "s-0", text: "go", probe: "q-2" }),
+        );
+        expect(second.failed).toBeUndefined();
+        expect(captured(armDir)["host:q-2:e-3:diff"]?.patch).toContain("+fn later() {}");
+
+        await resumed.event(ev("session_end", { id: "e-4", session: "s-0" }));
+        await resumed.event(ev("session_start", { id: "e-5", session: "s-1" }));
+        const next = await resumed.event(
+            ev("user_turn", { id: "e-6", session: "s-1", text: "next", probe: "q-3" }),
+        );
+        expect(next.failed).toBeUndefined();
+        const prior = captured(armDir)["host:q-3:e-6:prior-diff"] as {
+            patch?: string;
+            refused?: string;
+        };
+        expect(prior.refused).toBeUndefined();
+        expect(prior.patch).toContain("+fn later() {}");
     });
 
     test("a .gitignore that ignores itself still fails the probe turn as a rule change", async () => {
@@ -3230,41 +3312,34 @@ describe("probe snapshots", () => {
         expect(outcome.failed).toBe("rule files changed: vendor/.gitignore (changed)");
     });
 
-    test("an exclude or ignore file past the size cap reads as a changed rule", () => {
-        const repo = gitRepo();
-        const armDir = tmp();
-        const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
-        const info = join(repo, ".git", "info");
-        mkdirSync(info, { recursive: true });
-        const fd = openSync(join(info, "exclude"), "w");
-        writeSync(fd, "x", 2 << 20);
-        closeSync(fd);
-        expect(recorder.excludeDigest(repo)).toBe("unreadable");
-    });
-
-    test("an exclude file that is a directory, symlink, or FIFO reads as a changed rule without blocking", () => {
-        const repo = gitRepo();
-        const armDir = tmp();
-        const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
-        const info = join(repo, ".git", "info");
-        mkdirSync(info, { recursive: true });
-        const exclude = join(info, "exclude");
-        rmSync(exclude, { force: true });
-        expect(recorder.excludeDigest(repo)).toBeNull();
-        mkdirSync(exclude);
-        expect(recorder.excludeDigest(repo)).toBe("unreadable");
-        rmSync(exclude, { recursive: true });
-        symlinkSync(join(tmp(), "secret"), exclude);
-        expect(recorder.excludeDigest(repo)).toBe("unreadable");
-        rmSync(exclude);
-        spawnSync("mkfifo", [exclude]);
-        const started = Date.now();
-        expect(recorder.excludeDigest(repo)).toBe("unreadable");
-        expect(Date.now() - started).toBeLessThan(1_000);
-        rmSync(exclude);
-        rmSync(info, { recursive: true });
-        symlinkSync(tmp(), info);
-        expect(recorder.excludeDigest(repo)).toBe("unreadable");
+    test("a FIFO or an oversized file at .git/info/exclude fails no probe turn and blocks no recorder run", async () => {
+        const { driver, hosts } = fixture("host", { p: gitRepo() });
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reset();
+        const host = hosts.at(-1) as FakeHost;
+        const ws = fresh.workspace("p");
+        const exclude = join(ws, ".git", "info", "exclude");
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        host.onPrompt = () => {
+            rmSync(exclude, { force: true });
+            spawnSync("mkfifo", [exclude]);
+            writeFileSync(join(ws, "lib.rs"), "fn lib() {}\n");
+        };
+        // A recorder run that opened the FIFO would wait past the turn deadline and fail the turn.
+        const fifo = await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(fifo.failed).toBeUndefined();
+        host.onPrompt = () => {
+            rmSync(exclude);
+            const fd = openSync(exclude, "w");
+            writeSync(fd, "x", 2 << 20);
+            closeSync(fd);
+        };
+        const large = await fresh.event(
+            ev("user_turn", { id: "e-2", session: "s-0", text: "go", probe: "q-2" }),
+        );
+        expect(large.failed).toBeUndefined();
     });
 
     test("a probe turn that adds a .gitattributes rule ends failed, since attributes rewrite indexed content", async () => {
@@ -3282,14 +3357,6 @@ describe("probe snapshots", () => {
             ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
         );
         expect(outcome.failed).toBe("rule files changed: .gitattributes (added)");
-        host.onPrompt = () =>
-            writeFileSync(join(ws, ".git", "info", "attributes"), "*.txt ident\n");
-        rmSync(join(ws, ".gitattributes"));
-        mkdirSync(join(ws, ".git", "info"), { recursive: true });
-        const info = await fresh.event(
-            ev("user_turn", { id: "e-2", session: "s-0", text: "go", probe: "q-2" }),
-        );
-        expect(info.failed).toBe("rule files changed: .git/info/attributes (changed)");
     });
 
     test("a probe turn that leaves an embedded repository in the workspace ends failed, naming it", async () => {
@@ -3572,7 +3639,7 @@ test("a session that changed a rule file leaves the next session a refused prior
     const repo = gitRepo();
     const armDir = tmp();
     const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
-    recorder.trackIgnoreRules(basename(repo), {}, null, null);
+    recorder.trackIgnoreRules(basename(repo), {});
     recorder.sessionStart("s-1", basename(repo), repo);
     writeFileSync(join(repo, ".gitignore"), "secret.txt\n");
     writeFileSync(join(repo, "secret.txt"), "hidden");
@@ -3857,7 +3924,7 @@ test("rule-file hashing is bounded by count and by the recorder deadline", () =>
         writeFileSync(join(few, "some", `d${i}`, ".gitignore"), "x\n");
     }
     const slow = new SnapshotRecorder(tmp(), "eidnara", () => [], 0);
-    slow.trackIgnoreRules(basename(few), {}, null, null);
+    slow.trackIgnoreRules(basename(few), {});
     const files = Array.from({ length: 50 }, (_, i) => `some/d${i}/.gitignore`);
     expect(() => slow.ignoreChanges(few, basename(few), files)).toThrow("hashing timed out");
 }, 60_000);

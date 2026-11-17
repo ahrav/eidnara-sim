@@ -17,7 +17,6 @@ import {
 import { basename, join, relative, sep } from "node:path";
 import { GitBound, git, gitEnv } from "../git";
 import type { Artefact, CallView, Command, Snapshot } from "../grade/artefacts";
-import { sha256Hex } from "../prereg/canonical";
 import { keepCompleteLines } from "../run/journal";
 
 interface RecorderState {
@@ -36,13 +35,10 @@ interface RecorderState {
     /** Per project, the generation of its index file; a lock a killed git left behind moves the project to the next. */
     indexGenerations?: Record<string, number>;
     /**
-     * Per project, the blob ids of the source's `.gitignore` and `.gitattributes` files and the
-     * digests of the clone's `.git/info/exclude` and `.git/info/attributes`.
+     * Per project, the blob ids of the source's `.gitignore` and `.gitattributes` files: the rule
+     * files the recorder's git reads from the work tree when it indexes the workspace.
      */
-    ignores?: Record<
-        string,
-        { files: Record<string, string>; exclude: string | null; attributes?: string | null }
-    >;
+    ignores?: Record<string, { files: Record<string, string> }>;
 }
 
 const EMPTY: RecorderState = { session: null, ended: null, starts: {}, last: {} };
@@ -342,23 +338,22 @@ export class SnapshotRecorder {
     }
 
     /**
-     * Records the project's baseline ignore rules: the blob id of every `.gitignore` the source
-     * tracks and the digest of the clone's `.git/info/exclude`.
+     * Records the project's baseline rule files: the blob id of every `.gitignore` and
+     * `.gitattributes` the source tracks. Git reads these in-tree files from the work tree, and
+     * reads `info/exclude` and `info/attributes` from the repository `GIT_DIR` names, which for
+     * every recorder run is the recorder's own.
      */
-    trackIgnoreRules(
-        project: string,
-        files: Record<string, string>,
-        exclude: string | null,
-        attributes: string | null,
-    ): void {
-        this.state.ignores = { ...this.state.ignores, [project]: { files, exclude, attributes } };
+    trackIgnoreRules(project: string, files: Record<string, string>): void {
+        this.state.ignores = { ...this.state.ignores, [project]: { files } };
         this.save();
     }
 
     /**
-     * The ignore rules in `dir` that differ from the project's baseline, after `tree` has
-     * indexed the workspace: a `.gitignore` the agent added, changed, or removed, or an edited
-     * `.git/info/exclude`. A rule added in a turn would hide that turn's files from the diff.
+     * The in-tree rule files in `dir` that differ from the project's baseline, after `tree` has
+     * indexed the workspace: a `.gitignore` or `.gitattributes` the agent added, changed, or
+     * removed. An ignore rule added during a turn excludes matching untracked files from that
+     * turn's diff. The clone's `.git/info/exclude` and `.git/info/attributes` apply to git runs
+     * on the clone's own repository, so an edit to either leaves the recorder's tree as it was.
      */
     ignoreChanges(
         dir: string,
@@ -388,11 +383,6 @@ export class SnapshotRecorder {
             changes.push(
                 `${path} (${was === undefined ? "added" : is === undefined ? "removed" : "changed"})`,
             );
-        }
-        if (this.excludeDigest(dir) !== baseline.exclude)
-            changes.push(".git/info/exclude (changed)");
-        if (this.excludeDigest(dir, "attributes") !== (baseline.attributes ?? null)) {
-            changes.push(".git/info/attributes (changed)");
         }
         return changes.sort();
     }
@@ -435,26 +425,6 @@ export class SnapshotRecorder {
         if (ignored.status !== 0) return new Set();
         const skipped = new Set(ignored.stdout.split("\0").filter(Boolean));
         return new Set(candidates.filter((path) => skipped.has(parentOf(path))));
-    }
-
-    /**
-     * The digest of `.git/info/exclude` when `.git`, `.git/info`, and the file are each a real
-     * directory or regular file; a missing file reads as null, and any other shape (a symlink,
-     * a FIFO, a directory in the file's place) reads as a changed rule.
-     */
-    excludeDigest(dir: string, name: "exclude" | "attributes" = "exclude"): string | null {
-        const gitDir = join(dir, ".git");
-        const info = join(gitDir, "info");
-        const exclude = join(info, name);
-        for (const at of [gitDir, info]) {
-            const stat = lstatSync(at, { throwIfNoEntry: false });
-            if (stat === undefined) return at === gitDir ? "unreadable" : null;
-            if (!stat.isDirectory()) return "unreadable";
-        }
-        const stat = lstatSync(exclude, { throwIfNoEntry: false });
-        if (stat === undefined) return null;
-        if (!stat.isFile() || stat.size > RULE_FILE_CAP) return "unreadable";
-        return sha256Hex(readFileSync(exclude, "utf8"));
     }
 
     tree(dir: string, nested = this.embedded(dir)): string {

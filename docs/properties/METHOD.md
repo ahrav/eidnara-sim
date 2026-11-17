@@ -102,6 +102,21 @@ least the acknowledged count, at most the attempted count. Aggregate totals can
 cancel inside a one-to-one contract, so per-identity checks are the primary oracle
 and the bounds are a cheap screen.
 
+## Agent workspace actions and harness guards
+
+An agent acts on its workspace by its own choice, and the agents of two arms
+may act differently. A harness guard fails a turn for an agent action only
+when the action changes an input the guarded measurement reads. A record for
+such a guard names that input and the check that shows the measurement reads
+it. An action on any other file is agent behaviour: the harness records it,
+the turn keeps its outcome, and every arm gets the same treatment.
+
+The probe snapshot is the worked case (`docs/grading.md`). The recorder's git
+reads in-tree `.gitignore` and `.gitattributes` files, so a changed one fails
+the probe turn on every arm. The recorder reads `info/exclude` and
+`info/attributes` from its own repository, so an agent edit of the clone's
+`.git/info/exclude` or `.git/info/attributes` fails no turn on any arm.
+
 ## Evidence file structure
 
 One file per record at `evidence/<slug>.md`:
