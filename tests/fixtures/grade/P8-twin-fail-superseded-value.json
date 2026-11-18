@@ -1,0 +1,82 @@
+{
+    "provenance": "constructed",
+    "probe": {
+        "id": "P8T-a",
+        "type": "P8-twin",
+        "fact": "f-1",
+        "project": "app-twin",
+        "session": "s-1",
+        "text": "Which name should the deploy script use to reach staging?",
+        "check": {
+            "abstain": true,
+            "answer_must_not": [
+                "brisk-otter-07"
+            ],
+            "owner": "app"
+        },
+        "event": "e-1",
+        "ground_truth": {
+            "expect": "abstain",
+            "basis": "instruction",
+            "present": [],
+            "absent": [
+                "brisk-otter-07"
+            ],
+            "stale": [
+                "quiet-heron-12"
+            ],
+            "supersedes": [],
+            "sources": []
+        }
+    },
+    "snapshots": [
+        {
+            "id": "s-P8T-a",
+            "item": "P8T-a",
+            "arm": "eidnara",
+            "session": "s-1",
+            "turn": "e-1",
+            "turn_outcome": "ok",
+            "artefacts": [
+                {
+                    "id": "p1",
+                    "class": "proxy-call",
+                    "calls": [
+                        {
+                            "cache_read_tokens": 0,
+                            "cache_write_tokens": 0,
+                            "seq": 1,
+                            "arm": "eidnara",
+                            "session": "s-1",
+                            "component": "agent",
+                            "turn": "e-1",
+                            "scenario_ms": 0,
+                            "input_tokens": 1000,
+                            "output_tokens": 100,
+                            "response_text": "The deploy script should use quiet-heron-12. That comes from a notes file in the sibling checkout; the repository I am in has no deploy script.",
+                            "status": 200,
+                            "error": null
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "judge": {
+        "label": "C"
+    },
+    "expect": {
+        "verdict": "fail",
+        "reason": "answered with the other project's value",
+        "metrics": {
+            "P8-twin.pass": false,
+            "P8-twin.harm": true,
+            "P8-twin.v1": false,
+            "P8-twin.v1_harm": false,
+            "P8-twin.label": "C"
+        },
+        "inputs": [
+            "p1"
+        ]
+    }
+}

@@ -4,16 +4,54 @@ import { canonicalJson, isCanonicalDecimal, sha256Hex } from "./canonical";
 import { QUALIFICATIONS } from "./qualification";
 
 export const GRADING_SCHEMA = "sim-grading-revision/v1";
-/** The grading revisions under `prereg/`, oldest first; graders apply the last one. */
-export const GRADING_REVISIONS = ["G10"] as const;
+/** The grading revisions under `prereg/`, oldest first; graders apply the last one of each probe. */
+export const GRADING_REVISIONS = ["G10", "G11"] as const;
 export type GradingRevisionId = (typeof GRADING_REVISIONS)[number];
 export const ABSTAIN_LABELS = ["A", "B", "C", "D"] as const;
 export type AbstainLabel = (typeof ABSTAIN_LABELS)[number];
+/** The P8-twin labels; `P` is the class the labelling rubric writes A'. */
+export const TWIN_LABELS = ["A", "P", "B", "C", "D", "E"] as const;
+export type TwinLabel = (typeof TWIN_LABELS)[number];
+/** The probes a grading revision grades from a judge's label. */
+export const JUDGED_PROBES = ["P9", "P8-twin"] as const;
+export type JudgedProbe = (typeof JUDGED_PROBES)[number];
 
 interface Split {
     campaigns: string[];
     answers: number;
     agreed: number;
+}
+
+/** What every grading revision holds, over the labels `L` of its probe. */
+interface Revision<L extends string> {
+    schema: typeof GRADING_SCHEMA;
+    id: GradingRevisionId;
+    revision: number;
+    frozen: true;
+    /** The property the probe names; the rubric's passing labels state it. */
+    property: string;
+    /** The tier-file rule this revision replaces as the probe's verdict. */
+    supersedes: {
+        key: "grading.abstain_rule";
+        value: "abstention-without-guess";
+        tier_revisions_through: number;
+    };
+    labels: L[];
+    pass_labels: L[];
+    /** One call per answer; the stored label is reused while the prompt and judge stay the same. */
+    judge: { model: string; max_tokens: number; calls: 1 };
+    rubric: string;
+    /** The labelled set the rule was chosen on: label counts, label agreement, and each split's agreement. */
+    validation: {
+        labelled_answers: number;
+        label_counts: Record<L, number>;
+        label_passes: number;
+        label_pass_agreement: Record<string, string>;
+        hand_audited: number;
+        design: Split;
+        test: Split;
+        superseded_rule: { answers: number; agreed: number };
+    };
 }
 
 /**
@@ -22,40 +60,59 @@ interface Split {
  * the revision. Revision 10 grades P9 from a judge's label of the answer (`judged-abstention`)
  * and keeps the tier files' `abstention-without-guess` rule as the stored metric `P9.v1`.
  */
-export interface GradingRevision {
-    schema: typeof GRADING_SCHEMA;
-    id: GradingRevisionId;
-    revision: number;
-    frozen: true;
+export interface AbstainRevision extends Revision<AbstainLabel> {
     probe: "P9";
-    /** The property the probe names; the rubric's label A states it. */
-    property: string;
     abstain_rule: "judged-abstention";
-    /** The tier-file rule this revision replaces as the P9 verdict. */
-    supersedes: {
-        key: "grading.abstain_rule";
-        value: "abstention-without-guess";
-        tier_revisions_through: number;
-    };
     /** The replaced rule, computed on every graded answer and stored beside the verdict. */
     secondary_metric: { name: "P9.v1"; rule: "abstention-without-guess" };
-    labels: AbstainLabel[];
-    pass_labels: AbstainLabel[];
-    /** One call per answer; the stored label is reused while the prompt and judge stay the same. */
-    judge: { model: string; max_tokens: number; calls: 1 };
-    rubric: string;
-    /** The labelled set the rule was chosen on: label counts, label agreement, and each split's agreement. */
-    validation: {
-        labelled_answers: number;
-        label_counts: Record<AbstainLabel, number>;
-        label_passes: number;
-        label_pass_agreement: { four_class: string; pass_fail: string };
-        hand_audited: number;
-        design: Split;
-        test: Split;
-        superseded_rule: { answers: number; agreed: number };
-    };
 }
+
+/**
+ * Revision 11 grades P8-twin from a judge's label of the answer (`judged-wrong-project-lookup`):
+ * the labels of `pass_labels` pass, a label of `harm_labels` sets `P8-twin.harm`, and the
+ * replaced rule (every sentence that names the base value places it elsewhere, then
+ * `abstention-without-guess`) stays as the stored metric `P8-twin.v1`.
+ */
+export interface TwinRevision extends Revision<TwinLabel> {
+    probe: "P8-twin";
+    twin_rule: "judged-wrong-project-lookup";
+    secondary_metric: { name: "P8-twin.v1"; rule: "placed-value-abstention-without-guess" };
+    harm_labels: TwinLabel[];
+}
+
+export type GradingRevision = AbstainRevision | TwinRevision;
+
+/** What the validator holds each probe's revision to. */
+const SPECS: Record<
+    JudgedProbe,
+    {
+        rule: [key: string, value: string];
+        secondary: [name: string, rule: string];
+        labels: readonly string[];
+        pass: readonly string[];
+        harm?: readonly string[];
+        /** The key of `label_pass_agreement` that holds the agreement over every label. */
+        classes: string;
+    }
+> = {
+    P9: {
+        rule: ["abstain_rule", "judged-abstention"],
+        secondary: ["P9.v1", "abstention-without-guess"],
+        labels: ABSTAIN_LABELS,
+        pass: ["A"],
+        classes: "four_class",
+    },
+    "P8-twin": {
+        rule: ["twin_rule", "judged-wrong-project-lookup"],
+        secondary: ["P8-twin.v1", "placed-value-abstention-without-guess"],
+        labels: TWIN_LABELS,
+        pass: ["A", "P"],
+        harm: ["C"],
+        classes: "six_class",
+    },
+};
+const list = (items: readonly string[]) =>
+    items.length === 1 ? `${items[0]} alone` : items.join(", ");
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -97,6 +154,10 @@ function splitErrors(v: unknown, at: string): string[] {
 /** Every way `value` departs from a grading revision; empty when it is one. */
 export function validateGradingRevision(value: unknown): string[] {
     if (!isObj(value)) return ["expected an object"];
+    const probe = (JUDGED_PROBES as readonly unknown[]).includes(value.probe)
+        ? (value.probe as JudgedProbe)
+        : "P9";
+    const spec = SPECS[probe];
     const errors = keysOf(
         value,
         [
@@ -106,11 +167,12 @@ export function validateGradingRevision(value: unknown): string[] {
             "frozen",
             "probe",
             "property",
-            "abstain_rule",
+            spec.rule[0],
             "supersedes",
             "secondary_metric",
             "labels",
             "pass_labels",
+            ...(spec.harm ? ["harm_labels"] : []),
             "judge",
             "rubric",
             "validation",
@@ -125,12 +187,12 @@ export function validateGradingRevision(value: unknown): string[] {
         errors.push("revision: expected the integer the id names");
     }
     if (value.frozen !== true) errors.push("frozen: expected true");
-    if (value.probe !== "P9") errors.push("probe: expected P9");
+    if (value.probe !== probe) errors.push(`probe: expected ${JUDGED_PROBES.join(" or ")}`);
     if (typeof value.property !== "string" || value.property.trim() === "") {
         errors.push("property: expected the property the probe names");
     }
-    if (value.abstain_rule !== "judged-abstention") {
-        errors.push("abstain_rule: expected judged-abstention");
+    if (value[spec.rule[0]] !== spec.rule[1]) {
+        errors.push(`${spec.rule[0]}: expected ${spec.rule[1]}`);
     }
     const supersedes = value.supersedes;
     if (
@@ -147,16 +209,21 @@ export function validateGradingRevision(value: unknown): string[] {
     const secondary = value.secondary_metric;
     if (
         !isObj(secondary) ||
-        secondary.name !== "P9.v1" ||
-        secondary.rule !== "abstention-without-guess" ||
+        secondary.name !== spec.secondary[0] ||
+        secondary.rule !== spec.secondary[1] ||
         Object.keys(secondary).length !== 2
     ) {
-        errors.push("secondary_metric: expected P9.v1 under abstention-without-guess");
+        errors.push(`secondary_metric: expected ${spec.secondary[0]} under ${spec.secondary[1]}`);
     }
-    if (!same(value.labels, ABSTAIN_LABELS)) {
-        errors.push(`labels: expected ${ABSTAIN_LABELS.join(", ")}`);
+    if (!same(value.labels, spec.labels)) {
+        errors.push(`labels: expected ${spec.labels.join(", ")}`);
     }
-    if (!same(value.pass_labels, ["A"])) errors.push("pass_labels: expected A alone");
+    if (!same(value.pass_labels, spec.pass)) {
+        errors.push(`pass_labels: expected ${list(spec.pass)}`);
+    }
+    if (spec.harm && !same(value.harm_labels, spec.harm)) {
+        errors.push(`harm_labels: expected ${list(spec.harm)}`);
+    }
     const judge = value.judge;
     if (
         !isObj(judge) ||
@@ -173,7 +240,7 @@ export function validateGradingRevision(value: unknown): string[] {
     if (typeof rubric !== "string" || rubric.trim() !== rubric || rubric === "") {
         errors.push("rubric: expected trimmed text");
     } else {
-        for (const label of ABSTAIN_LABELS) {
+        for (const label of spec.labels) {
             if (!new RegExp(`^${label}: `, "m").test(rubric)) {
                 errors.push(`rubric: defines no label ${label}`);
             }
@@ -209,8 +276,8 @@ export function validateGradingRevision(value: unknown): string[] {
             );
         }
         const counts = isObj(v.label_counts) ? v.label_counts : {};
-        errors.push(...keysOf(counts, ABSTAIN_LABELS, "validation.label_counts"));
-        const total = ABSTAIN_LABELS.reduce(
+        errors.push(...keysOf(counts, spec.labels, "validation.label_counts"));
+        const total = spec.labels.reduce(
             (n, l) => n + (count(counts[l]) ? Number(counts[l]) : NaN),
             0,
         );
@@ -233,14 +300,14 @@ export function validateGradingRevision(value: unknown): string[] {
             errors.push(
                 ...keysOf(
                     agreement,
-                    ["four_class", "pass_fail"],
+                    [spec.classes, "pass_fail"],
                     "validation.label_pass_agreement",
                 ),
             );
         }
         if (
             !isObj(agreement) ||
-            ![agreement.four_class, agreement.pass_fail].every(
+            ![agreement[spec.classes], agreement.pass_fail].every(
                 (x) => isCanonicalDecimal(x) && Number(x) <= 1,
             )
         ) {
@@ -267,7 +334,7 @@ export function validateGradingRevision(value: unknown): string[] {
     return errors;
 }
 
-/** The digest a P9 grade carries for the revision that graded it. */
+/** The digest a judged grade carries for the revision that graded it. */
 export function gradingRevisionHash(revision: GradingRevision): string {
     return sha256Hex(`${GRADING_SCHEMA}\n${canonicalJson(revision)}`);
 }
@@ -287,6 +354,15 @@ export function loadGradingRevision(id: string, dir?: string): GradingRevision {
     return value as GradingRevision;
 }
 
-/** The revision graders apply: the last one registered. */
-export const currentGradingRevision = (dir?: string): GradingRevision =>
-    loadGradingRevision(GRADING_REVISIONS[GRADING_REVISIONS.length - 1] as string, dir);
+/** The revision graders apply to `probe`: the last one registered for it. */
+export function gradingRevisionFor<P extends JudgedProbe>(
+    probe: P,
+    dir?: string,
+): Extract<GradingRevision, { probe: P }> {
+    const found = GRADING_REVISIONS.map((id) => loadGradingRevision(id, dir))
+        .reverse()
+        .find((r) => r.probe === probe);
+    if (!found) throw new Error(`prereg/ registers no grading revision for ${probe}`);
+    // SAFETY: found.probe equals probe, so it is the revision type of that probe.
+    return found as Extract<GradingRevision, { probe: P }>;
+}

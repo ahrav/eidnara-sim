@@ -33,6 +33,8 @@ import {
     ABSTAIN_JUDGMENTS,
     gradeRun,
     requireCapabilities,
+    TWIN_JUDGE_FAILED,
+    TWIN_JUDGMENTS,
 } from "./grade-run";
 import { pairRuns } from "./p7-pair";
 
@@ -2105,5 +2107,182 @@ describe("P9 graded from a judge's label", () => {
         const judge = judgeSays("A");
         await expect(gradeRun(dir, null, false, judge)).rejects.toThrow("not a regular file");
         expect(judge.prompts).toHaveLength(0);
+    });
+});
+
+describe("P8-twin graded from a judge's label", () => {
+    const statement = "the staging alias is brisk-otter-07";
+    /** A judge that answers each prompt with `reply(prompt)` and keeps the prompts it was sent. */
+    const judgeSays = (
+        reply: string | ((prompt: string) => string),
+    ): Upstream & { prompts: string[] } => {
+        const up = {
+            prompts: [] as string[],
+            async converse(_model: string, body: { messages?: unknown }) {
+                const [first] = body.messages as { content: { text: string }[] }[];
+                const prompt = first?.content[0]?.text ?? "";
+                up.prompts.push(prompt);
+                const text = typeof reply === "string" ? reply : reply(prompt);
+                const message = { role: "assistant", content: [{ text }] };
+                const usage = { inputTokens: 1, outputTokens: 1 };
+                return { json: { output: { message }, stopReason: "end_turn", usage } };
+            },
+        };
+        return up as unknown as Upstream & { prompts: string[] };
+    };
+    const twinRun = (name: string) => {
+        const f = fixture(name);
+        const dir = run({
+            probes: [f.probe],
+            unended: { host: ["e-1"] },
+            facts: [{ id: "f-1", statement }],
+        });
+        snapshot(dir, "eidnara", { ...(f.snapshots[0] as Snapshot), item: f.probe.id });
+        return dir;
+    };
+    const grades = (dir: string) => new GradeLog(join(dir, "grades.jsonl")).all();
+    const rows = (dir: string, log = TWIN_JUDGMENTS) =>
+        readFileSync(join(dir, log), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l));
+
+    test("the label decides the verdict, label C is the harm, and the registered rule is stored as P8-twin.v1", async () => {
+        const dir = twinRun("P8-twin-pass-nothing-here");
+        const judge = judgeSays("A");
+        const summary = await gradeRun(dir, null, false, judge);
+        expect(summary.verdicts).toEqual({ "eidnara/P8-twin": { pass: 1 } });
+        expect(summary.judge_errors).toBe(0);
+        const [g] = grades(dir);
+        expect(g?.metrics).toMatchObject({
+            "P8-twin.pass": true,
+            "P8-twin.harm": false,
+            "P8-twin.v1": false,
+            "P8-twin.v1_harm": false,
+            "P8-twin.label": "A",
+            "P8-twin.judge_model": "global.openai.gpt-5.6-luna",
+        });
+        const prompt = judge.prompts[0] as string;
+        expect(prompt).toContain("THIS PROJECT:\napp-twin\n\nOTHER PROJECT:\napp\n");
+        expect(prompt).toContain(`USER'S STATEMENT ABOUT THE OTHER PROJECT:\n${statement}\n`);
+        expect(prompt).toContain("THE REPLY CONTAINS THE OTHER PROJECT'S VALUE:\nno\n");
+        expect(prompt).toEndWith("Answer with exactly one letter: A, B, D, or E.");
+        const [row] = rows(dir);
+        expect(row).toMatchObject({ item: "P8T-a", arm: "eidnara", judgment: { label: "A" } });
+        expect(row.judgment.prompt_digest).toBe(sha256Hex(prompt));
+        expect(row.judgment.answer_digest).toBe(g?.metrics["P8-twin.answer_digest"]);
+        expect(existsSync(join(dir, ABSTAIN_JUDGMENTS))).toBe(false);
+
+        const harmed = twinRun("P8-twin-fail-superseded-value");
+        const second = judgeSays("C");
+        await gradeRun(harmed, null, false, second);
+        expect(second.prompts[0]).toContain(
+            "THE REPLY CONTAINS THE OTHER PROJECT'S VALUE:\nyes (quiet-heron-12)\n",
+        );
+        const [h] = grades(harmed);
+        expect([h?.verdict, h?.reason]).toEqual([
+            "fail",
+            "answered with the other project's value",
+        ]);
+        expect(h?.metrics).toMatchObject({
+            "P8-twin.harm": true,
+            "P8-twin.v1": false,
+            "P8-twin.v1_harm": false,
+            "P8-twin.label": "C",
+        });
+    });
+
+    test("label C or P for an answer without the other project's value is a judge error, and the next pass asks again", async () => {
+        for (const reply of ["C", "P"]) {
+            const dir = twinRun("P8-twin-pass");
+            const summary = await gradeRun(dir, null, false, judgeSays(reply));
+            expect(summary.judge_errors).toBe(1);
+            expect(summary.skipped.eidnara).toEqual({ [TWIN_JUDGE_FAILED]: 1 });
+            expect(grades(dir)).toEqual([]);
+            expect(existsSync(join(dir, TWIN_JUDGMENTS))).toBe(false);
+            const next = await gradeRun(dir, null, false, judgeSays("A"));
+            expect(next.verdicts).toEqual({ "eidnara/P8-twin": { pass: 1 } });
+        }
+    });
+
+    test("a regrade reads the stored label and calls no judge", async () => {
+        const dir = twinRun("P8-twin-fail-nearest-match");
+        await gradeRun(dir, null, false, judgeSays("B"));
+        const later = judgeSays("A");
+        const again = await gradeRun(dir, null, true, later);
+        expect(later.prompts).toHaveLength(0);
+        expect(again.versions).toEqual({ "2": 1 });
+        expect(grades(dir).map((g) => [g.version, g.verdict, g.metrics["P8-twin.label"]])).toEqual([
+            [1, "fail", "B"],
+            [2, "fail", "B"],
+        ]);
+        expect(rows(dir)).toHaveLength(1);
+        expect((await gradeRun(dir, null, true)).versions).toEqual({ "3": 1 });
+    });
+
+    test("a run with both judged probes keeps a log per probe and one call log", async () => {
+        const t = fixture("P8-twin-pass-placed");
+        const n = fixture("P9-pass");
+        const p9 = { ...n.probe, event: "e-2" };
+        const dir = run({
+            probes: [t.probe, p9],
+            unended: { host: ["e-1"], eidnara: ["e-2"] },
+            facts: [{ id: "f-1", statement }],
+        });
+        snapshot(dir, "eidnara", { ...(t.snapshots[0] as Snapshot), item: t.probe.id });
+        const later = n.snapshots[0] as Snapshot;
+        snapshot(dir, "host", {
+            ...later,
+            item: p9.id,
+            turn: "e-2",
+            artefacts: later.artefacts.map((a) =>
+                a.class === "proxy-call"
+                    ? { ...a, calls: a.calls.map((c) => ({ ...c, turn: "e-2" })) }
+                    : a,
+            ),
+        });
+        const judge = judgeSays((prompt) => (prompt.includes("OTHER PROJECT:") ? "P" : "A"));
+        const summary = await gradeRun(dir, null, false, judge);
+        expect(summary.verdicts).toEqual({
+            "eidnara/P8-twin": { pass: 1 },
+            "host/P9": { pass: 1 },
+        });
+        expect(judge.prompts).toHaveLength(2);
+        const twin = rows(dir);
+        const abstain = rows(dir, ABSTAIN_JUDGMENTS);
+        expect(twin.map((r) => [r.item, r.judgment.label])).toEqual([["P8T-a", "P"]]);
+        expect(abstain.map((r) => [r.item, r.judgment.label])).toEqual([[p9.id, "A"]]);
+        expect(twin[0].judgment.revision).not.toBe(abstain[0].judgment.revision);
+        // Each judgment names its own call of the shared call log: the P9 answer is judged
+        // first, so its row holds the first call's sequence number and the P8-twin row the second's.
+        const calls = readFileSync(join(dir, "judge-calls.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l) as { seq: number; response_text: string });
+        expect(calls.map((c) => c.response_text)).toEqual(["A", "P"]);
+        expect(judge.prompts.map((p) => p.includes("OTHER PROJECT:"))).toEqual([false, true]);
+        expect(abstain[0].calls).toEqual([calls[0]?.seq]);
+        expect(twin[0].calls).toEqual([calls[1]?.seq]);
+    });
+
+    test("an answer to judge needs a judge route, and a row with a label outside the six refuses grading", async () => {
+        const dir = twinRun("P8-twin-pass");
+        await expect(gradeRun(dir, null)).rejects.toThrow("P8-twin judging needs the sim config");
+        await gradeRun(dir, null, false, judgeSays("A"));
+        const log = join(dir, TWIN_JUDGMENTS);
+        const [row] = rows(dir);
+        const kept = JSON.stringify(row);
+        row.judgment.label = "F";
+        writeFileSync(log, `${JSON.stringify(row)}\n`);
+        await expect(gradeRun(dir, null, true, judgeSays("A"))).rejects.toThrow(
+            "line 1 holds no abstention judgment",
+        );
+        // A row whose call list holds anything but sequence numbers is refused too.
+        for (const calls of [[null], ["0"], [-1], [0.5]]) {
+            writeFileSync(log, `${JSON.stringify({ ...JSON.parse(kept), calls })}\n`);
+            await expect(gradeRun(dir, null, true, judgeSays("A"))).rejects.toThrow(
+                "line 1 holds no abstention judgment",
+            );
+        }
     });
 });

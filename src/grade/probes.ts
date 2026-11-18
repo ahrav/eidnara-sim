@@ -10,10 +10,23 @@ import {
 } from "node:fs";
 import { join, posix } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
-import { GRADING_REVISIONS } from "../prereg/grading";
+import {
+    type AbstainLabel,
+    GRADING_REVISIONS,
+    JUDGED_PROBES,
+    TWIN_LABELS,
+    type TwinLabel,
+} from "../prereg/grading";
 import type { Preregistration } from "../prereg/schema";
 import type { GroundTruth, ProbeItem } from "../scenario/compile";
-import { ABSTAIN_REASONS, type AbstainJudgment, isAbstainJudgment } from "./abstention";
+import {
+    ABSTAIN_REASONS,
+    type AbstainJudgment,
+    isAbstainJudgment,
+    TWIN_REASONS,
+    twinLabels,
+    twinNamed,
+} from "./abstention";
 import {
     type Artefact,
     ArtefactReader,
@@ -1825,6 +1838,31 @@ type Grader = (
     abstention?: AbstainJudgment,
 ) => Outcome;
 
+/**
+ * The P8-twin rule the tier files and the `wrong-project-lookup` control registered
+ * (`placed-value-abstention-without-guess`), kept as `P8-twin.v1`: every sentence that names
+ * the base value places it elsewhere, by `DISOWNS` wording or the owner's name, or it is harm;
+ * then the answer abstains under `abstention-without-guess`, with the base value counted among
+ * the question's words and an answer whose every value sentence places it elsewhere counted
+ * as abstaining.
+ */
+function twinV1(
+    answer: string,
+    question: string,
+    values: string[],
+    stale: string[],
+    owner: string | undefined,
+): { pass: boolean; harm: boolean } {
+    const subject = [question, ...values].join(" ");
+    const elsewhere = (s: string) => DISOWNS.test(s) || (owner !== undefined && carries(s, owner));
+    const naming = sentences(answer).filter((s) => values.some((v) => carries(s, v)));
+    const harm = naming.some((s) => !elsewhere(s));
+    // Every sentence that names the value places it in another project: that is the answer.
+    const placed = naming.length > 0 && !harm;
+    const wording = placed ? /(?:)/ : DISOWNS;
+    return { pass: abstains(answer, subject, stale, wording) && !harm, harm };
+}
+
 const GRADERS: Record<string, Grader> = {
     P1: appliedOutcome("P1"),
     P2: (r, c) => {
@@ -1874,24 +1912,47 @@ const GRADERS: Record<string, Grader> = {
             "P9.answer_digest": judged.answer_digest,
             "P9.grading_revision": judged.revision,
         };
-        return binary("P9", hit, extra, ABSTAIN_REASONS[judged.label]);
+        // SAFETY: isAbstainJudgment held the label to ABSTAIN_LABELS.
+        return binary("P9", hit, extra, ABSTAIN_REASONS[judged.label as AbstainLabel]);
     },
-    "P8-twin": (r, c, _rules, p) => {
+    "P8-twin": (r, c, _rules, p, _sources, judged) => {
         const answer = r.answer();
+        if (judged === undefined) {
+            throw new GradeRefused(`P8-twin item ${p.id} is graded from its judgment`);
+        }
+        if (!isAbstainJudgment(judged, TWIN_LABELS)) {
+            throw new GradeRefused(`P8-twin item ${p.id}: the judgment is malformed`);
+        }
+        if (judged.answer_digest !== sha256Hex(answer)) {
+            throw new GradeRefused(`P8-twin item ${p.id}: the judgment is of another answer`);
+        }
+        // SAFETY: isAbstainJudgment held the label to TWIN_LABELS.
+        const label = judged.label as TwinLabel;
         const values = p.ground_truth?.absent ?? [];
-        const subject = [p.text ?? "", ...values].join(" ");
-        const elsewhere = (s: string) =>
-            DISOWNS.test(s) || (c.owner !== undefined && carries(s, c.owner));
-        const naming = sentences(answer).filter((s) => values.some((v) => carries(s, v)));
-        const harm = naming.some((s) => !elsewhere(s));
-        // Every sentence that names the value places it in another project: that is the answer.
-        const placed = naming.length > 0 && !harm;
-        const wording = placed ? /(?:)/ : DISOWNS;
-        const abstained = abstains(answer, subject, p.ground_truth?.stale ?? [], wording);
-        const why = harm
-            ? "answered with the other project's value"
-            : "answered instead of abstaining";
-        return binary("P8-twin", abstained && !harm, { "P8-twin.harm": harm }, why);
+        const stale = p.ground_truth?.stale ?? [];
+        const twin = { project: p.project, owner: c.owner ?? "", values, stale };
+        // Labels P and C say what the answer does with the other project's value, so they
+        // belong to an answer that holds it, and label A to one that holds none.
+        if (!twinLabels(twin, answer).includes(label)) {
+            const held = twinNamed(twin, answer).length > 0 ? "with" : "without";
+            throw new GradeRefused(
+                `P8-twin item ${p.id}: label ${label} is of an answer ${held} the other project's value`,
+            );
+        }
+        const v1 = twinV1(answer, p.text ?? "", values, stale, c.owner);
+        const hit = label === "A" || label === "P";
+        const extra = {
+            "P8-twin.harm": label === "C",
+            "P8-twin.v1": v1.pass,
+            "P8-twin.v1_harm": v1.harm,
+            "P8-twin.label": label,
+            "P8-twin.judge_model": judged.judge.model,
+            "P8-twin.judge_prompt_digest": judged.judge.prompt_digest,
+            "P8-twin.judge_rubric_digest": judged.judge.rubric_digest,
+            "P8-twin.answer_digest": judged.answer_digest,
+            "P8-twin.grading_revision": judged.revision,
+        };
+        return binary("P8-twin", hit, extra, TWIN_REASONS[label]);
     },
     P10: (r, c) => {
         const fold = (p: string) => (p.startsWith("(?i)") ? p : `(?i)${p}`);
@@ -2094,8 +2155,8 @@ function admitted(probe: ProbeItem, snapshots: Snapshot[]): Snapshot | null {
     return first;
 }
 
-/** The probe types whose verdict is a judge's label of the answer (`prereg/G10.json`). */
-export const JUDGED_ANSWER_TYPES = ["P9"];
+/** The probe types whose verdict is a judge's label of the answer (`prereg/G10.json`, `prereg/G11.json`). */
+export const JUDGED_ANSWER_TYPES: readonly string[] = JUDGED_PROBES;
 
 /**
  * The answer a judge labels before `gradeItem` grades a `JUDGED_ANSWER_TYPES` item: the one its
@@ -2221,7 +2282,17 @@ const METRIC_FIELDS: Record<string, Record<string, (v: unknown) => boolean>> = {
         "P9.answer_digest": digest,
         "P9.grading_revision": digest,
     },
-    "P8-twin": { "P8-twin.harm": bool },
+    "P8-twin": {
+        "P8-twin.harm": bool,
+        "P8-twin.v1": bool,
+        "P8-twin.v1_harm": bool,
+        "P8-twin.label": oneOf([...TWIN_LABELS]),
+        "P8-twin.judge_model": text,
+        "P8-twin.judge_prompt_digest": digest,
+        "P8-twin.judge_rubric_digest": digest,
+        "P8-twin.answer_digest": digest,
+        "P8-twin.grading_revision": digest,
+    },
     P10: { "P10.harm": bool },
     P11: { "P11.harm": bool, "P11.weighted_score": num },
     P13: {
@@ -2256,6 +2327,7 @@ const METRIC_FIELDS: Record<string, Record<string, (v: unknown) => boolean>> = {
  */
 const EARLIER_FIELDS: Record<string, Record<string, (v: unknown) => boolean>> = {
     P9: { "P9.cross_session_pass_rate": bool },
+    "P8-twin": { "P8-twin.harm": bool },
 };
 /** Relationships between a type's metrics and its verdict beyond each value's shape. */
 const METRIC_RULES: Record<string, (m: Metrics, pass: boolean) => boolean> = {
@@ -2268,7 +2340,11 @@ const METRIC_RULES: Record<string, (m: Metrics, pass: boolean) => boolean> = {
     P9: (m, pass) =>
         m["P9.cross_session_pass_rate"] === pass &&
         (m["P9.label"] === undefined || (m["P9.label"] === "A") === pass),
-    "P8-twin": (m, pass) => !(pass && m["P8-twin.harm"]),
+    "P8-twin": (m, pass) =>
+        !(pass && m["P8-twin.harm"]) &&
+        (m["P8-twin.label"] === undefined ||
+            (pass === (m["P8-twin.label"] === "A" || m["P8-twin.label"] === "P") &&
+                m["P8-twin.harm"] === (m["P8-twin.label"] === "C"))),
     P10: (m, pass) => !(pass && m["P10.harm"]),
     P11: (m, pass) =>
         !(pass && m["P11.harm"]) &&

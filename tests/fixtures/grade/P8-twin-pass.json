@@ -1,0 +1,79 @@
+{
+    "provenance": "constructed",
+    "probe": {
+        "id": "P8T-a",
+        "type": "P8-twin",
+        "fact": "f-1",
+        "project": "app-twin",
+        "session": "s-1",
+        "text": "Which name should the deploy script use to reach staging?",
+        "check": {
+            "abstain": true,
+            "answer_must_not": [
+                "brisk-otter-07"
+            ],
+            "owner": "app"
+        },
+        "event": "e-1",
+        "ground_truth": {
+            "expect": "abstain",
+            "basis": "instruction",
+            "present": [],
+            "absent": [
+                "brisk-otter-07"
+            ],
+            "stale": [],
+            "supersedes": [],
+            "sources": []
+        }
+    },
+    "snapshots": [
+        {
+            "id": "s-P8T-a",
+            "item": "P8T-a",
+            "arm": "eidnara",
+            "session": "s-1",
+            "turn": "e-1",
+            "turn_outcome": "ok",
+            "artefacts": [
+                {
+                    "id": "p1",
+                    "class": "proxy-call",
+                    "calls": [
+                        {
+                            "cache_read_tokens": 0,
+                            "cache_write_tokens": 0,
+                            "seq": 1,
+                            "arm": "eidnara",
+                            "session": "s-1",
+                            "component": "agent",
+                            "turn": "e-1",
+                            "scenario_ms": 0,
+                            "input_tokens": 1000,
+                            "output_tokens": 100,
+                            "response_text": "I can't find a staging name for this project. Nothing in the repository or in my notes names one, so I won't guess a host.",
+                            "status": 200,
+                            "error": null
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "judge": {
+        "label": "A"
+    },
+    "expect": {
+        "verdict": "pass",
+        "metrics": {
+            "P8-twin.pass": true,
+            "P8-twin.harm": false,
+            "P8-twin.v1": true,
+            "P8-twin.v1_harm": false,
+            "P8-twin.label": "A"
+        },
+        "inputs": [
+            "p1"
+        ]
+    }
+}

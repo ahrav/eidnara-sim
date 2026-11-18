@@ -38,7 +38,25 @@ reply), `P9-pass-user-left-open` (wording outside the registered list),
 (`global.openai.gpt-5.6-luna`, the prompt `abstainPrompt` builds, two calls
 per answer) gave all nine P9 fixture answers their scripted labels.
 
-These fixtures carry checks from before generator `sim-scenario/v4` (no
+The P8-twin files hold one answer and the judge's label in the same form;
+`expect.metrics` lists the verdict, `P8-twin.harm`, the label, and the
+registered rule's two readings (`P8-twin.v1`, `P8-twin.v1_harm`), and each
+probe carries a constructed ground truth of the control's shape (`expect:
+abstain`, the base value in `absent`, superseded values in `stale`, and an
+empty source list, since the test supplies no source events). Five of
+them are the answer shapes of the 2026-11-18 P8-twin review in generic
+words: `P8-twin-pass-nothing-here` (an abstention in wording outside the
+registered list, with a port of something else set aside),
+`P8-twin-pass-placed` (the other project's value named and placed there),
+`P8-twin-fail-nearest-match` (a complete address built from example values
+as the closest thing), `P8-twin-fail-superseded-value` (a superseded value
+of the other project given as the answer, which the registered rule's harm
+test missed), and `P8-twin-fail-machine-value` (a port found on the machine
+given as the answer). On 2026-11-18 the live judge
+(`global.openai.gpt-5.6-luna`, the prompt `twinPrompt` builds, two calls
+per answer) gave all seven P8-twin fixture answers their scripted labels.
+
+The fixtures other than the P8-twin ones carry checks from before generator `sim-scenario/v4` (no
 `applies`, no file scope, no `ground_truth`), so they exercise the graders'
 channel logic on its own. The controls in `src/grade/controls.test.ts` grade
 against the checks and ground truth the current compiler emits.
