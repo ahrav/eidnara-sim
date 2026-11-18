@@ -100,6 +100,7 @@ import {
     CachingTally,
     cachingMismatches,
     capabilityRecord,
+    daemonCachePoints,
     type ExpectedNote,
     logLength,
     noteRequest,
@@ -2322,6 +2323,7 @@ async function runArms(
         clock: { scenarioMs: now },
         scope: () => ({ ...scope, origin: origin() }),
         requests,
+        ...(caching === "on" ? { cachePoints: daemonCachePoints } : {}),
         downstream: (e) => {
             // The sink runs inside an HTTP/2 event listener; a failed write ends the run through
             // its signal path rather than escaping as an uncaught exception.

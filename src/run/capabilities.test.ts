@@ -18,7 +18,8 @@ import {
     capabilityGaps,
     DAEMON_VARIANTS,
 } from "../hosts/profiles";
-import { cachePointsOf, type RequestPart } from "../proxy/requests";
+import type { ConverseBody } from "../proxy/classify";
+import { bodyCachePoints, cachePointsOf, type RequestPart } from "../proxy/requests";
 import {
     armMismatches,
     bootMismatches,
@@ -26,6 +27,7 @@ import {
     CachingTally,
     cachingMismatches,
     capabilityRecord,
+    daemonCachePoints,
     logLength,
     noteRequest,
     observeArm,
@@ -924,6 +926,7 @@ test("an arm's caching observation counts requests with cache points and the cac
             agent: {
                 requests: 2,
                 with_cache_points: 2,
+                placed_by_proxy: 0,
                 input_tokens: 12,
                 cache_read_tokens: 300,
                 cache_write_tokens: 30,
@@ -931,6 +934,7 @@ test("an arm's caching observation counts requests with cache points and the cac
             memory_capture: {
                 requests: 1,
                 with_cache_points: 0,
+                placed_by_proxy: 0,
                 input_tokens: 4,
                 cache_read_tokens: 100,
                 cache_write_tokens: 10,
@@ -938,6 +942,7 @@ test("an arm's caching observation counts requests with cache points and the cac
             other: {
                 requests: 1,
                 with_cache_points: 0,
+                placed_by_proxy: 0,
                 input_tokens: 4,
                 cache_read_tokens: 100,
                 cache_write_tokens: 10,
@@ -973,6 +978,7 @@ test("the capability record names the run's caching condition beside what the ar
     const counts = (with_cache_points: number) => ({
         requests: 2,
         with_cache_points,
+        placed_by_proxy: 0,
         input_tokens: 8,
         cache_read_tokens: 0,
         cache_write_tokens: 0,
@@ -1020,4 +1026,68 @@ test("requests counted as their calls start hold a session to the caching condit
     noteRequest(clean, "memory_capture", 1);
     expect(cachingMismatches("on", { components: clean })).toEqual([]);
     expect(cachingMismatches("on", { components: {} })).toEqual([]);
+});
+
+test("a daemon-run call without cache points gets Pi's two, and every other body stays as it is", () => {
+    const body = (): ConverseBody => ({
+        system: [{ text: "Summarize." }],
+        messages: [
+            { role: "user", content: [{ text: "<new_messages>" }] },
+            { role: "assistant", content: [{ text: "ok" }] },
+            { role: "user", content: [{ text: "more" }] },
+        ],
+    });
+    const summarizer = body();
+    expect(daemonCachePoints(summarizer, "history_summarizer")).toBe(2);
+    // One after the system prompt and one at the end of the last user message, as Pi places them.
+    expect(summarizer.system).toEqual([{ text: "Summarize." }, POINT]);
+    expect(summarizer.messages?.map((m) => m.content)).toEqual([
+        [{ text: "<new_messages>" }],
+        [{ text: "ok" }],
+        [{ text: "more" }, POINT],
+    ]);
+    // A second pass finds the points and places none.
+    expect(daemonCachePoints(summarizer, "history_summarizer")).toBe(0);
+    expect(bodyCachePoints(summarizer)).toBe(2);
+    for (const component of ["memory_classifier", "context_researcher"]) {
+        expect(daemonCachePoints(body(), component)).toBe(2);
+    }
+    // The host's own callers place their points themselves, and Pi 0.87 sends compaction with none.
+    for (const component of ["agent", "memory_capture", "native_compaction", "user-sim", "other"]) {
+        const own = body();
+        expect(daemonCachePoints(own, component)).toBe(0);
+        expect(own).toEqual(body());
+    }
+    // A body with no system prompt gets the message point, and one ending on an assistant
+    // message the system point.
+    const bare: ConverseBody = { messages: [{ role: "user", content: [{ text: "hi" }] }] };
+    expect(daemonCachePoints(bare, "history_summarizer")).toBe(1);
+    expect(bare.messages?.[0]?.content).toEqual([{ text: "hi" }, POINT]);
+    const prefilled: ConverseBody = {
+        system: [{ text: "s" }],
+        messages: [{ role: "assistant", content: [{ text: "a" }] }],
+    };
+    expect(daemonCachePoints(prefilled, "history_summarizer")).toBe(1);
+    expect(prefilled.messages?.[0]?.content).toEqual([{ text: "a" }]);
+    // A body that carries a cache point already, as OpenCode's closure sends it, is left alone.
+    const cached: ConverseBody = { system: [{ text: "s" }, POINT], messages: bare.messages ?? [] };
+    expect(daemonCachePoints(cached, "history_summarizer")).toBe(0);
+});
+
+test("the observation counts the requests whose cache points the proxy placed", () => {
+    const parts = new Map<string, RequestPart>([
+        ["sys+", { field: "system", value: [{ text: "s" }, POINT] }],
+        ["u", { field: "messages", value: { role: "user", content: [{ text: "a" }, POINT] } }],
+    ]);
+    const tokens = { input_tokens: 4, cache_read_tokens: 0, cache_write_tokens: 10 };
+    const request = { sha256: "x", bytes: 1, parts: ["sys+", "u"] };
+    const tally = new CachingTally(parts);
+    tally.add({ component: "history_summarizer", request, ...tokens, cache_points_placed: 2 });
+    tally.add({ component: "history_summarizer", request, ...tokens });
+    tally.add({ component: "agent", request, ...tokens });
+    expect(tally.observation().components).toMatchObject({
+        history_summarizer: { requests: 2, with_cache_points: 2, placed_by_proxy: 1 },
+        agent: { requests: 1, with_cache_points: 1, placed_by_proxy: 0 },
+    });
+    expect(cachingMismatches("on", tally.observation())).toEqual([]);
 });

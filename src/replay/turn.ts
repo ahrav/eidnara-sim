@@ -12,6 +12,7 @@ import { type CallRecord, RecordWriter } from "../proxy/records";
 import { RequestStore } from "../proxy/requests";
 import { Rng } from "../rng";
 import { projectCall } from "../run/callviews";
+import { daemonCachePoints } from "../run/capabilities";
 import type { ScenarioEvent } from "../run/scheduler";
 import { writeOffset } from "../run/timeinject";
 import { type Applied, TRANSFORMED, type TransformInputs, transformFor } from "./transforms";
@@ -112,6 +113,7 @@ export async function runTurn(spec: TurnSpec, seams: TurnSeams = {}): Promise<Tu
         clock: { scenarioMs: now },
         scope: () => ({ ...scope }),
         requests,
+        ...(spec.promptCaching === "on" ? { cachePoints: daemonCachePoints } : {}),
         arrival: hold,
         observe: hold,
         transform: (body, component, at) => {

@@ -10,6 +10,7 @@ import { CacheGaps, RecordWriter, recordProblems } from "./records";
 import {
     bodyCachePoints,
     partId,
+    placePiCachePoints,
     RequestPartLog,
     RequestStore,
     readRequestLines,
@@ -580,5 +581,78 @@ test("a record's cache gap is two gaps or nulls of non-negative times", () => {
         "none",
     ]) {
         expect(recordProblems({ ...base, cache_gap })).toEqual(["cache_gap invalid"]);
+    }
+});
+
+test("cache points the gateway is told to place reach the provider, the stored body, and the record", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-requests-"));
+    const path = join(dir, "requests.jsonl");
+    const requests = new RequestStore(path);
+    const records = new RecordWriter(null);
+    const seen: unknown[] = [];
+    const started: number[] = [];
+    const upstream: Upstream = {
+        async converse(_model, body) {
+            seen.push(JSON.parse(JSON.stringify(body)));
+            return echo.converse("", body, false, new AbortController().signal);
+        },
+    };
+    const gateway = new Gateway({
+        upstream,
+        records,
+        injector: new FaultInjector([], new Rng(1), 1_000),
+        rng: new Rng(1),
+        clock: { scenarioMs: () => 0 },
+        scope: () => ({ arm: "a", session: "s", turn: "t" }),
+        requests,
+        // Places Pi's two points on the summarizer's body alone.
+        cachePoints: (body, component) =>
+            component === "history_summarizer" ? placePiCachePoints(body) : 0,
+        observe: (e) => {
+            started.push(e.cache_points);
+        },
+    });
+    await gateway.start();
+    gateways.push(gateway);
+    const summarizer = {
+        system: [{ text: "Summarize." }],
+        messages: [turn("<new_messages>\n[1] U: hi\n</new_messages>")],
+    };
+    const agent = {
+        system: [{ text: "You are a coding agent." }],
+        messages: [turn("Fix the bug.")],
+        toolConfig: { tools: [{ toolSpec: { name: "bash" } }] },
+    };
+    for (const body of [summarizer, agent]) {
+        const response = await fetch(`${gateway.urls[0]}/model/m/converse`, {
+            method: "POST",
+            body: JSON.stringify(body),
+        });
+        await response.text();
+    }
+    await gateway.stop();
+    requests.close();
+    const point = { cachePoint: { type: "default" } };
+    const placed = {
+        system: [{ text: "Summarize." }, point],
+        messages: [
+            {
+                role: "user",
+                content: [{ text: "<new_messages>\n[1] U: hi\n</new_messages>" }, point],
+            },
+        ],
+    };
+    expect(seen).toEqual([placed, agent]);
+    expect(started).toEqual([2, 0]);
+    const [first, second] = records.records;
+    expect(first).toMatchObject({ component: "history_summarizer", cache_points_placed: 2 });
+    expect(rebuildRequest(first?.request as never, readRequestParts(path))).toEqual(placed);
+    expect(second?.component).toBe("agent");
+    expect(second && "cache_points_placed" in second).toBe(false);
+    expect(recordProblems(first as object)).toEqual([]);
+    for (const cache_points_placed of [0, 1.5, -1]) {
+        expect(recordProblems({ ...first, cache_points_placed })).toEqual([
+            "cache_points_placed invalid",
+        ]);
     }
 });

@@ -80,6 +80,8 @@ export interface CallRecord {
      * turn's first answer.
      */
     origin_turn?: string;
+    /** Cache point blocks the proxy placed in the forwarded body (`GatewayOptions.cachePoints`); absent when none. */
+    cache_points_placed?: number;
     /** On a run with prompt caching on: the time since the call whose conversation this one extends (`CacheGaps`). */
     cache_gap?: CacheGap;
 }
@@ -228,6 +230,10 @@ export function recordProblems(input: Partial<CallRecord> | Record<string, unkno
         )
     ) {
         problems.push("cache_write_1h_tokens invalid");
+    }
+    const placed = value.cache_points_placed;
+    if (placed !== undefined && !(Number.isSafeInteger(placed) && (placed as number) > 0)) {
+        problems.push("cache_points_placed invalid");
     }
     if (value.cache_gap !== undefined && !isCacheGap(value.cache_gap)) {
         problems.push("cache_gap invalid");

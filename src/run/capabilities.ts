@@ -26,7 +26,13 @@ import {
 } from "../hosts/profiles";
 import type { ConverseBody } from "../proxy/classify";
 import { type CallRecord, HARNESS_COMPONENTS } from "../proxy/records";
-import { cachePointsOf, type PartLookup, rebuildRequest } from "../proxy/requests";
+import {
+    bodyCachePoints,
+    cachePointsOf,
+    type PartLookup,
+    placePiCachePoints,
+    rebuildRequest,
+} from "../proxy/requests";
 import { ORACLE_OPENING } from "./oracle-note";
 
 /** The model-call components only the Eidnara plugin and daemon make. */
@@ -92,6 +98,8 @@ export interface CachingCount {
     requests: number;
     /** Of those, the calls whose body carries at least one cache point. */
     with_cache_points: number;
+    /** Of those, the calls whose cache points the proxy placed (`daemonCachePoints`). */
+    placed_by_proxy: number;
     /** The provider's prompt usage summed over the component's calls. */
     input_tokens: number;
     cache_read_tokens: number;
@@ -107,6 +115,7 @@ const countOf = (components: Record<string, CachingCount>, component: string): C
     (components[component] ??= {
         requests: 0,
         with_cache_points: 0,
+        placed_by_proxy: 0,
         input_tokens: 0,
         cache_read_tokens: 0,
         cache_write_tokens: 0,
@@ -121,11 +130,35 @@ export function noteRequest(
     components: Record<string, CachingCount>,
     component: string,
     points: number,
+    placed = 0,
 ): void {
     if (HARNESS_COMPONENTS.has(component)) return;
     const count = countOf(components, component);
     count.requests++;
     if (points > 0) count.with_cache_points++;
+    if (points > 0 && placed > 0) count.placed_by_proxy++;
+}
+
+/**
+ * The model calls the daemon runs itself. On Pi its model-execution backend starts a child `pi`
+ * from the daemon's own Pi closure, with a private home and Pi's built-in model list, so the
+ * model definition the arm writes (`piModelName`) stays outside it.
+ */
+const DAEMON_CALLERS: readonly string[] = [
+    "history_summarizer",
+    "memory_classifier",
+    "context_researcher",
+];
+
+/**
+ * Under prompt caching on, places Pi's two cache points on a daemon-run call whose body carries
+ * none, and returns how many: the points the child Pi's own client places for a model it
+ * recognises. A body that carries a cache point already (OpenCode's closure places its own) and
+ * every other caller's body stay as they are.
+ */
+export function daemonCachePoints(body: ConverseBody, component: string): number {
+    if (!DAEMON_CALLERS.includes(component) || bodyCachePoints(body) > 0) return 0;
+    return placePiCachePoints(body);
 }
 
 /** Builds an arm's `CachingObservation` from its call records; each stored part is read once. */
@@ -138,7 +171,12 @@ export class CachingTally {
     add(
         call: Pick<
             CallRecord,
-            "component" | "request" | "input_tokens" | "cache_read_tokens" | "cache_write_tokens"
+            | "component"
+            | "request"
+            | "input_tokens"
+            | "cache_read_tokens"
+            | "cache_write_tokens"
+            | "cache_points_placed"
         >,
     ): void {
         if (HARNESS_COMPONENTS.has(call.component)) return;
@@ -154,6 +192,7 @@ export class CachingTally {
             this.components,
             call.component,
             whole ? points.reduce<number>((sum, n) => sum + (n ?? 0), 0) : 0,
+            call.cache_points_placed,
         );
     }
 
