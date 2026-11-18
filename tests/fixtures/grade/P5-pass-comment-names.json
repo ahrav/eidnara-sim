@@ -1,0 +1,58 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P5-e",
+    "type": "P5",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "Do the task.",
+    "check": {
+      "must_not": [
+        "spawn_blocking"
+      ]
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P5-e",
+      "item": "P5-e",
+      "arm": "eidnara",
+      "session": "s-1",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "d1",
+          "class": "diff",
+          "role": "turn",
+          "patch": "diff --git a/src/cmd/digest.rs b/src/cmd/digest.rs\n--- a/src/cmd/digest.rs\n+++ b/src/cmd/digest.rs\n@@ -1,0 +1,6 @@\n+// spawn_blocking starved the blocking pool before, so the hash runs in chunks here.\n+for chunk in value.chunks(64 * 1024) {\n+    hasher.update(chunk);\n+    tokio::task::yield_now().await;\n+}\n+warn!(\"digest runs inline; spawn_blocking stays out\");\n"
+        },
+        {
+          "id": "c1",
+          "class": "command-log",
+          "role": "turn",
+          "commands": [
+            {
+              "command": "cargo test",
+              "exit": 0,
+              "scenario_ms": 0
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "pass",
+    "metrics": {
+      "P5.pass": true,
+      "P5.v1": "fail"
+    },
+    "inputs": [
+      "c1",
+      "d1"
+    ]
+  }
+}

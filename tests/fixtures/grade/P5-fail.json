@@ -44,7 +44,8 @@
     "verdict": "fail",
     "reason": "reused the rejected approach",
     "metrics": {
-      "P5.pass": false
+      "P5.pass": false,
+      "P5.v1": "fail"
     },
     "inputs": [
       "c1",

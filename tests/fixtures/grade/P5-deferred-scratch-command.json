@@ -45,19 +45,41 @@
               "scenario_ms": 1
             }
           ]
+        },
+        {
+          "id": "p1",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "seq": 1,
+              "arm": "eidnara",
+              "session": "s-1",
+              "component": "agent",
+              "turn": "e-1",
+              "scenario_ms": 10,
+              "status": 200,
+              "error": null,
+              "input_tokens": 1200,
+              "output_tokens": 90,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "response_text": "I tried a module-level cache in a scratch file: compiling 500 routes got 4% faster. The repository is unchanged. Tell me whether you want it applied, and I'll write it with a test."
+            }
+          ]
         }
       ]
     }
   ],
   "expect": {
-    "verdict": "fail",
-    "reason": "reused the rejected approach",
+    "verdict": "excluded",
+    "reason": "deferred",
     "metrics": {
-      "P5.pass": false
+      "P5.v1": "fail"
     },
     "inputs": [
       "c1",
-      "d1"
+      "d1",
+      "p1"
     ]
   }
 }

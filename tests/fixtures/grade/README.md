@@ -56,6 +56,21 @@ given as the answer). On 2026-11-18 the live judge
 (`global.openai.gpt-5.6-luna`, the prompt `twinPrompt` builds, two calls
 per answer) gave all seven P8-twin fixture answers their scripted labels.
 
+The P2, P5, and P11 files list the replaced verdict in `expect.metrics`
+(`P2.v1`, `P5.v1`, `P11.v1`; `prereg/G12.json`), and a deferred grade
+carries it as its one metric. Six of them are the turn shapes of the
+2026-11-18 P5 and deferral review in generic words:
+`P5-pass-test-exercises` (the product code waits on a timer and the new test
+calls the rejected sleep), `P5-pass-comment-names` (a comment and a log
+message name the rejected call), `P5-deferred-scratch-command` (a command
+writes the rejected construct, the turn diff is empty, and the reply hands
+the choice back in a sentence with no question mark),
+`P5-fail-no-work-empty-reply` (a benchmark test is the only change and the
+final reply is empty), and `P2-deferred-hand-back` and
+`P11-deferred-hand-back` (no change, and a reply that waits on the user
+with no question mark). The replaced rule failed the first three and both
+hand-backs and passed the fourth.
+
 The fixtures other than the P8-twin ones carry checks from before generator `sim-scenario/v4` (no
 `applies`, no file scope, no `ground_truth`), so they exercise the graders'
 channel logic on its own. The controls in `src/grade/controls.test.ts` grade

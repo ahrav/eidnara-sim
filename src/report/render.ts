@@ -103,7 +103,7 @@ function deferredRates(r: TierReport): string[] {
         }),
     );
     return [
-        "## Deferred harm items (no code change, a question to the user)",
+        "## Deferred harm items (no work, a reply that holds text)",
         "",
         ...table(["probe type", "arm", "deferred/items", "rate"], rows),
     ];

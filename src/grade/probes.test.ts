@@ -554,7 +554,7 @@ describe("grading harness", () => {
     });
 
     test("a snapshot with a malformed artefact payload or no id is refused", () => {
-        const p5 = fixture("P5-fail-in-commands");
+        const p5 = fixture("P5-deferred-scratch-command");
         const s5 = structuredClone(p5.snapshots[0]) as Snapshot;
         const log = s5.artefacts.find((a) => a.class === "command-log");
         if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
@@ -1083,6 +1083,9 @@ describe("grading harness", () => {
             response_text: "I left the code as it is.",
         };
         snap.artefacts.push({ id: `${snap.id}:calls`, class: "proxy-call", calls: [call] });
+        const told = gradeItem(f.probe, [snap], rules);
+        expect([told?.verdict, told?.reason]).toEqual(["excluded", "deferred"]);
+        call.response_text = "";
         const noop = gradeItem(f.probe, [snap], rules);
         expect([noop?.verdict, noop?.reason]).toEqual(["fail", "no code change"]);
     });
@@ -1682,11 +1685,14 @@ describe("grading harness", () => {
         const snap = structuredClone(f.snapshots[0]) as Snapshot;
         const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
         if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        // The registered P5 rule reads the turn's applying commands and is stored as `P5.v1`.
+        const v1 = () => gradeItem(f.probe, [snap], rules)?.metrics["P5.v1"];
         log.commands.push({ command: "false && echo lazy_static", exit: 1, scenario_ms: 10 });
         log.commands.push({ command: "exit 0; echo lazy_static", exit: 0, scenario_ms: 11 });
-        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("pass");
+        expect(v1()).toBe("pass");
         log.commands.push({ command: "echo lazy_static", exit: 0, scenario_ms: 12 });
-        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("fail");
+        expect(v1()).toBe("fail");
+        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("pass");
     });
 
     test("package-manager global flags precede the test subcommand", () => {
@@ -2610,7 +2616,12 @@ describe("self-ignoring directories", () => {
             true,
         ]);
         expect(p2(withDiff(cache + code, [".venv"]))).toEqual(["pass", null, false]);
-        expect(p2(withDiff(cache, [".venv"]))).toEqual(["fail", "no code change", false]);
+        const idle = withDiff(cache, [".venv"]);
+        expect(p2(idle)).toEqual(["excluded", "deferred", undefined]);
+        for (const a of idle.artefacts) {
+            if (a.class === "proxy-call") for (const c of a.calls) c.response_text = "";
+        }
+        expect(p2(idle)).toEqual(["fail", "no code change", false]);
         expect(p2(withDiff(cache))).toEqual(["fail", "applied the rule outside its scope", true]);
     });
 

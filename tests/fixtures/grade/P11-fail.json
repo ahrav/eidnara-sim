@@ -38,7 +38,8 @@
     "metrics": {
       "P11.pass": false,
       "P11.harm": true,
-      "P11.weighted_score": -2
+      "P11.weighted_score": -2,
+      "P11.v1": "fail"
     },
     "inputs": [
       "d1"
