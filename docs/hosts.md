@@ -345,8 +345,11 @@ reads that definition:
 | `user-sim`, `judge` | the harness, straight to the proxy | none; their bodies are the same under both values, and the report prices them at the run's table |
 
 The host arm and the Eidnara arms therefore run under one policy, set by
-Pi. A capture or summarizer call writes its own user message to the cache
-and reads the system prompt an earlier call of the arm wrote.
+Pi. Each caller has a system prompt of its own, and the agent has the tool
+definitions, so a prefix is shared among the calls of one component and
+with no other. A capture or summarizer call writes its own user message
+to the cache and reads the system prompt an earlier call of the same
+component wrote, in any session of the arm.
 
 OpenCode 1.18.22 places its own cache points for a model whose id holds
 `anthropic` or `claude`: one after the system prompt and one on each of

@@ -119,7 +119,12 @@ call reads or writes the cache. A cache read costs 0.05 of the input rate
 in `v2` and 0.1 in `v1`, so a run with cache tokens takes `v2`. `v2`
 holds one model's rates: a caching-on run whose agent models or side
 model are another model, or Opus 5.5 under another inference profile, is
-refused before its manifest is written (`pricedByCachedTable`).
+refused before its manifest is written (`pricedByCachedTable`). Either
+table prices every record, the harness's own callers included: the
+user simulator and the P7 judge run on other models with lower list
+prices, so `harness_usd`, `judgeCost`, and the `user-sim` part of the
+campaign supervisor's spend are upper bounds at the agent model's rates.
+An arm's total and its cost per pass leave those calls out.
 
 `callUsd` prices one call: `input_tokens`, `output_tokens`, and
 `cache_read_tokens` at their rates, the call's 5-minute cache writes

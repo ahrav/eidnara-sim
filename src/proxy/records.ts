@@ -101,7 +101,8 @@ export interface Gap {
  * How long before a call the provider last served a call that shares its cached prefix. `session`
  * is measured from the previous served call of the same arm, session, and component, whose
  * request the conversation extends; `arm` from the previous served call of the same arm and
- * component in any session, which shares the system prompt and tool definitions. Each is null for
+ * component in any session, which shares the system prompt and tool definitions. Components
+ * share no prefix, since each has a system prompt of its own. Each is null for
  * the first such call. The provider's cache lives `ttl_ms` of wall time after its last read. A
  * run's wall clock skips the idle time between turns that scenario time keeps, so a
  * `scenario_ms` gap above `ttl_ms` with a `wall_ms` gap inside it marks a call whose cache read
