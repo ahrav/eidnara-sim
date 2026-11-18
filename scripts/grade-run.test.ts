@@ -1975,6 +1975,22 @@ describe("P9 graded from a judge's label", () => {
         expect((await gradeRun(dir, null, true)).versions).toEqual({ "3": 1 });
     });
 
+    test("a row another judge or revision made labels nothing; the answer is judged again and the new row stands", async () => {
+        const dir = p9run("P9-pass-user-left-open");
+        await gradeRun(dir, null, false, judgeSays("A"));
+        const [row] = judgments(dir);
+        row.judgment.judge.model = "global.openai.an-earlier-judge";
+        writeFileSync(join(dir, ABSTAIN_JUDGMENTS), `${JSON.stringify(row)}\n`);
+        const judge = judgeSays("B");
+        await gradeRun(dir, null, true, judge);
+        expect(judge.prompts).toHaveLength(1);
+        expect(judgments(dir).map((r) => r.judgment.label)).toEqual(["A", "B"]);
+        const later = judgeSays("C");
+        await gradeRun(dir, null, true, later);
+        expect(later.prompts).toHaveLength(0);
+        expect(grades(dir).at(-1)?.metrics["P9.label"]).toBe("B");
+    });
+
     test("a judgment of another prompt is no judgment of this answer", async () => {
         const dir = p9run("P9-pass-user-left-open");
         const stale = judgments.bind(null, dir);

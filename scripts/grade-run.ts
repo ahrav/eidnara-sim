@@ -519,7 +519,7 @@ export async function judgeAbstentions(o: {
         `${f.prompt_digest}:${f.answer_digest}`;
     type Labelled = { judgment: AbstainJudgment; calls: number[] };
     const rows = new Map<string, AbstainJudgment>();
-    const prompts = new Map<string, Labelled>();
+    const loaded: Labelled[] = [];
     if (existsSync(log)) {
         const lines = readFileSync(log, "utf8").split("\n");
         // The text after the last line feed is a cut append; the next append overwrites it.
@@ -536,9 +536,7 @@ export async function judgeAbstentions(o: {
                 throw new Error(`${log}: line ${i + 1} holds no abstention judgment`);
             }
             rows.set(keyOf(judgment), judgment);
-            if (!prompts.has(judgment.prompt_digest)) {
-                prompts.set(judgment.prompt_digest, { judgment, calls: calls.map(Number) });
-            }
+            loaded.push({ judgment, calls: calls.map(Number) });
         }
     }
     const framer = (url: string): AbstainJudge => {
@@ -547,6 +545,14 @@ export async function judgeAbstentions(o: {
         return judges[0];
     };
     const offline = framer("http://judge.invalid");
+    // A prompt's label is its first stored row made by this judge under this revision.
+    const prompts = new Map<string, Labelled>();
+    for (const row of loaded) {
+        const { judgment } = row;
+        if (!prompts.has(judgment.prompt_digest) && judgmentStands(judgment, judgment, offline)) {
+            prompts.set(judgment.prompt_digest, row);
+        }
+    }
     const judgments = new Map<Abstention, AbstainJudgment>();
     type Frame = ReturnType<AbstainJudge["frame"]>;
     const pending: { item: Abstention; frame: Frame }[] = [];
@@ -558,11 +564,7 @@ export async function judgeAbstentions(o: {
     }
     const fresh: { item: Abstention; judgment: AbstainJudgment; calls: number[] }[] = [];
     /** The label a prompt already has under this judge, for an answer with no row of its own. */
-    const labelled = (frame: Frame): Labelled | undefined => {
-        const known = prompts.get(frame.prompt_digest);
-        const same = known && { ...frame, answer_digest: known.judgment.answer_digest };
-        return known && same && judgmentStands(known.judgment, same, offline) ? known : undefined;
-    };
+    const labelled = (frame: Frame): Labelled | undefined => prompts.get(frame.prompt_digest);
     const record = (item: Abstention, frame: Frame, from: Labelled) => {
         const judgment = { ...from.judgment, answer_digest: frame.answer_digest };
         fresh.push({ item, judgment, calls: from.calls });
