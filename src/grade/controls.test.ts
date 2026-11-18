@@ -2125,6 +2125,8 @@ describe("grading revision 13: product code apart from tests and comments", () =
             },
             `python3 - <<'EOF'\nopen('src/server.rs','a').write('const MAX: usize = ${current};')\nEOF`,
             `write src/server.rs\nconst MAX: usize = ${current};`,
+            `write /runs/scripts/r/workspaces/mini-redis/src/server.rs\nconst MAX: usize = ${current};`,
+            `edit src/server.rs replaceAll=true\n[{"newText":"Semaphore::new(${current})"}]`,
         ]) {
             const text = typeof written === "string" ? written : written.command;
             const g = grade(p3, { answer: already, earlier: [written], label: "R" });

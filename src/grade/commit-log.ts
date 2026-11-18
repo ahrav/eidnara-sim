@@ -32,8 +32,8 @@ const GIT_TIMEOUT_MS = 60_000;
 const PLACED_WITHIN_S = 600;
 /** Actions that place a commit object on HEAD: an unlabelled `update-ref`, and a `reset`. */
 const PLACES = /^(?:reset)?$/;
-/** A `git merge` whose commit carries a message of the agent's (`-m`): git's own subject opens with `Merge `. */
-const MERGES = /^merge\b/;
+/** A `git merge` that made a merge commit; a fast-forward reaches an existing commit and writes none. */
+const MERGES = /^merge\b.*: Merge made by/;
 const GIT_MERGE_SUBJECT = /^Merge /;
 const SECOND_MS = 1_000;
 /** Subjects git writes for a commit made to be folded into another. */
@@ -58,8 +58,8 @@ const shellQuoted = (w: string) => `'${w.replace(/'/g, "'\\''")}'`;
  * scenario time of the move (`scenarioMs` maps the time git recorded, `armClock`). A move counts
  * when its commit holds a message written for it: a `commit` (a merge the agent concluded with
  * `git commit` included), an amend whose subject differs from the commit it replaces, a
- * `git merge` whose subject is other than git's own `Merge ...`, and a commit object placed on
- * HEAD the first time within `PLACED_WITHIN_S` of its making (`commit-tree` with `update-ref`
+ * `git merge` that made a merge commit under a subject other than git's own `Merge ...`, and a
+ * commit object placed on HEAD the first time within `PLACED_WITHIN_S` of its making (`commit-tree` with `update-ref`
  * or `reset`). The moves are read in the order the logs hold them, so a commit is first reached
  * where its log first names it. A message git carries over or writes itself is left out: a
  * rebase pick, a cherry-pick, a revert, a `git merge` or `git pull` under git's subject, an
@@ -90,7 +90,7 @@ export function writtenCommits(
             : action === "commit (amend)"
               ? // An amend whose replaced commit git could not print carries an unknown subject.
                 replaced !== undefined && commit.subject !== replaced
-              : MERGES.test(action)
+              : MERGES.test(move.message)
                 ? !GIT_MERGE_SUBJECT.test(commit.subject)
                 : PLACES.test(action) && placed;
         if (!written) continue;

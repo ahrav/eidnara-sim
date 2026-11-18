@@ -1314,8 +1314,9 @@ cannot be read gives no record, and the grader then reads the commands
 `writtenCommits` keeps the messages the agent wrote. A move counts when it
 is a `commit` (a merge the agent concluded with `git commit` included), an
 amend whose subject differs from the commit it replaces (an amend whose
-replaced commit git cannot print counts as none), a `git merge` whose
-subject is other than git's own `Merge ...`, or a commit object placed on
+replaced commit git cannot print counts as none), a `git merge` that made
+a merge commit under a subject other than git's own `Merge ...` (a
+fast-forward writes none), or a commit object placed on
 HEAD for the first time within ten minutes of its making by an unlabelled
 `update-ref` or a `reset` (`commit-tree`); a checkout reaches a commit and
 writes none. The moves are read in the order the logs hold them, so a
@@ -1506,7 +1507,9 @@ the value, or a shell command that ran to its end and reached a part that
 writes a file (a redirection, a heredoc it consumes, an in-place `sed` or
 `perl`, `tee`, `patch`, `git apply`) with the value among its applying
 parts. A read, a search, a failed edit, an edit that only removes the
-value, and a command that only prints it wrote nothing. Every one of the
+value, and a command that only prints it wrote nothing. An edit record is
+read by its `newText` values, the form Pi records; a record whose body is
+other than that list is read whole. Every one of the
 56 labelled R turns has such a command, and 56 of the 199 no-change turns
 that ask back have one.
 A turn of an arm that never wrote the value fails without a judge call,

@@ -2130,11 +2130,14 @@ function wroteBefore(r: ArtefactReader, c: Check): boolean {
     const must = c.must ?? [];
     return (r.added("earlier") ?? []).some((x) => {
         if (x.exit === null || researchCall(x)) return false;
-        const record = /^(edit|write) (\S+)\n([\s\S]*)$/.exec(x.command);
+        // A tool record names its file, any scalar arguments, and then its text (`toolCommand`).
+        const record = /^(edit|write) (\S+)(?: [A-Za-z_]\w*=\S+)*\n([\s\S]*)$/.exec(x.command);
         if (record) {
             const [, tool, path, body] = record as unknown as [string, string, string, string];
             const text = tool === "edit" ? newText(body) : body;
-            return x.exit === 0 && isProductPath(path) && matchesAll(text, must);
+            // The path is read from the project's root, so a directory above it names no support code.
+            const inProject = path.replace(/^.*\/workspaces\/[^/]+\//, "");
+            return x.exit === 0 && isProductPath(inProject) && matchesAll(text, must);
         }
         // A shell command's exit is its last part's; the parts read here are the ones it reached.
         const parts = appliedParts(reachableParts(x.command, x.exit), false);

@@ -123,6 +123,9 @@ describe("the commit messages the agent wrote, read from git's record", () => {
         expect(subjects(moves, commits)).toEqual([
             ["git commit -m '[tag] bring in topic'", 10_000],
         ]);
+        // A fast-forward reaches a commit that was written before and writes none.
+        const forwarded = [move(1, 2, 50, "merge topic: Fast-forward")];
+        expect(subjects(forwarded, commits)).toEqual([]);
     });
 
     test("a commit is first reached where its log first names it, whatever the times say", () => {
@@ -240,6 +243,23 @@ describe("reading a repository's record", () => {
             "git commit -m '[tag] first'",
             "git commit -m '[tag] from the linked worktree'",
             "git commit -m 'second line one line two'",
+        ]);
+    });
+
+    test("the moves keep the order their log holds, whatever their times", () => {
+        const dir = join(root, "stepped");
+        mkdirSync(dir);
+        run(["init", "-q", "-b", "main"], dir);
+        run(["commit", "-q", "--allow-empty", "-m", "own commit"], dir);
+        const head = run(["rev-parse", "HEAD"], dir).trim();
+        // A line with an earlier time than the line before it, as a stepped clock writes one.
+        appendFileSync(
+            join(dir, ".git", "logs", "HEAD"),
+            `${head} ${head} a <a@b> 1000000000 +0000\treset: moving to HEAD\n`,
+        );
+        expect(readHeadLog(join(dir, ".git"))?.moves.map((m) => m.message)).toEqual([
+            "commit (initial): own commit",
+            "reset: moving to HEAD",
         ]);
     });
 

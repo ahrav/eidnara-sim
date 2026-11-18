@@ -574,7 +574,8 @@ function gradeRepeat(
     );
     const events = source.scenario.events as unknown as Record<string, unknown>[];
     const sources = sourceEvents(source.probe, events);
-    const ledger = () => readToolLedger(join(source.dir, source.arm, "tools.jsonl"), source.arm);
+    const tools = join(source.dir, source.arm, "tools.jsonl");
+    const ledger = () => readToolLedger(tools, source.arm);
     const snap = withEarlierWrites(
         withSourceCommands(
             { ...row, artefacts: [...row.artefacts, ...prior] },
@@ -585,7 +586,8 @@ function gradeRepeat(
         ),
         source.probe,
         events,
-        ledger,
+        // An arm without a tool ledger has no earlier write, as grade-run reads it.
+        () => (existsSync(tools) ? ledger() : null),
     );
     writeFileSync(join(armDir, "graded-snapshot.json"), `${JSON.stringify(snap)}\n`);
     const rules = loadPrereg(source.manifest.tier as never).grading;
