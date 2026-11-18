@@ -1,3 +1,4 @@
+import { ARM_PROFILES } from "../hosts/profiles";
 import { sha256Hex } from "../prereg/canonical";
 import {
     ABSTAIN_LABELS,
@@ -17,17 +18,32 @@ import {
 
 /** What stands in for an arm name in the text the abstention judge reads. */
 const REDACTED = "[name]";
+const spaced = (name: string, gap: string) => name.split(/[ -]/).join(gap);
+/**
+ * Arm names, longest first: each arm of `ARM_PROFILES` whose name joins words (`eidnara-kl`),
+ * with a hyphen or spaces between them, then the judge's `ARM_TOKENS`, whose words a hyphen, an
+ * underscore, or spaces join. A one-word token matches inside a longer word; a name of several
+ * words matches as whole words.
+ */
 const ARM_NAMES = new RegExp(
-    ARM_TOKENS.map((token) =>
-        token.includes(" ") ? `\\b${token.replace(/ /g, "\\s+")}\\b` : token,
-    ).join("|"),
+    [
+        ...Object.keys(ARM_PROFILES)
+            .filter((arm) => arm.includes("-"))
+            .map((arm) => `\\b${spaced(arm, "[-\\s]+")}\\b`),
+        ...ARM_TOKENS.map((token) =>
+            token.includes(" ") ? `\\b${spaced(token, "[-_\\s]+")}\\b` : token,
+        ),
+    ]
+        .sort((a, b) => b.length - a.length)
+        .join("|"),
     "gi",
 );
 
 /**
  * An answer as the abstention judge reads it: normalised as a P7 answer is, with every arm name
- * replaced by `[name]`. A one-word arm name is replaced inside a longer word too, so a tool
- * named after an arm keeps its suffix and loses the name.
+ * replaced by `[name]`. A registered arm name is replaced whole (`eidnara-kl`), and a one-word
+ * arm token is replaced inside a longer word too, so a tool named after an arm keeps its suffix
+ * and loses the name.
  */
 export const judgedText = (answer: string): string =>
     normalise(answer).replace(ARM_NAMES, REDACTED);

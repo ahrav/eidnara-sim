@@ -25,6 +25,9 @@ describe("the text the abstention judge reads", () => {
         expect(judgedText("The Host  Arm said so, and EIDNARA agreed.")).toBe(
             "The [name] said so, and [name] agreed.",
         );
+        expect(
+            judgedText("eidnara-kl and Eidnara Hybrid ran; host-arm and host_arm did too."),
+        ).toBe("[name] and [name] ran; [name] and [name] did too.");
         // A word that only ends in an arm token's first word keeps its text.
         expect(judgedText("Raise the alarm a second time.")).toBe("Raise the alarm a second time.");
     });

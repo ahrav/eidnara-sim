@@ -2024,6 +2024,51 @@ describe("P9 graded from a judge's label", () => {
         expect(existsSync(join(bare, "grades.jsonl"))).toBe(false);
     });
 
+    test("two answers that normalise to one prompt each keep their judgment", async () => {
+        const f = fixture("P9-pass");
+        const dir = run({ probes: [f.probe], facts: [{ id: "f-1", statement }] });
+        const base = f.snapshots[0] as Snapshot;
+        const answering = (arm: string, answer: string): Snapshot => ({
+            ...base,
+            id: `${arm}:${f.probe.id}`,
+            arm,
+            artefacts: base.artefacts.map((a) =>
+                a.class === "proxy-call"
+                    ? { ...a, calls: a.calls.map((c) => ({ ...c, response_text: answer })) }
+                    : a,
+            ),
+        });
+        snapshot(dir, "host", answering("host", "We never settled that."));
+        snapshot(dir, "eidnara", answering("eidnara", "We **never** settled that."));
+        const judge = judgeSays("A");
+        await gradeRun(dir, null, false, judge);
+        expect(judge.prompts).toHaveLength(2);
+        expect(judge.prompts[0]).toBe(judge.prompts[1] as string);
+        expect(new Set(judgments(dir).map((r) => r.judgment.answer_digest)).size).toBe(2);
+        const later = judgeSays("B");
+        await gradeRun(dir, null, true, later);
+        expect(later.prompts).toHaveLength(0);
+    });
+
+    test("a completed row of the judgment log that holds no judgment refuses grading; a cut last row is dropped", async () => {
+        const dir = p9run("P9-pass");
+        await gradeRun(dir, null, false, judgeSays("A"));
+        const log = join(dir, ABSTAIN_JUDGMENTS);
+        const kept = readFileSync(log, "utf8");
+        appendFileSync(log, '{"item":"torn');
+        const cut = judgeSays("B");
+        await gradeRun(dir, null, true, cut);
+        expect(cut.prompts).toHaveLength(0);
+        writeFileSync(log, `{"item":"P9-a","judgment":{"label":"A"}}\n${kept}`);
+        await expect(gradeRun(dir, null, true, judgeSays("B"))).rejects.toThrow(
+            "line 1 holds no abstention judgment",
+        );
+        writeFileSync(log, `not json\n${kept}`);
+        await expect(gradeRun(dir, null, true, judgeSays("B"))).rejects.toThrow(
+            "line 1 holds no abstention judgment",
+        );
+    });
+
     test("a judgment log that is a link is refused before any judge call", async () => {
         const dir = p9run("P9-pass");
         symlinkSync(join(dir, "elsewhere.jsonl"), join(dir, ABSTAIN_JUDGMENTS));

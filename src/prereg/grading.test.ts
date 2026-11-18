@@ -98,6 +98,21 @@ describe("grading revisions", () => {
         ).toEqual([
             "validation.label_counts: expected one count per label summing to labelled_answers",
         ]);
+        expect(
+            edited((r) => {
+                Object.assign((r.validation as { label_counts: object }).label_counts, { E: 0 });
+            }),
+        ).toEqual(["validation.label_counts.E: unknown key"]);
+        expect(
+            edited((r) => {
+                const v = r.validation as { superseded_rule: object; label_pass_agreement: object };
+                Object.assign(v.superseded_rule, { note: "x" });
+                Object.assign(v.label_pass_agreement, { kappa: "0.9" });
+            }),
+        ).toEqual([
+            "validation.label_pass_agreement.kappa: unknown key",
+            "validation.superseded_rule.note: unknown key",
+        ]);
         expect(validateGradingRevision(null)).toEqual(["expected an object"]);
     });
 

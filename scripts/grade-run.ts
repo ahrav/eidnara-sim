@@ -510,18 +510,24 @@ export async function judgeAbstentions(o: {
     const { items, dir, upstream, seed, revision, models, skip } = o;
     const log = join(dir, ABSTAIN_JUDGMENTS);
     requireAppendable(log);
+    // Two answers can normalise to one prompt, so a judgment is kept per prompt and answer.
+    const keyOf = (f: { prompt_digest: string; answer_digest: string }) =>
+        `${f.prompt_digest}:${f.answer_digest}`;
     const stored = new Map<string, AbstainJudgment>();
     if (existsSync(log)) {
-        for (const line of readFileSync(log, "utf8").split("\n")) {
-            let row: unknown;
+        const lines = readFileSync(log, "utf8").split("\n");
+        // The text after the last line feed is a cut append; the next append overwrites it.
+        for (const [i, line] of lines.slice(0, -1).entries()) {
+            let judgment: unknown;
             try {
-                row = JSON.parse(line);
+                judgment = (JSON.parse(line) as { judgment?: unknown } | null)?.judgment;
             } catch {
-                // A cut last line parses as nothing and is overwritten by the next append.
-                continue;
+                judgment = undefined;
             }
-            const judgment = (row as { judgment?: unknown } | null)?.judgment;
-            if (isAbstainJudgment(judgment)) stored.set(judgment.prompt_digest, judgment);
+            if (!isAbstainJudgment(judgment)) {
+                throw new Error(`${log}: line ${i + 1} holds no abstention judgment`);
+            }
+            stored.set(keyOf(judgment), judgment);
         }
     }
     const framer = (url: string): AbstainJudge => {
@@ -534,7 +540,7 @@ export async function judgeAbstentions(o: {
     const pending: { item: Abstention; frame: ReturnType<AbstainJudge["frame"]> }[] = [];
     for (const item of items) {
         const frame = offline.frame(item.probe.text ?? "", item.statement, item.answer);
-        const kept = stored.get(frame.prompt_digest);
+        const kept = stored.get(keyOf(frame));
         if (kept && judgmentStands(kept, frame, offline)) judgments.set(item, kept);
         else pending.push({ item, frame });
     }

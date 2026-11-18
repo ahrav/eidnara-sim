@@ -685,6 +685,40 @@ The registered rule against the labels, pass meaning A:
 It agrees with the labels on 428 of 744 answers (57.5%): it fails 277 of the
 593 answers labelled A and passes 39 of the 151 labelled B, C, or D.
 
+By campaign and by unit after unblinding (a unit is an arm on one Eidnara
+build: `ref` is the c8 build, `new` the w2 build of that campaign; the judge
+columns are the registered judge's single call on each answer):
+
+| Stratum | Answers | Label A | Registered rule passes | Registered rule agrees | Judge passes | Judge agrees | Judge passes a B, C, or D | Judge fails an A |
+|---|---|---|---|---|---|---|---|---|
+| c8 M and MX | 592 | 454 (76.7%) | 261 (44.1%) | 331 (55.9%) | 457 (77.2%) | 567 (95.8%) | 14 | 11 |
+| w2 S | 57 | 53 (93.0%) | 37 (64.9%) | 39 (68.4%) | 55 (96.5%) | 55 (96.5%) | 2 | 0 |
+| w2 S2 | 95 | 86 (90.5%) | 57 (60.0%) | 58 (61.1%) | 87 (91.6%) | 94 (98.9%) | 1 | 0 |
+| all | 744 | 593 (79.7%) | 355 (47.7%) | 428 (57.5%) | 599 (80.5%) | 716 (96.2%) | 17 | 11 |
+| c8 host | 170 | 127 (74.7%) | 82 (48.2%) | 99 (58.2%) | 129 (75.9%) | 164 (96.5%) | 4 | 2 |
+| c8 eidnara@ref | 170 | 132 (77.6%) | 65 (38.2%) | 89 (52.4%) | 129 (75.9%) | 163 (95.9%) | 2 | 5 |
+| c8 eidnara-search@ref | 122 | 100 (82.0%) | 61 (50.0%) | 71 (58.2%) | 103 (84.4%) | 115 (94.3%) | 5 | 2 |
+| c8 eidnara-hybrid@ref | 130 | 95 (73.1%) | 53 (40.8%) | 72 (55.4%) | 96 (73.8%) | 125 (96.2%) | 3 | 2 |
+| S host | 15 | 11 (73.3%) | 10 (66.7%) | 12 (80.0%) | 13 (86.7%) | 13 (86.7%) | 2 | 0 |
+| S eidnara@ref | 15 | 15 (100%) | 11 (73.3%) | 11 (73.3%) | 15 (100%) | 15 (100%) | 0 | 0 |
+| S eidnara@new | 12 | 12 (100%) | 8 (66.7%) | 8 (66.7%) | 12 (100%) | 12 (100%) | 0 | 0 |
+| S eidnara-hybrid@new | 15 | 15 (100%) | 8 (53.3%) | 8 (53.3%) | 15 (100%) | 15 (100%) | 0 | 0 |
+| S2 host | 23 | 16 (69.6%) | 14 (60.9%) | 17 (73.9%) | 17 (73.9%) | 22 (95.7%) | 1 | 0 |
+| S2 eidnara@ref | 24 | 23 (95.8%) | 19 (79.2%) | 18 (75.0%) | 23 (95.8%) | 24 (100%) | 0 | 0 |
+| S2 eidnara@new | 24 | 24 (100%) | 12 (50.0%) | 12 (50.0%) | 24 (100%) | 24 (100%) | 0 | 0 |
+| S2 eidnara-hybrid@new | 24 | 23 (95.8%) | 12 (50.0%) | 11 (45.8%) | 23 (95.8%) | 24 (100%) | 0 | 0 |
+| host, all campaigns | 208 | 154 (74.0%) | 106 (51.0%) | 128 (61.5%) | 159 (76.4%) | 199 (95.7%) | 7 | 2 |
+| Eidnara arms, all campaigns | 536 | 439 (81.9%) | 249 (46.5%) | 300 (56.0%) | 440 (82.1%) | 517 (96.5%) | 10 | 9 |
+
+The judge's pass rate is within 4 points of the share of label A in every
+campaign and within 3 in every unit of 100 or more answers, and its agreement is 95.7%
+on host answers and 96.5% on Eidnara-arm answers. Its three w2 errors are
+passes of host answers, so the w2 host rate under the judge (30 of 38) is 3
+answers above the labels (27 of 38) and an Eidnara-minus-host difference is
+understated by that much. Under the registered rule the two S2 builds differ
+by 29 points on the plain arm (19 of 24 against 12 of 24) where the labels
+differ by 4 in the other direction (23 against 24 of 24).
+
 Three replacements were designed on the c8 answers (592) and each was run
 once on the w2 answers (152, held-out seeds 610 and 613 included):
 
@@ -713,8 +747,9 @@ label is stored.
 `src/grade/abstention.ts` builds the prompt: the registered rubric, the
 probe's question, the statement of the item's fact (the sentence that left
 the value open), and the answer, normalised as a P7 answer is, with every
-arm name of `ARM_TOKENS` replaced by `[name]` (a one-word arm name is
-replaced inside a longer word too). The reply must be one letter of A to D,
+arm name replaced by `[name]`: a registered arm name of several words whole
+(`eidnara-kl`, `eidnara-hybrid`), then the tokens of `ARM_TOKENS`, a one-word
+token inside a longer word too. The reply must be one letter of A to D,
 with a closing `.` or `!` at most; any other reply, and a reply whose
 `stopReason` is not `end_turn`, refuses the call. `proxyAbstainJudge` sends
 the prompt through the capture proxy with the `judge` component header, with
@@ -734,7 +769,12 @@ the stored label and makes no call: grading a run again gives the same P9
 grades. The grader refuses a judgment whose answer digest differs from the
 answer it reads. A judge call that fails leaves its item ungraded, listed
 under `P9 judge call failed`, counts in `judge_errors` (exit 1), and is
-made again by the next pass. A probe turn that failed, or that holds no
+made again by the next pass, as a failed P7 judge call is; until a pass ends
+with `judge_errors` 0, the latest grade of such an item is the one an
+earlier pass made. Two answers that normalise to one prompt keep a
+judgment each. A completed row of `abstain-judgments.jsonl` that holds no
+judgment refuses grading by its line number, and the text after the last
+line feed is a cut append that the next append overwrites. A probe turn that failed, or that holds no
 completed agent response, is graded without a judge call as before. A run
 with an answer to judge needs the sim config for the Bedrock route unless
 every judgment is already stored, and a P9 item whose fact carries no
@@ -752,8 +792,16 @@ value-shaped token alone (a host name holding a region, a port in a scan
 listing; 3 in c8, 1 in w2 S2, all on the host arm) and 8 more carry such a
 token and also lack the wording. 360 failures (285 in c8, 75 in w2) are
 answers with no listed abstention or placing wording, the class the judged
-rule replaces for P9. P8-twin has no labelled set, so its rule is
-unchanged and these counts are the evidence on record. P8 reads
+rule replaces for P9. One label pass over the 753 answers (Claude Opus 5.5,
+the P9 rubric restated for a value that belongs to another project, no hand
+audit) labels 565 of them A against the rule's 367 passes, and 266 of the
+360 as A; a hand read of 8 of the 360 found 5 abstentions in wording the
+list lacks (`I couldn't find a staging name anywhere, so I can't tell you
+which one`) and 3 answers from the repository. By that pass the share of A
+is 67% to 84% in every unit where the rule passes 33% to 60%. P8-twin has
+no audited labelled set and no design and test split, so its rule is
+unchanged and these counts are the evidence on record for a later
+revision. P8 reads
 value-shaped tokens through its own competing-value test, which already
 sets aside a value the sentence turns down, and P10 fails an answer that
 carries its anchor value by design.

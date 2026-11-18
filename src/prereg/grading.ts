@@ -189,6 +189,7 @@ export function validateGradingRevision(value: unknown): string[] {
             ...splitErrors(v.test, "validation.test"),
         );
         const counts = isObj(v.label_counts) ? v.label_counts : {};
+        errors.push(...keysOf(counts, ABSTAIN_LABELS, "validation.label_counts"));
         const total = ABSTAIN_LABELS.reduce(
             (n, l) => n + (count(counts[l]) ? Number(counts[l]) : NaN),
             0,
@@ -208,6 +209,15 @@ export function validateGradingRevision(value: unknown): string[] {
             errors.push("validation.label_passes: expected at least two independent passes");
         }
         const agreement = v.label_pass_agreement;
+        if (isObj(agreement)) {
+            errors.push(
+                ...keysOf(
+                    agreement,
+                    ["four_class", "pass_fail"],
+                    "validation.label_pass_agreement",
+                ),
+            );
+        }
         if (
             !isObj(agreement) ||
             ![agreement.four_class, agreement.pass_fail].every(
@@ -220,6 +230,9 @@ export function validateGradingRevision(value: unknown): string[] {
             errors.push("validation.hand_audited: expected a count within the labelled answers");
         }
         const old = v.superseded_rule;
+        if (isObj(old)) {
+            errors.push(...keysOf(old, ["answers", "agreed"], "validation.superseded_rule"));
+        }
         if (
             !isObj(old) ||
             old.answers !== v.labelled_answers ||
