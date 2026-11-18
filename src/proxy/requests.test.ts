@@ -359,11 +359,11 @@ const served = (
     arm,
     session,
     component: component as "agent",
+    model: "m",
     scenario_ms,
     started_wall_ms,
     first_byte_ms,
     status: 200,
-    input_tokens: 4,
     cache_read_tokens: 0,
     cache_write_tokens: 100,
 });
@@ -395,6 +395,9 @@ test("a call's cache gaps run from the last served call of its session and of it
         session: null,
         arm: null,
     });
+    // The provider keeps a cache per model, so a call on another model has no earlier call.
+    const switched = { ...served("host", "s-1", "agent", 400_000, 53_000), model: "n" };
+    expect(gaps.of(switched)).toMatchObject({ session: null, arm: null });
 });
 
 test("a call's cache gaps run between answers, so a proxy retry's backoff falls on the call that waited", () => {
@@ -416,11 +419,8 @@ test("a call the provider never served leaves the cache gaps as they were", () =
     const gaps = new CacheGaps();
     gaps.note(served("host", "s-1", "agent", 1_000, 50_000));
     gaps.note({ ...served("host", "s-1", "agent", 2_000, 51_000), status: 429 });
-    gaps.note({
-        ...served("host", "s-1", "agent", 3_000, 52_000),
-        input_tokens: 0,
-        cache_write_tokens: 0,
-    });
+    // An answer with no cache read or write left the provider's cache as it was.
+    gaps.note({ ...served("host", "s-1", "agent", 3_000, 52_000), cache_write_tokens: 0 });
     const later = served("host", "s-1", "agent", 4_000, 53_000);
     expect(gaps.of(later).session).toEqual({ scenario_ms: 3_000, wall_ms: 3_000 });
     // A call received before the last served one overlapped it.

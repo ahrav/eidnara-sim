@@ -139,7 +139,7 @@ export interface Qualification {
     /**
      * The prompt-caching condition every arm of the registration runs under; `off` when absent.
      * Under `on` the run makes Pi place its Bedrock cache points for the measured model
-     * (`piModelName`), refuses an arm with a host caller whose requests carry none, records each
+     * (`piModelName`), refuses an arm with a host caller's request that carries none, records each
      * call's cache gaps, and prices its calls at `CACHED_PRICE_TABLE`. OpenCode places its own
      * cache points for a Claude model under either value.
      */

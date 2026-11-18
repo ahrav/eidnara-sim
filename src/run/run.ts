@@ -2481,8 +2481,8 @@ async function runArms(
             throw new HarnessFailure(`arm ${arm} capability mismatch: ${wrong.join("; ")}`);
         }
     };
-    // A session's requests against the run's caching condition, at its end: a host caller whose
-    // requests carry no cache point stops the run after one session's spend.
+    // The arm's requests so far against the run's caching condition, at each session's end: a
+    // host caller's request without a cache point stops the run at the session that shows it.
     const requireCachePoints = (arm: string) => {
         const wrong = cachingMismatches(caching, { components: liveCaching.get(arm) ?? {} });
         if (wrong.length > 0) {

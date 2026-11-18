@@ -416,13 +416,14 @@ complete evidence only when the two agree:
   `prompt_caching` condition, and `prompt_caching` under `observed`: per
   component the arm's hosts call from, the stored requests, how many of
   them carry a cache point, and the input, cache-read, and cache-write
-  tokens. Under `on`, a caller that goes through the host's model client
-  (`agent`, `native_compaction`, and the Eidnara components) with stored
-  requests of which none carries a cache point is a mismatch. The run
-  applies the same rule at every `session_end` to the requests counted as
-  this invocation's calls started (`call_started` names each body's cache
-  points), and a mismatch there fails the event like a boot mismatch, so a
-  host that places no cache point stops after one session. A mismatch
+  tokens. Under `on`, every stored request of a caller that goes through
+  the host's model client (`agent`, `native_compaction`, and the Eidnara
+  components) carries a cache point, and one without is a mismatch. The
+  run applies the same rule at every `session_end` to the requests counted
+  as this invocation's calls started (`call_started` names each body's
+  cache points), and a mismatch there fails the event like a boot
+  mismatch, so a host that stops placing cache points stops the run at the
+  session that shows it. A mismatch
   leaves `EndArm` unwritten, so the run is incomplete and a resume checks the
   same evidence again: a host-only arm with a plugin boot
   or an Eidnara component call; an arm with Eidnara compaction on that

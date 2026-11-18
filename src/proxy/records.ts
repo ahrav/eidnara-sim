@@ -99,10 +99,10 @@ export interface Gap {
 
 /**
  * How long before a call the provider last served a call that shares its cached prefix. `session`
- * is measured from the previous served call of the same arm, session, and component, whose
- * request the conversation extends; `arm` from the previous served call of the same arm and
- * component in any session, which shares the system prompt and tool definitions. Components
- * share no prefix, since each has a system prompt of its own. Each is null for
+ * is measured from the previous served call of the same arm, component, model, and session, whose
+ * request the conversation extends; `arm` from the previous served call of the same arm,
+ * component, and model in any session, which shares the system prompt and tool definitions.
+ * Components share no prefix, since each has a system prompt of its own. Each is null for
  * the first such call. The provider's cache lives `ttl_ms` of wall time after its last read. A
  * run's wall clock skips the idle time between turns that scenario time keeps, so a
  * `scenario_ms` gap above `ttl_ms` with a `wall_ms` gap inside it marks a call whose cache read
@@ -117,10 +117,9 @@ export interface CacheGap {
 
 type Timed = Pick<
     CallRecord,
-    "arm" | "session" | "component" | "scenario_ms" | "started_wall_ms" | "first_byte_ms"
+    "arm" | "session" | "component" | "model" | "scenario_ms" | "started_wall_ms" | "first_byte_ms"
 >;
-type Served = Timed &
-    Pick<CallRecord, "status" | "input_tokens" | "cache_read_tokens" | "cache_write_tokens">;
+type Served = Timed & Pick<CallRecord, "status" | "cache_read_tokens" | "cache_write_tokens">;
 
 /**
  * When the provider began to answer a call, on both clocks: its receipt plus the time to its
@@ -135,10 +134,12 @@ const answeredAt = (call: Timed): Gap => {
 };
 
 /**
- * The answer times (`answeredAt`) of the last served call per arm, session, and component, fed
- * every call record in write order. A call counts as served when the provider answered it with
- * prompt usage, since only such a call reads or writes the provider's cache; a call the proxy
- * faulted or the provider refused leaves the times as they were.
+ * The answer times (`answeredAt`) of the last served call per arm, component, model, and session,
+ * fed every call record in write order. A call counts as served when the provider answered it
+ * with cache-read or cache-write tokens, the usage that shows it read or wrote the cache; a call
+ * the proxy faulted, one the provider refused, and one whose prefix the provider left uncached
+ * leave the times as they were. The provider keeps a cache per model, so the model is part of
+ * both keys.
  */
 export class CacheGaps {
     private readonly last = new Map<string, Gap>();
@@ -166,8 +167,7 @@ export class CacheGaps {
     }
 
     note(call: Served): void {
-        const prompt = call.input_tokens + call.cache_read_tokens + call.cache_write_tokens;
-        if (call.status !== 200 || prompt <= 0) return;
+        if (call.status !== 200 || call.cache_read_tokens + call.cache_write_tokens <= 0) return;
         const at = answeredAt(call);
         for (const key of CacheGaps.keys(call)) {
             const prev = this.last.get(key);
@@ -178,9 +178,11 @@ export class CacheGaps {
         }
     }
 
-    private static keys(call: Pick<Timed, "arm" | "session" | "component">): [string, string] {
-        const arm = JSON.stringify([call.arm, call.component]);
-        return [arm, JSON.stringify([call.arm, call.component, call.session])];
+    private static keys(
+        call: Pick<Timed, "arm" | "session" | "component" | "model">,
+    ): [string, string] {
+        const arm = [call.arm, call.component, call.model];
+        return [JSON.stringify(arm), JSON.stringify([...arm, call.session])];
     }
 }
 

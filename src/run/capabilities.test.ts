@@ -946,7 +946,7 @@ test("an arm's caching observation counts requests with cache points and the cac
     });
     // A request the proxy could not attribute to a host caller is recorded and held to nothing.
     expect(cachingMismatches("on", observed)).toEqual([
-        "1 memory_capture requests and none carries a cache point, but the run registers prompt caching on",
+        "1 of 1 memory_capture requests carry no cache point, but the run registers prompt caching on",
     ]);
     // Under `off` the host's own model matching decides, so cache points are recorded and accepted.
     expect(cachingMismatches("off", observed)).toEqual([]);
@@ -975,7 +975,12 @@ test("the capability record names the run's caching condition beside what the ar
         mismatches: [],
     });
     expect(capabilityRecord(observed, null, undefined, "on").mismatches).toEqual([
-        "2 agent requests and none carries a cache point, but the run registers prompt caching on",
+        "2 of 2 agent requests carry no cache point, but the run registers prompt caching on",
+    ]);
+    // One request with a cache point leaves the other one outside the condition.
+    observed.prompt_caching = { components: { agent: counts(1) } };
+    expect(capabilityRecord(observed, null, undefined, "on").mismatches).toEqual([
+        "1 of 2 agent requests carry no cache point, but the run registers prompt caching on",
     ]);
     observed.prompt_caching = { components: { agent: counts(2) } };
     expect(capabilityRecord(observed, null, undefined, "on")).toMatchObject({
@@ -992,10 +997,15 @@ test("requests counted as their calls start hold a session to the caching condit
     noteRequest(live, "user-sim", 0);
     expect(live.agent).toMatchObject({ requests: 2, with_cache_points: 1 });
     expect(live["user-sim"]).toBeUndefined();
-    expect(cachingMismatches("on", { components: live })).toEqual([
-        "1 history_summarizer requests and none carries a cache point, but the run registers prompt caching on",
-    ]);
+    // A later request with cache points leaves an earlier one without them a mismatch.
     noteRequest(live, "history_summarizer", 2);
-    expect(cachingMismatches("on", { components: live })).toEqual([]);
+    expect(cachingMismatches("on", { components: live })).toEqual([
+        "1 of 2 agent requests carry no cache point, but the run registers prompt caching on",
+        "1 of 2 history_summarizer requests carry no cache point, but the run registers prompt caching on",
+    ]);
+    const clean: Record<string, CachingCount> = {};
+    noteRequest(clean, "agent", 2);
+    noteRequest(clean, "memory_capture", 1);
+    expect(cachingMismatches("on", { components: clean })).toEqual([]);
     expect(cachingMismatches("on", { components: {} })).toEqual([]);
 });

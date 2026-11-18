@@ -171,9 +171,9 @@ const CACHED_CALLERS: readonly string[] = ["agent", "native_compaction", ...EIDN
 
 /**
  * What an arm's requests show against the run's prompt-caching condition. Under `on` the host's
- * client places cache points on every request it sends, so one of its callers with stored
- * requests and none carrying a point ran outside the condition. Under `off` the host's own model
- * matching decides, so the observation stands as recorded.
+ * client places cache points on every request it sends, so a request of one of its callers
+ * without a point ran outside the condition. Under `off` the host's own model matching decides,
+ * so the observation stands as recorded.
  */
 export function cachingMismatches(
     condition: PromptCaching,
@@ -182,10 +182,10 @@ export function cachingMismatches(
     if (condition !== "on" || !o) return [];
     return Object.entries(o.components)
         .filter(([component]) => CACHED_CALLERS.includes(component))
-        .filter(([, c]) => c.requests > 0 && c.with_cache_points === 0)
+        .filter(([, c]) => c.with_cache_points < c.requests)
         .map(
             ([component, c]) =>
-                `${c.requests} ${component} requests and none carries a cache point, but the run registers prompt caching on`,
+                `${c.requests - c.with_cache_points} of ${c.requests} ${component} requests carry no cache point, but the run registers prompt caching on`,
         );
 }
 
