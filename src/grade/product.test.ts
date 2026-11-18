@@ -56,6 +56,10 @@ describe("product paths", () => {
             "zz_generated.deepcopy.go",
             "api/types_generated.go",
             "proto/store.pb.go",
+            "src/test_support.rs",
+            "src/testing/helpers.rs",
+            "src/support/test_utils.ts",
+            "internal/testutil/server.go",
             "examples/pub.rs",
             "_examples/rest/main.go",
             "example/a.ts",
@@ -274,6 +278,21 @@ describe("product code", () => {
             ["", ["+new Map()"]],
         ]);
         expect(matchesCode(productCode(hunks), pattern)).toBe(false);
+    });
+
+    test("a block comment the hunk opens and that closes below it covers the added lines inside it", () => {
+        const open = fileOf("src/a.rs", [
+            [
+                "",
+                [
+                    " fn live() {}",
+                    " /*",
+                    "+ * spawn_blocking starved the pool before.",
+                    " * More notes.",
+                ],
+            ],
+        ]);
+        expect(matchesCode(productCode(open), ["spawn_blocking"])).toBe(false);
     });
 
     test("a block comment that closes inside the hunk and opened above it covers the lines down to its closer", () => {

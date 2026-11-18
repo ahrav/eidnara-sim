@@ -410,6 +410,14 @@ describe("grading harness", () => {
                 /not a grade record/,
             );
         }
+        // A graded P2 or P11 record's `<type>.v1` is its verdict; P5's can differ.
+        for (const name of ["P2-pass", "P11-fail"]) {
+            const g = grade(name);
+            const flipped = g.verdict === "pass" ? "fail" : "pass";
+            const metrics = { ...g.metrics, [`${g.probe_type}.v1`]: flipped };
+            expect(() => log.append({ ...g, version: 3, metrics })).toThrow(/not a grade record/);
+        }
+        log.append({ ...p5, version: 3, metrics: { ...p5.metrics, "P5.v1": "fail" } });
         // A deferred record from before the revision holds no metric.
         log.append({ ...deferred, version: 2, metrics: {} });
     });

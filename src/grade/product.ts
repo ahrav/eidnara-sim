@@ -8,7 +8,7 @@ const SOURCE = /\.(?:rs|go|[cm]?[jt]sx?)$/i;
  * (`prereg/G12.json`).
  */
 const SUPPORT =
-    /(?:^|\/)(?:tests?|__tests__|testdata|benches|bench|benchmarks?|examples?|_examples|fixtures|scripts|generated)\/|_test\.go$|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|\/|_)tests?\.rs$|(?:^|\/)zz_generated\.|[._]generated\.|\.pb\.go$/i;
+    /(?:^|\/)(?:tests?|__tests__|testdata|benches|bench|benchmarks?|examples?|_examples|fixtures|scripts|generated|testing|test_support|test_utils?|test_helpers?|testutils?)\/|(?:^|\/)(?:test_support|test_utils?|test_helpers?|testutils?)\.[a-z]+$|_test\.go$|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|\/|_)tests?\.rs$|(?:^|\/)zz_generated\.|[._]generated\.|\.pb\.go$/i;
 
 export const isProductPath = (path: string): boolean => SOURCE.test(path) && !SUPPORT.test(path);
 
@@ -24,20 +24,21 @@ const GAP = "\u0000";
 
 /**
  * A hunk's new-side lines with comments blanked (`bare`) and with string contents blanked too
- * (`masked`). The lines are one stretch of the file, so they are read together. When that
- * reading ends inside a literal or a comment, a delimiter above or below the hunk is unpaired
- * within it, and each line is read on its own, which keeps code after a stray closing delimiter
- * in the code.
+ * (`masked`). The lines are one stretch of the file, so they are read together. A reading that
+ * ends inside a block comment the hunk opens stands: the comment closes below the hunk. A
+ * reading that ends inside a string holds a quote that is unpaired within the hunk, the opener
+ * of a literal that closes below it or the closer of one that opened above it; each line is
+ * then read on its own, which keeps code after a stray closing delimiter in the code.
  */
 function maskHunk(lines: string[], rust: boolean): { bare: string[]; masked: string[] } {
     const text = lines.join("\n");
-    const whole = codeMask(`${text}\n${END}`, rust);
-    const together = whole.endsWith(END);
+    const closes = (suffix: string) => codeMask(`${text}\n${suffix}${END}`, rust).endsWith(END);
+    const together = closes("") || closes("*/\n");
     const bare = together
         ? codeMask(text, rust, true).split("\n")
         : lines.map((l) => codeMask(l, rust, true));
     const masked = together
-        ? whole.slice(0, -(END.length + 1)).split("\n")
+        ? codeMask(text, rust).split("\n")
         : lines.map((l) => codeMask(l, rust));
     // A line that opens with `*/` closes a block comment that opened above the hunk: the lines
     // down to it are comment text.

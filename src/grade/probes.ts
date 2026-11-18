@@ -2377,9 +2377,16 @@ const EARLIER_FIELDS: Record<string, Record<string, (v: unknown) => boolean>> = 
     "P8-twin": { "P8-twin.harm": bool },
     P11: { "P11.harm": bool, "P11.weighted_score": num },
 };
+/**
+ * A graded P2 or P11 record's `<type>.v1` equals its verdict: revision 12 changed which no-work
+ * turns defer, and a turn that is graded has the verdict it had. A record from before the
+ * revision carries none.
+ */
+const sameAsEarlier = (v1: unknown, pass: boolean) =>
+    v1 === undefined || v1 === (pass ? "pass" : "fail");
 /** Relationships between a type's metrics and its verdict beyond each value's shape. */
 const METRIC_RULES: Record<string, (m: Metrics, pass: boolean) => boolean> = {
-    P2: (m, pass) => !(pass && m["P2.harm"]),
+    P2: (m, pass) => !(pass && m["P2.harm"]) && sameAsEarlier(m["P2.v1"], pass),
     P3: (m, pass) =>
         m["P3.harm"] === (m["P3.reliance"] === "stale") &&
         pass === (m["P3.reliance"] === "authoritative"),
@@ -2396,6 +2403,7 @@ const METRIC_RULES: Record<string, (m: Metrics, pass: boolean) => boolean> = {
     P10: (m, pass) => !(pass && m["P10.harm"]),
     P11: (m, pass) =>
         !(pass && m["P11.harm"]) &&
+        sameAsEarlier(m["P11.v1"], pass) &&
         (pass
             ? m["P11.weighted_score"] === 1
             : m["P11.harm"]
