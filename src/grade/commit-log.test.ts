@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import {
     appendFileSync,
+    chmodSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
@@ -126,6 +127,18 @@ describe("the commit messages the agent wrote, read from git's record", () => {
         // A fast-forward reaches a commit that was written before and writes none.
         const forwarded = [move(1, 2, 50, "merge topic: Fast-forward")];
         expect(subjects(forwarded, commits)).toEqual([]);
+        // A message of the agent's may open with the word git's own subject opens with, and a
+        // merge git resolved in the index is a merge commit too.
+        const worded: [number, CommitObject][] = [[2, agent("Merge the cache work", 10)]];
+        for (const note of ["Merge made by the 'ort' strategy.", "In-index merge"]) {
+            expect(subjects([move(1, 2, 10, `merge topic: ${note}`)], worded)).toEqual([
+                ["git commit -m 'Merge the cache work'", 10_000],
+            ]);
+        }
+        const own: [number, CommitObject][] = [[2, agent("Merge branch 'topic'", 10)]];
+        expect(
+            subjects([move(1, 2, 10, "merge topic: Merge made by the 'ort' strategy.")], own),
+        ).toEqual([]);
     });
 
     test("a commit is first reached where its log first names it, whatever the times say", () => {
@@ -331,6 +344,25 @@ describe("reading a repository's record", () => {
         expect(readHeadLog(gitDir)).toBeNull();
     });
 
+    test("a commit object above the size bound and a branch-log directory that cannot be listed give no record", () => {
+        const dir = join(root, "large");
+        mkdirSync(dir);
+        run(["init", "-q", "-b", "main"], dir);
+        run(["commit", "-q", "--allow-empty", "-m", "own commit"], dir);
+        const gitDir = join(dir, ".git");
+        expect(readHeadLog(gitDir)).not.toBeNull();
+        const hidden = join(gitDir, "logs", "refs", "heads", "hidden");
+        mkdirSync(hidden);
+        chmodSync(hidden, 0o000);
+        // A superuser lists any directory, so the case is read where the mode binds.
+        if (process.getuid?.() !== 0) expect(readHeadLog(gitDir)).toBeNull();
+        chmodSync(hidden, 0o755);
+        expect(readHeadLog(gitDir)).not.toBeNull();
+        writeFileSync(join(dir, "message"), `subject\n\n${"x".repeat((1 << 20) + 1)}\n`);
+        run(["commit", "-q", "--allow-empty", "-F", "message"], dir);
+        expect(readHeadLog(gitDir)).toBeNull();
+    });
+
     test("a walk of branch logs stops at its bound, counting directories", () => {
         const dir = join(root, "nested");
         mkdirSync(dir);
@@ -500,6 +532,12 @@ describe("the recorded command log of a snapshot", () => {
         expect(resumed?.(5_000)).toBe("ambiguous");
         // A stamp of turn X from before turn Y's range has one turn.
         expect(resumed?.(1_200)).toBe(200);
+    });
+
+    test("a stamp whose second began before the arm's first entry is read at that entry", () => {
+        // The arm's first entry is at wall 1,500; a commit at wall 1,700 is recorded as second 1,000.
+        const late = [offset(1_500, 0, 0), ...turn("e-first", 1_600, 5_000, 0)];
+        expect(armClock(late, "host")?.(1_000)).toBe(0);
     });
 
     test("an offset written again leaves one wall time, and a stamp reads up to a second early", () => {

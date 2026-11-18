@@ -2100,6 +2100,7 @@ describe("grading revision 13: product code apart from tests and comments", () =
             `read src/limits/max_connections.rs ${current}`,
             `eidnara_search {"query":"${current}"}`,
             `echo ${current}`,
+            `cat <<'EOF'\nmax_connections = ${current}\nEOF`,
             `grep ${current} src/server.rs && touch seen`,
             `cargo test pool_${current}`,
             { command: edit("src/server.rs", { newText: `Semaphore::new(${current})` }), exit: 1 },

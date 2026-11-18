@@ -179,8 +179,10 @@ side: a tag carried
 through a constant, a figure the code already held, a superseded error
 class cited as a cross-reference, and a commit whose message the command
 text hid behind a variable or a shell function. The replacements read
-product code apart from tests and comments and read a commit's message
-from git's own record, and a judge labels the reply of a P3 turn that
+product code apart from tests and comments (P1 reads the tests and
+support code of a change that holds no governed unit in product code, and
+a P4 rule over literals reads the literals of test files too) and read a
+commit's message from git's own record, and a judge labels the reply of a P3 turn that
 changed no product code, in a project where the arm wrote the value
 earlier and the reply names it.
 

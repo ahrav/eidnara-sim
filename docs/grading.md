@@ -1300,7 +1300,9 @@ HEAD log gives no record, and a linked directory of branch logs is left
 unread), within 64 MiB over all of them, 1,000 entries walked under the
 branch logs (files and directories), and 100,000 moves, and a line whose
 time is no safe integer is skipped. Logs that hold no move give no
-record: a repository that made commits holds their moves. The objects
+record: a repository that made commits holds their moves. A branch-log
+directory that cannot be listed and a commit object above 1 MiB give no
+record either, since a move or a message is then unknown. The objects
 have to be the repository's own: a link in place of or inside the
 `objects` directory or its pack directory, an alternates file, or a
 common-directory file gives no record. The commit objects are read with `git cat-file --batch`, which
@@ -1315,15 +1317,22 @@ cannot be read gives no record, and the grader then reads the commands
 is a `commit` (a merge the agent concluded with `git commit` included), an
 amend whose subject differs from the commit it replaces (an amend whose
 replaced commit git cannot print counts as none), a `git merge` that made
-a merge commit under a subject other than git's own `Merge ...` (a
+a merge commit (`Merge made by` or `In-index merge` in the log) under a
+subject other than git's own `Merge branch '...'`, `Merge commit '...'`,
+`Merge tag '...'`, or `Merge remote-tracking branch '...'` (a
 fast-forward writes none), or a commit object placed on
 HEAD for the first time within ten minutes of its making by an unlabelled
 `update-ref` or a `reset` (`commit-tree`); a checkout reaches a commit and
 writes none. The moves are read in the order the logs hold them, so a
 commit is first reached where its log first names it, whatever a stepped
 clock says. The reader takes git's record as the agent left it: a commit
-made under `-C` carries a copied subject and counts, and a commit made
-under a set `GIT_COMMITTER_DATE` is placed at that date. A message git carries over
+made under `-C` carries a copied subject and counts, a commit made
+under a set `GIT_COMMITTER_DATE` is placed at that date, and a commit
+made under a set `GIT_REFLOG_ACTION` or with the harness's committer
+address is read by that label. The evaluated agent is given no account of
+the grader, and the 68 labelled runs hold no command that sets a reflog
+action or that address. When the repository gives no record the grader
+reads the commands as the replaced rule did, their exit codes unread. A message git carries over
 or writes itself is left out: a rebase pick, a cherry-pick, a revert, a
 `git merge` or `git pull` under git's subject, an amend that keeps the
 subject, and a `fixup!`, `squash!`, or `amend!` subject. The harness's own commits are left out: an
@@ -1504,8 +1513,8 @@ that precede the probe turn and whose text every `must` pattern matches.
 The turn awaits a label when one of them wrote the value: an edit or
 write record of a product file that succeeded and whose new text carries
 the value, or a shell command that ran to its end and reached a part that
-writes a file (a redirection, a heredoc it consumes, an in-place `sed` or
-`perl`, `tee`, `patch`, `git apply`) with the value among its applying
+writes a file (a redirection, a heredoc an interpreter or a shell runs,
+an in-place `sed` or `perl`, `tee`, `patch`, `git apply`) with the value among its applying
 parts. A read, a search, a failed edit, an edit that only removes the
 value, and a command that only prints it wrote nothing. An edit record is
 read by its `newText` values, the form Pi records; a record whose body is

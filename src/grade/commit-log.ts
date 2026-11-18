@@ -33,8 +33,8 @@ const PLACED_WITHIN_S = 600;
 /** Actions that place a commit object on HEAD: an unlabelled `update-ref`, and a `reset`. */
 const PLACES = /^(?:reset)?$/;
 /** A `git merge` that made a merge commit; a fast-forward reaches an existing commit and writes none. */
-const MERGES = /^merge\b.*: Merge made by/;
-const GIT_MERGE_SUBJECT = /^Merge /;
+const MERGES = /^merge\b.*: (?:Merge made by|In-index merge)/;
+const GIT_MERGE_SUBJECT = /^Merge (?:(?:remote-tracking )?branch(?:es)?|commits?|tags?) '/;
 const SECOND_MS = 1_000;
 /** Subjects git writes for a commit made to be folded into another. */
 const FOLDED = /^(?:fixup|squash|amend)! /;
@@ -123,14 +123,16 @@ function regularText(path: string, budget: number): string | null {
 
 /**
  * The reflog files under a directory of branch logs, links left out, or null once the walk has
- * visited more than `LOG_FILE_CAP` entries, files and directories alike.
+ * visited more than `LOG_FILE_CAP` entries, files and directories alike, or met a directory it
+ * cannot list.
  */
 function branchLogs(dir: string, found: string[] = [], walked = { entries: 0 }): string[] | null {
     let entries: Dirent[];
     try {
         entries = readdirSync(dir, { withFileTypes: true });
     } catch {
-        return found;
+        // A directory that is there and cannot be listed may hold a log, so the record is unknown.
+        return existsSync(dir) ? null : found;
     }
     walked.entries += entries.length;
     if (walked.entries > LOG_FILE_CAP) return null;
@@ -152,8 +154,12 @@ function holdsLink(dir: string): boolean {
     }
 }
 
-/** The commit objects `cat-file --batch` printed: each `<id> commit <size>` header with its body. */
-function parseCommits(batch: Buffer): Map<string, CommitObject> {
+/**
+ * The commit objects `cat-file --batch` printed: each `<id> commit <size>` header with its body.
+ * A commit object above `COMMIT_BYTE_CAP` is left unread, and the result is then null: its
+ * message is unknown, so the repository gives no record.
+ */
+function parseCommits(batch: Buffer): Map<string, CommitObject> | null {
     const commits = new Map<string, CommitObject>();
     let at = 0;
     while (at < batch.length) {
@@ -166,7 +172,8 @@ function parseCommits(batch: Buffer): Map<string, CommitObject> {
         if (!Number.isSafeInteger(length) || length < 0) break;
         const from = at;
         at += length + 1;
-        if (type !== "commit" || length > COMMIT_BYTE_CAP) continue;
+        if (type !== "commit") continue;
+        if (length > COMMIT_BYTE_CAP) return null;
         const body = batch.subarray(from, from + length).toString("utf8");
         const split = body.indexOf("\n\n");
         const headers = split < 0 ? body : body.slice(0, split);
@@ -246,7 +253,8 @@ export function readHeadLog(
             GIT_TIMEOUT_MS,
             { input: Buffer.from(`${ids.join("\n")}\n`) },
         );
-        return { moves, commits: parseCommits(batch) };
+        const commits = parseCommits(batch);
+        return commits && { moves, commits };
     } catch {
         return null;
     }
@@ -354,7 +362,9 @@ export function armClock(
         if (walls.length === 0) return "outside";
         const decided = walls.length === 1 ? walls : walls.filter(inTurn);
         if (decided.length !== 1) return "ambiguous";
-        return scenarioAt(decided[0] as number) ?? "outside";
+        // A stamp whose second began before the first entry is read at that entry.
+        const first = (mine[0] as ClockEntry).wall_ms;
+        return scenarioAt(Math.max(decided[0] as number, first)) ?? "outside";
     };
 }
 

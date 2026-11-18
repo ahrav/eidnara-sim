@@ -2159,9 +2159,11 @@ function newText(body: string): string {
 /** Whether an executed part writes a file: a redirection to one, a heredoc it consumes, an in-place `sed` or `perl`, or `tee`, `patch`, or `git apply`. */
 const writes = (p: Segment): boolean =>
     writesFile(p.seg) ||
-    p.body !== "" ||
+    // A heredoc writes when a program runs it; one a reader such as `cat` prints writes nothing.
+    (p.body !== "" && RUNS_HEREDOC.test(unprefixed(p.seg))) ||
     /^(?:sed|perl)\b[^|;&]*\s-[A-Za-z]*i/.test(unprefixed(p.seg)) ||
     /^(?:tee|patch|git\s+apply)\b/.test(unprefixed(p.seg));
+const RUNS_HEREDOC = /^(?:python[\d.]*|node|bun|deno|ruby|perl|php|bash|sh|zsh)\b/;
 const P10_PROSE = 200;
 const NO_WORK = "no change and no written answer";
 
@@ -2818,10 +2820,20 @@ function metricsAgree(g: Record<string, unknown>): boolean {
 
 /**
  * A deferred P2, P5, or P11 record carries the replaced verdict as its one metric, or no metric
- * when it was made before `<type>.v1`; any other excluded record's metrics are free.
+ * when it was made before `<type>.v1`; a P13 record with no governed action after the fold
+ * carries the fold's companions and the replaced verdict; any other excluded record's metrics
+ * are free.
  */
 function deferredAgree(g: Record<string, unknown>): boolean {
     const type = g.probe_type as string;
+    if (type === "P13" && g.reason === NO_GOVERNED_ACTION) {
+        // The fields of a graded P13 record but for the two the rule's verdict would give.
+        const m = g.metrics as Metrics;
+        const fields = Object.entries(METRIC_FIELDS.P13 ?? {}).filter(
+            ([key]) => key !== "P13.fold_fidelity_score" && key !== "P13.rule_kept",
+        );
+        return Object.keys(m).length === fields.length && fields.every(([key, ok]) => ok(m[key]));
+    }
     if (g.reason !== DEFERRED || !DEFERRABLE.includes(type)) return true;
     const m = g.metrics as Metrics;
     const keys = Object.keys(m);

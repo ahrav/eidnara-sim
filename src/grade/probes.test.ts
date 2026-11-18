@@ -37,6 +37,7 @@ import {
     graderDigest,
     graderFor,
     judgedAnswer,
+    NO_GOVERNED_ACTION,
 } from "./probes";
 import { diffPaths, withoutFilesUnder } from "./text";
 
@@ -429,6 +430,21 @@ describe("grading harness", () => {
         ).toThrow(/not a grade record/);
         // A deferred record from before the revision holds no metric.
         log.append({ ...deferred, version: 2, metrics: {} });
+        // A P13 record with no governed action after the fold carries the fold's companions
+        // and the replaced verdict, and those alone.
+        const p13 = grade("P13-pass");
+        const {
+            "P13.fold_fidelity_score": score,
+            "P13.rule_kept": kept,
+            ...companions
+        } = p13.metrics;
+        const outside = { ...p13, verdict: "excluded" as const, reason: NO_GOVERNED_ACTION };
+        const { "P13.v1": v1, ...short } = companions;
+        for (const metrics of [{}, short, { ...companions, "P13.rule_kept": kept === true }]) {
+            expect(() => log.append({ ...outside, metrics })).toThrow(/not a grade record/);
+        }
+        log.append({ ...outside, metrics: companions });
+        expect([typeof score, typeof v1]).toEqual(["number", "boolean"]);
     });
 
     test("P9.v1 applies the guess checks after a leading UNKNOWN line", () => {
