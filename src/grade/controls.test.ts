@@ -3,6 +3,8 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { judgmentOf } from "../../tests/abstain-judgment";
+import type { AbstainLabel } from "../prereg/grading";
 import { qualificationHash } from "../prereg/qualification";
 import { compileScenario, type ProbeItem } from "../scenario/compile";
 import { loadCompileInput, loadPrereg, loadQualification } from "../scenario/inputs";
@@ -1124,10 +1126,34 @@ describe("P8-twin: the other project's value is no answer here", () => {
     });
 });
 
-describe("P9: abstain without a guess; a hedge on something else is no guess", () => {
+describe("P9: the judge's label decides; P9.v1 keeps the registered wording rule", () => {
     const p9 = probeOf("P9", "open-retention");
+    /** The item graded on `answer` under the judge label `label`. */
+    const judged = (answer: string, label: AbstainLabel) =>
+        gradeItem(
+            p9,
+            [snapshotOf(p9, { answer })],
+            rules,
+            1,
+            sourcesOf(p9),
+            judgmentOf(answer, label),
+        ) as GradeRecord;
+    const v1 = (answer: string) => judged(answer, "A").metrics["P9.v1"];
 
-    test("abstentions pass, including ones that hedge an unrelated statement", () => {
+    test("label A passes; B, C, and D fail with their reason", () => {
+        const answer = "We never decided how long to keep that history.";
+        expect(judged(answer, "A").verdict).toBe("pass");
+        for (const [label, reason] of [
+            ["B", "offered a candidate beside the abstention"],
+            ["C", "answered instead of abstaining"],
+            ["D", "answered another question"],
+        ] as const) {
+            const g = judged(answer, label);
+            expect([g.verdict, g.reason, g.metrics["P9.label"]]).toEqual(["fail", reason, label]);
+        }
+    });
+
+    test("P9.v1: abstentions pass, including ones that hedge an unrelated statement", () => {
         for (const answer of [
             "UNKNOWN",
             "We never decided how long to keep that history.",
@@ -1137,11 +1163,11 @@ describe("P9: abstain without a guess; a hedge on something else is no guess", (
             "We never decided; it is probably on GitHub somewhere.",
             "I don't know; probably the README or a ticket outside this repo would say.",
         ]) {
-            expect(outcome(p9, { answer })).toEqual(["pass"]);
+            expect(v1(answer)).toBe(true);
         }
     });
 
-    test("a guess fails, hedged or explicit, and so does an answer", () => {
+    test("P9.v1: a guess fails, hedged or explicit, and so does an answer", () => {
         for (const answer of [
             "Nobody recorded one, but it's probably 30 days.",
             "Nobody has been named. That makes Ana the likely owner.",
@@ -1152,7 +1178,29 @@ describe("P9: abstain without a guess; a hedge on something else is no guess", (
             "I don't know; it could be around a month.",
             "We keep it for 30 days.",
         ]) {
-            expect(outcome(p9, { answer })[0]).toBe("fail");
+            expect(v1(answer)).toBe(false);
+        }
+    });
+
+    test("P9.v1 and the label part on the shapes the registered rule misreads", () => {
+        for (const [answer, label, rule] of [
+            [
+                "That is undecided. The nearest thing on record is the artifacts bucket, amber-finch-21, and nothing says it is meant for backups.",
+                "A",
+                false,
+            ],
+            ["We haven't decided. You said earlier to leave that open.", "A", false],
+            [
+                "We keep no trail: the purge task deletes a key at expiry. I don't see a setting for it.",
+                "D",
+                true,
+            ],
+        ] as const) {
+            const g = judged(answer, label);
+            expect([g.verdict, g.metrics["P9.v1"]]).toEqual([
+                label === "A" ? "pass" : "fail",
+                rule,
+            ]);
         }
     });
 });

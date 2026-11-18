@@ -149,6 +149,44 @@ rule file, so it differs from git in one case: a directory created after the
 clone by a commit that also adds a catch-all rule file is read as
 self-ignoring, while git still lists the files that commit tracks there.
 
+## Grading rules as measurements
+
+A probe's grading rule is a measurement of the property the probe names. A
+difference between arms under a rule is read as behaviour only after the
+rule has been checked against labelled answers, and a record whose check is
+a probe verdict cites that check. The P9 rule is the worked case
+(`docs/grading.md`, Grading revision 10): the registered wording rule agreed
+with blind labels on 428 of 744 answers, and the pass-rate difference
+between two builds under it was a count of value-shaped tokens in replies.
+
+- State the property in one sentence and write the rubric from it before
+  any answer is labelled. Give every class a label, the passing one and each
+  way of failing, and write down each boundary ruling the labelling needs.
+- Label blind to arm. Collect the answers of every arm and campaign that
+  reached the probe, remove arm, run, seed, and build names, shuffle, and
+  keep the id map apart from the labels.
+- Use two independent label passes and read by hand every disagreement and
+  a random sample of at least 15% of the agreements. Report the agreement
+  between the passes and the count read by hand.
+- Report the rule under review as a confusion table against the labels,
+  per arm after unblinding and per campaign, with the share of passing
+  labels beside the rule's pass rate.
+- Split the labelled set before designing a replacement: design on one
+  campaign and run each candidate once on the other. Choose by agreement on
+  the test split and state the residual error and which way it errs.
+- A replacement treats every arm identically: it reads the answer, the
+  probe, and the scenario, and no arm, build, or tool name.
+- Keep the rule under review computed and stored as a secondary metric, so
+  earlier results stay comparable, and register the replacement in a file
+  of its own when a run manifest records the digest of the file that holds
+  the old rule.
+- A judge-graded rule pins the judge model, registers the rubric, stores
+  the label with the digests of the prompt and the answer, and reads a
+  stored label on a later pass, so grading a run again gives the same
+  verdicts.
+- Tuning a system to raise its score under a rule that has not passed this
+  check is tuning to the grader.
+
 ## Evidence file structure
 
 One file per record at `evidence/<slug>.md`:

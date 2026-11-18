@@ -28,7 +28,12 @@ import { type Entry, releaseLease, takeLease } from "../src/run/journal";
 import { tierPlan } from "../src/run/tier";
 import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
-import { gradeRun, requireCapabilities } from "./grade-run";
+import {
+    ABSTAIN_JUDGE_FAILED,
+    ABSTAIN_JUDGMENTS,
+    gradeRun,
+    requireCapabilities,
+} from "./grade-run";
 import { pairRuns } from "./p7-pair";
 
 const ROOT = join(import.meta.dir, "..");
@@ -65,6 +70,8 @@ interface RunOptions {
     prelude?: Record<string, unknown>[];
     /** The scenario's scheduled faults; the tier report reads the list. */
     faults?: Record<string, unknown>[];
+    /** The scenario's facts; a judged item's fact carries the statement its judge reads. */
+    facts?: { id: string; statement: string }[];
 }
 
 function run(o: RunOptions): string {
@@ -97,6 +104,7 @@ function run(o: RunOptions): string {
         events,
         ...(o.cf_deletions ? { cf_deletions: o.cf_deletions } : {}),
         ...(o.faults ? { faults: o.faults } : {}),
+        ...(o.facts ? { facts: o.facts } : {}),
     };
     const scenario = { ...body, scenario_hash: sha256Hex(canonicalJson(body)) };
     writeFileSync(join(dir, "scenario.json"), `${canonicalJson(scenario)}\n`);
@@ -1879,5 +1887,148 @@ describe("P7 across runs and P14 without a probe turn", () => {
         expect(summary.skipped).toEqual({
             eidnara: { "probe turn outside the run's 2 events": 1 },
         });
+    });
+});
+
+describe("P9 graded from a judge's label", () => {
+    const statement = "we still have not chosen how long to retain expired-key history";
+    /** A judge that answers every prompt with `reply` and keeps the prompts it was sent. */
+    const judgeSays = (reply: string, stop = "end_turn"): Upstream & { prompts: string[] } => {
+        const up = {
+            prompts: [] as string[],
+            async converse(_model: string, body: { messages?: unknown }) {
+                const [first] = body.messages as { content: { text: string }[] }[];
+                up.prompts.push(first?.content[0]?.text ?? "");
+                const message = { role: "assistant", content: [{ text: reply }] };
+                const usage = { inputTokens: 1, outputTokens: 1 };
+                return { json: { output: { message }, stopReason: stop, usage } };
+            },
+        };
+        return up as unknown as Upstream & { prompts: string[] };
+    };
+    const p9run = (name: string) => {
+        const f = fixture(name);
+        const dir = run({
+            probes: [f.probe],
+            unended: { host: ["e-1"] },
+            facts: [{ id: "f-1", statement }],
+        });
+        snapshot(dir, "eidnara", { ...(f.snapshots[0] as Snapshot), item: f.probe.id });
+        return dir;
+    };
+    const grades = (dir: string) => new GradeLog(join(dir, "grades.jsonl")).all();
+    const judgments = (dir: string) =>
+        readFileSync(join(dir, ABSTAIN_JUDGMENTS), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l));
+
+    test("the label decides the verdict and the registered rule is stored as P9.v1", async () => {
+        const dir = p9run("P9-pass-set-aside-value");
+        const judge = judgeSays("A");
+        const summary = await gradeRun(dir, null, false, judge);
+        expect(summary.verdicts).toEqual({ "eidnara/P9": { pass: 1 } });
+        expect(summary.judge_errors).toBe(0);
+        const [g] = grades(dir);
+        expect(g?.metrics).toMatchObject({
+            "P9.pass": true,
+            "P9.cross_session_pass_rate": true,
+            "P9.v1": false,
+            "P9.label": "A",
+            "P9.judge_model": "global.openai.gpt-5.6-luna",
+        });
+        expect(judge.prompts).toHaveLength(1);
+        const prompt = judge.prompts[0] as string;
+        expect(prompt).toContain(`USER'S EARLIER STATEMENT:\n${statement}\n`);
+        expect(prompt).toContain("QUESTION:\nWhich backup location did we settle on");
+        expect(prompt).toContain("amber-finch-21");
+        const [row] = judgments(dir);
+        expect(row).toMatchObject({ item: "P9-e", arm: "eidnara", judgment: { label: "A" } });
+        expect(row.calls).toHaveLength(1);
+        expect(row.judgment.prompt_digest).toBe(sha256Hex(prompt));
+        expect(row.judgment.answer_digest).toBe(g?.metrics["P9.answer_digest"]);
+    });
+
+    test("a label other than A fails the item with the label's reason", async () => {
+        const dir = p9run("P9-fail-code-answer");
+        await gradeRun(dir, null, false, judgeSays("D."));
+        const [g] = grades(dir);
+        expect([g?.verdict, g?.reason]).toEqual(["fail", "answered another question"]);
+        expect(g?.metrics).toMatchObject({ "P9.v1": true, "P9.label": "D" });
+    });
+
+    test("a regrade reads the stored label and calls no judge", async () => {
+        const dir = p9run("P9-pass-user-left-open");
+        const judge = judgeSays("A");
+        await gradeRun(dir, null, false, judge);
+        // A judge that would now answer B is never asked: the stored judgment stands.
+        const later = judgeSays("B");
+        const again = await gradeRun(dir, null, true, later);
+        expect(later.prompts).toHaveLength(0);
+        expect(again.versions).toEqual({ "2": 1 });
+        expect(grades(dir).map((g) => [g.version, g.verdict, g.metrics["P9.label"]])).toEqual([
+            [1, "pass", "A"],
+            [2, "pass", "A"],
+        ]);
+        expect(judgments(dir)).toHaveLength(1);
+        // With the label on file, the pass needs no judge route at all.
+        expect((await gradeRun(dir, null, true)).versions).toEqual({ "3": 1 });
+    });
+
+    test("a judgment of another answer is no judgment of this one", async () => {
+        const dir = p9run("P9-pass-user-left-open");
+        const stale = judgments.bind(null, dir);
+        await gradeRun(dir, null, false, judgeSays("A"));
+        const [row] = stale();
+        row.judgment.answer_digest = sha256Hex("an earlier answer");
+        writeFileSync(join(dir, ABSTAIN_JUDGMENTS), `${JSON.stringify(row)}\n`);
+        const judge = judgeSays("B");
+        await gradeRun(dir, null, true, judge);
+        expect(judge.prompts).toHaveLength(1);
+        expect(grades(dir).at(-1)?.metrics["P9.label"]).toBe("B");
+    });
+
+    test("a reply that is not one label, or a cut reply, leaves the item ungraded as a judge error", async () => {
+        for (const judge of [judgeSays("A or B"), judgeSays("", "max_tokens")]) {
+            const dir = p9run("P9-pass");
+            const summary = await gradeRun(dir, null, false, judge);
+            expect(summary.judge_errors).toBe(1);
+            expect(summary.skipped.eidnara).toEqual({ [ABSTAIN_JUDGE_FAILED]: 1 });
+            expect(grades(dir)).toEqual([]);
+            expect(existsSync(join(dir, ABSTAIN_JUDGMENTS))).toBe(false);
+            // The next pass asks again and grades the item.
+            const next = await gradeRun(dir, null, false, judgeSays("A"));
+            expect(next.verdicts).toEqual({ "eidnara/P9": { pass: 1 } });
+        }
+    });
+
+    test("an answer to judge needs a judge route, a judge of another family, and the fact's statement", async () => {
+        const dir = p9run("P9-pass");
+        await expect(gradeRun(dir, null)).rejects.toThrow("P9 judging needs the sim config");
+        const f = fixture("P9-pass");
+        const same = run({
+            probes: [f.probe],
+            unended: { host: ["e-1"] },
+            facts: [{ id: "f-1", statement }],
+            models: ["global.anthropic.claude-opus-5-5", "global.openai.gpt-5.6-terra"],
+        });
+        snapshot(same, "eidnara", f.snapshots[0] as Snapshot);
+        await expect(gradeRun(same, null, false, judgeSays("A"))).rejects.toThrow(
+            "shares the agent model's family",
+        );
+        const bare = run({ probes: [f.probe], unended: { host: ["e-1"] } });
+        snapshot(bare, "eidnara", f.snapshots[0] as Snapshot);
+        await expect(gradeRun(bare, null, false, judgeSays("A"))).rejects.toThrow(
+            "P9 item P9-a names no fact with a statement",
+        );
+        expect(existsSync(join(bare, "grades.jsonl"))).toBe(false);
+    });
+
+    test("a judgment log that is a link is refused before any judge call", async () => {
+        const dir = p9run("P9-pass");
+        symlinkSync(join(dir, "elsewhere.jsonl"), join(dir, ABSTAIN_JUDGMENTS));
+        const judge = judgeSays("A");
+        await expect(gradeRun(dir, null, false, judge)).rejects.toThrow("not a regular file");
+        expect(judge.prompts).toHaveLength(0);
     });
 });

@@ -1,0 +1,64 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P9-i",
+    "type": "P9",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "Who looks after the steps we run before shipping?",
+    "check": {
+      "abstain": true
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P9-i",
+      "item": "P9-i",
+      "arm": "eidnara",
+      "session": "s-1",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "p1",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "seq": 1,
+              "arm": "eidnara",
+              "session": "s-1",
+              "component": "agent",
+              "turn": "e-1",
+              "scenario_ms": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "response_text": "The repo doesn't name an owner for those steps. The only person it points to is the package author, so treat him as the likely owner.",
+              "status": 200,
+              "error": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "judge": {
+    "label": "B"
+  },
+  "expect": {
+    "verdict": "fail",
+    "reason": "offered a candidate beside the abstention",
+    "metrics": {
+      "P9.pass": false,
+      "P9.cross_session_pass_rate": false,
+      "P9.v1": false,
+      "P9.label": "B"
+    },
+    "inputs": [
+      "p1"
+    ]
+  }
+}

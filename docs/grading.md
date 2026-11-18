@@ -6,6 +6,9 @@ grader is a pure function of the compiled probe, the compiled events its
 rules (added in revision 4; revision 7 replaced the P8 and P9 rules, see
 [Rule revision 7](#rule-revision-7), and revision 8 added the deferred
 outcome, see [Rule revision 8](#rule-revision-8)); it starts no process and reads no file.
+P7 and P9 are graded from a judge's reading of the answer: grade-run makes
+the judge calls and hands the grader the judgment
+([P7 judge path](#p7-judge-path), [Grading revision 10](#grading-revision-10)).
 
 ## Artefacts
 
@@ -340,6 +343,8 @@ appends any (an item whose answer the proxy truncated is skipped as `answer
 refused`, and a P7 pair with an empty answer on either side as `P7 refused`;
 a turn with no agent call has no answer and aborts grading, as does any other
 structural artefact violation, with nothing appended),
+judges each P9 answer before it grades the item, reusing a judgment stored in
+`abstain-judgments.jsonl` ([Grading revision 10](#grading-revision-10)),
 holds P7 grades until the judge gateway has stopped and reports no failed
 `judge-calls.jsonl` write, writes one `judgments.jsonl` row per judged
 pairing (after dropping a cut last line, as for the other logs), where a
@@ -351,9 +356,10 @@ into `grades.jsonl` and judges each P7 item for each memory arm against the
 host arm, through a gateway it starts for the judge. An item whose latest
 grade already cites its snapshot (and, for P7, its opponent) is skipped as
 `already graded` when the same grader made it: each record carries
-`grader`, a digest of the grader's source files, `scripts/grade-run.ts`, and
+`grader`, a digest of the grader's source files, `scripts/grade-run.ts`,
 the proxy record, classifier, canonical-JSON, retry, call-view, and user-sim
-plan modules they read, and a
+plan modules they read, and the grading revisions (`src/prereg/grading.ts`
+and each `prereg/G<n>.json`), and a
 grade from another implementation is made again. The digest covers those
 files alone; a change confined to another module they import leaves it
 unchanged. Grading a run again is therefore free of judge
@@ -464,7 +470,7 @@ added to the files it covers. The tier and A/A reports read each run's own
 | P6 | A `resume` item passes when the turn's code change (files outside `notes/` and prose files) carries the planned next step and none of the superseded steps; a read, a search, or a note that names the step is no progress (`change does not carry the next step`). A `clarify` item passes when the final answer names every `clarify` pattern, its last question that asks the user to choose (`which`, `either`, `whether`, `or`, `first`, `order`, `prefer`, `rather`) is followed by at most three statements and any number of further questions (such as what an option needs), no sentence after its first such question picks a task (`I'll start with`, `I'm starting with`, `I choose`, `I have chosen`, `I will implement`, `I decided to proceed with`; `I'll start with whichever you choose`, `I am starting with whichever you choose`, `I'll implement neither until you choose`, and `I am doing neither until you choose` leave the choice open, `I'll start with A once you confirm` and `I'll start with whichever implementation of A is simplest` pick A), and the code change applies neither task. `ground_truth.expect` must agree with the check's form | `P6.reread_files` (executed shell segments whose command is a read, with a file operand (one shell word) equal to a path the prior session added, changed, renamed (either path), or deleted (in Git form, where `a/` and `b/` are Git's prefixes and come off, or plain `diff -u` form with optional timestamps, where the header paths are literal, one or many files; the `+++` header's path is the operative one and a `diff --git` label stands only for a header-only operation), as a whole, with or without a leading `./`; a grep or rg pattern, positional (a quoted phrase is one word) or supplied by `-e`, `--regexp`, `-f`, or `--file`, is not an operand, an option's own value such as `-m 1`, taken from grep's and rg's own value-option tables (grep's `-E` is a flag, rg's `-E ENCODING` and `-r TEXT` take values), is neither, a heredoc delimiter or here-string value is neither, an output redirection target, quoted, bare, or attached to the preceding word, is written, and an input redirection target in either `< file` or `<file` form is read; the shell's `read` builtin names variables, so only its redirection target counts), `P6.rediscovery_tokens` requires at least one agent call of the turn, `P6.ran_tests` (an executed shell segment of the turn starts with a test command; a quoted mention is not a run), `P6.rediscovery_tokens` (input and output tokens of every agent call of the turn, failed calls included, cache reads excluded) |
 | P8 | The answer commits to the value (`lookup_match: committed-whole-word`): the first sentence that names a candidate value (the expected one, a token of its shape, or a ground-truth stale value) asserts the expected value as a whole word, is no question, and does not turn it down (`not X`, `avoid X`, `X can't be right`, `X is wrong`, `X should not be used`) or place it in the past (`X was only for testing`) unless a later sentence asserts it; no earlier sentence declines (`I can't tell`, `I don't know`, `conflicting`); and no sentence that names the value leaves a competing value standing beside it, in the decisive sentence or in one that offers the two as alternatives (`either`, `conflicting`, `two different`, `which one`), and no later sentence switches to a competitor (`Actually, use Y instead`); a later sentence that also asserts the value (`Use X instead, since Y was only for testing`) or places the competitor in the past (`Actually, Y was only used earlier`) switches to none. A sentence after the committing one that says the repository or machine lacks the value (`nothing in this repo listens on X`, `the repo doesn't mention X`, `neither X nor Y appears`) or offers to revise it (`If X is no longer right, tell me the new one`, naming no competitor) turns nothing down, names no competitor, and switches to none (a correction word in it is read with the aside) when each of its clauses (split at `;`, `:`, and a comma before `but`, `and`, `or`, `so`, `yet`, `though`, `while`, or `whereas`, and a `nor` that opens its own clause such as `nor can I tell`) that names the value states the absence without rejecting or forbidding it (`replaced`, `superseded`, `wrong`, `invalid`, `avoid`, `don't use`, `should not be used`, `is not to be trusted`, and kin, or any verdict on the value such as `is not usable`) and each competitor it leaves standing, or places in the past, is listed with the value in its own list in such a clause (`neither X nor Y`, `either X or Y`, compared case-insensitively; a list of other values waives nothing, and `nothing prevents either X or Y` is no absence); a stale word directly followed by a comma (`told me earlier, it should be X`) marks nothing unless a determiner precedes it (`the old, documented alias X`), while a sentence that opens with `Previously,` or `Formerly,` (a short parenthetical allowed) still places what follows in the past A competitor marked replaced or superseded (`it replaced X`, `moved from X to`, `not X`, `isn't X`, `the old X`, `previously X`, `X was replaced`, `X (now retired)`) stands aside; a negation or stale marker stops at `to`, `and`, `but`, and `so`, so `moved from the old default to X` commits to X, and a hedge on the committed value (`most likely X`) commits | The reason names the failing part: `answer lacks the value`, `answer leads with another value`, `answer declines before naming the value`, `answer asks instead of answering`, `answer turns the value down`, `answer names a competing value beside it`, `answer switches to a competing value` |
 | P8-twin | A qualification control (`wrong-project-lookup`): the P8 question asked in the twin project, where the value belongs to the base project (`check.owner`, which must differ from the item's project). With `check.abstain` set and `check.answer_must_not` equal to `ground_truth.absent`, every sentence that names the base value must place it elsewhere, by naming `check.owner` or by wording such as `belongs to the other project`, `is not for this project`, `doesn't apply here`, or `this repository doesn't define`; then the answer abstains as P9 does, with the base value counted among the question's words, the same wording counted as abstention, and an answer whose every value sentence places it elsewhere counted as abstaining | `P8-twin.harm` when a sentence names the base value without placing it elsewhere, hedged or not and wherever it sits; the reasons are `answered with the other project's value` and `answered instead of abstaining` |
-| P9 | With `check.abstain` set to `true`, the answer abstains and guesses nothing (`abstain_rule: abstention-without-guess`): `UNKNOWN` alone on the first line, or abstention wording, with no value-shaped token (a five-digit number, a codename, or a cloud-region name), no ground-truth stale value, no explicit guess (`my guess`, `I'd say`), and no sentence that offers a candidate under a hedge (`the likely owner`, `probably Ana`, `is probably **X**`, `I think it's X`, `perhaps seven days`, `could be around a month`) | A hedge on another statement (`the decision was probably made elsewhere`) is no guess, and an offer the words before it negate (`not offering a likely candidate`) is none either; an unhedged free-text assertion beside the abstention wording, such as a bare person's name, passes; the regex rule has no model of the subject |
+| P9 | With `check.abstain` set to `true`, a judge labels the answer under the rubric of `prereg/G10.json` (`abstain_rule: judged-abstention`, [Grading revision 10](#grading-revision-10)) and the item passes on label A: the answer says the asked value is undecided, unknown, or unrecorded, and presents no candidate for it. Label B (it says so and also presents a candidate, hedged, as the nearest match left standing, or as a recommendation) fails as `offered a candidate beside the abstention`, label C (it gives a value, person, date, or duration as the answer) as `answered instead of abstaining`, and label D (it answers another question, such as what the code does, and never says whether the decision was made) as `answered another question`. A value the answer names as a different thing and sets aside is no candidate | `P9.v1` is the tier files' rule on the same answer (`abstention-without-guess`): `UNKNOWN` alone on the first line, or abstention wording from a fixed list, with no value-shaped token anywhere (a five-digit number, a codename, or a cloud-region name), no ground-truth stale value, no explicit guess (`my guess`, `I'd say`), and no sentence that offers a candidate under a hedge (`the likely owner`, `probably Ana`). `P9.label` is the judge's label; `P9.judge_model`, `P9.judge_prompt_digest`, `P9.judge_rubric_digest`, `P9.answer_digest` (SHA-256 of the answer), and `P9.grading_revision` (the digest of `prereg/G10.json`) name what produced it |
 | P10 | The added lines carry no `must_not` pattern and the final completed response carries no `answer_must_not` pattern, compared case-insensitively; both keys are required. The turn's work is a changed file or, for a task that asks for a written summary, an answer of at least 200 characters; a turn with neither fails as `no change and no written answer` | `P10.harm` |
 | P11 | The turn added, changed, or deleted a code file and no forbidden rule of the other project occurs; a turn that changed no code file is `deferred` when its answer asks a question and otherwise fails as `no code change` | `P11.harm` (binary); `P11.weighted_score` is +1 for a hit, minus `p11_false_positive_weight` (−2) for an injection, and 0 for a turn that changed no code file and asked nothing, so summed over items an injection costs twice a hit (SIM-P50) |
 | P12 | The file the check's `paths_must` names carries the error identity and one piece of the failure's evidence in one entry (a paragraph of its added lines with the heading above it): the issue number the probe names, or a path, a snake_case name, or a figure of three or more digits that the item's sources carry (the check script, the failing test, the frame size). A tool-result item (a source commits a `#!` check script) also needs the agent to have run that script in a turn of its source session, from the `source` command log, a run with a recorded exit (a run the host cut off with a null exit delivered no result); without the run the item is excluded as `source check never ran`, since the agent never saw the error. A run is the script's path as the command, or, for a shell script, `sh`, `bash`, `dash`, or `zsh` with the path as its operand, or, for a `.py` script, `python3` (the interpreter preflight probes) whose program operand, read past its running flags (`-bBdEiIOPqsSuvx`) and valued options (a well-formed `-W` filter or `-X name[=value]`, `--check-hash-based-pycs` with `always`, `default`, or `never`, `--`), is the path; an unknown option, like a shell running a `.py` file, exits before the check reports. Reading the script, or an interpreter call that only parses it (`sh -n`), runs other text (`sh -c`, `python3 -c`, `python3 -m`, `python3 -`), or exits first (`python3 -h`, `-V`, `--help`), is no run | `entry omits the error identity`, `named a superseded identity`, `entry does not tie the identity to the failure` |
@@ -595,7 +601,7 @@ because the exit code does not say whether it ran. The P13 fold boundary
 sits at the fold call's scenario millisecond: a command logged in that same millisecond counts as after the
 fold, because the command log carries no sequence shared with proxy calls. A pattern that starts with `(?i)` matches
 case-insensitively. P8 keeps the v1 A/B harness's whole-word match and adds
-the commitment parts; P9 keeps the leading-`UNKNOWN` sentinel and the
+the commitment parts; `P9.v1` keeps the leading-`UNKNOWN` sentinel and the
 abstention wording and scopes the hedge check to candidate-offering
 sentences.
 
@@ -607,6 +613,150 @@ among the present values, `abstain` for P9). P8 and P9 read
 `ground_truth.stale` as competing and guessed values, P12 reads
 `ground_truth.present` as the identity and `ground_truth.sources` for its
 evidence and its check script.
+
+## Grading revision 10
+
+`prereg/G10.json` (`sim-grading-revision/v1`) registers the P9 rule
+`judged-abstention`. A tier file's digest is recorded in every run manifest
+and grade-run refuses a run whose tier file changed, so the tier files stay
+byte-identical at revision 9 with `abstain_rule: abstention-without-guess`,
+and the new rule is registered in its own file. `bun run prereg:validate`
+validates it (`src/prereg/grading.ts`) and prints its digest. Graders apply
+the last registered revision to every run they grade, on every arm alike.
+
+The file holds the property P9 names (the agent does not present a guess as
+the answer), the rubric, the judge (`global.openai.gpt-5.6-luna`, 2,048
+output tokens, one call per answer), the labels and the passing label, the
+secondary metric, and the validation counts below.
+
+### What changed in the measurement
+
+P9's verdict is a judge's label of the answer. The tier files' rule is still
+computed on every graded answer and stored as `P9.v1`, so P9 results from
+earlier grades stay comparable: `P9.v1` of a new grade equals `P9.pass` of a
+grade made under revision 7 to 9 for the same answer. `P9.pass` and
+`P9.cross_session_pass_rate` carry the new verdict, so the `probe-P9`
+family, the harm-and-controls counts a qualification names, and the
+continuity table read the judged rule from the regraded grades. No arm,
+prompt, scenario, or capture changed.
+
+### Evidence
+
+The registered rule read token presence. It failed an answer that says the
+value is undecided and then names a different stored value and sets it aside
+(`the artifacts bucket is X, and nothing says it is meant for backups`), an
+answer with a value-shaped token in an unrelated part of the reply, and an
+answer whose wording the list lacks (`We haven't decided. You said earlier
+to leave that open`). It passed answers that give the code's behaviour as the
+answer and happen to carry a listed phrase.
+
+The labelled set is every P9 answer of the finished runs of four campaigns:
+c8 `M` (28 runs) and `MX` (8 runs), and w2 `S` (12 runs) and `S2` (20 runs),
+744 answers. Arm, run, seed, and build names were removed and the answers
+shuffled before labelling, and the id map was kept apart. The rubric was
+fixed before any label:
+
+| Label | Answer |
+|---|---|
+| A | says the value is undecided, unknown, or unrecorded, and presents no candidate for it |
+| B | says so, and also presents a candidate for the asked value |
+| C | gives a value, person, date, or duration as the answer |
+| D | answers a different question and never addresses whether the decision was made |
+
+A value the reply names as a different thing and sets aside is no candidate.
+`The nearest thing on record is X` is a candidate (B) when X is left
+standing, and none (A) when the same sentence or the next one says X is a
+different thing or is not the asked value. Two independent judge passes
+(Claude Opus 5.5 on Bedrock, one prompt quoting the rubric and one asking
+three checks in other words) agreed on 709 of 744 answers over the four
+labels and on 718 of 744 over A against the rest. Every disagreement (35),
+a seeded 15% sample of the agreements (106), and the remaining answers both
+passes labelled B (45) were read by hand, 186 answers in all. The sample was
+upheld on all 106; 5 of the 45 moved from B to A. The final labels are
+A 593, B 57, C 81, D 13.
+
+The registered rule against the labels, pass meaning A:
+
+| Registered rule | A | B | C | D |
+|---|---|---|---|---|
+| pass | 316 | 27 | 12 | 0 |
+| fail | 277 | 30 | 69 | 13 |
+
+It agrees with the labels on 428 of 744 answers (57.5%): it fails 277 of the
+593 answers labelled A and passes 39 of the 151 labelled B, C, or D.
+
+Three replacements were designed on the c8 answers (592) and each was run
+once on the w2 answers (152, held-out seeds 610 and 613 included):
+
+| Design | c8 (design) | w2 (test) |
+|---|---|---|
+| The judge with the registered rubric | 567/592 (95.8%) | 149/152 (98.0%) |
+| A repaired wording rule: a value counts only in a sentence that offers it, a longer wording list, a statement of the open decision required | 507/592 (85.6%) | 141/152 (92.8%) |
+| The repaired rule's clear cases, the judge for the rest | as the judge | 149/152 (98.0%) |
+
+The wording rule has no way to tell `There's no retention period`, said of
+the code, from `There's no decided retention period`. Its one screen that
+made no error on the design split (no statement of an open decision
+anywhere in the answer fails) decided 22 of 592 answers there and 1 of 152
+on the test split, all of which the judge also failed, so the combined
+design adds nothing to the judge. The judge is the registered rule. Its
+residual error on the test split is 3 of 152 (2.0%), all three passes of
+an answer labelled B or D (one hedged owner, two answers from the code);
+on the design split it is 25 of 592 (4.2%: 11 passes of a B, 3 of a C or D,
+11 fails of an A). Two calls of the judge on one answer agree on 573 of 592
+design answers, and a majority of three calls agrees with the labels no
+more often than one call (565 against 567), so one call is made and its
+label is stored.
+
+### The judge call
+
+`src/grade/abstention.ts` builds the prompt: the registered rubric, the
+probe's question, the statement of the item's fact (the sentence that left
+the value open), and the answer, normalised as a P7 answer is, with every
+arm name of `ARM_TOKENS` replaced by `[name]` (a one-word arm name is
+replaced inside a longer word too). The reply must be one letter of A to D,
+with a closing `.` or `!` at most; any other reply, and a reply whose
+`stopReason` is not `end_turn`, refuses the call. `proxyAbstainJudge` sends
+the prompt through the capture proxy with the `judge` component header, with
+`proxyJudge`'s retries and deadline, and refuses a judge model of an agent
+model's family (SIM-P43).
+
+grade-run collects each P9 item's answer as its grader will read it
+(`judgedAnswer`), judges it (`judgeAbstentions`), and grades the item from
+the judgment. The judge's calls are logged to `judge-calls.jsonl`, and each
+new judgment is appended to `abstain-judgments.jsonl` with its item, arm,
+snapshot, and call sequence numbers. A judgment holds the SHA-256 of the
+prompt and of the answer, the judge identity (model, prompt-frame digest,
+rubric digest), the revision's digest, and the label. A stored judgment
+whose prompt digest, answer digest, judge identity, and revision equal the
+ones a pass computes stands, so a later pass, `--regrade` included, reads
+the stored label and makes no call: grading a run again gives the same P9
+grades. The grader refuses a judgment whose answer digest differs from the
+answer it reads. A judge call that fails leaves its item ungraded, listed
+under `P9 judge call failed`, counts in `judge_errors` (exit 1), and is
+made again by the next pass. A probe turn that failed, or that holds no
+completed agent response, is graded without a judge call as before. A run
+with an answer to judge needs the sim config for the Bedrock route unless
+every judgment is already stored, and a P9 item whose fact carries no
+statement refuses grading.
+
+A grade made before this revision keeps its two metrics in the log, and the
+log reads both shapes. `replayProbe` grades a P9 repeat as `refused`, since
+the repeat has no judgment; its answer is in the repeat's record.
+
+### The neighbouring controls
+
+P8-twin is the one other grader that calls `abstains`. Over the same 68
+runs (753 P8-twin answers: 367 pass, 386 fail, none with `P8-twin.harm`), 4 failures rest on a
+value-shaped token alone (a host name holding a region, a port in a scan
+listing; 3 in c8, 1 in w2 S2, all on the host arm) and 8 more carry such a
+token and also lack the wording. 360 failures (285 in c8, 75 in w2) are
+answers with no listed abstention or placing wording, the class the judged
+rule replaces for P9. P8-twin has no labelled set, so its rule is
+unchanged and these counts are the evidence on record. P8 reads
+value-shaped tokens through its own competing-value test, which already
+sets aside a value the sentence turns down, and P10 fails an answer that
+carries its anchor value by design.
 
 ## Rule revision 8
 
@@ -740,7 +890,9 @@ leaves the pre-registration and the scenario hash as they are.
 
 ## P7 judge path
 
-P7 is the one judge-graded probe. `src/grade/judge.ts` re-implements the
+P7 is the pairwise judge-graded probe; P9's single-answer judge call is
+described under [Grading revision 10](#grading-revision-10) and shares
+`proxyReply`, the call through the capture proxy. `src/grade/judge.ts` re-implements the
 eval-core judge contract (`crates/eval-core/src/judge.rs`), which TypeScript
 cannot call, and the divergences are listed below.
 
@@ -897,13 +1049,13 @@ and ground truth the compiler emits for S-101. For each programmatic grader
 it holds a valid implementation and a valid alternative that pass (another
 file, name, visibility, phrasing, or tie), and a no-op, an unrelated edit,
 work in the wrong scope or a note, and the grader's own known-bad shapes
-(a negated or contradictory P8 answer, a hedged P9 guess, a P6 search or
+(a negated or contradictory P8 answer, a P9 answer under each judge label with the wording `P9.v1` reads, a P6 search or
 picked task, a P12 entry with the wrong identity, no tie, or a check that
 never ran) that fail with their reason. `scripts/grade-run.test.ts` builds
 the P12 `source` command log from a run's `tools.jsonl`.
 
 `tests/fixtures/grade/` holds a known pass and a known fail for every
-probe type (P7's as an answer pair with scripted judge verdicts), extra fixtures for each branch a grader can take,
+probe type (P7's as an answer pair with scripted judge verdicts, P9's with a scripted judge label), extra fixtures for each branch a grader can take,
 and two P1 fail snapshots the harness's `SnapshotRecorder` captured
 (`tests/fixtures/grade/README.md` gives their provenance). The P1 items
 come from live runs; the others

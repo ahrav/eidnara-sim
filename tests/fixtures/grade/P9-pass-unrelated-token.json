@@ -1,0 +1,63 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P9-f",
+    "type": "P9",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "Who looks after the steps we run before shipping?",
+    "check": {
+      "abstain": true
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P9-f",
+      "item": "P9-f",
+      "arm": "eidnara",
+      "session": "s-1",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "p1",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "seq": 1,
+              "arm": "eidnara",
+              "session": "s-1",
+              "component": "agent",
+              "turn": "e-1",
+              "scenario_ms": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "response_text": "Nobody has been named as owner of the release checklist yet.\n\nOne earlier question is still pending: should the connection limit stay at 23001?",
+              "status": 200,
+              "error": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "judge": {
+    "label": "A"
+  },
+  "expect": {
+    "verdict": "pass",
+    "metrics": {
+      "P9.pass": true,
+      "P9.cross_session_pass_rate": true,
+      "P9.v1": false,
+      "P9.label": "A"
+    },
+    "inputs": [
+      "p1"
+    ]
+  }
+}

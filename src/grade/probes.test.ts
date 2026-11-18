@@ -12,6 +12,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { judgmentMetrics, judgmentOf } from "../../tests/abstain-judgment";
+import type { AbstainLabel } from "../prereg/grading";
 import { compileScenario, type ProbeItem } from "../scenario/compile";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { hashEmbedder } from "../scenario/similarity";
@@ -22,7 +24,15 @@ import {
     GradeRefused,
     type Snapshot,
 } from "./artefacts";
-import { deltaMem, GradeLog, type GradeRecord, gradeItem, graderDigest, graderFor } from "./probes";
+import {
+    deltaMem,
+    GradeLog,
+    type GradeRecord,
+    gradeItem,
+    graderDigest,
+    graderFor,
+    judgedAnswer,
+} from "./probes";
 import { diffPaths, withoutFilesUnder } from "./text";
 
 const DIR = join(import.meta.dir, "../../tests/fixtures/grade");
@@ -31,6 +41,8 @@ const rules = loadPrereg("S").grading;
 interface Fixture {
     probe: ProbeItem;
     snapshots: Snapshot[];
+    /** The label the judge step hands the grader for a judge-graded item, scripted for the test. */
+    judge?: { label: AbstainLabel };
     expect: {
         verdict: string;
         reason?: string;
@@ -50,8 +62,24 @@ const retagged = (snapshot: Snapshot, session: string): Snapshot => {
         if (a.class === "proxy-call") for (const c of a.calls) c.session = session;
     return copy;
 };
+/** The scripted judgment of a judge-graded fixture's answer, or none for any other fixture. */
+const judgmentFor = (f: Fixture, snapshots = f.snapshots) => {
+    const answer = f.judge ? judgedAnswer(f.probe, snapshots) : null;
+    return f.judge && answer !== null ? judgmentOf(answer, f.judge.label) : undefined;
+};
+const gradeFixture = (f: Fixture, snapshots = f.snapshots, r = rules) =>
+    gradeItem(f.probe, snapshots, r, 1, [], judgmentFor(f, snapshots));
 const grade = (name: string, r = rules) =>
-    gradeItem(fixture(name).probe, fixture(name).snapshots, r) as GradeRecord;
+    gradeFixture(fixture(name), fixture(name).snapshots, r) as GradeRecord;
+/** A P9 fixture graded on `answer` in place of its own, under the judge label `label`. */
+const gradeP9 = (name: string, answer: string, label: AbstainLabel) => {
+    const f = fixture(name);
+    const snap = structuredClone(f.snapshots[0]) as Snapshot;
+    const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+    if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+    (calls.calls[0] as { response_text: string }).response_text = answer;
+    return gradeFixture({ ...f, judge: { label } }, [snap]) as GradeRecord;
+};
 
 describe("recorded fixtures", () => {
     test("every programmatic probe type has a known pass and a known fail", () => {
@@ -63,10 +91,14 @@ describe("recorded fixtures", () => {
 
     for (const [file, f] of fixtures) {
         test(`${file} grades as recorded and lists the artefacts it read`, () => {
-            const g = gradeItem(f.probe, f.snapshots, rules) as GradeRecord;
+            const g = gradeFixture(f) as GradeRecord;
             expect(g.verdict).toBe(f.expect.verdict as GradeRecord["verdict"]);
             expect(g.reason).toBe(f.expect.reason);
-            expect(g.metrics).toEqual(f.expect.metrics);
+            const judgment = judgmentFor(f);
+            expect(g.metrics).toEqual({
+                ...f.expect.metrics,
+                ...(judgment ? judgmentMetrics(judgment) : {}),
+            });
             expect(f.expect.inputs.length).toBeGreaterThan(0);
             expect(g.inputs).toEqual(f.expect.inputs);
             const ids = new Set((f.snapshots[0] as Snapshot).artefacts.map((a) => a.id));
@@ -242,39 +274,95 @@ describe("grading harness", () => {
         expect(gradeItem(probe, [snap], rules)?.verdict).toBe("pass");
     });
 
-    test("P9 fails an abstention that hedges a guess without a value-shaped token", () => {
-        const f = fixture("P9-pass-wording");
+    test("P9.v1 fails an abstention that hedges a guess without a value-shaped token", () => {
         for (const guess of [
             "I do not know, but probably Alice owns it.",
             "We never decided; probably us-east-1.",
             "I do not know. Use us-east-1.",
             "UNKNOWN\nI think eu-west-2 is the one.",
         ]) {
-            const snap = structuredClone(f.snapshots[0]) as Snapshot;
-            const calls = snap.artefacts.find((a) => a.class === "proxy-call");
-            if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
-            (calls.calls[0] as { response_text: string }).response_text = guess;
-            expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("fail");
+            expect(gradeP9("P9-pass-wording", guess, "B").metrics["P9.v1"]).toBe(false);
         }
     });
 
-    test("P9 passes an answer that says nobody was named, and fails one that names a value", () => {
-        const f = fixture("P9-pass-wording");
-        const graded = (answer: string) => {
-            const snap = structuredClone(f.snapshots[0]) as Snapshot;
-            const calls = snap.artefacts.find((a) => a.class === "proxy-call");
-            if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
-            (calls.calls[0] as { response_text: string }).response_text = answer;
-            return gradeItem(f.probe, [snap], rules)?.verdict;
-        };
+    test("P9.v1 passes an answer that says nobody was named, and fails one that names a value", () => {
+        const v1 = (answer: string) => gradeP9("P9-pass-wording", answer, "A").metrics["P9.v1"];
         for (const answer of [
             "Nobody has been named owner of the release checklist yet.",
             "No one is named as the owner of these steps anywhere in this repo.",
             "The repo doesn't name an owner for these steps.",
         ]) {
-            expect(graded(answer)).toBe("pass");
+            expect(v1(answer)).toBe(true);
         }
-        expect(graded("Nobody was named, so it is nimble-quokka-44.")).toBe("fail");
+        expect(v1("Nobody was named, so it is nimble-quokka-44.")).toBe(false);
+    });
+
+    test("the P9 verdict is the judge's label, whatever the registered rule reads in the answer", () => {
+        const kept = "We never settled how long to keep that history.";
+        const aside =
+            "That is undecided. The artifacts bucket is amber-finch-21, a separate thing.";
+        for (const [answer, label, verdict, reason, v1] of [
+            [kept, "A", "pass", undefined, true],
+            [aside, "A", "pass", undefined, false],
+            [kept, "B", "fail", "offered a candidate beside the abstention", true],
+            [kept, "C", "fail", "answered instead of abstaining", true],
+            [kept, "D", "fail", "answered another question", true],
+        ] as const) {
+            const g = gradeP9("P9-pass-wording", answer, label);
+            expect([g.verdict, g.reason]).toEqual([verdict, reason]);
+            expect(g.metrics).toMatchObject({
+                "P9.pass": verdict === "pass",
+                "P9.cross_session_pass_rate": verdict === "pass",
+                "P9.label": label,
+                "P9.v1": v1,
+            });
+        }
+    });
+
+    test("a P9 item is graded only from a judgment of its own answer", () => {
+        const f = fixture("P9-pass");
+        expect(() => gradeItem(f.probe, f.snapshots, rules)).toThrow(
+            "P9 item P9-a is graded from its abstention judgment",
+        );
+        const other = judgmentOf("another answer", "A");
+        expect(() => gradeItem(f.probe, f.snapshots, rules, 1, [], other)).toThrow(
+            "the abstention judgment is of another answer",
+        );
+        const answer = judgedAnswer(f.probe, f.snapshots) as string;
+        const malformed = { ...judgmentOf(answer, "A"), label: "E" } as never;
+        expect(() => gradeItem(f.probe, f.snapshots, rules, 1, [], malformed)).toThrow(
+            "the abstention judgment is malformed",
+        );
+    });
+
+    test("a judged item whose turn failed or holds no completed response has no answer to judge", () => {
+        const f = fixture("P9-pass");
+        const failed = { ...(f.snapshots[0] as Snapshot), turn_outcome: "failed" as const };
+        expect(judgedAnswer(f.probe, [failed])).toBeNull();
+        expect(gradeItem(f.probe, [failed], rules)).toBeNull();
+        const cut = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = cut.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        for (const c of calls.calls) Object.assign(c, { status: 503, error: "upstream" });
+        expect(judgedAnswer(f.probe, [cut])).toBeNull();
+        expect(gradeItem(f.probe, [cut], rules)?.verdict).toBe("excluded");
+    });
+
+    test("the grade log reads a P9 grade of either rule and refuses a mix of the two", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const log = new GradeLog(path);
+        const now = grade("P9-pass");
+        const earlier = {
+            ...now,
+            metrics: { "P9.pass": true, "P9.cross_session_pass_rate": true },
+        };
+        log.append(earlier);
+        log.append({ ...now, version: 2 });
+        expect(log.all().map((g) => Object.keys(g.metrics).length)).toEqual([2, 9]);
+        const mixed = { ...now, version: 3, metrics: { ...earlier.metrics, "P9.v1": true } };
+        expect(() => log.append(mixed)).toThrow();
+        const disagreeing = { ...now, version: 3, metrics: { ...now.metrics, "P9.label": "B" } };
+        expect(() => log.append(disagreeing)).toThrow();
     });
 
     test("a cut final grade line is dropped on read and overwritten by the next append", () => {
@@ -288,14 +376,9 @@ describe("grading harness", () => {
         expect(log.all().map((x) => x.version)).toEqual([1, 2]);
     });
 
-    test("P9 applies the guess checks after a leading UNKNOWN line", () => {
-        const f = fixture("P9-pass");
-        const snap = structuredClone(f.snapshots[0]) as Snapshot;
-        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
-        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
-        (calls.calls[0] as { response_text: string }).response_text =
-            "UNKNOWN\nProbably Alice owns it.";
-        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("fail");
+    test("P9.v1 applies the guess checks after a leading UNKNOWN line", () => {
+        const g = gradeP9("P9-pass", "UNKNOWN\nProbably Alice owns it.", "B");
+        expect(g.metrics["P9.v1"]).toBe(false);
     });
 
     test("P14 counts only completed user-sim calls", () => {
@@ -366,7 +449,7 @@ describe("grading harness", () => {
     test("every pre-registered probe family metric is emitted by its grader", () => {
         const emitted = new Set(
             fixtures
-                .map(([, f]) => gradeItem(f.probe, f.snapshots, rules))
+                .map(([, f]) => gradeFixture(f))
                 .flatMap((g) => (g && g.verdict !== "excluded" ? Object.keys(g.metrics) : [])),
         );
         const registered = loadPrereg("S")
@@ -1773,18 +1856,13 @@ describe("grading harness", () => {
         expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
     });
 
-    test("P9 treats UNKNOWN as abstention only when it is the whole first line", () => {
-        const f = fixture("P9-pass");
-        for (const [answer, verdict] of [
-            ["The status should not be UNKNOWN.", "fail"],
-            ["UNKNOWN", "pass"],
-            ["**UNKNOWN**\nWe never decided that.", "pass"],
+    test("P9.v1 treats UNKNOWN as abstention only when it is the whole first line", () => {
+        for (const [answer, v1] of [
+            ["The status should not be UNKNOWN.", false],
+            ["UNKNOWN", true],
+            ["**UNKNOWN**\nWe never decided that.", true],
         ] as const) {
-            const snap = structuredClone(f.snapshots[0]) as Snapshot;
-            const calls = snap.artefacts.find((a) => a.class === "proxy-call");
-            if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
-            (calls.calls[0] as { response_text: string }).response_text = answer;
-            expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe(verdict);
+            expect(gradeP9("P9-pass", answer, "A").metrics["P9.v1"]).toBe(v1);
         }
     });
 

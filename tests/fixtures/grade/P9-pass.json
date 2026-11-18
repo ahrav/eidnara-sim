@@ -45,11 +45,16 @@
       ]
     }
   ],
+  "judge": {
+    "label": "A"
+  },
   "expect": {
     "verdict": "pass",
     "metrics": {
       "P9.pass": true,
-      "P9.cross_session_pass_rate": true
+      "P9.cross_session_pass_rate": true,
+      "P9.v1": true,
+      "P9.label": "A"
     },
     "inputs": [
       "p1"

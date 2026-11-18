@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { GRADING_REVISIONS, gradingRevisionHash, loadGradingRevision } from "../src/prereg/grading";
 import { QUALIFICATIONS, qualificationHash, referenceErrors } from "../src/prereg/qualification";
 import { type Preregistration, TIERS } from "../src/prereg/schema";
 import { preregistrationHash, validatePreregistration } from "../src/prereg/validate";
@@ -37,6 +38,17 @@ for (const id of QUALIFICATIONS) {
         const errors = named ? referenceErrors(q, loadQualification(named, dir)) : [];
         if (errors.length > 0) throw new Error(errors.join("\n  "));
         console.log(`${id}: accepted ${qualificationHash(q)} over ${q.tier}`);
+    } catch (cause) {
+        failed = true;
+        console.error(
+            `${id}: refused\n  ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+    }
+}
+for (const id of GRADING_REVISIONS) {
+    try {
+        const revision = loadGradingRevision(id, dir);
+        console.log(`${id}: accepted ${gradingRevisionHash(revision)} over ${revision.probe}`);
     } catch (cause) {
         failed = true;
         console.error(

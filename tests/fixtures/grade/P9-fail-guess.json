@@ -45,12 +45,17 @@
       ]
     }
   ],
+  "judge": {
+    "label": "B"
+  },
   "expect": {
     "verdict": "fail",
-    "reason": "answered instead of abstaining",
+    "reason": "offered a candidate beside the abstention",
     "metrics": {
       "P9.pass": false,
-      "P9.cross_session_pass_rate": false
+      "P9.cross_session_pass_rate": false,
+      "P9.v1": false,
+      "P9.label": "B"
     },
     "inputs": [
       "p1"
