@@ -12,9 +12,38 @@ const SUPPORT =
 
 export const isProductPath = (path: string): boolean => SOURCE.test(path) && !SUPPORT.test(path);
 
-/** `#[cfg(test)]`, `#[cfg(all(test, ...))]`, `#[test]`, a runtime's test macro (`#[tokio::test]`), and `#[bench]`. */
-const TEST_ATTRIBUTE =
-    /^\s*#\[(?:cfg\((?:all\(\s*)?test\b[^\]]*|(?:\w+::)*test(?:\([^\]]*\))?|bench)\]\s*/;
+const OUTER_ATTRIBUTE = /^\s*#\[([^\]]*)\]\s*/;
+/** The operands of a `cfg(all(...))` predicate, split at its top-level commas. */
+const operands = (list: string): string[] => {
+    const out: string[] = [];
+    let depth = 0;
+    let from = 0;
+    for (const [i, ch] of [...list].entries()) {
+        if (ch === "(") depth++;
+        else if (ch === ")") depth--;
+        else if (ch === "," && depth === 0) {
+            out.push(list.slice(from, i).trim());
+            from = i + 1;
+        }
+    }
+    return [...out, list.slice(from).trim()];
+};
+/**
+ * The length of the test attribute a line opens with, or 0: `#[cfg(test)]`, `#[cfg(all(...))]`
+ * with `test` among its operands, `#[test]`, a runtime's test macro (`#[tokio::test]`), and
+ * `#[bench]`.
+ */
+const testAttribute = (line: string): number => {
+    const m = OUTER_ATTRIBUTE.exec(line);
+    const inner = m?.[1]?.trim() ?? "";
+    const all = /^cfg\(\s*all\((.*)\)\s*\)$/.exec(inner);
+    const marks =
+        /^cfg\(\s*test\s*\)$/.test(inner) ||
+        (all !== null && operands(all[1] ?? "").includes("test")) ||
+        /^(?:\w+::)*test(?:\(.*\))?$/.test(inner) ||
+        inner === "bench";
+    return m && marks ? m[0].length : 0;
+};
 const ATTRIBUTE = /^\s*#\[/;
 const TEST_MODULE = /^\s*(?:pub(?:\([^)\n]*\))?\s+)?mod\s+(?:tests?|\w+_tests?|tests?_\w+)\s*\{/;
 const indentOf = (line: string) => /^\s*/.exec(line)?.[0] ?? "";
@@ -93,9 +122,9 @@ function rustTestLines(lines: string[], section: string): boolean[] {
             headerLine(line, header, false);
             return true;
         }
-        const attribute = TEST_ATTRIBUTE.exec(line);
-        if (attribute) {
-            const item = line.slice(attribute[0].length);
+        const attribute = testAttribute(line);
+        if (attribute > 0) {
+            const item = line.slice(attribute);
             if (item.trim() === "") pending = true;
             else headerLine(item, indentOf(line), true);
             return true;

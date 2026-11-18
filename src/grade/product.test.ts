@@ -198,11 +198,15 @@ describe("product code", () => {
             "fn open() { setup();",
             "    thread::sleep(D);",
             "}",
+            "#[cfg(all(unix, test))]",
+            "fn unix_only() { thread::sleep(D); }",
+            "#[cfg(all(unix, not(test)))]",
+            "fn shipped() { thread::sleep(D); }",
             "#[cfg(not(test))]",
             "fn live() { thread::sleep(D); }",
         ]);
         expect(productCode(items).code).toBe(
-            `fn mid() {}\n${GAP}\nfn mid2() {}\n${GAP}\n#[cfg(not(test))]\nfn live() { thread::sleep(D); }`,
+            `fn mid() {}\n${GAP}\nfn mid2() {}\n${GAP}\n#[cfg(all(unix, not(test)))]\nfn shipped() { thread::sleep(D); }\n#[cfg(not(test))]\nfn live() { thread::sleep(D); }`,
         );
     });
 
