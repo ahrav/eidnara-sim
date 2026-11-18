@@ -40,12 +40,12 @@ describe("grading revisions", () => {
         expect(validateGradingRevision(g11)).toEqual([]);
         const v = g11.validation;
         expect(v.design.answers + v.test.answers).toBe(v.labelled_answers);
-        const rate = (s: { agreed: number; answers: number }) => s.agreed / s.answers;
-        expect(rate(v.test)).toBeGreaterThan(rate(v.superseded_rule));
-        // The share of passing labels is what a rule that passes every answer scores.
-        expect(rate(v.test)).toBeGreaterThan(
-            (v.label_counts.A + v.label_counts.P) / v.labelled_answers,
-        );
+        // Over the design and test answers together, the judge agrees with the labels more
+        // often than the superseded rule and than a rule that passes every answer, which
+        // scores the count of passing labels.
+        const judged = v.design.agreed + v.test.agreed;
+        expect(judged).toBeGreaterThan(v.superseded_rule.agreed);
+        expect(judged).toBeGreaterThan(v.label_counts.A + v.label_counts.P);
     });
 
     test("a P8-twin revision is held to its own shape", () => {

@@ -221,6 +221,13 @@ describe("the P8-twin judge", () => {
             "12345",
         ]);
         expect(twinNamed(twin, "Try brisk-otter-070 on port 112345.")).toEqual([]);
+        // The match reads the text the judge reads: a value written with a character
+        // reference is held, as its literal form is.
+        expect(twinNamed(twin, "Use port &#49;2345.")).toEqual(["12345"]);
+        expect(twinNamed(twin, "Use port 12345.")).toEqual(["12345"]);
+        expect(twinPrompt("R", "Q", "S", twin, "Use port &#49;2345.")).toContain(
+            "VALUE:\nyes (12345)\n\nREPLY:\n<<<\nUse port 12345.\n>>>",
+        );
         expect(twinLabels(twin, "port 12345")).toEqual(["P", "B", "C", "D", "E"]);
         expect(twinLabels(twin, "no port")).toEqual(["A", "B", "D", "E"]);
     });

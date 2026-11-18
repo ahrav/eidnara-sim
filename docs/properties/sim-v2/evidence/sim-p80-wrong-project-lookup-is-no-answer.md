@@ -39,7 +39,7 @@ none of the base project's values (`ground_truth.absent` and
 that holds one, and stores the sentence
 rule's verdict and harm as `P8-twin.v1` and `P8-twin.v1_harm`. On 753
 blind-labelled answers of c8 and w2 the sentence rule agreed with the
-labels on 363 and the judge on 739; the one answer labelled C gave a
+labels on 363 and the judge on 740; the one answer labelled C gave a
 superseded base value, which the sentence rule's harm test does not read.
 
 ## Failure scenario

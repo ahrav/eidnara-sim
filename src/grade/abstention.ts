@@ -81,9 +81,14 @@ export interface TwinSubject {
     stale: readonly string[];
 }
 
-/** The owner's values, current and superseded, that `answer` holds as whole tokens. */
-export const twinNamed = (twin: TwinSubject, answer: string): string[] =>
-    [...new Set([...twin.values, ...twin.stale])].filter((v) => carries(answer, v));
+/**
+ * The owner's values, current and superseded, that `answer` holds as whole tokens in the text
+ * the judge reads (`judgedText`), so the match and the reply the judge labels are one text.
+ */
+export const twinNamed = (twin: TwinSubject, answer: string): string[] => {
+    const read = judgedText(answer);
+    return [...new Set([...twin.values, ...twin.stale])].filter((v) => carries(read, v));
+};
 
 /**
  * The labels an answer can take. P and C say what the answer does with one of the owner's
@@ -162,11 +167,13 @@ export interface AbstainJudgment {
     label: JudgedLabel;
 }
 
-/** The label a judge's reply holds, one of `labels`: the letter, with one closing `.` or `!` at most. */
-export function parseLabel<L extends string = AbstainLabel>(
+/** The label a judge's reply holds, one of `labels` (the P9 labels by default): the letter, with one closing `.` or `!` at most. */
+export function parseLabel(text: string): AbstainLabel;
+export function parseLabel<L extends JudgedLabel>(text: string, labels: readonly L[]): L;
+export function parseLabel(
     text: string,
-    labels: readonly L[] = ABSTAIN_LABELS as unknown as readonly L[],
-): L {
+    labels: readonly JudgedLabel[] = ABSTAIN_LABELS,
+): JudgedLabel {
     const letter = text.trim().replace(/[.!]$/, "");
     const found = labels.find((l) => l === letter);
     if (found !== undefined) return found;
@@ -247,7 +254,7 @@ const hex = (v: unknown) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v);
 /** Whether a parsed row of a judgment log holds a judgment with one of `labels`. */
 export function isAbstainJudgment(
     value: unknown,
-    labels: readonly string[] = ABSTAIN_LABELS,
+    labels: readonly JudgedLabel[] = ABSTAIN_LABELS,
 ): value is AbstainJudgment {
     if (typeof value !== "object" || value === null) return false;
     const j = value as Record<string, unknown>;

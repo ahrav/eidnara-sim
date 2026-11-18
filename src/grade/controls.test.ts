@@ -1081,7 +1081,10 @@ describe("P8-twin: the judge's label decides; P8-twin.v1 keeps the registered ru
             [],
             twinJudgmentOf(answer, label),
         ) as GradeRecord;
-    /** What the registered rule stores for `answer`: its verdict and its harm. */
+    /**
+     * What the registered rule stores for `answer`: its verdict and its harm. Both read the
+     * answer alone; label B is the one label every answer can take.
+     */
     const v1 = (answer: string) => {
         const m = judged(answer, "B").metrics;
         return [m["P8-twin.v1"], m["P8-twin.v1_harm"]];

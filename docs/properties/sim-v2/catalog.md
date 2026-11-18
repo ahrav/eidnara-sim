@@ -2262,8 +2262,11 @@ guess; `scripts/grade-run.test.ts` grades runs from a scripted judge
 Guarantee: SIM-P80: A `P8-twin` item passes only on judge label A or P, and
 `P8-twin.harm` is true only for label C on an answer that holds one of the
 base project's values.
-Check: `always` - assert on every graded P8-twin record, because a pass that
-carries the other project's value would count leakage as recall.
+Check: `always` - assert on every graded P8-twin record that it passes
+exactly on label A or P, that harm is exactly label C, and that labels P
+and C sit on an answer that holds a base value and label A on one that
+holds none, because a pass on an answer that gives the other project's
+value as this project's would count leakage as recall.
 Fault/timing angle: none.
 Required faults and enabling state: a qualification naming
 `wrong-project-lookup`.

@@ -545,11 +545,17 @@ export async function judgeAbstentions(o: {
             }
             const judgment = row?.judgment;
             const calls = row?.calls;
-            if (!isAbstainJudgment(judgment, revision.labels) || !Array.isArray(calls)) {
+            // A row names the calls that made its label by their sequence numbers.
+            const numbered = (c: unknown): c is number => Number.isSafeInteger(c) && Number(c) >= 0;
+            if (
+                !isAbstainJudgment(judgment, revision.labels) ||
+                !Array.isArray(calls) ||
+                !calls.every(numbered)
+            ) {
                 throw new Error(`${log}: line ${i + 1} holds no abstention judgment`);
             }
             rows.set(keyOf(judgment), judgment);
-            loaded.push({ judgment, calls: calls.map(Number) });
+            loaded.push({ judgment, calls });
         }
     }
     const framer = (url: string): AbstainJudge => {

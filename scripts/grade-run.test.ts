@@ -2253,10 +2253,16 @@ describe("P8-twin graded from a judge's label", () => {
         expect(twin.map((r) => [r.item, r.judgment.label])).toEqual([["P8T-a", "P"]]);
         expect(abstain.map((r) => [r.item, r.judgment.label])).toEqual([[p9.id, "A"]]);
         expect(twin[0].judgment.revision).not.toBe(abstain[0].judgment.revision);
-        // Each judgment names its own call of the shared call log.
-        expect(new Set([...twin[0].calls, ...abstain[0].calls]).size).toBe(2);
-        const calls = readFileSync(join(dir, "judge-calls.jsonl"), "utf8").trim().split("\n");
-        expect(calls).toHaveLength(2);
+        // Each judgment names its own call of the shared call log: the P9 answer is judged
+        // first, so its row holds the first call's sequence number and the P8-twin row the second's.
+        const calls = readFileSync(join(dir, "judge-calls.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l) as { seq: number; response_text: string });
+        expect(calls.map((c) => c.response_text)).toEqual(["A", "P"]);
+        expect(judge.prompts.map((p) => p.includes("OTHER PROJECT:"))).toEqual([false, true]);
+        expect(abstain[0].calls).toEqual([calls[0]?.seq]);
+        expect(twin[0].calls).toEqual([calls[1]?.seq]);
     });
 
     test("an answer to judge needs a judge route, and a row with a label outside the six refuses grading", async () => {
@@ -2265,10 +2271,18 @@ describe("P8-twin graded from a judge's label", () => {
         await gradeRun(dir, null, false, judgeSays("A"));
         const log = join(dir, TWIN_JUDGMENTS);
         const [row] = rows(dir);
+        const kept = JSON.stringify(row);
         row.judgment.label = "F";
         writeFileSync(log, `${JSON.stringify(row)}\n`);
         await expect(gradeRun(dir, null, true, judgeSays("A"))).rejects.toThrow(
             "line 1 holds no abstention judgment",
         );
+        // A row whose call list holds anything but sequence numbers is refused too.
+        for (const calls of [[null], ["0"], [-1], [0.5]]) {
+            writeFileSync(log, `${JSON.stringify({ ...JSON.parse(kept), calls })}\n`);
+            await expect(gradeRun(dir, null, true, judgeSays("A"))).rejects.toThrow(
+                "line 1 holds no abstention judgment",
+            );
+        }
     });
 });
