@@ -63,8 +63,8 @@ carries it as its one metric. Six of them are the turn shapes of the
 `P5-pass-test-exercises` (the product code waits on a timer and the new test
 calls the rejected sleep), `P5-pass-comment-names` (a comment and a log
 message name the rejected call), `P5-deferred-scratch-command` (a command
-writes the rejected construct, the turn diff is empty, and the reply hands
-the choice back in a sentence with no question mark),
+writes the rejected construct, the turn diff is empty, and the reply asks
+whether to apply it, so `P5.v1` fails through the command match alone),
 `P5-fail-no-work-empty-reply` (a benchmark test is the only change and the
 final reply is empty), and `P2-deferred-hand-back` and
 `P11-deferred-hand-back` (no change, and a reply that waits on the user

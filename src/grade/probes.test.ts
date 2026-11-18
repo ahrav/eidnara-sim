@@ -398,8 +398,20 @@ describe("grading harness", () => {
         expect(() =>
             log.append({ ...p5, version: 3, metrics: { ...p5.metrics, "P5.v1": "maybe" } }),
         ).toThrow(/not a grade record/);
-        log.append(grade("P5-deferred-scratch-command"));
+        const deferred = grade("P5-deferred-scratch-command");
+        log.append(deferred);
         expect(log.all().at(-1)?.metrics).toEqual({ "P5.v1": "fail" });
+        const malformed: GradeRecord["metrics"][] = [
+            { "P5.v1": "maybe" },
+            { "P5.v1": "fail", "P5.pass": false },
+        ];
+        for (const metrics of malformed) {
+            expect(() => log.append({ ...deferred, version: 2, metrics })).toThrow(
+                /not a grade record/,
+            );
+        }
+        // A deferred record from before the revision holds no metric.
+        log.append({ ...deferred, version: 2, metrics: {} });
     });
 
     test("P9.v1 applies the guess checks after a leading UNKNOWN line", () => {
@@ -2616,7 +2628,9 @@ describe("self-ignoring directories", () => {
             (dirs === undefined
                 ? diff
                 : { ...diff, self_ignored: dirs }) as Snapshot["artefacts"][number],
-            ...fixture("P10-pass").snapshots[0]!.artefacts.filter((a) => a.class === "proxy-call"),
+            ...structuredClone(
+                fixture("P10-pass").snapshots[0]!.artefacts.filter((a) => a.class === "proxy-call"),
+            ),
         ];
         for (const a of snap.artefacts) {
             if (a.class !== "proxy-call") continue;

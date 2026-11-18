@@ -245,7 +245,7 @@ describe("rule revisions", () => {
         }
     });
 
-    test("on both splits the rules agree with the labels more often than the rules they replace, and the P5 rule's test agreement is within two points of the judge's", () => {
+    test("on each split the rules agree with the labels more often than the replaced rules do over both splits, and the P5 rule's test agreement is at most two points below the judge's", () => {
         const { reuse, deferral } = g12.validation;
         const share = (agreed: number, of: number) => agreed / of;
         const old = share(reuse.superseded_rule.agreed, reuse.superseded_rule.items);
@@ -386,6 +386,23 @@ describe("rule revisions", () => {
         expect(edited((r) => Object.assign(r, { validation: null }))).toEqual([
             "validation: expected an object",
         ]);
+        expect(
+            edited((r) => {
+                (r.supersedes as { tier_revisions_through: number }).tier_revisions_through = -1;
+            }),
+        ).toEqual(["supersedes: expected the tier rule and the last tier revision it held in"]);
+        expect(
+            edited((r) => {
+                (reuse(r).label_pass_agreement as Record<string, string>).verdict =
+                    "1.00000000000000001";
+            }),
+        ).toEqual(["validation.reuse.label_pass_agreement: expected canonical decimals in [0, 1]"]);
+        // A total that is no number is named, and the checks that read it still return.
+        expect(
+            edited((r) => {
+                (reuse(r) as Record<string, unknown>).labelled_items = { valueOf: null };
+            }),
+        ).toContain("validation.reuse.hand_audited: expected a count within the labelled items");
         expect(validateRuleRevision(null)).toEqual(["expected an object"]);
     });
 });

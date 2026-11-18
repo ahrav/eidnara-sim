@@ -3,19 +3,24 @@ import { codeMask, type DiffFile, type DiffHunk, pattern } from "./text";
 /** Source files of the languages whose comments and string literals `codeMask` reads. */
 const SOURCE = /\.(?:rs|go|[cm]?[jt]sx?)$/i;
 /**
- * Paths of code that checks, measures, or demonstrates the product. A rejected approach a test
- * exercises is named there, and the product is what uses or avoids it (`prereg/G12.json`).
+ * Paths of code that checks, measures, or demonstrates the product, and of generated source. A
+ * rejected approach a test exercises is named there, and the product is what uses or avoids it
+ * (`prereg/G12.json`).
  */
 const SUPPORT =
-    /(?:^|\/)(?:tests?|__tests__|testdata|benches|bench|benchmarks?|examples?|_examples|fixtures|scripts)\/|_test\.go$|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|\/|_)tests?\.rs$/i;
+    /(?:^|\/)(?:tests?|__tests__|testdata|benches|bench|benchmarks?|examples?|_examples|fixtures|scripts|generated)\/|_test\.go$|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|\/|_)tests?\.rs$|(?:^|\/)zz_generated\.|[._]generated\.|\.pb\.go$/i;
 
 export const isProductPath = (path: string): boolean => SOURCE.test(path) && !SUPPORT.test(path);
 
-const TEST_ATTRIBUTE = /^\s*#\[cfg\((?:all\(\s*)?test\b[^\]]*\]\s*/;
+/** `#[cfg(test)]`, `#[cfg(all(test, ...))]`, `#[test]`, a runtime's test macro (`#[tokio::test]`), and `#[bench]`. */
+const TEST_ATTRIBUTE =
+    /^\s*#\[(?:cfg\((?:all\(\s*)?test\b[^\]]*|(?:\w+::)*test(?:\([^\]]*\))?|bench)\]\s*/;
 const ATTRIBUTE = /^\s*#\[/;
 const TEST_MODULE = /^\s*(?:pub(?:\([^)\n]*\))?\s+)?mod\s+(?:tests?|\w+_tests?|tests?_\w+)\s*\{/;
 const indentOf = (line: string) => /^\s*/.exec(line)?.[0] ?? "";
 const END = "end_of_hunk";
+/** The line between two stretches of added code that the file holds apart; a match that holds it counts for nothing. */
+const GAP = "\u0000";
 
 /**
  * A hunk's new-side lines with comments blanked (`bare`) and with string contents blanked too
@@ -27,23 +32,30 @@ const END = "end_of_hunk";
 function maskHunk(lines: string[], rust: boolean): { bare: string[]; masked: string[] } {
     const text = lines.join("\n");
     const whole = codeMask(`${text}\n${END}`, rust);
-    if (whole.endsWith(END)) {
-        return {
-            bare: codeMask(text, rust, true).split("\n"),
-            masked: whole.slice(0, -(END.length + 1)).split("\n"),
-        };
+    const together = whole.endsWith(END);
+    const bare = together
+        ? codeMask(text, rust, true).split("\n")
+        : lines.map((l) => codeMask(l, rust, true));
+    const masked = together
+        ? whole.slice(0, -(END.length + 1)).split("\n")
+        : lines.map((l) => codeMask(l, rust));
+    // A line that opens with `*/` closes a block comment that opened above the hunk: the lines
+    // down to it are comment text.
+    const closer = masked.findIndex((l) => /^\s*\*\//.test(l));
+    for (let i = 0; i <= closer; i++) {
+        const blank = (line: string) =>
+            i < closer ? line.replace(/\S/g, " ") : line.replace(/^(\s*)\*\//, "$1  ");
+        bare[i] = blank(bare[i] ?? "");
+        masked[i] = blank(masked[i] ?? "");
     }
-    return {
-        bare: lines.map((l) => codeMask(l, rust, true)),
-        masked: lines.map((l) => codeMask(l, rust)),
-    };
+    return { bare, masked };
 }
 
 /**
  * Which lines of a Rust hunk are test code, read from the lines with comments and string
  * contents blanked. A test item is the item under a `#[cfg(test)]` attribute or a module named
- * for tests (`mod tests {`). Its header runs to the line that opens its body (`{`) or ends it
- * (`;`), and its body runs while lines are blank, indented deeper than the header, or the end
+ * for tests (`mod tests {`). Its header runs to the line that opens its body (a brace left
+ * open) or ends it (`;`, or a closed one-line body), and its body runs while lines are blank, indented deeper than the header, or the end
  * of a multi-line literal, through the closing brace at the header's indentation. A hunk whose header section names a test module
  * starts inside one, at column zero. Each hunk is read on its own.
  */
@@ -54,11 +66,17 @@ function rustTestLines(lines: string[], section: string): boolean[] {
     let header: string | null = null;
     /** A `#[cfg(test)]` attribute awaits its item. */
     let pending = false;
-    /** Reads one line of a test item's header: its body opens, its statement ends, or it goes on. */
-    const headerLine = (line: string, indent: string) => {
+    /**
+     * Reads one line of a test item's header. A brace the line leaves open opens the body. A
+     * line that ends its statement (`;`) or closes every brace it opens (`fn f() { g() }`) ends
+     * the item, and so does a first line that ends a field, a variant, or a match arm (`,`).
+     * Any other line continues the header.
+     */
+    const headerLine = (line: string, indent: string, first: boolean) => {
         header = null;
-        if (/\{\s*$/.test(line)) lead = indent;
-        else if (!/;\s*$/.test(line)) header = indent;
+        const open = (line.match(/\{/g)?.length ?? 0) - (line.match(/\}/g)?.length ?? 0);
+        if (open > 0) lead = indent;
+        else if (!/[;}]\s*$/.test(line) && !(first && /,\s*$/.test(line))) header = indent;
     };
     return lines.map((line) => {
         const blank = line.trim() === "";
@@ -71,20 +89,20 @@ function rustTestLines(lines: string[], section: string): boolean[] {
             if (closes) return true;
         }
         if (header !== null) {
-            headerLine(line, header);
+            headerLine(line, header, false);
             return true;
         }
         const attribute = TEST_ATTRIBUTE.exec(line);
         if (attribute) {
             const item = line.slice(attribute[0].length);
             if (item.trim() === "") pending = true;
-            else headerLine(item, indentOf(line));
+            else headerLine(item, indentOf(line), true);
             return true;
         }
         if (pending && (ATTRIBUTE.test(line) || blank)) return true;
         if (pending || TEST_MODULE.test(line)) {
             pending = false;
-            headerLine(line, indentOf(line));
+            headerLine(line, indentOf(line), true);
             return true;
         }
         return false;
@@ -102,7 +120,9 @@ export interface ProductCode {
 /**
  * The product code a file's hunks add: its added lines, with comments and literals read over
  * each hunk's new-side lines (`maskHunk`), and in a Rust file without the lines of test items
- * (`rustTestLines`).
+ * (`rustTestLines`). Added lines that the file holds apart (a context line, a test line, or
+ * another hunk lies between them) are joined across a `GAP` line, so a pattern that spans lines
+ * matches only lines that are adjacent in the file.
  */
 export function productCode(file: DiffFile): ProductCode {
     const rust = file.path.endsWith(".rs");
@@ -114,8 +134,15 @@ export function productCode(file: DiffFile): ProductCode {
             rust,
         );
         const test = rust ? rustTestLines(masked, hunk.section) : [];
+        let adjacent = false;
         for (const [i, line] of hunk.lines.entries()) {
-            if (!line.startsWith("+") || test[i]) continue;
+            const product = line.startsWith("+") && !test[i];
+            if (product && !adjacent && code.length > 0) {
+                code.push(GAP);
+                mask.push(GAP);
+            }
+            adjacent = product;
+            if (!product) continue;
             code.push(bare[i] ?? "");
             mask.push(masked[i] ?? "");
         }
@@ -134,6 +161,7 @@ export function matchesCode(product: ProductCode, sources: string[]): boolean {
     return sources.some((source) => {
         const re = pattern(source);
         for (const m of product.code.matchAll(new RegExp(re.source, `${re.flags}g`))) {
+            if (m[0].includes(GAP)) continue;
             if (/\S/.test(product.mask.slice(m.index, m.index + m[0].length))) return true;
         }
         return false;

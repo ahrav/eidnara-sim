@@ -165,11 +165,12 @@ P8-twin is the second case (Grading revision 11): its registered rule agreed
 with blind labels on 363 of 753 answers, failed 369 of the 715 answers the
 labels pass, and recorded no harm on the one answer that gave a superseded
 value of the other project as its own. P5 is the third case (Grading
-revision 12) and the first whose replacement is a rule the grader computes:
-the registered rule agreed with blind labels on 536 of 637 turns, failed 55
-turns whose product code did the task another way (a test or a comment held
-the rejected call), and failed 28 turns that handed the decision back
-without a question mark.
+revision 12) and the first whose replacement is a rule the grader computes.
+The rule it replaced agreed with blind labels on 536 of 637 turns: it failed
+55 turns whose product code did the task another way (a test or a comment
+held the rejected call) and 28 turns that handed the decision back without
+a question mark. The registered replacement agrees on 623 of the 637 (487 of
+500 design turns, 136 of 137 test turns).
 
 - State the property in one sentence and write the rubric from it before
   any answer is labelled. Give every class a label, the passing one and each
@@ -221,10 +222,10 @@ without a question mark.
   a statement about the other project until the rubric said the names are
   shared.
 - Prefer a rule the grader computes over a judge when its test agreement is
-  within two points of the judge's, and fix that choice before the test
+  at most two points below the judge's, and fix that choice before the test
   run: the rule regrades a finished run with no model call. Register it
-  with the same evidence as a judged rule (P5: 136 of 137 test turns
-  against the judge's 133).
+  with the same evidence as a judged rule (P5: 136 of 137 test turns, above
+  the judge's 133).
 - A token rule reads where the token stands. A pattern for a rejected call
   matched tests that exercised it and comments that said it was avoided, and
   an arm that remembers the rejection writes such lines more often (label M:

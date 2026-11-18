@@ -119,6 +119,8 @@ const list = (items: readonly string[]) =>
     items.length === 1 ? `${items[0]} alone` : items.join(", ");
 
 type Obj = Record<string, unknown>;
+/** A canonical decimal in [0, 1], read from its digits so a value just above 1 is refused. */
+const unitDecimal = (x: unknown) => isCanonicalDecimal(x) && (x === "1" || /^0(?:\.|$)/.test(x));
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 const count = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0;
 const same = (a: unknown, b: readonly string[]) =>
@@ -164,6 +166,7 @@ function supersedesErrors(value: Obj, key: string, was: string): string[] {
         supersedes.key === key &&
         supersedes.value === was &&
         Number.isSafeInteger(supersedes.tier_revisions_through) &&
+        (supersedes.tier_revisions_through as number) >= 1 &&
         !(
             Number.isSafeInteger(value.revision) &&
             (supersedes.tier_revisions_through as number) >= (value.revision as number)
@@ -215,7 +218,7 @@ function labelledSetErrors(
     if ((sizes[0] as number) + (sizes[1] as number) !== total) {
         errors.push(`${at}: the design and test splits partition the labelled ${unit}`);
     }
-    if (!count(v.hand_audited) || (v.hand_audited as number) > (total as number)) {
+    if (!count(v.hand_audited) || !count(total) || (v.hand_audited as number) > (total as number)) {
         errors.push(`${at}.hand_audited: expected a count within the labelled ${unit}`);
     }
     const old = v.superseded_rule;
@@ -340,9 +343,7 @@ export function validateGradingRevision(value: unknown): string[] {
         }
         if (
             !isObj(agreement) ||
-            ![agreement[spec.classes], agreement.pass_fail].every(
-                (x) => isCanonicalDecimal(x) && Number(x) <= 1,
-            )
+            ![agreement[spec.classes], agreement.pass_fail].every(unitDecimal)
         ) {
             errors.push("validation.label_pass_agreement: expected canonical decimals in [0, 1]");
         }
@@ -562,12 +563,7 @@ export function validateRuleRevision(value: unknown): string[] {
                 ),
             );
         }
-        if (
-            !isObj(agreement) ||
-            ![agreement.five_class, agreement.verdict].every(
-                (x) => isCanonicalDecimal(x) && Number(x) <= 1,
-            )
-        ) {
+        if (!isObj(agreement) || ![agreement.five_class, agreement.verdict].every(unitDecimal)) {
             errors.push(
                 "validation.reuse.label_pass_agreement: expected canonical decimals in [0, 1]",
             );

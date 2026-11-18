@@ -2283,7 +2283,7 @@ function isGradeRecord(value: unknown): value is GradeRecord {
     const attempts =
         Number.isInteger(g.later_attempts_logged) && (g.later_attempts_logged as number) >= 0;
     const against = g.probe_type === "P7" ? text(g.against) : g.against === undefined;
-    const graded = metrics && (g.verdict === "excluded" || metricsAgree(g));
+    const graded = metrics && (g.verdict === "excluded" ? deferredAgree(g) : metricsAgree(g));
     const optionals = optional(str)(g.reason) && optional(digest)(g.grader);
     const pair =
         g.probe_type === "P1-control"
@@ -2431,6 +2431,18 @@ function metricsAgree(g: Record<string, unknown>): boolean {
     if (!holds(METRIC_FIELDS[type] ?? {}) && !(earlier && holds(earlier))) return false;
     if (primary.length > 0 && m[`${type}.pass`] !== pass) return false;
     return (METRIC_RULES[type] ?? (() => true))(m, pass);
+}
+
+/**
+ * A deferred P2, P5, or P11 record carries the replaced verdict as its one metric, or no metric
+ * when it was made before `<type>.v1`; any other excluded record's metrics are free.
+ */
+function deferredAgree(g: Record<string, unknown>): boolean {
+    const type = g.probe_type as string;
+    if (g.reason !== DEFERRED || !DEFERRABLE.includes(type)) return true;
+    const m = g.metrics as Metrics;
+    const keys = Object.keys(m);
+    return keys.length === 0 || (keys.length === 1 && oneOf(EARLIER_VERDICTS)(m[`${type}.v1`]));
 }
 
 /** The field a regrade changed among those fixed for an item, arm, and opponent, or null. */

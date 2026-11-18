@@ -18,6 +18,8 @@ const fileOf = (path: string, hunks: [string, string[]][]) => {
     return file;
 };
 const added = (path: string, lines: string[]) => fileOf(path, [["", lines.map((l) => `+${l}`)]]);
+/** The line `productCode` puts between added lines that the file holds apart. */
+const GAP = "\u0000";
 const matches = (path: string, lines: string[], patterns: string[]) =>
     matchesCode(productCode(added(path, lines)), patterns);
 
@@ -50,6 +52,10 @@ describe("product paths", () => {
             "benchmarks/route.ts",
             "benchmark/route.ts",
             "fixtures/big.go",
+            "src/generated/api.ts",
+            "zz_generated.deepcopy.go",
+            "api/types_generated.go",
+            "proto/store.pb.go",
             "examples/pub.rs",
             "_examples/rest/main.go",
             "example/a.ts",
@@ -135,7 +141,7 @@ describe("product code", () => {
             "fn after() { time::interval(Duration::from_secs(60)); }",
         ]);
         expect(productCode(inModule).code).toBe(
-            "fn sweep() {}\nfn after() { time::interval(Duration::from_secs(60)); }",
+            `fn sweep() {}\n${GAP}\nfn after() { time::interval(Duration::from_secs(60)); }`,
         );
         const oneLine = added("src/db.rs", [
             "#[cfg(test)] mod tests {",
@@ -184,12 +190,110 @@ describe("product code", () => {
             "{",
             "    fn nap(&self) { thread::sleep(D); }",
             "}",
+            "#[cfg(test)]",
+            "fn open() { setup();",
+            "    thread::sleep(D);",
+            "}",
             "#[cfg(not(test))]",
             "fn live() { thread::sleep(D); }",
         ]);
         expect(productCode(items).code).toBe(
-            "fn mid() {}\nfn mid2() {}\n#[cfg(not(test))]\nfn live() { thread::sleep(D); }",
+            `fn mid() {}\n${GAP}\nfn mid2() {}\n${GAP}\n#[cfg(not(test))]\nfn live() { thread::sleep(D); }`,
         );
+    });
+
+    test("a one-line item under cfg(test) ends on its line: a function, a field, a match arm", () => {
+        const kept = (lines: string[]) =>
+            productCode(added("src/db.rs", lines))
+                .code.split("\n")
+                .filter((l) => l !== GAP);
+        expect(
+            kept(["#[cfg(test)]", "fn reset() {}", "", "static DB: Mutex<Db> = new();"]),
+        ).toEqual(["", "static DB: Mutex<Db> = new();"]);
+        expect(
+            kept([
+                "pub struct Db {",
+                "    #[cfg(test)]",
+                "    probe: Probe,",
+                "    cache: Mutex<HashMap<K, V>>,",
+                "}",
+            ]),
+        ).toEqual(["pub struct Db {", "    cache: Mutex<HashMap<K, V>>,", "}"]);
+        expect(
+            kept([
+                "match cmd {",
+                "    #[cfg(test)]",
+                "    Cmd::Probe => probe(),",
+                "    Cmd::Get => {",
+                "        spawn_blocking(f);",
+                "    }",
+                "}",
+            ]),
+        ).toEqual(["match cmd {", "    Cmd::Get => {", "        spawn_blocking(f);", "    }", "}"]);
+        const context = fileOf("src/db.rs", [
+            [
+                "",
+                [
+                    " #[cfg(test)]",
+                    " pub fn noop(&self) {}",
+                    "+pub fn sweep() { thread::sleep(D); }",
+                ],
+            ],
+        ]);
+        expect(productCode(context).code).toBe("pub fn sweep() { thread::sleep(D); }");
+    });
+
+    test("a function under a test attribute stays out in a file that holds no test module", () => {
+        const standalone = added("src/lib.rs", [
+            "#[test]",
+            "fn sleeps() {",
+            "    std::thread::sleep(D);",
+            "}",
+            '#[tokio::test(flavor = "multi_thread")]',
+            "async fn blocks() {",
+            "    tokio::task::spawn_blocking(f).await.unwrap();",
+            "}",
+            "#[bench]",
+            "fn hot(b: &mut Bencher) { b.iter(|| std::thread::sleep(D)); }",
+            "#[inline]",
+            "fn live() { std::thread::sleep(D); }",
+        ]);
+        expect(productCode(standalone).code).toBe(
+            "#[inline]\nfn live() { std::thread::sleep(D); }",
+        );
+    });
+
+    test("a pattern that spans lines matches lines that are adjacent in the file alone", () => {
+        const pattern = ["const\\s+\\w+\\s*=\\s*new\\s+Map\\("];
+        const adjacent = fileOf("src/a.ts", [["", ["+const cache =", "+\tnew Map()"]]]);
+        expect(matchesCode(productCode(adjacent), pattern)).toBe(true);
+        const apart = fileOf("src/a.ts", [["", ["+const cache =", " \tbuild()", "+new Map()"]]]);
+        expect(matchesCode(productCode(apart), pattern)).toBe(false);
+        const hunks = fileOf("src/a.ts", [
+            ["", ["+const cache ="]],
+            ["", ["+new Map()"]],
+        ]);
+        expect(matchesCode(productCode(hunks), pattern)).toBe(false);
+    });
+
+    test("a block comment that closes inside the hunk and opened above it covers the lines down to its closer", () => {
+        const tail = fileOf("src/a.ts", [
+            [
+                "",
+                [
+                    " * It replaced the old sweeper.",
+                    "+ * setInterval(sweep, 1000) kept tests alive.",
+                    " */",
+                    "+start()",
+                ],
+            ],
+        ]);
+        expect(
+            productCode(tail)
+                .code.split("\n")
+                .map((l) => l.trim()),
+        ).toEqual(["", GAP, "start()"]);
+        expect(matchesCode(productCode(tail), ["setInterval\\s*\\("])).toBe(false);
     });
 
     test("each hunk is read from its own header: inside a test module, or past one that closed above it", () => {

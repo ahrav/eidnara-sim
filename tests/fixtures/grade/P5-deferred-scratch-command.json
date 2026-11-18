@@ -63,7 +63,7 @@
               "output_tokens": 90,
               "cache_read_tokens": 0,
               "cache_write_tokens": 0,
-              "response_text": "I tried a module-level cache in a scratch file: compiling 500 routes got 4% faster. The repository is unchanged. Tell me whether you want it applied, and I'll write it with a test."
+              "response_text": "I tried a module-level cache in a scratch file: compiling 500 routes got 4% faster. The repository is unchanged. Do you want it applied?"
             }
           ]
         }
