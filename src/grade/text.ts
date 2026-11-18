@@ -452,11 +452,20 @@ const META_GRAMMAR: Record<string, RegExp> = {
     "GIT binary patch": /^$/,
 };
 
-/** One file the diff leaves in place: its path, its added lines, and whether the diff creates it. */
+/** One hunk of a file: the text after its header's second `@@`, and its new-side lines with their markers. */
+export interface DiffHunk {
+    /** The enclosing line git prints after the hunk range, such as `mod tests {`; empty when it prints none. */
+    section: string;
+    /** The hunk's context (` `) and added (`+`) lines in file order, each with its marker. */
+    lines: string[];
+}
+
+/** One file the diff leaves in place: its path, its added lines, whether the diff creates it, and its hunks. */
 export interface DiffFile {
     path: string;
     added: string[];
     created: boolean;
+    hunks: DiffHunk[];
 }
 
 interface Scan {
@@ -479,6 +488,7 @@ function scanDiff(patch: string): Scan {
     const surviving: string[] = [];
     const files: DiffFile[] = [];
     let fileAdded: string[] = [];
+    let fileHunks: DiffHunk[] = [];
     let created = false;
     let ok = true;
     let opened = false;
@@ -547,9 +557,10 @@ function scanDiff(patch: string): Scan {
         const survivor = operative ?? label;
         if (survivor !== null && !deleted) {
             surviving.push(survivor);
-            files.push({ path: survivor, added: fileAdded, created });
+            files.push({ path: survivor, added: fileAdded, created, hunks: fileHunks });
         }
         fileAdded = [];
+        fileHunks = [];
         created = false;
         label = null;
         labelText = null;
@@ -595,6 +606,7 @@ function scanDiff(patch: string): Scan {
                 added.push(line.slice(1));
                 fileAdded.push(line.slice(1));
             }
+            if (kind === " " || kind === "+") fileHunks.at(-1)?.lines.push(line);
             if (!(kind === " " || kind === "+" || kind === "-") || oldLeft < 0 || newLeft < 0) {
                 fail();
                 break;
@@ -652,6 +664,7 @@ function scanDiff(patch: string): Scan {
             oldEnd = oldFrom + oldLeft;
             newEnd = newFrom + newLeft;
             hunks++;
+            fileHunks.push({ section: line.slice(m[0].length).trim(), lines: [] });
         } else if (FILE_META.test(line)) {
             if (pendingNew || headersDone || !inFile) fail();
             const kind = ((FILE_META.exec(line) as RegExpExecArray)[1] as string).trim();

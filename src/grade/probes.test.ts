@@ -381,6 +381,50 @@ describe("grading harness", () => {
         expect(log.all().map((x) => x.version)).toEqual([1, 2]);
     });
 
+    test("a P2, P5, or P11 grade made before revision 12 reads back beside one that carries <type>.v1", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const log = new GradeLog(path);
+        for (const name of ["P2-pass", "P5-pass", "P11-pass", "P5-fail"]) {
+            const g = grade(name);
+            const type = g.probe_type;
+            const { [`${type}.v1`]: v1, ...before } = g.metrics;
+            expect(v1).toBe(g.verdict);
+            log.append({ ...g, metrics: before });
+            log.append({ ...g, version: 2 });
+        }
+        expect(log.all().map((g) => [g.probe_type, g.version])).toHaveLength(8);
+        // A graded record's `<type>.v1` is one of the three verdicts; a deferred record carries it too.
+        const p5 = grade("P5-pass");
+        expect(() =>
+            log.append({ ...p5, version: 3, metrics: { ...p5.metrics, "P5.v1": "maybe" } }),
+        ).toThrow(/not a grade record/);
+        const deferred = grade("P5-deferred-scratch-command");
+        log.append(deferred);
+        expect(log.all().at(-1)?.metrics).toEqual({ "P5.v1": "fail" });
+        const malformed: GradeRecord["metrics"][] = [
+            { "P5.v1": "maybe" },
+            { "P5.v1": "fail", "P5.pass": false },
+        ];
+        for (const metrics of malformed) {
+            expect(() => log.append({ ...deferred, version: 2, metrics })).toThrow(
+                /not a grade record/,
+            );
+        }
+        // A graded P2 or P11 record's `<type>.v1` is its verdict; P5's can differ.
+        for (const name of ["P2-pass", "P11-fail"]) {
+            const g = grade(name);
+            const flipped = g.verdict === "pass" ? "fail" : "pass";
+            const metrics = { ...g.metrics, [`${g.probe_type}.v1`]: flipped };
+            expect(() => log.append({ ...g, version: 3, metrics })).toThrow(/not a grade record/);
+        }
+        log.append({ ...p5, version: 3, metrics: { ...p5.metrics, "P5.v1": "fail" } });
+        expect(() =>
+            log.append({ ...p5, version: 4, metrics: { ...p5.metrics, "P5.v1": "deferred" } }),
+        ).toThrow(/not a grade record/);
+        // A deferred record from before the revision holds no metric.
+        log.append({ ...deferred, version: 2, metrics: {} });
+    });
+
     test("P9.v1 applies the guess checks after a leading UNKNOWN line", () => {
         const g = gradeP9("P9-pass", "UNKNOWN\nProbably Alice owns it.", "B");
         expect(g.metrics["P9.v1"]).toBe(false);
@@ -554,7 +598,7 @@ describe("grading harness", () => {
     });
 
     test("a snapshot with a malformed artefact payload or no id is refused", () => {
-        const p5 = fixture("P5-fail-in-commands");
+        const p5 = fixture("P5-deferred-scratch-command");
         const s5 = structuredClone(p5.snapshots[0]) as Snapshot;
         const log = s5.artefacts.find((a) => a.class === "command-log");
         if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
@@ -1083,6 +1127,9 @@ describe("grading harness", () => {
             response_text: "I left the code as it is.",
         };
         snap.artefacts.push({ id: `${snap.id}:calls`, class: "proxy-call", calls: [call] });
+        const told = gradeItem(f.probe, [snap], rules);
+        expect([told?.verdict, told?.reason]).toEqual(["excluded", "deferred"]);
+        call.response_text = "";
         const noop = gradeItem(f.probe, [snap], rules);
         expect([noop?.verdict, noop?.reason]).toEqual(["fail", "no code change"]);
     });
@@ -1682,11 +1729,14 @@ describe("grading harness", () => {
         const snap = structuredClone(f.snapshots[0]) as Snapshot;
         const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
         if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        // The registered P5 rule reads the turn's applying commands and is stored as `P5.v1`.
+        const v1 = () => gradeItem(f.probe, [snap], rules)?.metrics["P5.v1"];
         log.commands.push({ command: "false && echo lazy_static", exit: 1, scenario_ms: 10 });
         log.commands.push({ command: "exit 0; echo lazy_static", exit: 0, scenario_ms: 11 });
-        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("pass");
+        expect(v1()).toBe("pass");
         log.commands.push({ command: "echo lazy_static", exit: 0, scenario_ms: 12 });
-        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("fail");
+        expect(v1()).toBe("fail");
+        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("pass");
     });
 
     test("package-manager global flags precede the test subcommand", () => {
@@ -2589,7 +2639,9 @@ describe("self-ignoring directories", () => {
             (dirs === undefined
                 ? diff
                 : { ...diff, self_ignored: dirs }) as Snapshot["artefacts"][number],
-            ...fixture("P10-pass").snapshots[0]!.artefacts.filter((a) => a.class === "proxy-call"),
+            ...structuredClone(
+                fixture("P10-pass").snapshots[0]!.artefacts.filter((a) => a.class === "proxy-call"),
+            ),
         ];
         for (const a of snap.artefacts) {
             if (a.class !== "proxy-call") continue;
@@ -2610,7 +2662,12 @@ describe("self-ignoring directories", () => {
             true,
         ]);
         expect(p2(withDiff(cache + code, [".venv"]))).toEqual(["pass", null, false]);
-        expect(p2(withDiff(cache, [".venv"]))).toEqual(["fail", "no code change", false]);
+        const idle = withDiff(cache, [".venv"]);
+        expect(p2(idle)).toEqual(["excluded", "deferred", undefined]);
+        for (const a of idle.artefacts) {
+            if (a.class === "proxy-call") for (const c of a.calls) c.response_text = "";
+        }
+        expect(p2(idle)).toEqual(["fail", "no code change", false]);
         expect(p2(withDiff(cache))).toEqual(["fail", "applied the rule outside its scope", true]);
     });
 

@@ -1,0 +1,81 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P5-f",
+    "type": "P5",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "Do the task.",
+    "check": {
+      "must_not": [
+        "\\bunsafe\\s*\\{"
+      ]
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P5-f",
+      "item": "P5-f",
+      "arm": "eidnara",
+      "session": "s-1",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "d1",
+          "class": "diff",
+          "role": "turn",
+          "patch": "diff --git a/tests/bench_bulk.rs b/tests/bench_bulk.rs\nnew file mode 100644\n--- /dev/null\n+++ b/tests/bench_bulk.rs\n@@ -0,0 +1,5 @@\n+#[test]\n+fn bench_long_bulk() {\n+    let frame = long_bulk(1 << 20);\n+    assert!(parse(&frame).is_ok());\n+}\n"
+        },
+        {
+          "id": "c1",
+          "class": "command-log",
+          "role": "turn",
+          "commands": [
+            {
+              "command": "cargo test --test bench_bulk",
+              "exit": 0,
+              "scenario_ms": 0
+            }
+          ]
+        },
+        {
+          "id": "p1",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "seq": 1,
+              "arm": "eidnara",
+              "session": "s-1",
+              "component": "agent",
+              "turn": "e-1",
+              "scenario_ms": 10,
+              "status": 200,
+              "error": null,
+              "input_tokens": 1200,
+              "output_tokens": 90,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "response_text": ""
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "fail",
+    "reason": "no code change",
+    "metrics": {
+      "P5.pass": false,
+      "P5.v1": "pass"
+    },
+    "inputs": [
+      "c1",
+      "d1",
+      "p1"
+    ]
+  }
+}

@@ -1,6 +1,13 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { GRADING_REVISIONS, gradingRevisionHash, loadGradingRevision } from "../src/prereg/grading";
+import {
+    gradingRevisionHash,
+    JUDGED_REVISIONS,
+    loadGradingRevision,
+    loadRuleRevision,
+    RULE_REVISIONS,
+    ruleRevisionHash,
+} from "../src/prereg/grading";
 import { QUALIFICATIONS, qualificationHash, referenceErrors } from "../src/prereg/qualification";
 import { type Preregistration, TIERS } from "../src/prereg/schema";
 import { preregistrationHash, validatePreregistration } from "../src/prereg/validate";
@@ -45,15 +52,27 @@ for (const id of QUALIFICATIONS) {
         );
     }
 }
-for (const id of GRADING_REVISIONS) {
+/** Prints the digest `accept` returns for a revision, or the reason it is refused. */
+const report = (id: string, accept: () => string) => {
     try {
-        const revision = loadGradingRevision(id, dir);
-        console.log(`${id}: accepted ${gradingRevisionHash(revision)} over ${revision.probe}`);
+        console.log(`${id}: accepted ${accept()}`);
     } catch (cause) {
         failed = true;
         console.error(
             `${id}: refused\n  ${cause instanceof Error ? cause.message : String(cause)}`,
         );
     }
+};
+for (const id of JUDGED_REVISIONS) {
+    report(id, () => {
+        const revision = loadGradingRevision(id, dir);
+        return `${gradingRevisionHash(revision)} over ${revision.probe}`;
+    });
+}
+for (const id of RULE_REVISIONS) {
+    report(id, () => {
+        const revision = loadRuleRevision(id, dir);
+        return `${ruleRevisionHash(revision)} over ${revision.probes.join(", ")}`;
+    });
 }
 process.exit(failed ? 1 : 0);

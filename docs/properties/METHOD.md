@@ -164,7 +164,13 @@ labels that differ by one answer the other way (23 against 24 of 24).
 P8-twin is the second case (Grading revision 11): its registered rule agreed
 with blind labels on 363 of 753 answers, failed 369 of the 715 answers the
 labels pass, and recorded no harm on the one answer that gave a superseded
-value of the other project as its own.
+value of the other project as its own. P5 is the third case (Grading
+revision 12) and the first whose replacement is a rule the grader computes.
+The rule it replaced agreed with blind labels on 536 of 637 turns: it failed
+55 turns whose product code did the task another way (a test or a comment
+held the rejected call) and 28 turns that handed the decision back without
+a question mark. The registered replacement agrees on 623 of the 637 (487 of
+500 design turns, 136 of 137 test turns).
 
 - State the property in one sentence and write the rubric from it before
   any answer is labelled. Give every class a label, the passing one and each
@@ -215,6 +221,25 @@ value of the other project as its own.
   a judge given both project names read `the server exposes no metrics` as
   a statement about the other project until the rubric said the names are
   shared.
+- Prefer a rule the grader computes over a judge when its test agreement is
+  at most two points below the judge's, and fix that choice before the test
+  run: the rule regrades a finished run with no model call. Register it
+  with the same evidence as a judged rule (P5: 136 of 137 test turns, above
+  the judge's 133). A judge rubric that carries rulings from the label
+  audit has seen the shapes of both splits, so say so beside its test
+  agreement: the comparison then favours the judge.
+- A token rule reads where the token stands. A pattern for a rejected call
+  matched tests that exercised it and comments that said it was avoided, and
+  an arm that remembers the rejection writes such lines more often (label M:
+  8% of host turns, 20% of Eidnara-arm turns), so the error fell unevenly on
+  arms. Read the pattern in the code the product ships, with comments and
+  string contents set aside.
+- When a class has one observable mark in the labelled set, register the
+  mark and state what the set cannot show. Every labelled no-work turn that
+  hands nothing back has an empty final reply (20 of 20), and every one
+  whose reply holds text hands the next step to the user (424 of 424), so
+  the deferral rule reads whether the reply holds text; a reply that reports
+  and stops lies outside the labelled set.
 - Tuning a system to raise its score under a rule that has not passed this
   check is tuning to the grader.
 

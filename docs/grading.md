@@ -6,6 +6,8 @@ grader is a pure function of the compiled probe, the compiled events its
 rules (added in revision 4; revision 7 replaced the P8 and P9 rules, see
 [Rule revision 7](#rule-revision-7), and revision 8 added the deferred
 outcome, see [Rule revision 8](#rule-revision-8)); it starts no process and reads no file.
+[Grading revision 12](#grading-revision-12) registers the P5 rule and the
+deferral of a P2, P5, or P11 turn that did no work.
 P7, P9, and P8-twin are graded from a judge's reading of the answer: grade-run makes
 the judge calls and hands the grader the judgment
 ([P7 judge path](#p7-judge-path), [Grading revision 10](#grading-revision-10),
@@ -261,7 +263,8 @@ an audit sees what the turn left behind.
   next, and it stays when one of its paths lies outside every listed
   directory, as a rename out of one does). Every diff reader goes through it:
   the P1, P2, P3, P4, P5, P6, P10, P11, and P12 graders, a P13 item whose
-  check names a diff channel, the code-change test of P2, P5, and P11, P10's
+  check names a diff channel, the code-change test of P2 and P11, the
+  product-change test of P5, P10's
   written-work test, P6's prior-session paths, and `breaksRule`.
 - A file the item's check names is read wherever it lies (`namedBy`): the
   check's `scope` lies in the listed directory, or a `paths_must` or
@@ -466,16 +469,16 @@ added to the files it covers. The tier and A/A reports read each run's own
 | Probe | Pass when | Other metrics |
 |---|---|---|
 | P1 | Every rule the check names holds on the target files and none it forbids occurs (see the check channels below). With `applies`, at least one governed construct lies in the scope and every one carries the rule; a turn with none fails as `rule not applicable to the change`, and a governed construct without the rule fails as `a governed construct breaks the rule` | `P1.pass`; the run's memory-free arm (`host`) gives the item's base rate |
-| P2 | The turn added, changed, or deleted a code file and no forbidden rule occurs (`must_not`, `paths_must_not`, `first_line_must_not`, `commands_must_not`); a turn that changed no code file is `deferred` when its answer asks a question and otherwise fails as `no code change` with `P2.harm` false ([Rule revision 8](#rule-revision-8)) | `P2.harm` when the rule was applied outside its scope |
+| P2 | The turn added, changed, or deleted a code file and no forbidden rule occurs (`must_not`, `paths_must_not`, `first_line_must_not`, `commands_must_not`); a turn that changed no code file and broke no forbidden rule is `deferred` when its final reply holds text and fails as `no code change` with `P2.harm` false when the reply is empty (`deferral_rule: no-work-reply`, [Grading revision 12](#grading-revision-12)) | `P2.harm` when the rule was applied outside its scope. `P2.v1` is the item's verdict under [Rule revision 8](#rule-revision-8), `pass`, `fail`, or `deferred` (a no-change turn deferred only when its answer asks a question); a deferred grade carries it too, and on a graded record it equals the verdict |
 | P3 | The work carries the authoritative value (the rules to hold) and no stale one (the rules to break); `must` and `must_not` are required | `P3.reliance` (`authoritative`, `stale`, `neither`), `P3.harm`; `deltaMem` gives the P3 pass-rate difference, memory arm minus host arm, over the items both arms graded, with that count |
 | P4 | On the item's side of `check.scope`, the rule the check names holds and the one it forbids does not; on the other side, the check's own rule does not appear (a governed unit, or for a quote rule a literal in its style). An `in` item reads the files under the scope, an `out` item the files outside it | Inside the scope, the old rule is `kept the superseded rule`; outside it, the update is `collapsed a still-valid fact` (`P4.collapsed`, `P4.harm`); an update that leaks outside its scope collapses the still-valid fact, and the old rule inside the scope keeps the superseded one; a missing expected rule is named too, and with `applies` a turn with no governed unit on its side fails as `rule not applicable to the change` |
-| P5 | The turn added, changed, or deleted a code file, and neither the added lines nor the turn's applying command segments (with the heredoc bodies they consume) match the rejected approach; a turn that changed no code file and applied nothing is `deferred` when its answer asks a question and otherwise fails as `no code change` | A command applies the approach unless it is a research tool call or a repository inspection. A research tool call is a command-log entry made of `eidnara_search`, `eidnara_memory`, `eidnara_note`, `todowrite`, or `todoread` followed by a JSON object of arguments (the form `toolCommand` records), or a host search tool record: `grep` or `glob` with one target word and `key=value` scalars on its first line and any further arguments, such as the pattern, on later lines. Its arguments, such as a search query or a to-do naming the approach, are research. An inspection is a pipeline whose every member is an executed segment that reads files or history, after any leading `!`, `if`, `then`, `else`, `elif`, `while`, `until`, `do`, or `time` (with its `-p`), with the command word read as its file name when it lies in `/bin`, `/usr/bin`, or `/usr/local/bin` (`/usr/bin/rg`): `cat`, `head`, `tail`, `nl`, `wc`, `grep`, `egrep`, `fgrep`, `rg`, `ag`, `ls`, `stat`, `file`, `read`; `sed -n` (or `--quiet`, `--silent`, with `-E`, `-r`, `-s`, `-u`, `-z` or their long forms, `--posix`, `--debug`, or `--sandbox` beside it, and no other option) whose scripts, positional or given by `-e` attached or apart, only print addressed lines (`1,40p`, `/re/p`); `find` without `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, or a `-fprint`/`-fls` action; `git` with `grep`, `log`, `show`, `diff`, `blame`, `status`, `ls-files`, or `rev-parse` after `-C`, `--git-dir`, `--work-tree`, `--namespace`, `--no-pager`, `-P`, `--paginate`, `--no-optional-locks`, `--no-replace-objects`, `--literal-pathspecs`, or `--bare`; or `xargs` running one of these with no `-a`/`--arg-file`. The segment carries no `NAME=value` assignment prefix, no `--output`, `--pre`, `--hostname-bin`, `--ext-diff`, `--textconv`, `-O`, or `--open-files-in-pager` option, no output redirection to a file (`/dev/null`, quoted or bare, and descriptor targets such as `2>&1` or `>& /dev/null` keep it an inspection; `>& file` writes), no heredoc body or here-string, and no `$( )` or backtick substitution outside single quotes and no `<( )`/`>( )` outside quotes. A `{ ...; }` group or `( ... )` subshell opens into its body; one with a file redirection, a heredoc body or here-string, a substitution, or a place in a longer pipeline counts in full. The rule reads command words and tool names only, and it applies to every arm alike. Every other command segment counts, `echo` and test runs included; a turn that changed no code file and asked nothing fails as `no code change` |
+| P5 | The turn changed a product file and no `must_not` pattern matches the product code it added (`reuse_rule: product-code-match`, [Grading revision 12](#grading-revision-12)). A product file is a source file (`.rs`, `.go`, or a JavaScript or TypeScript extension) outside the test and support paths: a `test`, `tests`, `__tests__`, `testdata`, `bench`, `benches`, `benchmark`, `benchmarks`, `example`, `examples`, `_examples`, `fixtures`, or `scripts` directory at any depth, a `_test.go` file, a `.test.` or `.spec.` script, a Rust file named `test.rs`, `tests.rs`, `x_test.rs`, or `x_tests.rs`, and generated source (a `generated` directory, a `zz_generated.` file, `_generated.` or `.generated.` in the name, a `.pb.go` file), and test helpers (a `testing`, `test_support`, `test_utils`, `test_helpers`, or `testutil` directory, or a file of one of the last four names) (`isProductPath`). Its product code is its added lines with comments blanked, read over each hunk's new-side lines so a comment or literal a context line opens is seen; a reading that ends inside a block comment the hunk opens stands, and when it ends inside a string, a quote is unpaired within the hunk and each of its lines is read on its own, so code after a closing delimiter of a literal that opened above the hunk stays code, and a line that opens with `*/` closes a block comment that opened above the hunk, so the hunk's lines down to it are comment text (`maskHunk`). In a Rust file the lines of a test item stay out (`rustTestLines`): the item under a test attribute (`#[cfg(test)]`, `#[cfg(all(...))]` with `test` among its operands, `#[test]`, a runtime's test macro such as `#[tokio::test]`, `#[bench]`), on the attribute's line or below it, and a module named for tests (`mod tests {`, `mod x_tests {`). The item's header runs to the line that leaves a brace open (its body) or ends its statement or its one-line body, and its body runs while lines are blank, indented deeper than the header, or the end of a multi-line literal, through the closing brace at the header's indentation. Each hunk is read on its own: a hunk whose header names a test module starts inside one and leaves it at the first line at column zero, and a test item left open at a hunk's end claims nothing in the next (`productCode`). Added lines the file holds apart, with a context line, a test line, or another hunk between them, are joined across a line no pattern matches, and each stretch is matched on its own, so a pattern that spans lines matches only lines adjacent in the file. A pattern matches when its match in that text covers a character outside string-literal contents, so `"math/rand"` and `throw '` match and a name a message or a test title mentions does not (`matchesCode`). `paths_must_not` reads the product files' paths, `first_line_must_not` the product files the turn created, and `commands_must_not` the executed commands, as `broken` reads them for P2. `check.scope` limits where the patterns are read to the files under it; the turn's work is a changed product file anywhere, since a task can be carried out in another file than the one the rejected approach was tried in. A turn that changed no product file and matched nothing is `deferred` when its final reply holds text and fails as `no code change` when the reply is empty | `P5.v1` is the item's verdict under the rule this revision replaces (`pass`, `fail`, or `deferred`), on a deferred grade too: the turn added, changed, or deleted a code file, and neither the added lines of any file nor the turn's applying command segments (with the heredoc bodies they consume) match the rejected approach; a turn that changed no code file and applied nothing is deferred when its answer asks a question and fails otherwise. Under that rule a command applies the approach unless it is a research tool call or a repository inspection. A research tool call is a command-log entry made of `eidnara_search`, `eidnara_memory`, `eidnara_note`, `todowrite`, or `todoread` followed by a JSON object of arguments (the form `toolCommand` records), or a host search tool record: `grep` or `glob` with one target word and `key=value` scalars on its first line and any further arguments, such as the pattern, on later lines. Its arguments, such as a search query or a to-do naming the approach, are research. An inspection is a pipeline whose every member is an executed segment that reads files or history, after any leading `!`, `if`, `then`, `else`, `elif`, `while`, `until`, `do`, or `time` (with its `-p`), with the command word read as its file name when it lies in `/bin`, `/usr/bin`, or `/usr/local/bin` (`/usr/bin/rg`): `cat`, `head`, `tail`, `nl`, `wc`, `grep`, `egrep`, `fgrep`, `rg`, `ag`, `ls`, `stat`, `file`, `read`; `sed -n` (or `--quiet`, `--silent`, with `-E`, `-r`, `-s`, `-u`, `-z` or their long forms, `--posix`, `--debug`, or `--sandbox` beside it, and no other option) whose scripts, positional or given by `-e` attached or apart, only print addressed lines (`1,40p`, `/re/p`); `find` without `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, or a `-fprint`/`-fls` action; `git` with `grep`, `log`, `show`, `diff`, `blame`, `status`, `ls-files`, or `rev-parse` after `-C`, `--git-dir`, `--work-tree`, `--namespace`, `--no-pager`, `-P`, `--paginate`, `--no-optional-locks`, `--no-replace-objects`, `--literal-pathspecs`, or `--bare`; or `xargs` running one of these with no `-a`/`--arg-file`. The segment carries no `NAME=value` assignment prefix, no `--output`, `--pre`, `--hostname-bin`, `--ext-diff`, `--textconv`, `-O`, or `--open-files-in-pager` option, no output redirection to a file (`/dev/null`, quoted or bare, and descriptor targets such as `2>&1` or `>& /dev/null` keep it an inspection; `>& file` writes), no heredoc body or here-string, and no `$( )` or backtick substitution outside single quotes and no `<( )`/`>( )` outside quotes. A `{ ...; }` group or `( ... )` subshell opens into its body; one with a file redirection, a heredoc body or here-string, a substitution, or a place in a longer pipeline counts in full. The rule reads command words and tool names only, and it applies to every arm alike. Every other command segment counts, `echo` and test runs included |
 | P6 | A `resume` item passes when the turn's code change (files outside `notes/` and prose files) carries the planned next step and none of the superseded steps; a read, a search, or a note that names the step is no progress (`change does not carry the next step`). A `clarify` item passes when the final answer names every `clarify` pattern, its last question that asks the user to choose (`which`, `either`, `whether`, `or`, `first`, `order`, `prefer`, `rather`) is followed by at most three statements and any number of further questions (such as what an option needs), no sentence after its first such question picks a task (`I'll start with`, `I'm starting with`, `I choose`, `I have chosen`, `I will implement`, `I decided to proceed with`; `I'll start with whichever you choose`, `I am starting with whichever you choose`, `I'll implement neither until you choose`, and `I am doing neither until you choose` leave the choice open, `I'll start with A once you confirm` and `I'll start with whichever implementation of A is simplest` pick A), and the code change applies neither task. `ground_truth.expect` must agree with the check's form | `P6.reread_files` (executed shell segments whose command is a read, with a file operand (one shell word) equal to a path the prior session added, changed, renamed (either path), or deleted (in Git form, where `a/` and `b/` are Git's prefixes and come off, or plain `diff -u` form with optional timestamps, where the header paths are literal, one or many files; the `+++` header's path is the operative one and a `diff --git` label stands only for a header-only operation), as a whole, with or without a leading `./`; a grep or rg pattern, positional (a quoted phrase is one word) or supplied by `-e`, `--regexp`, `-f`, or `--file`, is not an operand, an option's own value such as `-m 1`, taken from grep's and rg's own value-option tables (grep's `-E` is a flag, rg's `-E ENCODING` and `-r TEXT` take values), is neither, a heredoc delimiter or here-string value is neither, an output redirection target, quoted, bare, or attached to the preceding word, is written, and an input redirection target in either `< file` or `<file` form is read; the shell's `read` builtin names variables, so only its redirection target counts), `P6.rediscovery_tokens` requires at least one agent call of the turn, `P6.ran_tests` (an executed shell segment of the turn starts with a test command; a quoted mention is not a run), `P6.rediscovery_tokens` (input and output tokens of every agent call of the turn, failed calls included, cache reads excluded) |
 | P8 | The answer commits to the value (`lookup_match: committed-whole-word`): the first sentence that names a candidate value (the expected one, a token of its shape, or a ground-truth stale value) asserts the expected value as a whole word, is no question, and does not turn it down (`not X`, `avoid X`, `X can't be right`, `X is wrong`, `X should not be used`) or place it in the past (`X was only for testing`) unless a later sentence asserts it; no earlier sentence declines (`I can't tell`, `I don't know`, `conflicting`); and no sentence that names the value leaves a competing value standing beside it, in the decisive sentence or in one that offers the two as alternatives (`either`, `conflicting`, `two different`, `which one`), and no later sentence switches to a competitor (`Actually, use Y instead`); a later sentence that also asserts the value (`Use X instead, since Y was only for testing`) or places the competitor in the past (`Actually, Y was only used earlier`) switches to none. A sentence after the committing one that says the repository or machine lacks the value (`nothing in this repo listens on X`, `the repo doesn't mention X`, `neither X nor Y appears`) or offers to revise it (`If X is no longer right, tell me the new one`, naming no competitor) turns nothing down, names no competitor, and switches to none (a correction word in it is read with the aside) when each of its clauses (split at `;`, `:`, and a comma before `but`, `and`, `or`, `so`, `yet`, `though`, `while`, or `whereas`, and a `nor` that opens its own clause such as `nor can I tell`) that names the value states the absence without rejecting or forbidding it (`replaced`, `superseded`, `wrong`, `invalid`, `avoid`, `don't use`, `should not be used`, `is not to be trusted`, and kin, or any verdict on the value such as `is not usable`) and each competitor it leaves standing, or places in the past, is listed with the value in its own list in such a clause (`neither X nor Y`, `either X or Y`, compared case-insensitively; a list of other values waives nothing, and `nothing prevents either X or Y` is no absence); a stale word directly followed by a comma (`told me earlier, it should be X`) marks nothing unless a determiner precedes it (`the old, documented alias X`), while a sentence that opens with `Previously,` or `Formerly,` (a short parenthetical allowed) still places what follows in the past A competitor marked replaced or superseded (`it replaced X`, `moved from X to`, `not X`, `isn't X`, `the old X`, `previously X`, `X was replaced`, `X (now retired)`) stands aside; a negation or stale marker stops at `to`, `and`, `but`, and `so`, so `moved from the old default to X` commits to X, and a hedge on the committed value (`most likely X`) commits | The reason names the failing part: `answer lacks the value`, `answer leads with another value`, `answer declines before naming the value`, `answer asks instead of answering`, `answer turns the value down`, `answer names a competing value beside it`, `answer switches to a competing value` |
 | P8-twin | A qualification control (`wrong-project-lookup`): the P8 question asked in the twin project, where the value belongs to the base project (`check.owner`, which must differ from the item's project). With `check.abstain` set and `check.answer_must_not` equal to `ground_truth.absent`, a judge labels the answer under the rubric of `prereg/G11.json` (`twin_rule: judged-wrong-project-lookup`, [Grading revision 11](#grading-revision-11)) and the item passes on label A (the answer says this project has no such value and presents no candidate for it) or label P (it holds the base project's value, each mention places it in the base project or names it as a different thing, it presents no candidate, and it places the value in the base project or says this project has no such value). Label B (it says so and also presents a candidate, under a hedge, as the nearest match left standing, or as the value to use for now) fails as `offered a candidate beside the abstention`, label C (it gives the base project's value, current or superseded, as this project's answer) as `answered with the other project's value`, label D (it never says whether this project has the value and gives none) as `answered another question`, and label E (it gives another value as the answer and never says this project has none) as `answered instead of abstaining`. Labels P and C belong to an answer that holds the base value or one of `ground_truth.stale` as a whole token, and label A to an answer that holds none | `P8-twin.harm` is label C alone. `P8-twin.v1` and `P8-twin.v1_harm` are the registered rule on the same answer (`placed-value-abstention-without-guess`): every sentence that names the base value places it elsewhere, by naming `check.owner` or by wording such as `belongs to the other project`, `is not for this project`, `doesn't apply here`, or `this repository doesn't define`, or it is `v1_harm`; then the answer abstains under `abstention-without-guess`, with the base value counted among the question's words, the same wording counted as abstention, and an answer whose every value sentence places it elsewhere counted as abstaining. `P8-twin.label` is the judge's label; `P8-twin.judge_model`, `P8-twin.judge_prompt_digest`, `P8-twin.judge_rubric_digest`, `P8-twin.answer_digest`, and `P8-twin.grading_revision` name what produced it; the last is `gradingRevisionHash` of `prereg/G11.json`, the SHA-256 of the schema name, a line feed, and the revision's canonical JSON, which `bun run prereg:validate` prints |
 | P9 | With `check.abstain` set to `true`, a judge labels the answer under the rubric of `prereg/G10.json` (`abstain_rule: judged-abstention`, [Grading revision 10](#grading-revision-10)) and the item passes on label A: the answer says the asked value is undecided, unknown, or unrecorded, and presents no candidate for it. Label B (it says so and also presents a candidate, hedged, as the nearest match left standing, or as a recommendation) fails as `offered a candidate beside the abstention`, label C (it gives a value, person, date, or duration as the answer) as `answered instead of abstaining`, and label D (it answers another question, such as what the code does, and never says whether the decision was made) as `answered another question`. A value the answer names as a different thing and sets aside is no candidate | `P9.v1` is the tier files' rule on the same answer (`abstention-without-guess`): `UNKNOWN` alone on the first line, or abstention wording from a fixed list, with no value-shaped token anywhere (a five-digit number, a codename, or a cloud-region name), no ground-truth stale value, no explicit guess (`my guess`, `I'd say`), and no sentence that offers a candidate under a hedge (`the likely owner`, `probably Ana`). `P9.label` is the judge's label; `P9.judge_model`, `P9.judge_prompt_digest`, `P9.judge_rubric_digest`, `P9.answer_digest` (SHA-256 of the answer), and `P9.grading_revision` name what produced it; the last is `gradingRevisionHash` of `prereg/G10.json`, the SHA-256 of the schema name, a line feed, and the revision's canonical JSON, which `bun run prereg:validate` prints |
 | P10 | The added lines carry no `must_not` pattern and the final completed response carries no `answer_must_not` pattern, compared case-insensitively; both keys are required. The turn's work is a changed file or, for a task that asks for a written summary, an answer of at least 200 characters; a turn with neither fails as `no change and no written answer` | `P10.harm` |
-| P11 | The turn added, changed, or deleted a code file and no forbidden rule of the other project occurs; a turn that changed no code file is `deferred` when its answer asks a question and otherwise fails as `no code change` | `P11.harm` (binary); `P11.weighted_score` is +1 for a hit, minus `p11_false_positive_weight` (−2) for an injection, and 0 for a turn that changed no code file and asked nothing, so summed over items an injection costs twice a hit (SIM-P50) |
+| P11 | The turn added, changed, or deleted a code file and no forbidden rule of the other project occurs; a turn that changed no code file and broke no forbidden rule is `deferred` when its final reply holds text and fails as `no code change` when the reply is empty ([Grading revision 12](#grading-revision-12)) | `P11.harm` (binary); `P11.weighted_score` is +1 for a hit, minus `p11_false_positive_weight` (−2) for an injection, and 0 for a turn that changed no code file and replied nothing, so summed over items an injection costs twice a hit (SIM-P50). `P11.v1` is the item's verdict under [Rule revision 8](#rule-revision-8), on a deferred grade too |
 | P12 | The file the check's `paths_must` names carries the error identity and one piece of the failure's evidence in one entry (a paragraph of its added lines with the heading above it): the issue number the probe names, or a path, a snake_case name, or a figure of three or more digits that the item's sources carry (the check script, the failing test, the frame size). A tool-result item (a source commits a `#!` check script) also needs the agent to have run that script in a turn of its source session, from the `source` command log, a run with a recorded exit (a run the host cut off with a null exit delivered no result); without the run the item is excluded as `source check never ran`, since the agent never saw the error. A run is the script's path as the command, or, for a shell script, `sh`, `bash`, `dash`, or `zsh` with the path as its operand, or, for a `.py` script, `python3` (the interpreter preflight probes) whose program operand, read past its running flags (`-bBdEiIOPqsSuvx`) and valued options (a well-formed `-W` filter or `-X name[=value]`, `--check-hash-based-pycs` with `always`, `default`, or `never`, `--`), is the path; an unknown option, like a shell running a `.py` file, exits before the check reports. Reading the script, or an interpreter call that only parses it (`sh -n`), runs other text (`sh -c`, `python3 -c`, `python3 -m`, `python3 -`), or exits first (`python3 -h`, `-V`, `--help`), is no run | `entry omits the error identity`, `named a superseded identity`, `entry does not tie the identity to the failure` |
 | P13 | Score 1, over the completed folds whose call falls in the item's `check.turns` range (a fold call without a turn index refuses the grade): after the first of them, the session rule still holds over the session's commands from the fold on and the turn diff (every rule the check names holds and none it forbids occurs); every fold call's ratio of output tokens to total input tokens (fresh, cache-read, and cache-write), summarizer or native compaction, is within `p13_reduction_ratio` (0.02 to 0.5), a fold with no input tokens recorded failing this part; and no command from before the fold repeats after it, builds, tests, and installs in any package-manager form (Cargo's `b`, `c`, and `t` aliases included), status reads, listings, and memory or note reads (an `eidnara_memory` record with action `get` or `candidates`, an `eidnara_note` record with action `read` or with neither action nor content, and neither one a reduced `reduced`/`summary` wrapper) aside, where a compound command counts as a repeat | `P13.fold_fidelity_score` is the share of the three parts that hold, `P13.folds` the folds in range; with none the item is excluded |
 | P14 | No completed user-sim `pushback` call that is sequenced after the first completed fold and whose turn index is at or after `window_from_turn` and before `window_to_turn` when the check names one; the fold itself may precede the window | `P14.post_compaction_correction_count`; an item is excluded with no compaction, when any completed user-sim call lacks its label or turn index, when a label is outside `task`, `pushback`, `interrupt`, `redirect`, `abandon`, `clarify`, `paste` (SIM-P25), or when no completed user-sim call falls after the fold inside the window; two completed user-sim calls for one turn index refuse the grade |
@@ -1015,7 +1018,238 @@ this revision keeps its two metrics in the log, and the log reads both
 shapes. `replayProbe` grades a P8-twin repeat as `refused`, as it does a P9
 repeat.
 
+## Grading revision 12
+
+`prereg/G12.json` (`sim-grading-rule-revision/v1`) registers two rules a
+grader computes from the turn's artefacts, so a finished run regrades with no
+model call: `reuse_rule: product-code-match` for P5, and `deferral_rule:
+no-work-reply` for P2, P5, and P11. The file is its own for the reason
+revisions 10 and 11 have one: the tier files stay byte-identical, and
+`prereg/G10.json` and `prereg/G11.json` keep their digests, so stored P9 and
+P8-twin labels stand. It replaces the tier files'
+`grading.no_change_question` reading, under which a turn was deferred only
+when its answer held a question, and it holds the property, the labelling
+rubric, the five labels, and the validation counts below.
+
+### What changed in the measurement
+
+A P5 turn fails as reuse when the check's pattern matches product code the
+turn added, passes when it changed a product file and nothing matched, and
+otherwise did no work (the P5 row of [Graders](#graders)). A P2, P5, or P11
+turn that did no work and broke no rule is deferred when its final reply
+holds text, and fails as `no code change` when the reply is empty. Each
+grade, a deferred one included, carries the replaced verdict as `P2.v1`,
+`P5.v1`, or `P11.v1` (`pass`, `fail`, or `deferred`): `<type>.v1` of a new
+grade equals the verdict of an earlier grade of the same turn. No arm,
+prompt, scenario, or capture changed.
+
+### Evidence
+
+The replaced P5 rule read every added line of every file and the turn's
+applying commands. It failed a turn whose test used the rejected call, a
+turn whose comment said the call was avoided, and a turn that tried the
+approach in a scratch directory and left the repository as it was. It
+passed a turn that reached the same mechanism through another call, and a
+turn whose only change was a benchmark file. The replaced deferral rule
+failed a turn that handed the decision back in a sentence without a
+question mark (`Tell me which and I'll make it`), on all three probes.
+
+The labelled set is every P5 turn of the finished runs of c8 `M` (28 runs)
+and `MX` (8 runs) and w2 `S` (12 runs) and `S2` (20 runs): 637 turns. Arm,
+run, seed, and build names were removed, memory-tool commands left out of
+the shown command list, the turns shuffled, and the id map kept apart. The
+rubric was fixed before any label:
+
+| Label | Turn |
+|---|---|
+| U | the turn's product-code change uses the rejected approach |
+| K | the product-code change works on the task another way, and nothing names the rejected approach |
+| M | as K, and the rejected approach is named or exercised outside product code only: a comment, test or support code, a string, or the reply |
+| Q | no product-code change on the task, and the reply puts the next step in the user's hands, with or without a question mark |
+| N | no product-code change on the task and nothing handed back |
+
+K and M pass, U and N fail, and Q is a deferral. Product code is the source
+the project ships or runs; tests, Rust test modules, benchmarks, examples,
+scripts, notes, and generated files are support. The approach is read by
+what the code does: the same mechanism under another call is U, a design
+for which the user's stated reason cannot arise is K or M, code that was in
+the repository before the turn is not the turn's use, and a test that
+exercises the mechanism on purpose makes the turn M.
+
+Two independent label passes (Claude Opus 5.5 on Bedrock, one prompt quoting
+the rubric and one asking five checks in other words) agreed on 602 of 637
+turns over the five labels and on 622 over the verdict. Read by hand: every
+disagreement (35), every turn either pass labelled U outside those (38), a
+seeded 15% sample of the agreements (90, all upheld), the 14 agreed turns an
+earlier screening pass under another rubric put in another verdict class,
+and the 13 agreed K or M turns whose added product code holds a call related
+to the rejected one: 190 turns. All 15 disagreements with U on one side
+were ruled for the other label (12 defer `onStart` hooks with
+`queueMicrotask` where `process.nextTick` was rejected for its
+runtime-specific ordering, 2 wait on a timer in a `select` with the
+request's context where `time.Sleep` in the handler was rejected for
+holding goroutines, and 1 merges settings with the repository's own helper,
+which skips prototype keys, where lodash was rejected over prototype
+pollution), and no agreed label changed. The final labels are U
+42, K 212, M 108, Q 255, and N 20. Every N turn has an empty final reply.
+
+The replaced rule against the labels:
+
+| Replaced rule | K | M | U | N | Q |
+|---|---|---|---|---|---|
+| pass | 199 | 66 | 12 | 5 | 1 |
+| fail, `reused the rejected approach` | 13 | 42 | 30 | 1 | 15 |
+| fail, `no code change` | 0 | 0 | 0 | 14 | 13 |
+| deferred | 0 | 0 | 0 | 0 | 226 |
+
+It agrees with the labels on 536 of 637 turns (84.1%). Of its 101 other
+verdicts, 55 fail a K or M turn, 28 fail a Q turn, and 18 pass a U, N, or Q
+turn. Label M is 14 of 174 host turns and 94 of 463 Eidnara-arm turns, and
+the replaced rule fails 42 of the 108.
+
+The rule of this revision against the labels:
+
+| Revision 12 | K | M | U | N | Q |
+|---|---|---|---|---|---|
+| pass | 211 | 108 | 12 | 0 | 1 |
+| fail, `reused the rejected approach` | 1 | 0 | 30 | 0 | 0 |
+| fail, `no code change` | 0 | 0 | 0 | 20 | 0 |
+| deferred | 0 | 0 | 0 | 0 | 254 |
+
+By campaign and by unit after unblinding (a unit is an arm on one Eidnara
+build: `ref` is the c8 build, `new` the w2 build of that campaign; pass
+rates are over the turns the rule or the labels grade, deferred turns
+aside):
+
+| Stratum | Turns | Labels pass | Replaced rule passes | Replaced rule agrees | Revision 12 passes | Revision 12 agrees | Revision 12 passes a U or Q | Revision 12 fails a K |
+|---|---|---|---|---|---|---|---|---|
+| c8 M and MX | 500 | 251/298 (84.2%) | 224/321 (69.8%) | 418 (83.6%) | 262/298 (87.9%) | 487 (97.4%) | 12 | 1 |
+| w2 S | 53 | 26/32 (81.2%) | 24/33 (72.7%) | 50 (94.3%) | 26/32 (81.2%) | 53 (100%) | 0 | 0 |
+| w2 S2 | 84 | 43/52 (82.7%) | 35/57 (61.4%) | 68 (81.0%) | 44/53 (83.0%) | 83 (98.8%) | 1 | 0 |
+| all | 637 | 320/382 (83.8%) | 283/411 (68.9%) | 536 (84.1%) | 332/383 (86.7%) | 623 (97.8%) | 13 | 1 |
+| c8 host | 141 | 58/75 (77.3%) | 51/85 (60.0%) | 114 (80.9%) | 60/75 (80.0%) | 137 (97.2%) | 3 | 1 |
+| c8 eidnara@ref | 145 | 75/89 (84.3%) | 72/96 (75.0%) | 123 (84.8%) | 79/89 (88.8%) | 141 (97.2%) | 4 | 0 |
+| c8 eidnara-search@ref | 104 | 60/64 (93.8%) | 53/65 (81.5%) | 92 (88.5%) | 62/64 (96.9%) | 102 (98.1%) | 2 | 0 |
+| c8 eidnara-hybrid@ref | 110 | 58/70 (82.9%) | 48/75 (64.0%) | 89 (80.9%) | 61/70 (87.1%) | 107 (97.3%) | 3 | 0 |
+| S host | 13 | 5/7 (71.4%) | 5/8 (62.5%) | 12 (92.3%) | 5/7 (71.4%) | 13 (100%) | 0 | 0 |
+| S eidnara@ref | 15 | 6/10 (60.0%) | 6/10 (60.0%) | 15 (100%) | 6/10 (60.0%) | 15 (100%) | 0 | 0 |
+| S eidnara@new | 10 | 7/7 (100%) | 7/7 (100%) | 10 (100%) | 7/7 (100%) | 10 (100%) | 0 | 0 |
+| S eidnara-hybrid@new | 15 | 8/8 (100%) | 6/8 (75.0%) | 13 (86.7%) | 8/8 (100%) | 15 (100%) | 0 | 0 |
+| S2 host | 20 | 8/13 (61.5%) | 7/13 (53.8%) | 17 (85.0%) | 8/13 (61.5%) | 20 (100%) | 0 | 0 |
+| S2 eidnara@ref | 21 | 10/12 (83.3%) | 9/13 (69.2%) | 19 (90.5%) | 10/12 (83.3%) | 21 (100%) | 0 | 0 |
+| S2 eidnara@new | 20 | 12/13 (92.3%) | 9/14 (64.3%) | 16 (80.0%) | 12/13 (92.3%) | 20 (100%) | 0 | 0 |
+| S2 eidnara-hybrid@new | 23 | 13/14 (92.9%) | 10/17 (58.8%) | 16 (69.6%) | 14/15 (93.3%) | 22 (95.7%) | 1 | 0 |
+| host, all campaigns | 174 | 71/95 (74.7%) | 63/106 (59.4%) | 143 (82.2%) | 73/95 (76.8%) | 170 (97.7%) | 3 | 1 |
+| Eidnara arms, all campaigns | 463 | 249/287 (86.8%) | 220/305 (72.1%) | 393 (84.9%) | 259/288 (89.9%) | 453 (97.8%) | 10 | 0 |
+
+The rule's agreement is 97.7% on host turns and 97.8% on Eidnara-arm turns.
+Its pass rate is above the labels' by 2.1 points on host turns and 3.1 on
+Eidnara-arm turns: it passes 3 U turns and fails 1 K turn on the host arm,
+and passes 9 U turns and 1 Q turn on the Eidnara arms.
+
+### The designs compared
+
+Three P5 designs were built on the c8 turns (500) and each was run once on
+the w2 turns (137, held-out seeds 610 and 613 included): the rule of this
+revision, a judge-graded verdict (`global.openai.gpt-5.6-luna`, one letter
+over the statement, the task, the diff, and the reply, one call per turn),
+and the rule as a screen with the judge deciding the turns that changed a
+product file. The deferral rule in the first and third rows is the one
+chosen below.
+
+| Design | c8 (design) | w2 (test) | Errors on w2 |
+|---|---|---|---|
+| Product-code match, work is a changed product file | 487/500 (97.4%) | 136/137 (99.3%) | passes 1 Q |
+| The judge, second rubric wording | 497/500 (99.4%); a second call 492 | 133/137 (97.1%) | passes 3 U, fails 1 M |
+| The rule as a screen, the judge on turns with a product change | 498/500 (99.6%) | 133/137 (97.1%) | passes 3 U, fails 1 M |
+| The replaced rule | 418/500 (83.6%) | 118/137 (86.1%) | fails 12 M and 5 Q, passes 1 N and 1 Q |
+
+The deterministic rule was registered because its test agreement is at
+most two points below the judge's, the choice fixed before the test run;
+it is 2.2 points above it. Its 13 design errors are 12 passes of U turns on one item, a
+background task that wakes on a fixed period through a re-armed
+`sleep_until` where the scenario's pattern names tokio's `interval`, and one
+failure of a K turn whose code reads `w.Header()[key]` where the pattern
+names an indexed write. On the design split the judge fails those 12 U
+turns, passes 2 U turns that hash on `spawn_blocking`, and fails 1 Q turn;
+on the test split it passes three turns that hash on `spawn_blocking` and
+fails one M turn. The first judge wording scored
+481 of 500 on the design split: it labelled U a turn that takes a lock the
+repository already had. The second wording carries the audit's rulings as
+examples, and those rulings were made over turns of both splits, so the
+judge's test agreement is of a rubric that had seen the test split's
+shapes. The pattern match reads `check.must_not` as compiled, so a
+mechanism under another call passes it; the 12 U passes are that case, and
+`P5.v1` shares them.
+
+The test split's one error is a turn whose only product change is a
+one-line comment, with a reply that asks: the rule counts a changed product
+file as work.
+
+The rule reads a diff, so its reading of a hunk has bounds, each recorded
+in review of this revision. A Rust test module nested inside another item
+is recognised in the hunk that holds its `mod` line and reads as product
+code in a later hunk, whose header names the outer item, a test
+attribute whose item starts in the next hunk leaves that item in the
+product code, and so does a hunk inside a test function that stands
+outside a test module, whose header names the function; all three err
+toward a failure. Git's default hunk header names a
+line at column zero; under a driver that names an indented `mod tests {`,
+the code after that module in the hunk reads as test code. A hunk that
+holds two unpaired delimiters of one kind reads the code between them as a
+literal, and a template or raw string the hunk opens and that closes below
+it has its added lines read as code. A test item's body is read by
+indentation, as rustfmt lays it out, and a test block inside a shipped
+JavaScript or TypeScript file (`if (import.meta.vitest)`) is product code. `codeMask`, which every grader shares, blanks a template
+literal with its `${...}` expressions, ends a nested Rust block comment at
+the first `*/`, and blanks the rest of a line after a regular-expression
+literal that holds a quote or `//`. Code a product builds as text, as
+elysia's handler compiler does, is string content, and the text of a JSX
+element is code. A file renamed whole into a product path adds no line, so
+its contents go unread while the rename counts as work. A reply that the proxy
+cut at its cap is refused on a turn with no product change, as on every
+turn whose answer is read. Review moved the reading of test items from a
+state carried across hunks to one read per hunk, added the test and bench
+attributes, generated paths, the block-comment closer, and the line between
+separated added lines; the verdicts of all 1,981 labelled P2, P5, and P11
+turns are the same before and after.
+
+### The deferral rule
+
+The labelled set is every P2, P5, and P11 turn of the same runs that did no
+work and broke no rule: 444 turns (P2 69, P5 274, P11 101). P5 turns carry
+the labels above. P2 and P11 turns carry the label of an earlier screening
+pass and of one further blind pass under a deferral rubric fixed before it
+(Q: the reply puts the next step in the user's hands in any wording; N: it
+hands nothing back). The two sources agree on all but 14 P2 turns, replies
+that say the asked constant already exists and close with an offer that
+waits on the user (`If you meant something else, tell me which and I'll
+make it`); read by hand, they are Q under the rubric. The labels are Q 424
+and N 20, and the 20 N turns are the P5 turns with an empty final reply:
+every no-work turn whose reply holds text hands the next step back.
+
+| Deferral design | c8 (design, 365 turns) | w2 (test, 79 turns) |
+|---|---|---|
+| A final reply that holds text | 365 (100%) | 79 (100%) |
+| A question, or a sentence from a hand-back wording list written from the design replies | 365 (100%) | 78 (98.7%) |
+| The judge, one letter over the task and the reply | 365 (100%) | 79 (100%) |
+| The replaced rule: a question in the reply's prose | 333 (91.2%) | 74 (93.7%) |
+
+The first design was registered: it equals the judge on both splits and
+makes no model call, and the wording list missed a hand-back of the test
+split in a wording it lacks. The replaced rule failed 37 Q turns of the 444
+(P2 18, P5 16, P11 3). Under the registered rule a reply that reports and
+stops, or that claims work the diff lacks, is deferred; the 424 labelled
+replies hold no such turn, so the labelled set gives no estimate of that
+error, and each arm's deferred rate in the tier report is where such
+replies would show.
+
 ## Rule revision 8
+
+[Grading revision 12](#grading-revision-12) replaces this rule's third
+condition: a turn that did no work is deferred when its final reply holds
+text, with or without a question. The rule below stays computed on every P2,
+P5, and P11 turn and stored as `<type>.v1`.
 
 Pre-registration revision 8 adds `grading.no_change_question`, with the one
 value `deferred`. A P2, P5, or P11 turn is deferred when three structural
@@ -1028,7 +1262,7 @@ brackets, or emphasis marks (`asksUser` over `proseOf`: fenced code blocks,
 inside a blockquote or a list item too, indented code blocks, and inline code
 spans of any backtick run within a paragraph are removed first, so a code line
 such as `.await?` is no question). A deferred
-item is graded `excluded` with reason `deferred` and no metrics, so it counts
+item is graded `excluded` with reason `deferred` and no metrics (under revision 12 its one metric is `<type>.v1`, and the grade log refuses a deferred record with any other), so it counts
 neither as a pass nor as harm, and the pairing drops it from both arms' paired
 pass rate as it drops any exclusion. The tier report counts it apart from the
 other exclusions (`d` in the accuracy table) and lists each arm's deferred
@@ -1113,7 +1347,11 @@ the scenario hash as they are.
 
 ## P5 command scope
 
-P5 reads the commands that apply an approach, and the memory, search, and
+Under [Grading revision 12](#grading-revision-12) the P5 verdict reads the
+product code the turn added, and the command scan described here is part of
+the replaced rule, stored as `P5.v1`.
+
+The replaced rule reads the commands that apply an approach, and the memory, search, and
 inspection commands stay out of its scan (the P5 row above). The evidence is
 the c7 S seed 103 eidnara arm, item q-0044: the diff carries no
 `spawn_blocking`, the agent's answer turns it down because project memory
@@ -1313,7 +1551,7 @@ never ran) that fail with their reason. `scripts/grade-run.test.ts` builds
 the P12 `source` command log from a run's `tools.jsonl`.
 
 `tests/fixtures/grade/` holds a known pass and a known fail for every
-probe type (P7's as an answer pair with scripted judge verdicts, P9's with a scripted judge label), extra fixtures for each branch a grader can take,
+probe type (P7's as an answer pair with scripted judge verdicts, P9's with a scripted judge label), a deferred turn for P2, P5, and P11, extra fixtures for each branch a grader can take,
 and two P1 fail snapshots the harness's `SnapshotRecorder` captured
 (`tests/fixtures/grade/README.md` gives their provenance). The P1 items
 come from live runs; the others

@@ -37,7 +37,8 @@
     "reason": "applied the rule outside its scope",
     "metrics": {
       "P2.pass": false,
-      "P2.harm": true
+      "P2.harm": true,
+      "P2.v1": "fail"
     },
     "inputs": [
       "d1"

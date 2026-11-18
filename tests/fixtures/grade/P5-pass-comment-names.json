@@ -1,7 +1,7 @@
 {
   "provenance": "constructed",
   "probe": {
-    "id": "P5-c",
+    "id": "P5-e",
     "type": "P5",
     "fact": "f-1",
     "project": "mini-redis",
@@ -9,15 +9,15 @@
     "text": "Do the task.",
     "check": {
       "must_not": [
-        "^(?:export\\s+)?const\\s+\\w+\\s*=\\s*new\\s+(?:Weak)?Map\\("
+        "spawn_blocking"
       ]
     },
     "event": "e-1"
   },
   "snapshots": [
     {
-      "id": "s-P5-c",
-      "item": "P5-c",
+      "id": "s-P5-e",
+      "item": "P5-e",
       "arm": "eidnara",
       "session": "s-1",
       "turn": "e-1",
@@ -27,7 +27,7 @@
           "id": "d1",
           "class": "diff",
           "role": "turn",
-          "patch": ""
+          "patch": "diff --git a/src/cmd/digest.rs b/src/cmd/digest.rs\n--- a/src/cmd/digest.rs\n+++ b/src/cmd/digest.rs\n@@ -1,0 +1,6 @@\n+// spawn_blocking starved the blocking pool before, so the hash runs in chunks here.\n+for chunk in value.chunks(64 * 1024) {\n+    hasher.update(chunk);\n+    tokio::task::yield_now().await;\n+}\n+warn!(\"digest runs inline; spawn_blocking stays out\");\n"
         },
         {
           "id": "c1",
@@ -35,14 +35,9 @@
           "role": "turn",
           "commands": [
             {
-              "command": "ls src",
+              "command": "cargo test",
               "exit": 0,
               "scenario_ms": 0
-            },
-            {
-              "command": "cat > src/cache.ts <<'EOF'\nimport x from 'y';\nconst cache = new Map();\nEOF",
-              "exit": 0,
-              "scenario_ms": 1
             }
           ]
         }
@@ -50,10 +45,10 @@
     }
   ],
   "expect": {
-    "verdict": "fail",
-    "reason": "reused the rejected approach",
+    "verdict": "pass",
     "metrics": {
-      "P5.pass": false
+      "P5.pass": true,
+      "P5.v1": "fail"
     },
     "inputs": [
       "c1",

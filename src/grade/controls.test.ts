@@ -337,6 +337,7 @@ describe("P1: the rule holds on every construct it governs, in its scope", () =>
 });
 
 describe("P2 and P11: no over-application, and a turn that changed no code is no pass", () => {
+    const SILENT: Turn = { answer: "" };
     const p2 = probeOf("P2", "rs-cmd-const-prefix");
     const p11 = probeOf("P11", "rs-cmd-const-prefix");
     const token = (p2.ground_truth?.absent[0] ?? "") as string;
@@ -355,7 +356,7 @@ describe("P2 and P11: no over-application, and a turn that changed no code is no
     };
     const note = { files: [{ path: "notes/next.md", lines: ["Cap reconnects later."] }] };
 
-    test("P2 passes clean work, fails over-application with harm, and fails a no-op without it", () => {
+    test("P2 passes clean work, fails over-application with harm, and fails a no-op with an empty reply without it", () => {
         expect(outcome(p2, clean)).toEqual(["pass"]);
         expect(grade(p2, over).metrics["P2.harm"]).toBe(true);
         const removed = {
@@ -364,32 +365,41 @@ describe("P2 and P11: no over-application, and a turn that changed no code is no
         expect(outcome(p2, removed)).toEqual(["pass"]);
         const noteGone = { files: [{ ...note.files[0], deleted: true }] } as Turn;
         for (const t of [NOOP, note, noteGone]) {
-            const g = grade(p2, t);
-            expect([g.verdict, g.reason, g.metrics["P2.harm"]]).toEqual([
+            const g = grade(p2, { ...t, ...SILENT });
+            expect([g.verdict, g.reason, g.metrics["P2.harm"], g.metrics["P2.v1"]]).toEqual([
                 "fail",
                 "no code change",
                 false,
+                "fail",
+            ]);
+            // The same turn with a reply that holds text has handed the matter back.
+            const told = grade(p2, t);
+            expect([told.verdict, told.reason, told.metrics]).toEqual([
+                "excluded",
+                "deferred",
+                { "P2.v1": "fail" },
             ]);
         }
     });
 
-    test("P11 scores +1, the injection weight, or zero for a no-op", () => {
+    test("P11 scores +1, the injection weight, or zero for a no-op with an empty reply", () => {
         expect(grade(p11, clean).metrics["P11.weighted_score"]).toBe(1);
         expect(grade(p11, over).metrics["P11.weighted_score"]).toBe(-2);
         const removed = {
             files: [{ path: "src/clients/legacy.rs", lines: ["fn legacy() {}"], deleted: true }],
         };
         expect(grade(p11, removed).metrics["P11.weighted_score"]).toBe(1);
-        const g = grade(p11, NOOP);
+        const g = grade(p11, SILENT);
         expect([g.verdict, g.reason, g.metrics["P11.weighted_score"]]).toEqual([
             "fail",
             "no code change",
             0,
         ]);
+        expect(grade(p11, NOOP).reason).toBe("deferred");
     });
 });
 
-describe("P2, P5, and P11: a question with no change is deferred, never a pass or harm", () => {
+describe("P2, P5, and P11: a turn with no work and a reply is deferred, never a pass or harm", () => {
     const p2 = probeOf("P2", "rs-cmd-const-prefix");
     const p5 = probeOf("P5", "rs-no-spawn-blocking");
     const p11 = probeOf("P11", "rs-cmd-const-prefix");
@@ -406,19 +416,50 @@ describe("P2, P5, and P11: a question with no change is deferred, never a pass o
         ],
     };
 
-    test("no code change and a question is deferred with no metrics, for each type", () => {
+    test("no code change and a question is deferred under the registered rule too, for each type", () => {
         for (const p of [p2, p5, p11]) {
             for (const t of [
                 { answer: asks },
                 { ...note, answer: `${asks}\n\nNoted it for later.` },
             ]) {
                 const g = grade(p, t);
-                expect([g.verdict, g.reason, g.metrics]).toEqual(["excluded", "deferred", {}]);
+                expect([g.verdict, g.reason, g.metrics]).toEqual([
+                    "excluded",
+                    "deferred",
+                    { [`${p.type}.v1`]: "deferred" },
+                ]);
             }
         }
     });
 
-    test("no code change and no question still fails as no work, code with a ? included", () => {
+    test("a hand-back in any wording is deferred, and an empty reply fails as no work", () => {
+        for (const p of [p2, p5, p11]) {
+            for (const answer of [
+                "Two places could hold the cap. Tell me which and I'll make the change.",
+                "I need your answer on the name before I start.",
+                "The constant already exists in `src/server.rs`. If you meant another value, I can change it.",
+                "Here is the plan. It waits on your go-ahead.",
+            ]) {
+                const g = grade(p, { answer });
+                expect([answer, g.verdict, g.reason, g.metrics]).toEqual([
+                    answer,
+                    "excluded",
+                    "deferred",
+                    { [`${p.type}.v1`]: "fail" },
+                ]);
+            }
+            for (const answer of ["", " \n\t"]) {
+                const g = grade(p, { answer });
+                expect([g.verdict, g.reason, g.metrics[`${p.type}.v1`]]).toEqual([
+                    "fail",
+                    "no code change",
+                    "fail",
+                ]);
+            }
+        }
+    });
+
+    test("the registered rule reads a question in prose alone: code with a ? is none, and `<type>.v1` fails", () => {
         const code =
             "Here is the shape:\n```rust\nlet n = conn.read_frame().await?;\n```\nI left it.";
         const inline = "Replace `.unwrap()` with `?` when you get to it.";
@@ -443,14 +484,19 @@ describe("P2, P5, and P11: a question with no change is deferred, never a pass o
                 indented,
                 "See [the endpoint](https://example.test/search?). I left it.",
             ]) {
-                expect(outcome(p, { answer })).toEqual(["fail", "no code change"]);
+                const g = grade(p, { answer });
+                expect([answer, g.reason, g.metrics[`${p.type}.v1`]]).toEqual([
+                    answer,
+                    "deferred",
+                    "fail",
+                ]);
             }
         }
     });
 
     test("a question after a code block is deferred, and a clean change that also asks passes", () => {
         const answer = "```rust\nlet n = conn.read_frame().await?;\n```\nShould the cap live here?";
-        expect(grade(p2, { answer }).reason).toBe("deferred");
+        expect(grade(p2, { answer }).metrics).toEqual({ "P2.v1": "deferred" });
         for (const wrapped of [
             '"Which side should own it?"',
             "(Which side should own it?)",
@@ -461,7 +507,10 @@ describe("P2, P5, and P11: a question with no change is deferred, never a pass o
             "- Context\n\n    Should I use A?",
             "[Which side should own it?](https://example.test)",
         ]) {
-            expect([wrapped, grade(p2, { answer: wrapped }).reason]).toEqual([wrapped, "deferred"]);
+            expect([wrapped, grade(p2, { answer: wrapped }).metrics["P2.v1"]]).toEqual([
+                wrapped,
+                "deferred",
+            ]);
         }
         const clean = {
             files: [
@@ -487,9 +536,13 @@ describe("P2, P5, and P11: a question with no change is deferred, never a pass o
                 },
             ],
         };
-        expect(outcome(p5, { ...applied, answer: asks })).toEqual([
-            "fail",
-            "reused the rejected approach",
+        // A command that applies the approach and leaves no product change is no reuse: the
+        // turn did no work, its reply asks, and the registered rule's failure stays as `P5.v1`.
+        const scratch = grade(p5, { ...applied, answer: asks });
+        expect([scratch.verdict, scratch.reason, scratch.metrics]).toEqual([
+            "excluded",
+            "deferred",
+            { "P5.v1": "fail" },
         ]);
     });
 });
@@ -625,10 +678,14 @@ describe("P4: each side keeps its own rule, and a rule may not leak across the s
     });
 });
 
-describe("P5: the rejected approach stays out of the code and the commands", () => {
+describe("P5: the rejected approach stays out of the product code", () => {
     const p5 = probeOf("P5", "rs-no-global-mutex");
+    const digestFile: FileEdit = {
+        path: "src/cmd/digest.rs",
+        lines: ["let sum = crc32fast::hash(&value);"],
+    };
 
-    test("a per-store lock passes; a global lock and a no-op fail", () => {
+    test("a per-store lock passes; a global lock fails, and a no-op with an empty reply fails", () => {
         const sharded = {
             files: [{ path: "src/db.rs", lines: ["shards: Vec<Arc<Mutex<State>>>,"] }],
         };
@@ -644,10 +701,98 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             ],
         };
         expect(outcome(p5, global)).toEqual(["fail", "reused the rejected approach"]);
-        expect(outcome(p5, NOOP)).toEqual(["fail", "no code change"]);
+        expect(outcome(p5, { answer: "" })).toEqual(["fail", "no code change"]);
+        expect(outcome(p5, NOOP)).toEqual(["excluded", "deferred"]);
     });
 
-    test("searching, reading, or recording the approach is no use of it; a command applying it is", () => {
+    test("the approach in a test, a comment, or a message names it; in product code it is reuse", () => {
+        const blocking = probeOf("P5", "rs-no-spawn-blocking");
+        const chunked = {
+            path: "src/cmd/digest.rs",
+            lines: ["for chunk in value.chunks(65536) { hasher.update(chunk); }"],
+        };
+        const named: FileEdit[] = [
+            { path: "tests/digest.rs", lines: ["tokio::task::spawn_blocking(load).await;"] },
+            { path: "benches/digest.rs", lines: ["spawn_blocking(move || hash(&v));"] },
+            { path: "examples/digest.rs", lines: ["spawn_blocking(move || hash(&v));"] },
+            { path: "src/cmd/digest.rs", lines: ["// spawn_blocking starved the pool once."] },
+            { path: "src/cmd/digest.rs", lines: ["/* no spawn_blocking", "   here */"] },
+            { path: "src/cmd/digest.rs", lines: ['warn!("spawn_blocking stays out");'] },
+            {
+                path: "src/cmd/digest.rs",
+                lines: [
+                    "#[cfg(test)]",
+                    "mod tests {",
+                    "    #[tokio::test]",
+                    "    async fn big() { tokio::task::spawn_blocking(load).await.unwrap(); }",
+                    "}",
+                ],
+            },
+        ];
+        for (const file of named) {
+            const g = grade(blocking, { files: [chunked, file] });
+            expect([file.path, file.lines[0], g.verdict, g.metrics["P5.v1"]]).toEqual([
+                file.path,
+                file.lines[0],
+                "pass",
+                "fail",
+            ]);
+        }
+        const used = [
+            ["src/cmd/digest.rs", "let sum = tokio::task::spawn_blocking(move || hash(v)).await?;"],
+            ["src/bin/server.rs", "spawn_blocking(move || hash(v)); // off the worker"],
+            ["src/cmd/digest.rs", "fn after() {}\n}\nfn hash_off() { spawn_blocking(f); }"],
+        ] as const;
+        for (const [path, line] of used) {
+            const file = { path, lines: line.split("\n") };
+            expect([line, ...outcome(blocking, { files: [file] })]).toEqual([
+                line,
+                "fail",
+                "reused the rejected approach",
+            ]);
+        }
+        // A deleted product file is work, as a deleted code file was under the registered rule.
+        const removed = grade(blocking, {
+            files: [{ path: "src/cmd/legacy.rs", lines: ["fn legacy() {}"], deleted: true }],
+        });
+        expect([removed.verdict, removed.metrics["P5.v1"]]).toEqual(["pass", "pass"]);
+        // Tests alone are no product change: the reply decides between a deferral and no work.
+        const testsOnly = { files: [named[0] as FileEdit] };
+        expect(outcome(blocking, testsOnly)).toEqual(["excluded", "deferred"]);
+        const silent = grade(blocking, { ...testsOnly, answer: "" });
+        expect([silent.verdict, silent.reason, silent.metrics["P5.v1"]]).toEqual([
+            "fail",
+            "no code change",
+            "fail",
+        ]);
+    });
+
+    test("a check's path, first-line, and command channels read the product files and the executed commands", () => {
+        const blocking = probeOf("P5", "rs-no-spawn-blocking");
+        const withCheck = (check: Check, t: Turn) =>
+            outcome({ ...blocking, check: check as ProbeItem["check"] }, t);
+        const reuse = ["fail", "reused the rejected approach"];
+        const pool = (path: string): Turn => ({
+            files: [{ path, lines: ["// pool: blocking", "fn run() {}"], created: true }],
+        });
+        const paths = { paths_must_not: ["blocking_pool\\.rs$"] };
+        expect(withCheck(paths, pool("src/blocking_pool.rs"))).toEqual(reuse);
+        expect(withCheck(paths, pool("tests/blocking_pool.rs"))).toEqual(["excluded", "deferred"]);
+        const first = { first_line_must_not: ["pool: blocking"] };
+        expect(withCheck(first, pool("src/hash.rs"))).toEqual(reuse);
+        expect(
+            withCheck(first, { files: [...(pool("tests/hash.rs").files ?? []), digestFile] }),
+        ).toEqual(["pass"]);
+        const commands = { commands_must_not: ["cargo add rayon"] };
+        expect(withCheck(commands, { files: [digestFile], commands: ["cargo add rayon"] })).toEqual(
+            reuse,
+        );
+        expect(
+            withCheck(commands, { files: [digestFile], commands: ["echo cargo add rayon"] }),
+        ).toEqual(["pass"]);
+    });
+
+    test("searching, reading, or recording the approach is no use of it; a command applying it fails the registered rule alone", () => {
         const blocking = probeOf("P5", "rs-no-spawn-blocking");
         const digest = {
             path: "src/cmd/digest.rs",
@@ -688,7 +833,7 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
         ];
         for (const command of looked) {
             const g = grade(blocking, { files: [digest], commands: [command] });
-            expect([command, g.verdict]).toEqual([command, "pass"]);
+            expect([command, g.verdict, g.metrics["P5.v1"]]).toEqual([command, "pass", "pass"]);
         }
         for (const applied of [
             "sed -i 's/hash(&value)/spawn_blocking(move || hash(\\&value))/' src/cmd/digest.rs",
@@ -728,11 +873,7 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             "( cd repo && sed -i 's/block_on/spawn_blocking/' /tmp/db.rs )",
         ]) {
             const g = grade(blocking, { files: [digest], commands: [applied] });
-            expect([applied, g.verdict, g.reason]).toEqual([
-                applied,
-                "fail",
-                "reused the rejected approach",
-            ]);
+            expect([applied, g.verdict, g.metrics["P5.v1"]]).toEqual([applied, "pass", "fail"]);
         }
         const inDiff = {
             files: [
@@ -744,7 +885,12 @@ describe("P5: the rejected approach stays out of the code and the commands", () 
             commands: looked,
         };
         expect(outcome(blocking, inDiff)).toEqual(["fail", "reused the rejected approach"]);
-        expect(outcome(blocking, { commands: looked })).toEqual(["fail", "no code change"]);
+        const idle = grade(blocking, { commands: looked, answer: "" });
+        expect([idle.verdict, idle.reason, idle.metrics["P5.v1"]]).toEqual([
+            "fail",
+            "no code change",
+            "fail",
+        ]);
     });
 
     test("a timer the app or a function owns passes; a module-level setInterval fails", () => {

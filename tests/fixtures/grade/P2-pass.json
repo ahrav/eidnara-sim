@@ -36,7 +36,8 @@
     "verdict": "pass",
     "metrics": {
       "P2.pass": true,
-      "P2.harm": false
+      "P2.harm": false,
+      "P2.v1": "pass"
     },
     "inputs": [
       "d1"
