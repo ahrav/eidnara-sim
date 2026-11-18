@@ -368,36 +368,32 @@ const served = (
     cache_write_tokens: 100,
 });
 
-test("a call's cache gaps run from the last served call of its session and of its arm", () => {
+test("a call's cache gap runs from the last served call of its arm, component, model, and session", () => {
     const gaps = new CacheGaps();
     const first = served("host", "s-1", "agent", 1_000, 50_000);
-    expect(gaps.of(first)).toEqual({ ttl_ms: 300_000, session: null, arm: null });
+    expect(gaps.of(first)).toEqual({ ttl_ms: 300_000, session: null });
     gaps.note(first);
     // Six scenario minutes later and two wall seconds later: the idle gap the wall clock skips.
     const next = served("host", "s-1", "agent", 361_000, 52_000);
     expect(gaps.of(next)).toEqual({
         ttl_ms: 300_000,
         session: { scenario_ms: 360_000, wall_ms: 2_000 },
-        arm: { scenario_ms: 360_000, wall_ms: 2_000 },
     });
     gaps.note(next);
-    // A new session shares the arm's prefix alone; another component and another arm share none.
-    expect(gaps.of(served("host", "s-2", "agent", 400_000, 53_000))).toEqual({
-        ttl_ms: 300_000,
-        session: null,
-        arm: { scenario_ms: 39_000, wall_ms: 1_000 },
+    // Another session, component, or arm extends another conversation, and the provider keeps
+    // a cache per model, so each of these has no earlier call.
+    for (const other of [
+        served("host", "s-2", "agent", 400_000, 53_000),
+        served("host", "s-1", "memory_capture", 400_000, 53_000),
+        served("eidnara", "s-1", "agent", 400_000, 53_000),
+        { ...served("host", "s-1", "agent", 400_000, 53_000), model: "n" },
+    ]) {
+        expect(gaps.of(other).session).toBeNull();
+    }
+    expect(gaps.of(served("host", "s-1", "agent", 400_000, 53_000)).session).toEqual({
+        scenario_ms: 39_000,
+        wall_ms: 1_000,
     });
-    expect(gaps.of(served("host", "s-1", "memory_capture", 400_000, 53_000))).toMatchObject({
-        session: null,
-        arm: null,
-    });
-    expect(gaps.of(served("eidnara", "s-1", "agent", 400_000, 53_000))).toMatchObject({
-        session: null,
-        arm: null,
-    });
-    // The provider keeps a cache per model, so a call on another model has no earlier call.
-    const switched = { ...served("host", "s-1", "agent", 400_000, 53_000), model: "n" };
-    expect(gaps.of(switched)).toMatchObject({ session: null, arm: null });
 });
 
 test("a call's cache gaps run between answers, so a proxy retry's backoff falls on the call that waited", () => {
@@ -460,7 +456,7 @@ test("a writer with a gap tracker stamps each host call, and a resumed tracker c
     const harness = writer.write(record("user-sim", 2_000, 11_000));
     const second = writer.write(record("agent", 400_000, 12_000));
     // The first call has no earlier call to measure from; the gap is read before the call is noted.
-    expect(first.cache_gap).toEqual({ ttl_ms: 300_000, session: null, arm: null });
+    expect(first.cache_gap).toEqual({ ttl_ms: 300_000, session: null });
     expect(harness.cache_gap).toBeUndefined();
     expect(second.cache_gap?.session).toEqual({ scenario_ms: 399_000, wall_ms: 2_000 });
     expect(new RecordWriter(null).write(record("agent", 1, 1)).cache_gap).toBeUndefined();
@@ -493,16 +489,17 @@ test("a record's cache gap is two gaps or nulls of non-negative times", () => {
         proxy_retries: 0,
         fault_ref: null,
         error: null,
-        cache_gap: { ttl_ms: 300_000, session: { scenario_ms: 5, wall_ms: 1 }, arm: null },
+        cache_gap: { ttl_ms: 300_000, session: { scenario_ms: 5, wall_ms: 1 } },
     });
     expect(recordProblems(base)).toEqual([]);
+    expect(recordProblems({ ...base, cache_gap: { ttl_ms: 300_000, session: null } })).toEqual([]);
     const ttl_ms = 300_000;
     for (const cache_gap of [
-        { ttl_ms, session: null },
-        { session: null, arm: null },
-        { ttl_ms: 0, session: null, arm: null },
-        { ttl_ms, session: { scenario_ms: -1, wall_ms: 0 }, arm: null },
-        { ttl_ms, session: { scenario_ms: 1 }, arm: null },
+        { ttl_ms },
+        { session: null },
+        { ttl_ms: 0, session: null },
+        { ttl_ms, session: { scenario_ms: -1, wall_ms: 0 } },
+        { ttl_ms, session: { scenario_ms: 1 } },
         "none",
     ]) {
         expect(recordProblems({ ...base, cache_gap })).toEqual(["cache_gap invalid"]);

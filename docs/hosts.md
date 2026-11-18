@@ -382,12 +382,16 @@ has expired by then; in a run that rewrite replaces a prefix the wall
 clock still holds, so the Eidnara arm pays a write where the host arm
 keeps reading. Each call record of a caching-on run carries `cache_gap`
 (`docs/proxy.md`): the scenario and wall time since the previous served
-call of its session and of its arm, so an analysis prices a run both as
-recorded and with the lifetime applied on scenario time, where a call
-after a scenario gap above the record's `ttl_ms` pays its cache reads as writes
-on every arm. A resume after a stop is the opposite case: the wall gap
-exceeds the lifetime while the scenario gap does not, and `cache_gap`
-shows that call too.
+call of its session, so an analysis prices a run both as recorded and
+with the lifetime applied on scenario time, where a call after a scenario
+gap above the record's `ttl_ms` pays its cache reads as writes on every
+arm. A session's first call reads only the tools and system prompt an
+earlier session wrote; Pi's system prompt names the workspace, so the
+analysis finds the earlier call that sent the same tools and system
+prompt among the stored request parts and applies the same rule to the
+time since its answer. A resume after a stop is the opposite case: the
+wall gap exceeds the lifetime while the scenario gap does not, and
+`cache_gap` shows that call too.
 
 ## Capability evidence
 

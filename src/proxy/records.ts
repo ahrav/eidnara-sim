@@ -80,7 +80,7 @@ export interface CallRecord {
      * turn's first answer.
      */
     origin_turn?: string;
-    /** On a run with prompt caching on: the time since the calls whose cached prefix this one can read (`CacheGaps`). */
+    /** On a run with prompt caching on: the time since the call whose conversation this one extends (`CacheGaps`). */
     cache_gap?: CacheGap;
 }
 
@@ -98,21 +98,18 @@ export interface Gap {
 }
 
 /**
- * How long before a call the provider last served a call that shares its cached prefix. `session`
- * is measured from the previous served call of the same arm, component, model, and session, whose
- * request the conversation extends; `arm` from the previous served call of the same arm,
- * component, and model in any session, which shares the system prompt and tool definitions.
- * Components share no prefix, since each has a system prompt of its own. Each is null for
- * the first such call. The provider's cache lives `ttl_ms` of wall time after its last read. A
- * run's wall clock skips the idle time between turns that scenario time keeps, so a
- * `scenario_ms` gap above `ttl_ms` with a `wall_ms` gap inside it marks a call whose cache read
- * a user at the scenario's pace would have paid as a cache write.
+ * How long before a call the provider last served the call its conversation extends: the previous
+ * served call of the same arm, component, model, and session, or null for the first. The
+ * provider's cache lives `ttl_ms` of wall time after its last read. A run's wall clock skips the
+ * idle time between turns that scenario time keeps, so a `scenario_ms` gap above `ttl_ms` with a
+ * `wall_ms` gap inside it marks a call whose cache read a user at the scenario's pace would have
+ * paid as a cache write. A session's first call reads only the tools and system prompt an earlier
+ * session wrote, which the stored request parts identify (`requests.jsonl`).
  */
 export interface CacheGap {
-    /** The cache lifetime the gaps are read against. */
+    /** The cache lifetime the gap is read against. */
     ttl_ms: number;
     session: Gap | null;
-    arm: Gap | null;
 }
 
 type Timed = Pick<
@@ -134,55 +131,46 @@ const answeredAt = (call: Timed): Gap => {
 };
 
 /**
- * The answer times (`answeredAt`) of the last served call per arm, component, model, and session,
+ * The answer time (`answeredAt`) of the last served call per arm, component, model, and session,
  * fed every call record in write order. A call counts as served when the provider answered it
  * with cache-read or cache-write tokens, the usage that shows it read or wrote the cache; a call
  * the proxy faulted, one the provider refused, and one whose prefix the provider left uncached
- * leave the times as they were. The provider keeps a cache per model, so the model is part of
- * both keys.
+ * leave the time as it was. The provider keeps a cache per model, so the model is part of the key.
  */
 export class CacheGaps {
     private readonly last = new Map<string, Gap>();
 
-    /** `partial` with its gaps, for a call of a host under test; the harness's own calls stay as they are. */
+    /** `partial` with its gap, for a call of a host under test; the harness's own calls stay as they are. */
     stamp<T extends Omit<CallRecord, "seq" | "wall_ms">>(partial: T): T {
         if (HARNESS_COMPONENTS.has(partial.component)) return partial;
         return { ...partial, cache_gap: this.of(partial) };
     }
 
-    /** The gaps of `call`, read before `note` records it. */
+    /** The gap of `call`, read before `note` records it. */
     of(call: Timed): CacheGap {
         const at = answeredAt(call);
-        const since = (key: string): Gap | null => {
-            const prev = this.last.get(key);
-            if (!prev) return null;
-            // A call answered before the previous one's answer overlapped it; the gap is none.
-            return {
-                scenario_ms: Math.max(0, at.scenario_ms - prev.scenario_ms),
-                wall_ms: Math.max(0, at.wall_ms - prev.wall_ms),
-            };
+        const prev = this.last.get(CacheGaps.key(call));
+        // A call answered before the previous one's answer overlapped it; the gap is none.
+        const session = prev && {
+            scenario_ms: Math.max(0, at.scenario_ms - prev.scenario_ms),
+            wall_ms: Math.max(0, at.wall_ms - prev.wall_ms),
         };
-        const [arm, session] = CacheGaps.keys(call);
-        return { ttl_ms: CACHE_TTL_MS, session: since(session), arm: since(arm) };
+        return { ttl_ms: CACHE_TTL_MS, session: session ?? null };
     }
 
     note(call: Served): void {
         if (call.status !== 200 || call.cache_read_tokens + call.cache_write_tokens <= 0) return;
         const at = answeredAt(call);
-        for (const key of CacheGaps.keys(call)) {
-            const prev = this.last.get(key);
-            this.last.set(key, {
-                scenario_ms: Math.max(prev?.scenario_ms ?? 0, at.scenario_ms),
-                wall_ms: Math.max(prev?.wall_ms ?? 0, at.wall_ms),
-            });
-        }
+        const key = CacheGaps.key(call);
+        const prev = this.last.get(key);
+        this.last.set(key, {
+            scenario_ms: Math.max(prev?.scenario_ms ?? 0, at.scenario_ms),
+            wall_ms: Math.max(prev?.wall_ms ?? 0, at.wall_ms),
+        });
     }
 
-    private static keys(
-        call: Pick<Timed, "arm" | "session" | "component" | "model">,
-    ): [string, string] {
-        const arm = [call.arm, call.component, call.model];
-        return [JSON.stringify(arm), JSON.stringify([...arm, call.session])];
+    private static key(call: Pick<Timed, "arm" | "session" | "component" | "model">): string {
+        return JSON.stringify([call.arm, call.component, call.model, call.session]);
     }
 }
 
@@ -249,23 +237,16 @@ export function recordProblems(input: Partial<CallRecord> | Record<string, unkno
 }
 
 function isCacheGap(value: unknown): value is CacheGap {
-    const gap = (v: unknown) =>
-        v === null ||
-        (typeof v === "object" &&
-            ["scenario_ms", "wall_ms"].every((k) => {
-                const n = (v as Record<string, unknown>)[k];
-                return Number.isFinite(n) && (n as number) >= 0;
-            }));
     const g = value as Partial<CacheGap> | null;
+    if (typeof g !== "object" || g === null || !("session" in g)) return false;
+    if (!Number.isFinite(g.ttl_ms) || (g.ttl_ms as number) <= 0) return false;
+    const gap = g.session as Record<string, unknown> | null;
     return (
-        typeof g === "object" &&
-        g !== null &&
-        Number.isFinite(g.ttl_ms) &&
-        (g.ttl_ms as number) > 0 &&
-        "session" in g &&
-        "arm" in g &&
-        gap(g.session) &&
-        gap(g.arm)
+        gap === null ||
+        (typeof gap === "object" &&
+            ["scenario_ms", "wall_ms"].every(
+                (k) => Number.isFinite(gap[k]) && (gap[k] as number) >= 0,
+            ))
     );
 }
 
