@@ -797,6 +797,84 @@ describe("run inputs", () => {
         );
     });
 
+    test("a run records its registration's prompt-caching condition and the price table it selects", async () => {
+        const checks: Preflight = {
+            launcher: "/launcher",
+            time_injection: [],
+            distortions: [],
+            hosts: [{ host: "pi", version: "0.80.2", transcript_paths: [] }],
+            upgrade: [],
+            toolchain: [],
+        };
+        const tierRun = dir();
+        const tier: RunOptions = { config, tier: "S", seed: 101, host: "pi", out: tierRun };
+        const tierScenario = writeScenario(tierRun, scenarioBody());
+        const off = await loadManifest(tier, tierScenario, checks);
+        expect(off.manifest.prompt_caching).toBe("off");
+        expect(off.manifest.price_table).toEqual({
+            version: "v1",
+            rates: { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 },
+        });
+        // A manifest written before the field resumes as a caching-off run and stays as written.
+        const path = join(tierRun, "manifest.json");
+        const { prompt_caching: _condition, ...before } = off.manifest;
+        writeFileSync(path, JSON.stringify(before));
+        const resumed = await loadManifest(tier, tierScenario, checks);
+        expect(resumed.manifest.prompt_caching).toBeUndefined();
+        expect(resumed.manifest.price_table.version).toBe("v1");
+        writeFileSync(path, JSON.stringify({ ...before, prompt_caching: "on" }));
+        await expect(loadManifest(tier, tierScenario, checks)).rejects.toThrow(
+            /resume options differ from the manifest: prompt_caching/,
+        );
+        writeFileSync(path, JSON.stringify({ ...before, prompt_caching: "1h" }));
+        await expect(loadManifest(tier, tierScenario, checks)).rejects.toThrow(
+            /prompt_caching 1h is neither on nor off/,
+        );
+
+        const out = dir();
+        const opus = "global.anthropic.claude-opus-5-5";
+        const o: RunOptions = {
+            config: { ...config, agent_model: opus },
+            tier: "M",
+            seed: 605,
+            host: "pi",
+            out,
+            qualification: "PCH",
+        };
+        const scenario = writeScenario(out, scenarioBody(605, "M"));
+        // The cached table holds one model's rates, so a run of any other model is refused unwritten.
+        const haiku = "global.anthropic.claude-haiku-5-5";
+        const others: [Partial<RunOptions>, string][] = [
+            [{ config }, "m"],
+            [{ models: [opus, "us.anthropic.claude-opus-5-5"] }, "us.anthropic.claude-opus-5-5"],
+            [{ sideModel: haiku }, haiku],
+        ];
+        for (const [other, named] of others) {
+            await expect(loadManifest({ ...o, ...other }, scenario, checks)).rejects.toThrow(
+                `which holds no rates for ${named}`,
+            );
+        }
+        expect(existsSync(join(out, "manifest.json"))).toBe(false);
+        const on = await loadManifest(o, scenario, checks);
+        expect(on.manifest.qualification?.id).toBe("PCH");
+        expect(on.manifest.order).toEqual(["host", "eidnara"]);
+        expect(on.manifest.prompt_caching).toBe("on");
+        expect(on.manifest.price_table).toEqual({
+            version: "v2-opus-5-5-global-2026-11",
+            rates: { input: 4, output: 20, cache_read: 0.2, cache_write: 5, cache_write_1h: 8 },
+        });
+        await expect(loadManifest(o, scenario, checks)).resolves.toMatchObject({
+            manifest: {
+                prompt_caching: "on",
+                price_table: { version: "v2-opus-5-5-global-2026-11" },
+            },
+        });
+        // The condition is part of the execution digest the journal's Preflight entries bind.
+        expect(manifestIdentity(on.manifest)).not.toBe(
+            manifestIdentity({ ...on.manifest, prompt_caching: "off" }),
+        );
+    });
+
     test("a staging file that is a link is refused instead of followed", async () => {
         const out = dir();
         const scenario = writeScenario(out, scenarioBody());

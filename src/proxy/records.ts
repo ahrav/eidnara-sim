@@ -27,6 +27,9 @@ export const COMPONENTS = [
 ] as const;
 export type Component = (typeof COMPONENTS)[number];
 
+/** The components the harness itself records: its own callers and the requests the proxy refused. */
+export const HARNESS_COMPONENTS: ReadonlySet<string> = new Set(["user-sim", "judge", "rejected"]);
+
 export interface CallRecord {
     seq: number;
     arm: string;
@@ -39,8 +42,12 @@ export interface CallRecord {
     finish_reason: string | null;
     input_tokens: number;
     output_tokens: number;
+    /** Prompt tokens the provider read from its cache; `input_tokens` leaves them and the writes out. */
     cache_read_tokens: number;
+    /** Prompt tokens the call wrote to the provider's cache, at either lifetime. */
     cache_write_tokens: number;
+    /** Of `cache_write_tokens`, the tokens written with the 1-hour lifetime; absent when none. */
+    cache_write_1h_tokens?: number;
     started_wall_ms: number;
     wall_ms: number;
     scenario_ms: number;
@@ -73,6 +80,97 @@ export interface CallRecord {
      * turn's first answer.
      */
     origin_turn?: string;
+    /** On a run with prompt caching on: the time since the call whose conversation this one extends (`CacheGaps`). */
+    cache_gap?: CacheGap;
+}
+
+/**
+ * The provider's cache lifetime for the cache points a host places by default: Bedrock keeps a
+ * prefix for 5 minutes after its last read, and Pi's default retention (`short`) and OpenCode's
+ * default breakpoint name no longer one.
+ */
+const CACHE_TTL_MS = 300_000;
+
+/** Scenario and wall time from one call's answer to a later call's answer. */
+export interface Gap {
+    scenario_ms: number;
+    wall_ms: number;
+}
+
+/**
+ * How long before a call the provider last served the call its conversation extends: the previous
+ * served call of the same arm, component, model, and session, or null for the first. The
+ * provider's cache lives `ttl_ms` of wall time after its last read. A run's wall clock skips the
+ * idle time between turns that scenario time keeps, so a `scenario_ms` gap above `ttl_ms` with a
+ * `wall_ms` gap inside it marks a call whose cache read a user at the scenario's pace would have
+ * paid as a cache write. A session's first call reads only the tools and system prompt an earlier
+ * session wrote, which the stored request parts identify (`requests.jsonl`).
+ */
+export interface CacheGap {
+    /** The cache lifetime the gap is read against. */
+    ttl_ms: number;
+    session: Gap | null;
+}
+
+type Timed = Pick<
+    CallRecord,
+    "arm" | "session" | "component" | "model" | "scenario_ms" | "started_wall_ms" | "first_byte_ms"
+>;
+type Served = Timed & Pick<CallRecord, "status" | "cache_read_tokens" | "cache_write_tokens">;
+
+/**
+ * When the provider began to answer a call, on both clocks: its receipt plus the time to its
+ * first answer byte, which holds the proxy's upstream retries and their backoff. The provider
+ * reads the cache for the attempt it answers, and a prefix it writes can be read once that
+ * answer has started. Scenario time runs at wall speed while a call is in flight, so the same
+ * delay applies to both. A call with no answer keeps its receipt.
+ */
+const answeredAt = (call: Timed): Gap => {
+    const wait = Math.round(call.first_byte_ms ?? 0);
+    return { scenario_ms: call.scenario_ms + wait, wall_ms: call.started_wall_ms + wait };
+};
+
+/**
+ * The answer time (`answeredAt`) of the last served call per arm, component, model, and session,
+ * fed every call record in write order. A call counts as served when the provider answered it
+ * with cache-read or cache-write tokens, the usage that shows it read or wrote the cache; a call
+ * the proxy faulted, one the provider refused, and one whose prefix the provider left uncached
+ * leave the time as it was. The provider keeps a cache per model, so the model is part of the key.
+ */
+export class CacheGaps {
+    private readonly last = new Map<string, Gap>();
+
+    /** `partial` with its gap, for a call of a host under test; the harness's own calls stay as they are. */
+    stamp<T extends Omit<CallRecord, "seq" | "wall_ms">>(partial: T): T {
+        if (HARNESS_COMPONENTS.has(partial.component)) return partial;
+        return { ...partial, cache_gap: this.of(partial) };
+    }
+
+    /** The gap of `call`, read before `note` records it. */
+    of(call: Timed): CacheGap {
+        const at = answeredAt(call);
+        const prev = this.last.get(CacheGaps.key(call));
+        // A call answered before the previous one's answer overlapped it; the gap is none.
+        const session = prev && {
+            scenario_ms: Math.max(0, at.scenario_ms - prev.scenario_ms),
+            wall_ms: Math.max(0, at.wall_ms - prev.wall_ms),
+        };
+        return { ttl_ms: CACHE_TTL_MS, session: session ?? null };
+    }
+
+    note(call: Served): void {
+        if (call.status !== 200 || call.cache_read_tokens + call.cache_write_tokens <= 0) return;
+        // The reference is one answer, both clocks from the same call: the latest on the wall
+        // clock, which keeps its order across a resume.
+        const at = answeredAt(call);
+        const key = CacheGaps.key(call);
+        const prev = this.last.get(key);
+        if (!prev || at.wall_ms >= prev.wall_ms) this.last.set(key, at);
+    }
+
+    private static key(call: Pick<Timed, "arm" | "session" | "component" | "model">): string {
+        return JSON.stringify([call.arm, call.component, call.model, call.session]);
+    }
 }
 
 /** Characters of relayed response text a record keeps; a text this long may have been cut. */
@@ -120,7 +218,35 @@ export function recordProblems(input: Partial<CallRecord> | Record<string, unkno
     }
     if (value.request !== undefined && !isRequestRef(value.request))
         problems.push("request invalid");
+    const hour = value.cache_write_1h_tokens;
+    if (
+        hour !== undefined &&
+        !(
+            Number.isSafeInteger(hour) &&
+            (hour as number) > 0 &&
+            (hour as number) <= (value.cache_write_tokens as number)
+        )
+    ) {
+        problems.push("cache_write_1h_tokens invalid");
+    }
+    if (value.cache_gap !== undefined && !isCacheGap(value.cache_gap)) {
+        problems.push("cache_gap invalid");
+    }
     return problems;
+}
+
+function isCacheGap(value: unknown): value is CacheGap {
+    const g = value as Partial<CacheGap> | null;
+    if (typeof g !== "object" || g === null || !("session" in g)) return false;
+    if (!Number.isFinite(g.ttl_ms) || (g.ttl_ms as number) <= 0) return false;
+    const gap = g.session as Record<string, unknown> | null;
+    return (
+        gap === null ||
+        (typeof gap === "object" &&
+            ["scenario_ms", "wall_ms"].every(
+                (k) => Number.isFinite(gap[k]) && (gap[k] as number) >= 0,
+            ))
+    );
 }
 
 /** The last newline-terminated line of a file whose complete prefix ends at `end`, read backwards in chunks. */
@@ -184,15 +310,22 @@ export class RecordWriter {
     private closed = false;
     readonly records: CallRecord[] = [];
     private readonly retain: boolean;
+    private readonly cacheGaps: CacheGaps | null;
 
     /**
      * `resume` reopens an existing journal: a line a kill cut mid-append is dropped and the
      * sequence continues after the last complete record. `retain` keeps every record in
      * `records` for callers that read them back in memory; a run-long writer passes false,
-     * since its records live on disk and in the run's per-session call views. The record file
-     * exists from construction, so a run with no calls still has a `calls.jsonl`.
+     * since its records live on disk and in the run's per-session call views. With `cacheGaps`,
+     * a caching-on run's tracker, each record of a host under test carries its `cache_gap` and
+     * is noted once written; a resume first feeds the tracker the records the log holds. The
+     * record file exists from construction, so a run with no calls still has a `calls.jsonl`.
      */
-    constructor(path: string | null, options: { resume?: boolean; retain?: boolean } = {}) {
+    constructor(
+        path: string | null,
+        options: { resume?: boolean; retain?: boolean; cacheGaps?: CacheGaps } = {},
+    ) {
+        this.cacheGaps = options.cacheGaps ?? null;
         this.retain = options.retain ?? true;
         const resume = options.resume ?? false;
         this.fd = path === null ? null : openJournal(path, resume);
@@ -237,12 +370,14 @@ export class RecordWriter {
             );
         }
         const wall_ms = Math.max(this.lastWall, partial.started_wall_ms, Date.now());
-        const record = { ...partial, seq: this.seq, wall_ms };
+        const stamped = this.cacheGaps ? this.cacheGaps.stamp(partial) : partial;
+        const record = { ...stamped, seq: this.seq, wall_ms };
         const problems = recordProblems(record);
         if (problems.length > 0) throw new Error(`call record refused: ${problems.join(", ")}`);
         if (this.fd !== null) this.append(this.fd, `${JSON.stringify(record)}\n`);
         this.seq++;
         this.lastWall = wall_ms;
+        this.cacheGaps?.note(record);
         if (this.retain) this.records.push(record);
         return record;
     }

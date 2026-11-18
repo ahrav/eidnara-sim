@@ -74,10 +74,9 @@ the part memory can be held to.
 
 `costPanel(run, arm, grades)` sums calls and input, output, cache-read, and
 cache-write tokens by component and prices them at the table the run's
-manifest recorded when it started (`price_table`: today `v1`, USD 5, 25,
-0.5, and 6.25 per million tokens for every model, from `src/run/price.ts`);
-the panel names that version, and is `null` for a run whose manifest
-recorded no table. It also carries the arm's token totals summed over
+manifest recorded when it started (`price_table`, from `src/run/price.ts`,
+one set of rates for every model); the panel names that version, and is
+`null` for a run whose manifest recorded no table. It also carries the arm's token totals summed over
 its calls directly, so SIM-P38's conservation (arm totals equal the
 component sums) is auditable from the panel. The arm's total leaves out the harness's own user-sim and
 refused calls, which it reports apart, and divides by the arm's
@@ -100,6 +99,46 @@ from which the panel reports the memory writes and the writes with zero
 later reads; both are `null` for an arm with no `memory.json` (the host
 arm) and for one whose `memory.json` records that the notes could not be
 read.
+
+A run's prompt-caching condition (`docs/hosts.md`) selects its table:
+
+| Table | Run | Input | Output | Cache read | Cache write, 5 min | Cache write, 1 h |
+|---|---|---|---|---|---|---|
+| `v1` | caching off | 5 | 25 | 0.5 | 6.25 | 6.25 |
+| `v2-opus-5-5-global-2026-11` | caching on | 4 | 20 | 0.2 | 5 | 8 |
+
+Rates are USD per million tokens. `v2` holds the on-demand rates of Claude
+Opus 5.5 through the global inference profile in the AWS price list
+(`https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrockFoundationModels/current/us-west-2/index.json`,
+published 2026-11-09; the in-Region rates are 10% higher), which equal
+Anthropic's list prices. `v1` holds the list prices of Claude Opus 5 and
+4.8, which every campaign through W2S2 was priced at, so a caching-off
+run stays in their dollars: it is 25% above `v2` on input, output, and
+5-minute writes, which leaves every ratio between arms as it is while no
+call reads or writes the cache. A cache read costs 0.05 of the input rate
+in `v2` and 0.1 in `v1`, so a caching-on run takes `v2`; the registered
+condition selects the table, whatever tokens the run records. `v2`
+holds one model's rates: a caching-on run whose agent models or side
+model are another model, or Opus 5.5 under another inference profile, is
+refused before its manifest is written (`pricedByCachedTable`). Either
+table prices every record, the harness's own callers included: the
+user simulator and the P7 judge run on other models with lower list
+prices, so `harness_usd`, `judgeCost`, and the `user-sim` part of the
+campaign supervisor's spend are upper bounds at the agent model's rates.
+An arm's total and its cost per pass leave those calls out.
+
+`callUsd` prices one call: `input_tokens`, `output_tokens`, and
+`cache_read_tokens` at their rates, the call's 5-minute cache writes
+(`cache_write_tokens` less `cache_write_1h_tokens`) at the write rate, and
+its 1-hour writes at the 1-hour rate, or at the write rate in a table
+without one. The cost panel, the campaign supervisor's spend, and the
+probe replay's costs all price through it. The same call priced without
+caching charges its whole prompt (`input_tokens`, `cache_read_tokens`, and
+`cache_write_tokens`) at the input rate; an analysis reports a run both
+ways from the recorded tokens. The recorded cache reads are those of the
+run's wall clock; `docs/hosts.md` (Prompt caching) states how that
+differs from a user at the scenario's pace and what each call records for
+an analysis to price both.
 
 The cost table's `TOTAL` row sums every component's calls and tokens; its
 estimate is the arm's non-harness spend, as the heading states.

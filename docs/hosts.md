@@ -307,6 +307,94 @@ wrote; #1212's and #1213's final heads leave quoted and code text out of a
 widened statement and drop a contest whose observation the same commit
 retires. Every capability value stands.
 
+## Prompt caching
+
+A qualification registers `prompt_caching: "on"` or `"off"` for all its
+arms (`docs/run-command.md`); a tier run and a registration that names
+none run `off`. The manifest records the condition as `prompt_caching`, a
+resume compares it, and each arm's `capabilities.json` repeats it beside
+what the arm's requests show; `grade-run` and the probe replay take an
+arm's record only when its condition equals the manifest's.
+
+Pi 0.80.2's Bedrock client (`bedrock-converse-stream.js` in pi-ai) places
+a cache point after the system prompt and one at the end of the last
+message when that message has the user role, which every request's last
+message has (`buildSystemPrompt`, `convertMessages`). Bedrock orders a
+prefix as tools, system, messages, so the system point covers the tool
+definitions. Pi's default retention is `short`: a cache point with
+Bedrock's default 5-minute lifetime. `PI_CACHE_RETENTION=long` adds
+`ttl: "1h"`; the sandbox passes Pi no such variable. Pi places the points
+only for a Claude model whose id or display name holds a family string it
+knows (`supportsPromptCaching`: `-4-`, `claude-3-7-sonnet`,
+`claude-3-5-haiku`; Pi 0.87 adds `opus-5`, `sonnet-5`, `fable-5`), so for
+`global.anthropic.claude-opus-5-5` Pi 0.80.2 places none.
+
+Under `on`, `piModelName` writes each model of Pi's `models.json` with a
+display name that holds `-4-`, and Pi's own code places its two cache
+points. The model id, and with it the request's `modelId` and every other
+byte of the body, stays the same; Pi reads the name only to match model
+families and to show it. Every caller that reaches the model through Pi
+reads that definition:
+
+| Caller | Path to the model | Cache points under `on` |
+|---|---|---|
+| `agent` | Pi's agent loop | system, last user or tool-result message |
+| `native_compaction` | Pi's compaction, through the same client | system, last user message on Pi 0.80.2; none on Pi 0.87, which sends its compaction summary with cache retention `none` |
+| `memory_capture` | the plugin's `streamSimple` call with the model from Pi's registry (`packages/pi-plugin/src/memory-capture-native.ts`) | system, the one user message |
+| `history_summarizer`, `context_researcher`, `memory_classifier` | a child `pi --print --mode json --no-session` (`packages/pi-plugin/src/subagent-runner.ts`), which reads the arm's `models.json` | system, last user message |
+| `user-sim`, `judge` | the harness, straight to the proxy | none; their bodies are the same under both values, and the report prices them at the run's table |
+
+The host arm and the Eidnara arms therefore run under one policy, set by
+Pi. Each caller has a system prompt of its own, and the agent has the tool
+definitions, so a prefix is shared among the calls of one component and
+with no other. A capture or summarizer call writes its own user message
+to the cache and reads the system prompt an earlier call of the same
+component wrote, in any session of the arm.
+
+OpenCode 1.18.22 places its own cache points for a model whose id holds
+`anthropic` or `claude`: one after the system prompt and one on each of
+the last two messages, with the default lifetime. It does so under either
+value, so `off` describes Pi's requests, and an OpenCode run records
+cache-read and cache-write tokens under both.
+
+Bedrock accepts at most 4 cache points per request for Claude Opus 5.5,
+caches a prefix of at least 512 tokens, and offers the 5-minute and the
+1-hour lifetime
+(https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html).
+A read restarts the lifetime. The usage of a response reports
+`cacheReadInputTokens`, `cacheWriteInputTokens`, and the writes per
+lifetime in `cacheDetails`; `inputTokens` is the prompt less both.
+
+Cache lifetime runs on wall time, and the run's wall clock differs from
+scenario time between turns. Scenario time runs at wall speed while a
+turn or a background job is busy, and jumps over the idle gap to the next
+scheduled event (`docs/run.md`). Inside a turn the two gaps between calls
+are equal. Between turns and between sessions, scenario time advances by
+the scheduled gap while the wall clock advances by the harness's own work
+(the settle hold, the user-sim call, a host restart), a few seconds to a
+minute. A call that follows a scheduled gap above the lifetime therefore
+reads a cache that a user at the scenario's pace would find expired, and
+the recorded cost of such a call is a cache read where that user pays a
+cache write. Eidnara's daemon runs on the arm's injected clock and
+rewrites the first message once its last response is more than its
+`cache_ttl` (5 minutes) old, on the reasoning that the provider's cache
+has expired by then; in a run that rewrite replaces a prefix the wall
+clock still holds, so the Eidnara arm pays a write where the host arm
+keeps reading. Each call record of a caching-on run carries `cache_gap`
+(`docs/proxy.md`): the scenario and wall time since the previous served
+call of its session, so an analysis prices a run both as recorded and
+with the lifetime applied on scenario time, where a call after a scenario
+gap above the record's `ttl_ms` pays its cache reads as writes on every
+arm. The provider reports one cache-read count per call, so this view
+reprices all of a call's reads and is an estimate: it leaves the recorded
+cost as it is beside it. A session's first call reads only the tools and
+system prompt an earlier session wrote; Pi's system prompt names the workspace, so the
+analysis finds the earlier call that sent the same tools and system
+prompt among the stored request parts and applies the same rule to the
+time since its answer. A resume after a stop is the opposite case: the
+wall gap exceeds the lifetime while the scenario gap does not, and
+`cache_gap` shows that call too.
+
 ## Capability evidence
 
 The run checks each arm's evidence against its profile, and an arm is
@@ -330,8 +418,20 @@ complete evidence only when the two agree:
   `eidnara_search` result came from (the legacy scan when the result carries
   the plugin's fallback note, an error when it reports one, and the fused
   route for every other success; `null` on OpenCode, whose transcripts this
-  check does not read), and the arm's proxy calls by component. A mismatch
-  leaves `EndArm` unwritten, so the run is incomplete and a resume checks the
+  check does not read), the arm's proxy calls by component, the run's
+  `prompt_caching` condition, and `prompt_caching` under `observed`: per
+  component the arm's hosts call from, the stored requests, how many of
+  them carry a cache point, and the input, cache-read, and cache-write
+  tokens. Under `on`, every stored request of the agent and of the
+  Eidnara components carries a cache point; one without, or one with a
+  part `requests.jsonl` lacks, is a mismatch. Pi's own compaction is
+  recorded and held to nothing, since its cache points depend on the Pi
+  version. The run applies the same rule at every `session_end` to the
+  requests counted as calls started (`call_started` names each body's
+  cache points; a resume first counts the requests the log holds), and a
+  mismatch there fails the event like a boot mismatch, so a host that
+  stops placing cache points stops the run at the session that shows it.
+  A mismatch leaves `EndArm` unwritten, so the run is incomplete and a resume checks the
   same evidence again: a host-only arm with a plugin boot
   or an Eidnara component call; an arm with Eidnara compaction on that
   answered agent calls with no transform pass, whatever its Eidnara

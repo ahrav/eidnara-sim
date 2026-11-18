@@ -4,6 +4,7 @@ import type { SimConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
 import type { HostContext, SimHost } from "../hosts/arms";
 import { HostDriver } from "../hosts/driver";
+import type { PromptCaching } from "../hosts/profiles";
 import type { ConverseBody } from "../proxy/classify";
 import { bedrockUpstream, Gateway, type Upstream } from "../proxy/gateway";
 import { FaultInjector } from "../proxy/inject";
@@ -28,6 +29,8 @@ export interface TurnSpec {
     models: string[];
     contextLimit: number;
     sideModel: string | null;
+    /** The source run's prompt-caching condition, so the replayed requests carry its cache points. */
+    promptCaching: PromptCaching;
     turnDeadlineMs: number;
     project: string;
     corpus: string;
@@ -171,6 +174,7 @@ export async function runTurn(spec: TurnSpec, seams: TurnSeams = {}): Promise<Tu
         models: spec.models,
         contextLimit: spec.contextLimit,
         ...(spec.sideModel ? { sideModel: spec.sideModel } : {}),
+        promptCaching: spec.promptCaching,
         turnDeadlineMs: spec.turnDeadlineMs,
         transcriptPaths: spec.transcriptPaths,
         hostVersions: { from: spec.hostVersion, to: null },

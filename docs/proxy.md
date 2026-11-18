@@ -54,7 +54,8 @@ rest. The writer refuses a record that lacks any field below.
 | `component`, `componentSource` | The calling component and whether the caller `asserted` it or the proxy `inferred` it |
 | `model`, `status`, `error` | Model id, the HTTP status the gateway sent (0 when it sent none, including when the client disconnected before the answer), and the error text or `null` |
 | `finish_reason` | The stream's `messageStop.stopReason` or the response's `stopReason`; `stream_cut` when the answer carried no stop reason, including a stream that ended or failed before both `messageStop` and `metadata` arrived, and a stream the client left before it ended (relaying stops at the first event the client cannot receive, and the record holds the text delivered up to it; a non-streaming reply the client left before is recorded with `client disconnected before the response was delivered` and no text); `null` when the call had no answer |
-| `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` | Provider usage |
+| `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` | Provider usage. The provider counts a prompt token once: `cache_read_tokens` are the tokens it read from its prompt cache, `cache_write_tokens` the tokens it wrote there, and `input_tokens` the rest of the prompt, so the prompt is the sum of the three |
+| `cache_write_1h_tokens` | Of `cache_write_tokens`, the tokens written with the 1-hour lifetime, from the usage's `cacheDetails`; present only when above 0 |
 | `started_wall_ms`, `wall_ms` | Receipt time, and write time clamped so it never decreases in `seq` order and never precedes the record's own receipt (SIM-P15) |
 | `scenario_ms` | The scheduler's clock at receipt (SIM-P15) |
 | `first_byte_ms` | Milliseconds from receipt to the first answer byte the transport accepted for the host, after any `slow_stream` delay and including an injected fault's answer; `null` for a rejected request and when the host left first |
@@ -63,6 +64,7 @@ rest. The writer refuses a record that lacks any field below.
 | `stripped` | Request fields the proxy removed, keyed by path; present only when it removed one |
 | `arrival` | The request's arrival ordinal within its proxy process, assigned at the first byte; a resume replays records by this ordinal, falling back to `started_wall_ms` then `seq` for records written before it existed |
 | `request` | The forwarded body: `sha256` of the JSON handed upstream (after `stripped` removals), its UTF-8 `bytes`, and `parts`, the ids of its stored parts in body order (see Request bodies); present on every classified call of a run that stores bodies |
+| `cache_gap` | On a run with prompt caching on (`docs/hosts.md`), for every call but the harness's own (`user-sim`, `judge`, and `rejected` records carry none): `ttl_ms`, the provider's default cache lifetime the gap is read against (300,000), and `session`, the scenario and wall time (`scenario_ms`, `wall_ms`) from the answer of the previous served call of the same arm, component, model, and session, whose conversation this call extends, to this call's answer; `null` for the first such call. A call's answer time is its receipt plus `first_byte_ms` on both clocks, so the backoff of the proxy's upstream retries falls on the call that waited; `first_byte_ms` also holds the delay of a `slow_stream` fault (2 s by default), which moves that call's answer time by as much; a call with no answer byte keeps its receipt. A call is served when the provider answered it with cache-read or cache-write tokens, the usage that shows it read or wrote the cache. The gap is read when the record is written, against the calls written before it, so when the later-answered of two overlapping calls of one key is written first, it measures from the call before both and the earlier-answered one records 0; an arm's agent calls run one at a time. A resume rebuilds the answer times from the call log. A session's first call reads only the tools and system prompt an earlier call wrote; which earlier call sent the same ones is read from the stored request parts, since Pi's system prompt names the session's workspace |
 | `origin_turn` | On a `memory_capture`, `memory_classifier`, or `history_summarizer` call: the session's preceding turn, when the call was received after the next turn began and before that turn's first agent answer was recorded; absent otherwise |
 
 ## Request bodies
@@ -84,6 +86,12 @@ refuses later writes when that truncation fails. A body the store cannot write l
 adds a gateway failure, which fails the run at stop. An injected fault's
 request is stored too; its record's `fault_ref` shows that no provider saw it.
 
+A cache point is a block of the body like any other, so a stored request
+carries the host's cache points where the host put them. Pi puts one on
+the last message of a request, so the message that ends one request is a
+different part, without the point, in the next, and a caching-on run
+stores those messages twice.
+
 A gateway built with a `transform` option hands it each classified body, with
 the call's component and scope, after `stripUnsupported` and before the store
 and the upstream see it, so the stored body is the forwarded one; a transform
@@ -104,6 +112,7 @@ offering the `bash` tool as the agent, and `other` for the rest. A request
 the gateway refuses is `rejected`.
 
 `GatewayOptions.observe` receives a `call_started` event with the component
+and the number of cache point blocks in the forwarded body (`cache_points`)
 when the gateway classifies a call, before it forwards or faults the call, so
 a call that upstream refuses is observed too. The run uses the
 `history_summarizer` event to fire the mid-fold SIGKILL (OQ-8, observation

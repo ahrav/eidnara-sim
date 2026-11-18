@@ -8,7 +8,7 @@ import { ARMS, type Preregistration, type Tier } from "../prereg/schema";
 import { type CallRecord, recordProblems } from "../proxy/records";
 import { type HeldCall, heldCall } from "../run/calllog";
 import { type Entry, eachLine, requireAppendable, requireComplete } from "../run/journal";
-import type { PriceTable } from "../run/price";
+import { isPriceTable, type PriceTable } from "../run/price";
 import type { Sample as ResourceSample } from "../run/sampler";
 import { type Scenario, scenarioHash } from "../scenario/compile";
 import { admittedArms } from "../scenario/inputs";
@@ -123,18 +123,10 @@ interface Manifest {
 /** The manifest's price table: `null` when the run recorded none, refused when malformed. */
 function priceOf(table: unknown, path: string): PriceTable | null {
     if (table === undefined) return null;
-    const t = table as Partial<PriceTable> | null;
-    const rates = t?.rates as Record<string, unknown> | undefined;
-    const ok =
-        typeof t?.version === "string" &&
-        t.version !== "" &&
-        typeof rates === "object" &&
-        rates !== null &&
-        ["input", "output", "cache_read", "cache_write"].every(
-            (k) => typeof rates[k] === "number" && Number.isFinite(rates[k]) && rates[k] >= 0,
-        );
-    if (!ok) throw new Error(`${path}: price_table is not a versioned table of non-negative rates`);
-    return t as PriceTable;
+    if (!isPriceTable(table)) {
+        throw new Error(`${path}: price_table is not a versioned table of non-negative rates`);
+    }
+    return table;
 }
 
 /** Reads one JSON file as the record type its reader names, naming the file when the text does not parse. */
@@ -419,6 +411,10 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             if (!Number.isSafeInteger(c[field])) {
                 throw new Error(`call ${c.seq}: ${field} is not a count`);
             }
+        }
+        const hour = c.cache_write_1h_tokens;
+        if (hour !== undefined && !(Number.isSafeInteger(hour) && hour > 0)) {
+            throw new Error(`call ${c.seq}: cache_write_1h_tokens is not a count`);
         }
         if ("response_text" in c && typeof c.response_text !== "string") {
             throw new Error(`call ${c.seq}: response_text is not a string`);

@@ -3,6 +3,7 @@ import { AUDITED_BUILDS, auditedBuild, DAEMON_VARIANTS } from "../hosts/profiles
 import { loadPrereg, loadQualification } from "../scenario/inputs";
 import {
     buildRefusal,
+    promptCachingOf,
     qualificationHash,
     qualificationSeed,
     RANKING_GATE_ITEMS,
@@ -511,4 +512,50 @@ test("a run binds the registration's current build, or its reference build for r
     );
     // A registration without the section accepts whichever audited build the clone binds.
     expect(buildRefusal(loadQualification("C8H"), reference, ["eidnara-hybrid"])).toBeNull();
+});
+
+test("a registration names its prompt-caching condition, and one that names none runs with it off", () => {
+    expect(promptCachingOf(null)).toBe("off");
+    expect(promptCachingOf(Q)).toBe("off");
+    expect(edit((q) => (q.prompt_caching = "on"))).toEqual([]);
+    expect(edit((q) => (q.prompt_caching = "off"))).toEqual([]);
+    for (const value of ["1h", true, null]) {
+        expect(edit((q) => (q.prompt_caching = value))).toEqual([
+            "prompt_caching: expected one of off, on",
+        ]);
+    }
+    // The condition is part of the registration a run binds by hash.
+    const on = { ...structuredClone(Q), prompt_caching: "on" as const };
+    expect(promptCachingOf(on)).toBe("on");
+    expect(qualificationHash(on)).not.toBe(qualificationHash(Q));
+});
+
+test("the registrations before the caching condition keep their digests", () => {
+    const digests: Record<string, string> = {
+        C8: "c3762c53df8901401cbe5c990b773016cc97367d280645145628094a07723ff9",
+        C8H: "fc1448b33d715e11794b91d6c1f5444a182817d534886d8e65f92c691f723d02",
+        W2S: "c3a0a2df1e3bdcbfa4028e33c85253b5d0ac20a89d5a3260683f4fda444ee4f0",
+        W2SH: "8802f2ac4cf0fdc3e558ff3fd3b76734db02ac671ec3f0cdfbde24b34fc263ad",
+        W2S2: "c2621c571e56cdf27952c74a04d4a6bb9f8349d8f5044f183f5cb8378aafe01a",
+        W2S2H: "1023e9ad1a5880850676d0e4302b8bbe2a5179f81ecaa70d661110aea4f45b36",
+    };
+    for (const [id, digest] of Object.entries(digests)) {
+        const q = loadQualification(id);
+        expect(qualificationHash(q)).toBe(digest);
+        expect(promptCachingOf(q)).toBe("off");
+    }
+});
+
+test("PCH runs host and eidnara on C8H's held-out seed 605 with prompt caching on", () => {
+    const pch = loadQualification("PCH");
+    const c8h = loadQualification("C8H");
+    expect(validateQualification(pch, loadPrereg("M"))).toEqual([]);
+    expect(promptCachingOf(pch)).toBe("on");
+    expect(pch.seeds).toEqual([605]);
+    expect(c8h.seeds).toContain(605);
+    expect(pch.arms.run).toEqual(["host", "eidnara"]);
+    expect(pch.contrasts).toEqual([["eidnara", "host"]]);
+    // The split and the controls decide a scenario's items, so seed 605 holds C8H's.
+    expect([pch.tier, pch.corpus, pch.controls]).toEqual([c8h.tier, c8h.corpus, c8h.controls]);
+    expect(pch.no_source_control).toBe("host");
 });

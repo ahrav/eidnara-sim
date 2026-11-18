@@ -24,7 +24,7 @@ import { COMPONENT_HEADER, type ConverseBody, classify } from "./classify";
 import { encodeError, encodeEvent, encodeException, wireJson } from "./eventstream";
 import { type FaultInjector, type Sink, sleep, writeFault } from "./inject";
 import { type CallRecord, type Component, RESPONSE_TEXT_LIMIT, type RecordWriter } from "./records";
-import type { RequestStore } from "./requests";
+import { bodyCachePoints, type RequestStore } from "./requests";
 
 export type UpstreamResponse =
     | { events: AsyncIterable<Record<string, unknown>> }
@@ -114,6 +114,8 @@ export interface CallStarted {
     kind: "call_started";
     component: Component;
     wall_ms: number;
+    /** The cache point blocks the forwarded body carries. */
+    cache_points: number;
 }
 
 export interface GatewayOptions {
@@ -149,7 +151,9 @@ export interface GatewayOptions {
 
 const ROUTE = /^\/model\/([^/]+)\/(converse-stream|converse)$/;
 const MAX_BODY = 32 * 1024 * 1024;
-type Usage = Record<string, number>;
+type Usage = Record<string, number> & {
+    cacheDetails?: Array<{ ttl?: string; inputTokens?: number }>;
+};
 type Done = Partial<CallRecord> &
     Pick<CallRecord, "component" | "componentSource" | "model" | "status">;
 
@@ -633,9 +637,14 @@ export class Gateway {
             }
         }
         progress(done);
-        const event = { kind: "call_started", component: tag.component, wall_ms: Date.now() };
+        const event: CallStarted = {
+            kind: "call_started",
+            component: tag.component,
+            wall_ms: Date.now(),
+            cache_points: bodyCachePoints(body),
+        };
         try {
-            const ended = this.options.observe?.(event as CallStarted);
+            const ended = this.options.observe?.(event);
             if (typeof ended === "function") onEnd(ended as () => void);
         } catch (caught) {
             this.failures.push(caught as Error);
@@ -832,7 +841,23 @@ export class Gateway {
             input_tokens: usage.inputTokens ?? 0,
             output_tokens: usage.outputTokens ?? 0,
             cache_read_tokens: usage.cacheReadInputTokens ?? 0,
-            cache_write_tokens: usage.cacheWriteInputTokens ?? 0,
+            ...cacheWrites(usage),
         };
     }
+}
+
+/**
+ * A call's cache writes: the usage's total, or the sum of its per-lifetime `cacheDetails` when
+ * the usage names no total, and the tokens written with the 1-hour lifetime, which lie within
+ * the total; `cache_write_1h_tokens` is absent when there are none, as for every default cache
+ * point.
+ */
+function cacheWrites(usage: Usage): { cache_write_tokens: number; cache_write_1h_tokens?: number } {
+    const details = (Array.isArray(usage.cacheDetails) ? usage.cacheDetails : []).filter((d) =>
+        Number.isSafeInteger(d?.inputTokens),
+    );
+    const sum = (ds: typeof details) => ds.reduce((n, d) => n + (d.inputTokens as number), 0);
+    const total = usage.cacheWriteInputTokens ?? sum(details);
+    const hour = Math.min(total, sum(details.filter((d) => d.ttl === "1h")));
+    return { cache_write_tokens: total, ...(hour > 0 ? { cache_write_1h_tokens: hour } : {}) };
 }

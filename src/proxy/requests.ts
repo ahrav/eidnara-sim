@@ -56,6 +56,29 @@ export function requestParts(body: ConverseBody): RequestPart[] {
     return parts;
 }
 
+/**
+ * The cache point blocks a stored part carries: among a `system` part's blocks, a message's
+ * content blocks, or a `toolConfig` part's tools, the three places Bedrock accepts one.
+ */
+export function cachePointsOf(part: RequestPart): number {
+    const value = part.value as { content?: unknown; tools?: unknown } | null;
+    const blocks =
+        part.field === "system"
+            ? value
+            : part.field === "messages"
+              ? value?.content
+              : part.field === "toolConfig"
+                ? value?.tools
+                : null;
+    return (Array.isArray(blocks) ? blocks : []).filter(
+        (b) => typeof b === "object" && b !== null && "cachePoint" in b,
+    ).length;
+}
+
+/** The cache point blocks a body carries, over all its parts. */
+export const bodyCachePoints = (body: ConverseBody): number =>
+    requestParts(body).reduce((n, part) => n + cachePointsOf(part), 0);
+
 /** Stored parts by id: a whole log read into a map, or a `RequestPartLog` that reads on demand. */
 export interface PartLookup {
     get(id: string): RequestPart | undefined;

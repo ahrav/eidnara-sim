@@ -557,6 +557,15 @@ applied.
 | W2S2H | 610 | `a36f753b` | 751 | 0.3198 | 0.5188 |
 | W2S2H | 613 | `9adb4af5` | 323 | 0.3246 | 0.5368 |
 
+The prompt-caching pilot PCH (`prereg/PCH.json`, revision 1, `979f64b1`,
+held-out split) runs C8H's seed 605 with C8H's control, so its scenario
+holds the same 1,983 events, facts, and probes as C8H's, and its hash
+differs with the registration:
+
+| Registration | Seed | `scenario_hash` | Events | Largest BM25 ratio | Largest cosine |
+|---|---|---|---|---|---|
+| PCH | 605 | `57815a43` | 1983 | 0.3021 | 0.5913 |
+
 ## Known limits
 
 - A revised decision (P3) asks its task again in the workspace the agent

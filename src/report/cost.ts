@@ -5,7 +5,7 @@ import type { ArmLogs, RunLogs } from "../oracle/logs";
 import { HARNESS } from "../oracle/oracles";
 import type { CallRecord } from "../proxy/records";
 import { readJsonl } from "../run/journal";
-import type { Price } from "../run/price";
+import { callUsd, type Price } from "../run/price";
 import { notesOf } from "./intrusive";
 
 export interface ComponentCost {
@@ -43,7 +43,12 @@ const USEFUL = /^P(?:[1-9]|1[0-2])$/;
 
 type Tokens = Pick<
     CallRecord,
-    "component" | "input_tokens" | "output_tokens" | "cache_read_tokens" | "cache_write_tokens"
+    | "component"
+    | "input_tokens"
+    | "output_tokens"
+    | "cache_read_tokens"
+    | "cache_write_tokens"
+    | "cache_write_1h_tokens"
 >;
 
 export function componentCosts(calls: readonly Tokens[], price: Price): ComponentCost[] {
@@ -63,12 +68,7 @@ export function componentCosts(calls: readonly Tokens[], price: Price): Componen
         row.output += c.output_tokens;
         row.cache_read += c.cache_read_tokens;
         row.cache_write += c.cache_write_tokens;
-        row.usd +=
-            (c.input_tokens * price.input +
-                c.output_tokens * price.output +
-                c.cache_read_tokens * price.cache_read +
-                c.cache_write_tokens * price.cache_write) /
-            1e6;
+        row.usd += callUsd(c, price);
         byComponent.set(c.component, row);
     }
     return [...byComponent.values()].sort((a, b) => b.usd - a.usd);
@@ -135,7 +135,7 @@ export function costPanel(run: RunLogs, arm: ArmLogs, grades: GradeRecord[]): Co
     const sum = (rows: ComponentCost[]) => rows.reduce((s, c) => s + c.usd, 0);
     const usd = sum(components.filter((c) => !HARNESS.has(c.component)));
     const total = (field: keyof Tokens & `${string}_tokens`) =>
-        arm.calls.reduce((n, c) => n + c[field], 0);
+        arm.calls.reduce((n, c) => n + (c[field] ?? 0), 0);
     const latest = new Map<string, GradeRecord>();
     for (const g of grades) {
         if (g.arm !== arm.arm) continue;

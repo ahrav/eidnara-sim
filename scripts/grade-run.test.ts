@@ -1589,6 +1589,30 @@ describe("arm capability evidence", () => {
         }
     });
 
+    test("a record written under another prompt-caching condition than the manifest's is refused", () => {
+        const on = { ...record("host"), prompt_caching: "on" };
+        const dir = runDir({ host: on, eidnara: record("eidnara") });
+        const m = pinned("host", "eidnara");
+        const cached = { ...m, prompt_caching: "on" };
+        expect(() => requireCapabilities(dir, cached, ["host"], [ended("host")])).not.toThrow();
+        // A record from before the condition, or from a caching-off run, ran with it off.
+        expect(() => requireCapabilities(dir, m, ["eidnara"], [ended("eidnara")])).not.toThrow();
+        expect(() =>
+            requireCapabilities(
+                dir,
+                { ...m, prompt_caching: "off" },
+                ["eidnara"],
+                [ended("eidnara")],
+            ),
+        ).not.toThrow();
+        expect(() => requireCapabilities(dir, cached, ["eidnara"], [ended("eidnara")])).toThrow(
+            /is not the capability record of arm eidnara as the manifest pins it/,
+        );
+        expect(() => requireCapabilities(dir, m, ["host"], [ended("host")])).toThrow(
+            /is not the capability record of arm host as the manifest pins it/,
+        );
+    });
+
     test("grading refuses a pre-v3 run before it removes the run's grade summary", async () => {
         const dir = runDir({});
         writeFileSync(

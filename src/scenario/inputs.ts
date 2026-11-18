@@ -8,6 +8,7 @@ import { CORPUS_DIR } from "../corpus/sources";
 import { sha256Hex } from "../prereg/canonical";
 import {
     parseQualification,
+    promptCachingOf,
     type Qualification,
     qualificationHash,
     qualificationSeed,
@@ -132,10 +133,21 @@ export function admittedArms(
         seed?: number;
         order?: string[];
         qualification?: { id: string; sha256: string } | null;
+        prompt_caching?: unknown;
     },
     scenario: { manifest?: Record<string, unknown> },
 ): { run: string[]; pairs: string[][] } {
     const ref = manifest.qualification ?? null;
+    // The run took its prompt-caching condition from its registration; a tier run and a
+    // manifest from before the condition ran with it off.
+    const requireCondition = (registered: string) => {
+        const recorded = manifest.prompt_caching ?? "off";
+        if (recorded !== registered) {
+            throw new Error(
+                `manifest.json records prompt caching ${String(recorded)}, but ${ref?.id ?? `tier ${manifest.tier}`} registers ${registered}`,
+            );
+        }
+    };
     const compiledSeed = scenario.manifest?.seed;
     if (
         compiledSeed !== undefined &&
@@ -153,6 +165,7 @@ export function admittedArms(
         );
     }
     if (ref === null) {
+        requireCondition("off");
         const prereg = loadPrereg(manifest.tier);
         return { run: prereg.arms.run, pairs: prereg.aa_controls?.pairs ?? [] };
     }
@@ -160,6 +173,7 @@ export function admittedArms(
     if (qualificationHash(q) !== ref.sha256) {
         throw new Error(`prereg/${ref.id}.json changed since the run recorded ${ref.sha256}`);
     }
+    requireCondition(promptCachingOf(q));
     if (q.tier !== manifest.tier) throw new Error(`qualification ${q.id} binds tier ${q.tier}`);
     if (manifest.host !== undefined && !q.hosts.includes(manifest.host)) {
         throw new Error(`qualification ${q.id} runs no ${manifest.host} host`);

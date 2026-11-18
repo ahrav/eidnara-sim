@@ -14,6 +14,15 @@ export type ArmName =
     | "eidnara-search"
     | "host-oracle";
 
+/**
+ * A run's registered prompt-caching condition, the same for every arm. Under `on` the host places
+ * the provider cache points it places for a model it recognises (`piModelName` in `arms.ts`);
+ * under `off` the host's own model matching decides, which for Pi 0.80.2 and the Claude 5.5 model
+ * ids places none.
+ */
+export const PROMPT_CACHING = ["off", "on"] as const;
+export type PromptCaching = (typeof PROMPT_CACHING)[number];
+
 /** How an arm's memory search answers: none, the plugin's legacy snapshot scan, or the daemon's fused route. */
 export type SearchRoute = "none" | "legacy-scan" | "fused";
 

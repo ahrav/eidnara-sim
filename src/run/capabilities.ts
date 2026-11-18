@@ -22,10 +22,11 @@ import {
     type DaemonVariant,
     deliveryOf,
     FIXTURE_READER_LAG_COMMITS,
+    type PromptCaching,
 } from "../hosts/profiles";
 import type { ConverseBody } from "../proxy/classify";
-import type { CallRecord } from "../proxy/records";
-import { type PartLookup, rebuildRequest } from "../proxy/requests";
+import { type CallRecord, HARNESS_COMPONENTS } from "../proxy/records";
+import { cachePointsOf, type PartLookup, rebuildRequest } from "../proxy/requests";
 import { ORACLE_OPENING } from "./oracle-note";
 
 /** The model-call components only the Eidnara plugin and daemon make. */
@@ -81,6 +82,122 @@ export interface ArmObservation {
     daemon_routes?: DaemonRouteObservation;
     /** The daemon status readings in the arm's `resources.jsonl`; absent on observations recorded before they were read. */
     daemon_status?: DaemonStatusObservation;
+    /** The cache points and cache tokens of the arm's calls; absent on observations recorded before they were read. */
+    prompt_caching?: CachingObservation;
+}
+
+/** One component's calls as the provider's cache saw them. */
+export interface CachingCount {
+    /** Calls whose forwarded body the run stored. */
+    requests: number;
+    /** Of those, the calls whose body carries at least one cache point. */
+    with_cache_points: number;
+    /** The provider's prompt usage summed over the component's calls. */
+    input_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+}
+
+/** An arm's calls by component, the harness's own callers and refused requests left out. */
+export interface CachingObservation {
+    components: Record<string, CachingCount>;
+}
+
+const countOf = (components: Record<string, CachingCount>, component: string): CachingCount =>
+    (components[component] ??= {
+        requests: 0,
+        with_cache_points: 0,
+        input_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+    });
+
+/**
+ * Counts one request of `component` that carries `points` cache points. The run counts each
+ * request as its call starts, so a session's end can hold the arm to the caching condition
+ * before the arm's finish reads the stored bodies.
+ */
+export function noteRequest(
+    components: Record<string, CachingCount>,
+    component: string,
+    points: number,
+): void {
+    if (HARNESS_COMPONENTS.has(component)) return;
+    const count = countOf(components, component);
+    count.requests++;
+    if (points > 0) count.with_cache_points++;
+}
+
+/** Builds an arm's `CachingObservation` from its call records; each stored part is read once. */
+export class CachingTally {
+    private readonly components: Record<string, CachingCount> = {};
+    private readonly points = new Map<string, number | null>();
+
+    constructor(private readonly parts: PartLookup) {}
+
+    add(
+        call: Pick<
+            CallRecord,
+            "component" | "request" | "input_tokens" | "cache_read_tokens" | "cache_write_tokens"
+        >,
+    ): void {
+        if (HARNESS_COMPONENTS.has(call.component)) return;
+        const count = countOf(this.components, call.component);
+        count.input_tokens += call.input_tokens;
+        count.cache_read_tokens += call.cache_read_tokens;
+        count.cache_write_tokens += call.cache_write_tokens;
+        if (!call.request) return;
+        // A request with a part the log lacks cannot be rebuilt, so it shows no cache point.
+        const points = call.request.parts.map((id) => this.pointsOf(id));
+        const whole = points.every((n) => n !== null);
+        noteRequest(
+            this.components,
+            call.component,
+            whole ? points.reduce<number>((sum, n) => sum + (n ?? 0), 0) : 0,
+        );
+    }
+
+    /** The cache points of a stored part, or null for a part the log lacks. */
+    private pointsOf(id: string): number | null {
+        let n = this.points.get(id);
+        if (n === undefined) {
+            const part = this.parts.get(id);
+            n = part ? cachePointsOf(part) : null;
+            this.points.set(id, n);
+        }
+        return n;
+    }
+
+    observation(): CachingObservation {
+        return { components: this.components };
+    }
+}
+
+/**
+ * The components whose every request the host's model client sends with cache points: the agent
+ * loop and the Eidnara plugin's calls. Pi's own compaction is recorded and held to nothing, since
+ * Pi 0.87 sends its compaction summary with cache retention `none` where 0.80.2 places the points.
+ */
+const CACHED_CALLERS: readonly string[] = ["agent", ...EIDNARA_COMPONENTS];
+
+/**
+ * What an arm's requests show against the run's prompt-caching condition. Under `on` the host's
+ * client places cache points on every request it sends, so a request of one of its callers
+ * without a point ran outside the condition. Under `off` the host's own model matching decides,
+ * so the observation stands as recorded.
+ */
+export function cachingMismatches(
+    condition: PromptCaching,
+    o: CachingObservation | undefined,
+): string[] {
+    if (condition !== "on" || !o) return [];
+    return Object.entries(o.components)
+        .filter(([component]) => CACHED_CALLERS.includes(component))
+        .filter(([, c]) => c.with_cache_points < c.requests)
+        .map(
+            ([component, c]) =>
+                `${c.requests - c.with_cache_points} of ${c.requests} ${component} requests carry no cache point, but the run registers prompt caching on`,
+        );
 }
 
 /**
@@ -1077,6 +1194,29 @@ export function armMismatches(
         }
     }
     return out;
+}
+
+/**
+ * The arm's `capabilities.json`: its profile, the build the run bound (`eidnaraBuild`, as the
+ * manifest records it), the run's prompt-caching condition, what the evidence shows, and every
+ * difference between the two.
+ */
+export function capabilityRecord<B>(
+    observed: ArmObservation,
+    eidnaraBuild: B,
+    build: AuditedBuild | undefined,
+    caching: PromptCaching,
+) {
+    return {
+        profile: armProfile(observed.arm),
+        eidnara_build: eidnaraBuild,
+        prompt_caching: caching,
+        observed,
+        mismatches: [
+            ...armMismatches(observed, build),
+            ...cachingMismatches(caching, observed.prompt_caching),
+        ],
+    };
 }
 
 /**

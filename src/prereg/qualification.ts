@@ -12,6 +12,8 @@ import {
     capabilityGaps,
     deliveryOf,
     isArmName,
+    PROMPT_CACHING,
+    type PromptCaching,
 } from "../hosts/profiles";
 import { canonicalJson, sha256Hex } from "./canonical";
 import { HOSTS, type Preregistration, TIERS, type Tier } from "./schema";
@@ -40,6 +42,7 @@ export const QUALIFICATIONS = [
     "W2SH",
     "W2S2",
     "W2S2H",
+    "PCH",
 ] as const;
 /**
  * Control items a qualification adds to its scenarios. `wrong-project-lookup` asks each P8 lookup
@@ -133,8 +136,20 @@ export interface Qualification {
     replicates?: { seeds: number[]; arms: string[] };
     /** The analysis plan the registration fixes before any measured run. */
     analysis?: Analysis;
+    /**
+     * The prompt-caching condition every arm of the registration runs under; `off` when absent.
+     * Under `on` the run makes Pi place its Bedrock cache points for the measured model
+     * (`piModelName`), refuses an arm with a host caller's request that carries none, records the
+     * cache gap of each call a host under test makes, and prices its calls at `CACHED_PRICE_TABLE`. OpenCode places its own
+     * cache points for a Claude model under either value.
+     */
+    prompt_caching?: PromptCaching;
     claim: "descriptive";
 }
+
+/** The prompt-caching condition a registration's runs take; a tier run and an unnamed one run `off`. */
+export const promptCachingOf = (q: Pick<Qualification, "prompt_caching"> | null): PromptCaching =>
+    q?.prompt_caching ?? "off";
 
 /** One audited Eidnara build as a registration names it: the integration branch and its commit. */
 export interface BuildRef {
@@ -222,6 +237,7 @@ export function validateQualification(value: unknown, tier: Preregistration): st
         "no_source_control",
         "corpus",
         "fresh_seeds",
+        "prompt_caching",
     ]);
     for (const [field, shape] of Object.entries(SECTIONS)) {
         const v = (value as Record<string, unknown> | null)?.[field];
@@ -232,6 +248,14 @@ export function validateQualification(value: unknown, tier: Preregistration): st
     const fresh = (value as Record<string, unknown> | null)?.fresh_seeds;
     if (fresh !== undefined)
         checkShape({ fresh_seeds: fresh }, { fresh_seeds: literal(true) }, "", errors);
+    const caching = (value as Record<string, unknown> | null)?.prompt_caching;
+    if (caching !== undefined)
+        checkShape(
+            { prompt_caching: caching },
+            { prompt_caching: oneOf(PROMPT_CACHING) },
+            "",
+            errors,
+        );
     if (errors.length > 0) return errors;
     // SAFETY: checkShape found no error, so value has every field SHAPE declares.
     const q = value as Qualification;
