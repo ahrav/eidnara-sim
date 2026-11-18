@@ -61,12 +61,12 @@ export function abstainPrompt(
     return `${rubric}\n\nQUESTION:\n${question}\n\nUSER'S EARLIER STATEMENT:\n${statement}\n\nREPLY:\n<<<\n${judgedText(answer)}\n>>>\n\nAnswer with exactly one letter: ${ABSTAIN_LABELS.slice(0, -1).join(", ")}, or ${ABSTAIN_LABELS.at(-1)}.`;
 }
 
-/** The judge's identity for a revision: its model, the prompt frame with the preprocessing version, and the rubric. */
+/** The judge's identity for a revision: its model, the prompt frame with the preprocessing version and the arm-name pattern, and the rubric. */
 export function abstainIdentity(revision: GradingRevision): JudgeIdentity {
     return {
         model: revision.judge.model,
         prompt_digest: sha256Hex(
-            `${PREPROCESSING_VERSION}\n${REDACTED}\n${abstainPrompt("", "", "", "")}`,
+            `${PREPROCESSING_VERSION}\n${REDACTED}\n${ARM_NAMES.source}\n${abstainPrompt("", "", "", "")}`,
         ),
         rubric_digest: sha256Hex(revision.rubric),
     };
@@ -87,7 +87,7 @@ export interface AbstainJudgment {
 }
 
 export function parseLabel(text: string): AbstainLabel {
-    const letter = text.trim().replace(/[.!]+$/, "");
+    const letter = text.trim().replace(/[.!]$/, "");
     if ((ABSTAIN_LABELS as readonly string[]).includes(letter)) return letter as AbstainLabel;
     throw new GradeRefused(`judge reply ${JSON.stringify(text.slice(0, 80))} is not a label`);
 }

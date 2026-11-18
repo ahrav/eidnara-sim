@@ -52,7 +52,7 @@ describe("the text the abstention judge reads", () => {
 describe("the judge's reply", () => {
     test("one label letter is a label, with a closing period or exclamation mark at most", () => {
         expect(["A", " B\n", "C.", "D!"].map(parseLabel)).toEqual(["A", "B", "C", "D"]);
-        for (const reply of ["", "a", "E", "A or B", "Label: A", "A B"]) {
+        for (const reply of ["", "a", "E", "A or B", "Label: A", "A B", "A!!", "B.."]) {
             expect(() => parseLabel(reply)).toThrow(GradeRefused);
         }
     });

@@ -127,7 +127,8 @@ export function validateGradingRevision(value: unknown): string[] {
         supersedes.key !== "grading.abstain_rule" ||
         supersedes.value !== "abstention-without-guess" ||
         !Number.isSafeInteger(supersedes.tier_revisions_through) ||
-        (supersedes.tier_revisions_through as number) >= (value.revision as number) ||
+        (Number.isSafeInteger(value.revision) &&
+            (supersedes.tier_revisions_through as number) >= (value.revision as number)) ||
         Object.keys(supersedes).length !== 3
     ) {
         errors.push("supersedes: expected the tier rule and the last tier revision it held in");
@@ -188,6 +189,14 @@ export function validateGradingRevision(value: unknown): string[] {
             ...splitErrors(v.design, "validation.design"),
             ...splitErrors(v.test, "validation.test"),
         );
+        const campaigns = (s: unknown): unknown[] =>
+            isObj(s) && Array.isArray(s.campaigns) ? s.campaigns : [];
+        const designed = campaigns(v.design);
+        if (campaigns(v.test).some((c) => designed.includes(c))) {
+            errors.push(
+                "validation: a campaign lies in the design split or the test split, one of them",
+            );
+        }
         const counts = isObj(v.label_counts) ? v.label_counts : {};
         errors.push(...keysOf(counts, ABSTAIN_LABELS, "validation.label_counts"));
         const total = ABSTAIN_LABELS.reduce(

@@ -1975,12 +1975,12 @@ describe("P9 graded from a judge's label", () => {
         expect((await gradeRun(dir, null, true)).versions).toEqual({ "3": 1 });
     });
 
-    test("a judgment of another answer is no judgment of this one", async () => {
+    test("a judgment of another prompt is no judgment of this answer", async () => {
         const dir = p9run("P9-pass-user-left-open");
         const stale = judgments.bind(null, dir);
         await gradeRun(dir, null, false, judgeSays("A"));
         const [row] = stale();
-        row.judgment.answer_digest = sha256Hex("an earlier answer");
+        row.judgment.prompt_digest = sha256Hex("an earlier prompt");
         writeFileSync(join(dir, ABSTAIN_JUDGMENTS), `${JSON.stringify(row)}\n`);
         const judge = judgeSays("B");
         await gradeRun(dir, null, true, judge);
@@ -2024,7 +2024,7 @@ describe("P9 graded from a judge's label", () => {
         expect(existsSync(join(bare, "grades.jsonl"))).toBe(false);
     });
 
-    test("two answers that normalise to one prompt each keep their judgment", async () => {
+    test("answers that normalise to one prompt share one label and keep a row each", async () => {
         const f = fixture("P9-pass");
         const dir = run({ probes: [f.probe], facts: [{ id: "f-1", statement }] });
         const base = f.snapshots[0] as Snapshot;
@@ -2042,12 +2042,26 @@ describe("P9 graded from a judge's label", () => {
         snapshot(dir, "eidnara", answering("eidnara", "We **never** settled that."));
         const judge = judgeSays("A");
         await gradeRun(dir, null, false, judge);
-        expect(judge.prompts).toHaveLength(2);
-        expect(judge.prompts[0]).toBe(judge.prompts[1] as string);
-        expect(new Set(judgments(dir).map((r) => r.judgment.answer_digest)).size).toBe(2);
+        // One call labels the prompt; the second answer takes that label and the same call.
+        expect(judge.prompts).toHaveLength(1);
+        const rows = judgments(dir);
+        expect(rows.map((r) => [r.arm, r.judgment.label, r.calls])).toEqual([
+            ["host", "A", rows[0].calls],
+            ["eidnara", "A", rows[0].calls],
+        ]);
+        expect(new Set(rows.map((r) => r.judgment.answer_digest)).size).toBe(2);
+        expect(new Set(rows.map((r) => r.judgment.prompt_digest)).size).toBe(1);
         const later = judgeSays("B");
         await gradeRun(dir, null, true, later);
         expect(later.prompts).toHaveLength(0);
+        expect(grades(dir).map((g) => g.metrics["P9.label"])).toEqual(["A", "A", "A", "A"]);
+        // With one answer's row gone, the prompt's label still stands for it, with no judge route.
+        writeFileSync(join(dir, ABSTAIN_JUDGMENTS), `${JSON.stringify(rows[0])}\n`);
+        await gradeRun(dir, null, true);
+        expect(judgments(dir).map((r) => [r.arm, r.judgment.label])).toEqual([
+            ["host", "A"],
+            ["eidnara", "A"],
+        ]);
     });
 
     test("a completed row of the judgment log that holds no judgment refuses grading; a cut last row is dropped", async () => {

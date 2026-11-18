@@ -113,6 +113,18 @@ describe("grading revisions", () => {
             "validation.label_pass_agreement.kappa: unknown key",
             "validation.superseded_rule.note: unknown key",
         ]);
+        expect(
+            edited((r) => {
+                const v = r.validation as { design: { campaigns: string[] }; test: object };
+                Object.assign(v.test, { campaigns: [...v.design.campaigns] });
+            }),
+        ).toEqual([
+            "validation: a campaign lies in the design split or the test split, one of them",
+        ]);
+        // A revision that is no number is named, and the checks that read it still return.
+        expect(
+            edited((r) => Object.assign(r, { revision: { valueOf: null, toString: null } })),
+        ).toEqual(["revision: expected the integer the id names"]);
         expect(validateGradingRevision(null)).toEqual(["expected an object"]);
     });
 

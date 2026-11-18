@@ -491,12 +491,15 @@ export const ABSTAIN_JUDGMENTS = "abstain-judgments.jsonl";
 export const ABSTAIN_JUDGE_FAILED = "P9 judge call failed";
 
 /**
- * Labels each answer under the grading revision's rubric and judge. A judgment stored in
- * `abstain-judgments.jsonl` for the same prompt, answer, judge, and revision stands, so a later
- * pass, a regrade included, reads the stored label and calls no judge. A new label comes from
- * one call through a gateway this starts, logged to `judge-calls.jsonl`, and is appended to the
- * judgment log with the call's sequence number. An answer whose call fails is skipped and
- * counted in `judgeErrors`, as is every new label of a pass whose call log lost a write.
+ * Labels each answer under the grading revision's rubric and judge. A label belongs to a
+ * prompt: answers that normalise to one prompt share one label, whichever arm gave them, and
+ * each answer has a row of its own in `abstain-judgments.jsonl`. A stored row for the same
+ * prompt, answer, judge, and revision stands, so a later pass, a regrade included, reads the
+ * stored label and calls no judge. A prompt without a label gets one call through a gateway
+ * this starts, logged to `judge-calls.jsonl`, and each new row is appended with the sequence
+ * numbers of the calls that made its label. An answer whose call fails is skipped and counted in
+ * `judgeErrors`, as is every new row of a pass whose call log lost a write. A completed row
+ * that holds no judgment refuses the pass by its line number.
  */
 export async function judgeAbstentions(o: {
     items: readonly Abstention[];
@@ -510,24 +513,32 @@ export async function judgeAbstentions(o: {
     const { items, dir, upstream, seed, revision, models, skip } = o;
     const log = join(dir, ABSTAIN_JUDGMENTS);
     requireAppendable(log);
-    // Two answers can normalise to one prompt, so a judgment is kept per prompt and answer.
+    // A label belongs to a prompt. Each answer keeps a row of its own, and every answer that
+    // normalises to one prompt carries that prompt's one label, whichever arm gave it.
     const keyOf = (f: { prompt_digest: string; answer_digest: string }) =>
         `${f.prompt_digest}:${f.answer_digest}`;
-    const stored = new Map<string, AbstainJudgment>();
+    type Labelled = { judgment: AbstainJudgment; calls: number[] };
+    const rows = new Map<string, AbstainJudgment>();
+    const prompts = new Map<string, Labelled>();
     if (existsSync(log)) {
         const lines = readFileSync(log, "utf8").split("\n");
         // The text after the last line feed is a cut append; the next append overwrites it.
         for (const [i, line] of lines.slice(0, -1).entries()) {
-            let judgment: unknown;
+            let row: { judgment?: unknown; calls?: unknown } | null;
             try {
-                judgment = (JSON.parse(line) as { judgment?: unknown } | null)?.judgment;
+                row = JSON.parse(line);
             } catch {
-                judgment = undefined;
+                row = null;
             }
-            if (!isAbstainJudgment(judgment)) {
+            const judgment = row?.judgment;
+            const calls = row?.calls;
+            if (!isAbstainJudgment(judgment) || !Array.isArray(calls)) {
                 throw new Error(`${log}: line ${i + 1} holds no abstention judgment`);
             }
-            stored.set(keyOf(judgment), judgment);
+            rows.set(keyOf(judgment), judgment);
+            if (!prompts.has(judgment.prompt_digest)) {
+                prompts.set(judgment.prompt_digest, { judgment, calls: calls.map(Number) });
+            }
         }
     }
     const framer = (url: string): AbstainJudge => {
@@ -537,74 +548,97 @@ export async function judgeAbstentions(o: {
     };
     const offline = framer("http://judge.invalid");
     const judgments = new Map<Abstention, AbstainJudgment>();
-    const pending: { item: Abstention; frame: ReturnType<AbstainJudge["frame"]> }[] = [];
+    type Frame = ReturnType<AbstainJudge["frame"]>;
+    const pending: { item: Abstention; frame: Frame }[] = [];
     for (const item of items) {
         const frame = offline.frame(item.probe.text ?? "", item.statement, item.answer);
-        const kept = stored.get(keyOf(frame));
+        const kept = rows.get(keyOf(frame));
         if (kept && judgmentStands(kept, frame, offline)) judgments.set(item, kept);
         else pending.push({ item, frame });
     }
-    if (pending.length === 0) return { judgments, judgeErrors: 0 };
-    if (!upstream) throw new Error("P9 judging needs the sim config");
-    let judgeErrors = 0;
-    const { records, gateway } = judgeGateway(dir, ABSTAIN_JUDGMENTS, upstream, seed);
     const fresh: { item: Abstention; judgment: AbstainJudgment; calls: number[] }[] = [];
-    try {
-        await gateway.start();
-        const judge = framer(gateway.urls[0] as string);
-        for (const { item, frame } of pending) {
-            const firstCall = records.records.length;
-            try {
-                const label = await judge.label(frame.prompt);
-                fresh.push({
-                    item,
-                    judgment: {
+    /** The label a prompt already has under this judge, for an answer with no row of its own. */
+    const labelled = (frame: Frame): Labelled | undefined => {
+        const known = prompts.get(frame.prompt_digest);
+        const same = known && { ...frame, answer_digest: known.judgment.answer_digest };
+        return known && same && judgmentStands(known.judgment, same, offline) ? known : undefined;
+    };
+    const record = (item: Abstention, frame: Frame, from: Labelled) => {
+        const judgment = { ...from.judgment, answer_digest: frame.answer_digest };
+        fresh.push({ item, judgment, calls: from.calls });
+    };
+    const unlabelled = pending.filter(({ item, frame }) => {
+        const known = labelled(frame);
+        if (known) record(item, frame, known);
+        return !known;
+    });
+    let judgeErrors = 0;
+    let lost = false;
+    if (unlabelled.length > 0) {
+        if (!upstream) throw new Error("P9 judging needs the sim config");
+        const { records, gateway } = judgeGateway(dir, ABSTAIN_JUDGMENTS, upstream, seed);
+        try {
+            await gateway.start();
+            const judge = framer(gateway.urls[0] as string);
+            for (const { item, frame } of unlabelled) {
+                const known = labelled(frame);
+                if (known) {
+                    record(item, frame, known);
+                    continue;
+                }
+                const firstCall = records.records.length;
+                try {
+                    const label = await judge.label(frame.prompt);
+                    const judgment = {
                         prompt_digest: frame.prompt_digest,
                         answer_digest: frame.answer_digest,
                         judge: judge.identity,
                         revision: judge.revision,
                         label,
-                    },
-                    calls: records.records.slice(firstCall).map((r) => r.seq),
-                });
-            } catch (caught) {
-                if (!(caught instanceof GradeRefused)) throw caught;
-                judgeErrors++;
-                skip(item.arm, ABSTAIN_JUDGE_FAILED);
-                console.error(`${item.probe.id} (${item.arm}): ${String(caught)}`);
+                    };
+                    const calls = records.records.slice(firstCall).map((r) => r.seq);
+                    prompts.set(frame.prompt_digest, { judgment, calls });
+                    fresh.push({ item, judgment, calls });
+                } catch (caught) {
+                    if (!(caught instanceof GradeRefused)) throw caught;
+                    judgeErrors++;
+                    skip(item.arm, ABSTAIN_JUDGE_FAILED);
+                    console.error(`${item.probe.id} (${item.arm}): ${String(caught)}`);
+                }
+            }
+        } finally {
+            try {
+                await gateway.stop();
+            } finally {
+                records.close();
             }
         }
-    } finally {
-        try {
-            await gateway.stop();
-        } finally {
-            records.close();
+        lost = gateway.failures.length > 0;
+        if (lost) {
+            judgeErrors += gateway.failures.length;
+            for (const f of gateway.failures) console.error(`judge-calls.jsonl: ${String(f)}`);
+            for (const { item } of fresh) skip(item.arm, ABSTAIN_JUDGE_FAILED);
         }
     }
-    if (gateway.failures.length > 0) {
-        judgeErrors += gateway.failures.length;
-        for (const f of gateway.failures) console.error(`judge-calls.jsonl: ${String(f)}`);
-        for (const { item } of fresh) skip(item.arm, ABSTAIN_JUDGE_FAILED);
-        return { judgments, judgeErrors };
-    }
-    if (fresh.length > 0) {
-        keepCompleteLines(log);
-        appendFileSync(
-            log,
-            fresh
-                .map(({ item, judgment, calls }) =>
-                    JSON.stringify({
-                        item: item.probe.id,
-                        arm: item.arm,
-                        snapshot: (item.snapshots[0] as Snapshot).id,
-                        calls,
-                        judgment,
-                    }),
-                )
-                .map((row) => `${row}\n`)
-                .join(""),
-        );
-    }
+    if (lost || fresh.length === 0) return { judgments, judgeErrors };
+    const links = lstatSync(log, { throwIfNoEntry: false })?.nlink ?? 1;
+    if (links !== 1) throw new Error(`${log} has ${links} links; refusing to write through it`);
+    keepCompleteLines(log);
+    appendFileSync(
+        log,
+        fresh
+            .map(({ item, judgment, calls }) =>
+                JSON.stringify({
+                    item: item.probe.id,
+                    arm: item.arm,
+                    snapshot: (item.snapshots[0] as Snapshot).id,
+                    calls,
+                    judgment,
+                }),
+            )
+            .map((row) => `${row}\n`)
+            .join(""),
+    );
     for (const { item, judgment } of fresh) judgments.set(item, judgment);
     return { judgments, judgeErrors };
 }
