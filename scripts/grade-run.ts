@@ -12,6 +12,13 @@ import {
 import { join, resolve } from "node:path";
 import { loadConfig, type SimConfig } from "../src/config/config";
 import {
+    type AbstainJudge,
+    type AbstainJudgment,
+    isAbstainJudgment,
+    judgmentStands,
+    proxyAbstainJudge,
+} from "../src/grade/abstention";
+import {
     AnswerRefused,
     ArtefactReader,
     assertArtefactsOnly,
@@ -37,6 +44,8 @@ import {
     type GradeRecord,
     gradeItem,
     graderDigest,
+    JUDGED_ANSWER_TYPES,
+    judgedAnswer,
     P7_HOST_ELSEWHERE,
     P7_MEMORY_ELSEWHERE,
     p14SnapshotId,
@@ -53,6 +62,7 @@ import {
 } from "../src/grade/source-commands";
 import { armBase, requireSeedOrder } from "../src/hosts/arms";
 import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
+import { currentGradingRevision, type GradingRevision } from "../src/prereg/grading";
 import { qualificationSeed } from "../src/prereg/qualification";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bedrockUpstream, Gateway, type Upstream } from "../src/proxy/gateway";
@@ -118,6 +128,8 @@ export async function gradeRun(
     dir: string,
     config: SimConfig | null,
     regrade = false,
+    /** Stands in for the Bedrock route the judge calls take, so a test scripts the judge. */
+    judgeUpstream?: Upstream,
 ): Promise<Summary> {
     const lease = takeLease(dir);
     try {
@@ -126,7 +138,10 @@ export async function gradeRun(
         requireGradableTypes(JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")));
         // A pass that stops early leaves no summary, so a reader never takes a stale one as current.
         rmSync(summaryPath(dir), { force: true });
-        const summary = await grade(dir, config, regrade);
+        const upstream =
+            judgeUpstream ??
+            (config ? bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile) : null);
+        const summary = await grade(dir, upstream, regrade);
         writeAtomic(summaryPath(dir), `${JSON.stringify(summary, null, 2)}\n`);
         return summary;
     } finally {
@@ -437,6 +452,211 @@ export function judgeFirewall(url: string, rules: Rules, models: readonly string
 }
 
 /**
+ * The gateway a judging step calls through and the writer of its call records. The step's two
+ * logs under `dir`, `judge-calls.jsonl` and `log`, must each be a regular single-link file or
+ * absent.
+ */
+function judgeGateway(dir: string, log: string, upstream: Upstream, seed: number) {
+    for (const name of ["judge-calls.jsonl", log]) {
+        const path = join(dir, name);
+        requireAppendable(path);
+        const links = lstatSync(path, { throwIfNoEntry: false })?.nlink ?? 1;
+        if (links !== 1)
+            throw new Error(`${path} has ${links} links; refusing to write through it`);
+    }
+    const records = new RecordWriter(join(dir, "judge-calls.jsonl"), { resume: true });
+    const gateway = new Gateway({
+        upstream,
+        records,
+        injector: new FaultInjector([], new Rng(1), 1_000),
+        rng: new Rng(seed),
+        clock: { scenarioMs: () => 0 },
+        scope: () => ({ arm: "judge", session: null, turn: null }),
+    });
+    return { records, gateway };
+}
+
+/** One answer a judge labels before its item is graded. */
+export interface Abstention {
+    probe: Scenario["probes"][number];
+    arm: string;
+    snapshots: Snapshot[];
+    sources: ReturnType<typeof sourceEvents>;
+    answer: string;
+    /** The statement that left the asked value open, from the item's fact. */
+    statement: string;
+}
+
+export const ABSTAIN_JUDGMENTS = "abstain-judgments.jsonl";
+export const ABSTAIN_JUDGE_FAILED = "P9 judge call failed";
+
+/**
+ * Labels each answer under the grading revision's rubric and judge. A label belongs to a
+ * prompt: answers that normalise to one prompt share one label, whichever arm gave them, and
+ * each answer has a row of its own in `abstain-judgments.jsonl`. A stored row for the same
+ * prompt, answer, judge, and revision stands, so a later pass, a regrade included, reads the
+ * stored label and calls no judge. A prompt without a label gets one call through a gateway
+ * this starts, logged to `judge-calls.jsonl`, and each new row is appended with the sequence
+ * numbers of the calls that made its label. An answer whose call fails is skipped and counted in
+ * `judgeErrors`, as is every new row of a pass whose call log lost a write. A completed row
+ * that holds no judgment refuses the pass by its line number.
+ */
+export async function judgeAbstentions(o: {
+    items: readonly Abstention[];
+    dir: string;
+    upstream: Upstream | null;
+    seed: number;
+    revision: GradingRevision;
+    models: readonly string[];
+    skip: (arm: string, why: string) => void;
+}): Promise<{ judgments: Map<Abstention, AbstainJudgment>; judgeErrors: number }> {
+    const { items, dir, upstream, seed, revision, models, skip } = o;
+    const log = join(dir, ABSTAIN_JUDGMENTS);
+    requireAppendable(log);
+    // A label belongs to a prompt. Each answer keeps a row of its own, and every answer that
+    // normalises to one prompt carries that prompt's one label, whichever arm gave it.
+    const keyOf = (f: { prompt_digest: string; answer_digest: string }) =>
+        `${f.prompt_digest}:${f.answer_digest}`;
+    type Labelled = { judgment: AbstainJudgment; calls: number[] };
+    const rows = new Map<string, AbstainJudgment>();
+    const loaded: Labelled[] = [];
+    if (existsSync(log)) {
+        const lines = readFileSync(log, "utf8").split("\n");
+        // The text after the last line feed is a cut append; the next append overwrites it.
+        for (const [i, line] of lines.slice(0, -1).entries()) {
+            let row: { judgment?: unknown; calls?: unknown } | null;
+            try {
+                row = JSON.parse(line);
+            } catch {
+                row = null;
+            }
+            const judgment = row?.judgment;
+            const calls = row?.calls;
+            if (!isAbstainJudgment(judgment) || !Array.isArray(calls)) {
+                throw new Error(`${log}: line ${i + 1} holds no abstention judgment`);
+            }
+            rows.set(keyOf(judgment), judgment);
+            loaded.push({ judgment, calls: calls.map(Number) });
+        }
+    }
+    const framer = (url: string): AbstainJudge => {
+        const judges = models.map((m) => proxyAbstainJudge(url, revision, m));
+        if (!judges[0]) throw new Error("the manifest records no run model");
+        return judges[0];
+    };
+    const offline = framer("http://judge.invalid");
+    // A prompt's label is its first stored row made by this judge under this revision.
+    const prompts = new Map<string, Labelled>();
+    for (const row of loaded) {
+        const { judgment } = row;
+        if (!prompts.has(judgment.prompt_digest) && judgmentStands(judgment, judgment, offline)) {
+            prompts.set(judgment.prompt_digest, row);
+        }
+    }
+    const judgments = new Map<Abstention, AbstainJudgment>();
+    type Frame = ReturnType<AbstainJudge["frame"]>;
+    const pending: { item: Abstention; frame: Frame }[] = [];
+    for (const item of items) {
+        const frame = offline.frame(item.probe.text ?? "", item.statement, item.answer);
+        const kept = rows.get(keyOf(frame));
+        if (kept && judgmentStands(kept, frame, offline)) judgments.set(item, kept);
+        else pending.push({ item, frame });
+    }
+    /** Rows to append: `called` marks a row whose label one of this pass's calls made. */
+    const fresh: {
+        item: Abstention;
+        judgment: AbstainJudgment;
+        calls: number[];
+        called: boolean;
+    }[] = [];
+    const calledPrompts = new Set<string>();
+    /** The label a prompt already has under this judge, for an answer with no row of its own. */
+    const labelled = (frame: Frame): Labelled | undefined => prompts.get(frame.prompt_digest);
+    const record = (item: Abstention, frame: Frame, from: Labelled) => {
+        const judgment = { ...from.judgment, answer_digest: frame.answer_digest };
+        const called = calledPrompts.has(frame.prompt_digest);
+        fresh.push({ item, judgment, calls: from.calls, called });
+    };
+    const unlabelled = pending.filter(({ item, frame }) => {
+        const known = labelled(frame);
+        if (known) record(item, frame, known);
+        return !known;
+    });
+    let judgeErrors = 0;
+    let lost = false;
+    if (unlabelled.length > 0) {
+        if (!upstream) throw new Error("P9 judging needs the sim config");
+        const { records, gateway } = judgeGateway(dir, ABSTAIN_JUDGMENTS, upstream, seed);
+        try {
+            await gateway.start();
+            const judge = framer(gateway.urls[0] as string);
+            for (const { item, frame } of unlabelled) {
+                const known = labelled(frame);
+                if (known) {
+                    record(item, frame, known);
+                    continue;
+                }
+                const firstCall = records.records.length;
+                try {
+                    const label = await judge.label(frame.prompt);
+                    const judgment = {
+                        prompt_digest: frame.prompt_digest,
+                        answer_digest: frame.answer_digest,
+                        judge: judge.identity,
+                        revision: judge.revision,
+                        label,
+                    };
+                    const calls = records.records.slice(firstCall).map((r) => r.seq);
+                    prompts.set(frame.prompt_digest, { judgment, calls });
+                    calledPrompts.add(frame.prompt_digest);
+                    fresh.push({ item, judgment, calls, called: true });
+                } catch (caught) {
+                    if (!(caught instanceof GradeRefused)) throw caught;
+                    judgeErrors++;
+                    skip(item.arm, ABSTAIN_JUDGE_FAILED);
+                    console.error(`${item.probe.id} (${item.arm}): ${String(caught)}`);
+                }
+            }
+        } finally {
+            try {
+                await gateway.stop();
+            } finally {
+                records.close();
+            }
+        }
+        lost = gateway.failures.length > 0;
+        if (lost) {
+            judgeErrors += gateway.failures.length;
+            for (const f of gateway.failures) console.error(`judge-calls.jsonl: ${String(f)}`);
+            for (const { item, called } of fresh) if (called) skip(item.arm, ABSTAIN_JUDGE_FAILED);
+        }
+    }
+    // A row whose label a stored row made stands whatever became of this pass's call records.
+    const appended = lost ? fresh.filter((row) => !row.called) : fresh;
+    if (appended.length === 0) return { judgments, judgeErrors };
+    const links = lstatSync(log, { throwIfNoEntry: false })?.nlink ?? 1;
+    if (links !== 1) throw new Error(`${log} has ${links} links; refusing to write through it`);
+    keepCompleteLines(log);
+    appendFileSync(
+        log,
+        appended
+            .map(({ item, judgment, calls }) =>
+                JSON.stringify({
+                    item: item.probe.id,
+                    arm: item.arm,
+                    snapshot: (item.snapshots[0] as Snapshot).id,
+                    calls,
+                    judgment,
+                }),
+            )
+            .map((row) => `${row}\n`)
+            .join(""),
+    );
+    for (const { item, judgment } of appended) judgments.set(item, judgment);
+    return { judgments, judgeErrors };
+}
+
+/**
  * Judges each pair through a gateway it starts, logging the judge's calls to `judge-calls.jsonl`
  * and one row per judged pair to `judgments.jsonl` in `dir`. The returned grades put each pair's
  * host grade before its memory arm's; none is returned when a judge-log write failed.
@@ -453,22 +673,7 @@ export async function judgeP7(o: {
     const { pairs, dir, upstream, seed, rules, models, skip } = o;
     const grades: GradeRecord[] = [];
     let judgeErrors = 0;
-    for (const name of ["judge-calls.jsonl", "judgments.jsonl"]) {
-        const path = join(dir, name);
-        requireAppendable(path);
-        const links = lstatSync(path, { throwIfNoEntry: false })?.nlink ?? 1;
-        if (links !== 1)
-            throw new Error(`${path} has ${links} links; refusing to write through it`);
-    }
-    const records = new RecordWriter(join(dir, "judge-calls.jsonl"), { resume: true });
-    const gateway = new Gateway({
-        upstream,
-        records,
-        injector: new FaultInjector([], new Rng(1), 1_000),
-        rng: new Rng(seed),
-        clock: { scenarioMs: () => 0 },
-        scope: () => ({ arm: "judge", session: null, turn: null }),
-    });
+    const { records, gateway } = judgeGateway(dir, "judgments.jsonl", upstream, seed);
     const judged: { arm: string; grades: GradeRecord[] }[] = [];
     const judgments: Record<string, unknown>[] = [];
     try {
@@ -945,7 +1150,7 @@ export async function openRun(dir: string) {
 
 export type OpenRun = Awaited<ReturnType<typeof openRun>>;
 
-async function grade(dir: string, config: SimConfig | null, regrade: boolean): Promise<Summary> {
+async function grade(dir: string, upstream: Upstream | null, regrade: boolean): Promise<Summary> {
     const run = await openRun(dir);
     const { manifest, scenario, rules, arms, models, entries, attempts, ran, unjournaled } = run;
     const { p14Reached, p14Interrupted, sessionSnapshot } = run;
@@ -1039,8 +1244,33 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
     }
     if (pairs.length > 0) {
         judgeFirewall("http://judge.invalid", rules, models);
-        if (!config) throw new Error("P7 judging needs the sim config");
+        if (!upstream) throw new Error("P7 judging needs the sim config");
     }
+    const revision = currentGradingRevision();
+    // A scenario without a fact list holds no judged item.
+    const statements = new Map((scenario.facts ?? []).map((f) => [f.id, f.statement]));
+    const abstentions: Abstention[] = [];
+    /** Stages a grade as the arm's state leaves it: excluded where its evidence is set aside. */
+    const stage = (grade: GradeRecord | null, probe: Scenario["probes"][number], arm: string) => {
+        if (!grade) skip(arm, "probe turn failed");
+        else if (probe.type === "P14" && p14Interrupted(arm, probe.session)) {
+            // The session view lacks what a cut turn would have sent, so its count stands
+            // outside the comparison as the missingness policy keeps a failed turn's item.
+            staged.push({
+                ...grade,
+                verdict: "excluded",
+                reason: "session interrupted",
+                metrics: {},
+            });
+        } else if (unverified(arm, probe.id)) {
+            staged.push({
+                ...grade,
+                verdict: "excluded",
+                reason: "cf-unverified",
+                metrics: {},
+            });
+        } else staged.push(grade);
+    };
 
     const ledgers = new Map<string, LedgerRun[]>();
     /** The arm's tool ledger (`tools.jsonl`), read once, each run with the turn it belongs to. */
@@ -1092,6 +1322,27 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
                     () => ledger(arm),
                 );
                 const graded = [withSource, ...later];
+                if (JUDGED_ANSWER_TYPES.includes(probe.type)) {
+                    const answer = judgedAnswer(probe, graded, sources);
+                    if (answer !== null) {
+                        const statement = statements.get(probe.fact ?? "");
+                        if (!statement) {
+                            throw new GradeRefused(
+                                `${probe.type} item ${probe.id} names no fact with a statement`,
+                            );
+                        }
+                        // The judge labels the answer after this loop; the grade follows the label.
+                        abstentions.push({
+                            probe,
+                            arm,
+                            snapshots: graded,
+                            sources,
+                            answer,
+                            statement,
+                        });
+                        continue;
+                    }
+                }
                 grade = gradeItem(probe, graded, rules, 1, sources);
             } catch (caught) {
                 if (!(caught instanceof EvidenceRefused)) throw caught;
@@ -1099,32 +1350,32 @@ async function grade(dir: string, config: SimConfig | null, regrade: boolean): P
                 console.error(`${probe.id} (${arm}): ${String(caught)}`);
                 continue;
             }
-            if (!grade) skip(arm, "probe turn failed");
-            else if (probe.type === "P14" && p14Interrupted(arm, probe.session)) {
-                // The session view lacks what a cut turn would have sent, so its count stands
-                // outside the comparison as the missingness policy keeps a failed turn's item.
-                staged.push({
-                    ...grade,
-                    verdict: "excluded",
-                    reason: "session interrupted",
-                    metrics: {},
-                });
-            } else if (unverified(arm, probe.id)) {
-                staged.push({
-                    ...grade,
-                    verdict: "excluded",
-                    reason: "cf-unverified",
-                    metrics: {},
-                });
-            } else staged.push(grade);
+            stage(grade, probe, arm);
         }
     }
 
-    if (pairs.length > 0 && config) {
+    if (abstentions.length > 0) {
+        const judged = await judgeAbstentions({
+            items: abstentions,
+            dir,
+            upstream,
+            seed: manifest.seed,
+            revision,
+            models,
+            skip,
+        });
+        judgeErrors += judged.judgeErrors;
+        for (const [item, judgment] of judged.judgments) {
+            const { probe, arm, snapshots, sources } = item;
+            stage(gradeItem(probe, snapshots, rules, 1, sources, judgment), probe, arm);
+        }
+    }
+
+    if (pairs.length > 0 && upstream) {
         const judged = await judgeP7({
             pairs,
             dir,
-            upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
+            upstream,
             seed: manifest.seed,
             rules,
             models,

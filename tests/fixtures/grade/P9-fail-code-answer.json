@@ -1,0 +1,64 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P9-h",
+    "type": "P9",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "How long do we hold on to the trail of keys once they lapse?",
+    "check": {
+      "abstain": true
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P9-h",
+      "item": "P9-h",
+      "arm": "eidnara",
+      "session": "s-1",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "p1",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "seq": 1,
+              "arm": "eidnara",
+              "session": "s-1",
+              "component": "agent",
+              "turn": "e-1",
+              "scenario_ms": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "response_text": "We keep no trail. Once a key's expiry passes, the purge task deletes it and nothing records that it existed. I don't see a setting that changes this.",
+              "status": 200,
+              "error": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "judge": {
+    "label": "C"
+  },
+  "expect": {
+    "verdict": "fail",
+    "reason": "answered instead of abstaining",
+    "metrics": {
+      "P9.pass": false,
+      "P9.cross_session_pass_rate": false,
+      "P9.v1": true,
+      "P9.label": "C"
+    },
+    "inputs": [
+      "p1"
+    ]
+  }
+}

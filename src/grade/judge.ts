@@ -217,92 +217,108 @@ function family(model: string): string {
     return provider;
 }
 
+/**
+ * A judge call through the capture proxy: the reply's text for one prompt. The call refuses a
+ * judge model of the agent model's family (SIM-P43), carries the `judge` component header, and
+ * shares one deadline across its attempts.
+ */
+export function proxyReply(
+    gatewayUrl: string,
+    model: string,
+    agentModel: string,
+    maxTokens: number,
+    options: ProxyJudgeOptions = {},
+): (prompt: string) => Promise<string> {
+    if (family(model) === family(agentModel)) {
+        throw new GradeRefused(`judge ${model} shares the agent model's family`);
+    }
+    const deadlineMs = options.deadlineMs ?? 900_000;
+    return async (prompt) => {
+        type Body = { output?: { message?: { content?: unknown } }; stopReason?: unknown };
+        const attempt = async (attemptMs: number): Promise<Body> => {
+            let response: Response;
+            try {
+                response = await fetch(
+                    `${gatewayUrl}/model/${encodeURIComponent(model)}/converse`,
+                    {
+                        method: "POST",
+                        headers: {
+                            [COMPONENT_HEADER]: "judge",
+                            "content-type": "application/json",
+                        },
+                        body: JSON.stringify({
+                            messages: [{ role: "user", content: [{ text: prompt }] }],
+                            inferenceConfig: { maxTokens },
+                        }),
+                        signal: AbortSignal.timeout(attemptMs),
+                        redirect: "error",
+                        keepalive: false,
+                    },
+                );
+            } catch (caught) {
+                const error = caught as Error;
+                if (error.name === "TimeoutError") {
+                    throw new JudgeTransport(`judge call timed out after ${attemptMs} ms`);
+                }
+                // A redirect is the gateway's answer, refused as `redirect: "error"` asks.
+                if (/redirect/i.test(error.message)) {
+                    throw new GradeRefused(`judge call failed: ${error.message}`);
+                }
+                throw new JudgeTransport(`judge call failed: ${error.message}`);
+            }
+            if (response.status === 429 || response.status >= 500) {
+                throw new JudgeTransport(`judge call failed: ${response.status}`);
+            }
+            if (!response.ok) throw new GradeRefused(`judge call failed: ${response.status}`);
+            try {
+                return (await response.json()) as Body;
+            } catch (caught) {
+                if (caught instanceof SyntaxError) {
+                    throw new GradeRefused("judge reply is not JSON");
+                }
+                if ((caught as Error).name === "TimeoutError") {
+                    throw new JudgeTransport(`judge call timed out after ${attemptMs} ms`);
+                }
+                throw new JudgeTransport(`judge reply broke off: ${(caught as Error).message}`);
+            }
+        };
+        let body: Body;
+        try {
+            body = await withRetry(
+                "judge call",
+                options.retry ?? gatewayRetry(deadlineMs),
+                (caught) => caught instanceof JudgeTransport,
+                attempt,
+            );
+        } catch (caught) {
+            if (caught instanceof GradeRefused) throw caught;
+            throw new GradeRefused((caught as Error).message);
+        }
+        if (body?.stopReason !== "end_turn") {
+            throw new GradeRefused(`judge reply stopped for ${String(body?.stopReason)}`);
+        }
+        const content = body?.output?.message?.content;
+        const texts = Array.isArray(content)
+            ? content.flatMap((block: unknown) => {
+                  const text = (block as { text?: unknown } | null)?.text;
+                  return typeof text === "string" ? [text] : [];
+              })
+            : [];
+        if (texts.length === 0) throw new GradeRefused("judge reply carries no text");
+        return texts.join("\n");
+    };
+}
+
 export function proxyJudge(
     gatewayUrl: string,
     model: string,
     agentModel: string,
     options: ProxyJudgeOptions = {},
 ): JudgeClient {
-    if (family(model) === family(agentModel)) {
-        throw new GradeRefused(`judge ${model} shares the agent model's family`);
-    }
-    const deadlineMs = options.deadlineMs ?? 900_000;
+    const reply = proxyReply(gatewayUrl, model, agentModel, 256, options);
     return {
         identity: judgeIdentity(model),
-        async verdict(prompt) {
-            type Body = { output?: { message?: { content?: unknown } }; stopReason?: unknown };
-            const attempt = async (attemptMs: number): Promise<Body> => {
-                let response: Response;
-                try {
-                    response = await fetch(
-                        `${gatewayUrl}/model/${encodeURIComponent(model)}/converse`,
-                        {
-                            method: "POST",
-                            headers: {
-                                [COMPONENT_HEADER]: "judge",
-                                "content-type": "application/json",
-                            },
-                            body: JSON.stringify({
-                                messages: [{ role: "user", content: [{ text: prompt }] }],
-                                inferenceConfig: { maxTokens: 256 },
-                            }),
-                            signal: AbortSignal.timeout(attemptMs),
-                            redirect: "error",
-                            keepalive: false,
-                        },
-                    );
-                } catch (caught) {
-                    const error = caught as Error;
-                    if (error.name === "TimeoutError") {
-                        throw new JudgeTransport(`judge call timed out after ${attemptMs} ms`);
-                    }
-                    // A redirect is the gateway's answer, refused as `redirect: "error"` asks.
-                    if (/redirect/i.test(error.message)) {
-                        throw new GradeRefused(`judge call failed: ${error.message}`);
-                    }
-                    throw new JudgeTransport(`judge call failed: ${error.message}`);
-                }
-                if (response.status === 429 || response.status >= 500) {
-                    throw new JudgeTransport(`judge call failed: ${response.status}`);
-                }
-                if (!response.ok) throw new GradeRefused(`judge call failed: ${response.status}`);
-                try {
-                    return (await response.json()) as Body;
-                } catch (caught) {
-                    if (caught instanceof SyntaxError) {
-                        throw new GradeRefused("judge reply is not JSON");
-                    }
-                    if ((caught as Error).name === "TimeoutError") {
-                        throw new JudgeTransport(`judge call timed out after ${attemptMs} ms`);
-                    }
-                    throw new JudgeTransport(`judge reply broke off: ${(caught as Error).message}`);
-                }
-            };
-            let body: Body;
-            try {
-                body = await withRetry(
-                    "judge call",
-                    options.retry ?? gatewayRetry(deadlineMs),
-                    (caught) => caught instanceof JudgeTransport,
-                    attempt,
-                );
-            } catch (caught) {
-                if (caught instanceof GradeRefused) throw caught;
-                throw new GradeRefused((caught as Error).message);
-            }
-            if (body?.stopReason !== "end_turn") {
-                throw new GradeRefused(`judge reply stopped for ${String(body?.stopReason)}`);
-            }
-            const content = body?.output?.message?.content;
-            const texts = Array.isArray(content)
-                ? content.flatMap((block: unknown) => {
-                      const text = (block as { text?: unknown } | null)?.text;
-                      return typeof text === "string" ? [text] : [];
-                  })
-                : [];
-            if (texts.length === 0) throw new GradeRefused("judge reply carries no text");
-            return parseVerdict(texts.join("\n"));
-        },
+        verdict: async (prompt) => parseVerdict(await reply(prompt)),
     };
 }
 

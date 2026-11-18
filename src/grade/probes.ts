@@ -10,8 +10,10 @@ import {
 } from "node:fs";
 import { join, posix } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
+import { GRADING_REVISIONS } from "../prereg/grading";
 import type { Preregistration } from "../prereg/schema";
 import type { GroundTruth, ProbeItem } from "../scenario/compile";
+import { ABSTAIN_REASONS, type AbstainJudgment, isAbstainJudgment } from "./abstention";
 import {
     type Artefact,
     ArtefactReader,
@@ -1820,6 +1822,7 @@ type Grader = (
     rules: Rules,
     probe: ProbeItem,
     sources: SourceEvent[],
+    abstention?: AbstainJudgment,
 ) => Outcome;
 
 const GRADERS: Record<string, Grader> = {
@@ -1849,10 +1852,29 @@ const GRADERS: Record<string, Grader> = {
         const hit = why === null;
         return binary("P8", hit, { "P8.cross_session_pass_rate": hit }, why ?? undefined);
     },
-    P9: (r, _c, _rules, p) => {
-        const hit = abstains(r.answer(), p.text ?? "", p.ground_truth?.stale ?? []);
-        const extra = { "P9.cross_session_pass_rate": hit };
-        return binary("P9", hit, extra, "answered instead of abstaining");
+    P9: (r, _c, _rules, p, _sources, judged) => {
+        const answer = r.answer();
+        if (judged === undefined) {
+            throw new GradeRefused(`P9 item ${p.id} is graded from its abstention judgment`);
+        }
+        if (!isAbstainJudgment(judged)) {
+            throw new GradeRefused(`P9 item ${p.id}: the abstention judgment is malformed`);
+        }
+        if (judged.answer_digest !== sha256Hex(answer)) {
+            throw new GradeRefused(`P9 item ${p.id}: the abstention judgment is of another answer`);
+        }
+        const hit = judged.label === "A";
+        const extra = {
+            "P9.cross_session_pass_rate": hit,
+            "P9.v1": abstains(answer, p.text ?? "", p.ground_truth?.stale ?? []),
+            "P9.label": judged.label,
+            "P9.judge_model": judged.judge.model,
+            "P9.judge_prompt_digest": judged.judge.prompt_digest,
+            "P9.judge_rubric_digest": judged.judge.rubric_digest,
+            "P9.answer_digest": judged.answer_digest,
+            "P9.grading_revision": judged.revision,
+        };
+        return binary("P9", hit, extra, ABSTAIN_REASONS[judged.label]);
     },
     "P8-twin": (r, c, _rules, p) => {
         const answer = r.answer();
@@ -2033,13 +2055,11 @@ export function requireEvidence(
     }
 }
 
-export function gradeItem(
-    probe: ProbeItem,
-    snapshots: Snapshot[],
-    rules: Rules,
-    version = 1,
-    sources: SourceEvent[] = [],
-): GradeRecord | null {
+/**
+ * The first snapshot of an item and arm once every snapshot passed the item's checks, or null
+ * when the probe turn ended `failed`.
+ */
+function admitted(probe: ProbeItem, snapshots: Snapshot[]): Snapshot | null {
     const first = snapshots[0];
     if (!first) throw new GradeRefused(`item ${probe.id} has no snapshot`);
     const bad = snapshots.findIndex((s) => typeof s !== "object" || s === null);
@@ -2071,6 +2091,40 @@ export function gradeItem(
     if (first.turn_outcome !== "ok") {
         throw new GradeRefused(`snapshot ${first.id} has turn_outcome ${first.turn_outcome}`);
     }
+    return first;
+}
+
+/** The probe types whose verdict is a judge's label of the answer (`prereg/G10.json`). */
+export const JUDGED_ANSWER_TYPES = ["P9"];
+
+/**
+ * The answer a judge labels before `gradeItem` grades a `JUDGED_ANSWER_TYPES` item: the one its
+ * grader reads from the first snapshot. Null when the item grades without a judgment, because
+ * the probe turn failed or holds no completed agent response.
+ */
+export function judgedAnswer(
+    probe: ProbeItem,
+    snapshots: Snapshot[],
+    sources: SourceEvent[] = [],
+): string | null {
+    const first = admitted(probe, snapshots);
+    if (!first) return null;
+    graderFor(probe);
+    requireEvidence(probe, first, sources);
+    const reader = new ArtefactReader(first, namedBy((probe.check ?? {}) as Check));
+    return reader.responseIncomplete() ? null : reader.answer();
+}
+
+export function gradeItem(
+    probe: ProbeItem,
+    snapshots: Snapshot[],
+    rules: Rules,
+    version = 1,
+    sources: SourceEvent[] = [],
+    abstention?: AbstainJudgment,
+): GradeRecord | null {
+    const first = admitted(probe, snapshots);
+    if (!first) return null;
     const grader = graderFor(probe);
     requireEvidence(probe, first, sources);
     const reader = new ArtefactReader(first, namedBy((probe.check ?? {}) as Check));
@@ -2078,7 +2132,7 @@ export function gradeItem(
     if (probe.type !== "P14" && reader.responseIncomplete()) {
         outcome = { verdict: "excluded", reason: NO_RESPONSE, metrics: {} };
     } else {
-        outcome = grader(reader, (probe.check ?? {}) as Check, rules, probe, sources);
+        outcome = grader(reader, (probe.check ?? {}) as Check, rules, probe, sources, abstention);
     }
     return {
         item: probe.id,
@@ -2157,7 +2211,16 @@ const METRIC_FIELDS: Record<string, Record<string, (v: unknown) => boolean>> = {
     P4: { "P4.harm": bool, "P4.collapsed": bool },
     P6: { "P6.reread_files": count, "P6.ran_tests": bool, "P6.rediscovery_tokens": count },
     P8: { "P8.cross_session_pass_rate": bool },
-    P9: { "P9.cross_session_pass_rate": bool },
+    P9: {
+        "P9.cross_session_pass_rate": bool,
+        "P9.v1": bool,
+        "P9.label": oneOf(["A", "B", "C", "D"]),
+        "P9.judge_model": text,
+        "P9.judge_prompt_digest": digest,
+        "P9.judge_rubric_digest": digest,
+        "P9.answer_digest": digest,
+        "P9.grading_revision": digest,
+    },
     "P8-twin": { "P8-twin.harm": bool },
     P10: { "P10.harm": bool },
     P11: { "P11.harm": bool, "P11.weighted_score": num },
@@ -2186,6 +2249,14 @@ const METRIC_FIELDS: Record<string, Record<string, (v: unknown) => boolean>> = {
         longer_recalled_alone: (v) => bool(v) || v === "n/a",
     },
 };
+/**
+ * The metrics a type's grades carried before a grading revision added to them. A log keeps
+ * those grades, so a record of either shape reads back: a P9 grade made under
+ * `abstention-without-guess` holds the pass rate alone.
+ */
+const EARLIER_FIELDS: Record<string, Record<string, (v: unknown) => boolean>> = {
+    P9: { "P9.cross_session_pass_rate": bool },
+};
 /** Relationships between a type's metrics and its verdict beyond each value's shape. */
 const METRIC_RULES: Record<string, (m: Metrics, pass: boolean) => boolean> = {
     P2: (m, pass) => !(pass && m["P2.harm"]),
@@ -2194,7 +2265,9 @@ const METRIC_RULES: Record<string, (m: Metrics, pass: boolean) => boolean> = {
         pass === (m["P3.reliance"] === "authoritative"),
     P4: (m, pass) => m["P4.harm"] === m["P4.collapsed"] && !(pass && m["P4.collapsed"] === true),
     P8: (m, pass) => m["P8.cross_session_pass_rate"] === pass,
-    P9: (m, pass) => m["P9.cross_session_pass_rate"] === pass,
+    P9: (m, pass) =>
+        m["P9.cross_session_pass_rate"] === pass &&
+        (m["P9.label"] === undefined || (m["P9.label"] === "A") === pass),
     "P8-twin": (m, pass) => !(pass && m["P8-twin.harm"]),
     P10: (m, pass) => !(pass && m["P10.harm"]),
     P11: (m, pass) =>
@@ -2221,14 +2294,18 @@ function metricsAgree(g: Record<string, unknown>): boolean {
     const m = g.metrics as Metrics;
     const type = g.probe_type as string;
     const pass = g.verdict === "pass";
-    const fields = METRIC_FIELDS[type] ?? {};
     const primary = type === "P13" || type === "P14" ? [] : [`${type}.pass`];
-    const expected = new Set([...primary, ...Object.keys(fields)]);
-    if (Object.keys(m).length !== expected.size || [...expected].some((k) => !(k in m))) {
-        return false;
-    }
+    const holds = (fields: Record<string, (v: unknown) => boolean>) => {
+        const expected = new Set([...primary, ...Object.keys(fields)]);
+        return (
+            Object.keys(m).length === expected.size &&
+            [...expected].every((k) => k in m) &&
+            Object.entries(fields).every(([k, ok]) => ok(m[k]))
+        );
+    };
+    const earlier = EARLIER_FIELDS[type];
+    if (!holds(METRIC_FIELDS[type] ?? {}) && !(earlier && holds(earlier))) return false;
     if (primary.length > 0 && m[`${type}.pass`] !== pass) return false;
-    if (Object.entries(fields).some(([k, ok]) => !ok(m[k]))) return false;
     return (METRIC_RULES[type] ?? (() => true))(m, pass);
 }
 
@@ -2256,15 +2333,19 @@ function newest(grades: GradeRecord[]): GradeRecord[] {
 export const graderDigest = (extra: readonly string[] = []): string =>
     sha256Hex(
         [
+            "abstention.ts",
             "artefacts.ts",
             "judge.ts",
             "probes.ts",
             "source-commands.ts",
             "text.ts",
             "../../scripts/grade-run.ts",
+            "../hosts/profiles.ts",
             "../proxy/records.ts",
             "../proxy/classify.ts",
             "../prereg/canonical.ts",
+            "../prereg/grading.ts",
+            ...GRADING_REVISIONS.map((id) => `../../prereg/${id}.json`),
             "../run/retry.ts",
             "../run/callviews.ts",
             "../usersim/plan.ts",

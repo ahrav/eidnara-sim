@@ -26,6 +26,18 @@ the test; `P7-pass` and `P7-fail` are the pairs the live judge
 (`global.openai.gpt-5.6-luna`) graded the same way on 2026-10-16, recorded
 with its identity in `runs/judge-smoke/judgments.json`.
 
+The P9 files hold one answer and the judge's label, scripted for the test
+(`judge.label`); `expect.metrics` lists the verdict metrics, the label, and
+`P9.v1`, and the test adds the judgment's identity metrics. Five of them are
+the answer shapes of the 2026-11-18 P9 review in generic words:
+`P9-pass-set-aside-value` (a different stored value named and set aside),
+`P9-pass-unrelated-token` (a value-shaped token in an unrelated part of the
+reply), `P9-pass-user-left-open` (wording outside the registered list),
+`P9-fail-code-answer` (the code's behaviour given as the answer), and
+`P9-fail-likely-owner` (a hedged candidate). On 2026-11-18 the live judge
+(`global.openai.gpt-5.6-luna`, the prompt `abstainPrompt` builds, two calls
+per answer) gave all nine P9 fixture answers their scripted labels.
+
 These fixtures carry checks from before generator `sim-scenario/v4` (no
 `applies`, no file scope, no `ground_truth`), so they exercise the graders'
 channel logic on its own. The controls in `src/grade/controls.test.ts` grade
