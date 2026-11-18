@@ -110,6 +110,32 @@ describe("the commit messages the agent wrote, read from git's record", () => {
         ]);
     });
 
+    test("a merge under a message of the agent's counts, and an amend counts when the replaced subject is known", () => {
+        const commits: [number, CommitObject][] = [
+            [2, agent("[tag] bring in topic", 10)],
+            [4, agent("[tag] reworded", 30)],
+        ];
+        const moves = [
+            move(1, 2, 10, "merge topic: Merge made by the 'ort' strategy."),
+            // Git could not print the commit this amend replaced, so its subject is unknown.
+            move(3, 4, 30, "commit (amend): [tag] reworded"),
+        ];
+        expect(subjects(moves, commits)).toEqual([
+            ["git commit -m '[tag] bring in topic'", 10_000],
+        ]);
+    });
+
+    test("a commit is first reached where its log first names it, whatever the times say", () => {
+        // After a resume the arm's clock stepped back: the reset to commit 2 carries an earlier
+        // time than the commit that made it, and it follows that commit in the log.
+        const commits: [number, CommitObject][] = [[2, agent("[tag] first", 100)]];
+        const moves = [
+            move(1, 2, 100, "commit: [tag] first"),
+            move(3, 2, 40, "reset: moving to 0002"),
+        ];
+        expect(subjects(moves, commits)).toEqual([["git commit -m '[tag] first'", 100_000]]);
+    });
+
     test("a merge the agent concluded with git commit counts; a merge, a pull, and an applied patch do not", () => {
         const commits: [number, CommitObject][] = [
             [2, agent("[tag] merge topic by hand", 10)],
@@ -273,6 +299,29 @@ describe("reading a repository's record", () => {
         rmSync(join(gitDir, "objects", "info", "alternates"));
         writeFileSync(join(gitDir, "commondir"), `${join(repo, ".git")}\n`);
         expect(readHeadLog(gitDir)).toBeNull();
+        rmSync(join(gitDir, "commondir"));
+        expect(readHeadLog(gitDir)).not.toBeNull();
+        // A link inside the object directory points git at another store.
+        symlinkSync(join(repo, ".git", "objects", "pack"), join(gitDir, "objects", "linked"));
+        expect(readHeadLog(gitDir)).toBeNull();
+        rmSync(join(gitDir, "objects", "linked"));
+        // An emptied log is no record that the repository made no commit.
+        writeFileSync(join(gitDir, "logs", "HEAD"), "");
+        rmSync(join(gitDir, "logs", "refs"), { recursive: true });
+        expect(readHeadLog(gitDir)).toBeNull();
+    });
+
+    test("a walk of branch logs stops at its bound, counting directories", () => {
+        const dir = join(root, "nested");
+        mkdirSync(dir);
+        run(["init", "-q", "-b", "main"], dir);
+        run(["commit", "-q", "--allow-empty", "-m", "own commit"], dir);
+        const heads = join(dir, ".git", "logs", "refs", "heads");
+        for (let i = 0; i < 40; i++) {
+            for (let j = 0; j < 30; j++)
+                mkdirSync(join(heads, `d${i}`, `e${j}`), { recursive: true });
+        }
+        expect(readHeadLog(join(dir, ".git"))).toBeNull();
     });
 
     test("a promisor remote in the repository's config starts no fetch for a missing object", () => {
@@ -415,6 +464,33 @@ describe("the recorded command log of a snapshot", () => {
         // other, and stamp 110,000 lies in no turn under either.
         expect(clock(103_500)).toBe("ambiguous");
         expect(clock(110_000)).toBe("ambiguous");
+    });
+
+    test("a turn a kill cut is a turn, so a stamp it shares with the resumed turn stays undecided", () => {
+        // Turn X began at wall 1,000 and was cut; the run resumed at wall 200,000 with offset
+        // -199 s and turn Y ran from wall 203,000 to 207,000, which reads stamps 4,000 to 8,000.
+        const cut = [
+            offset(1_000, 0, 0),
+            { kind: "BeginTurn", event: "e-x", arm: "host", wall_ms: 1_000, scenario_ms: 0 },
+            offset(200_000, -199, 4_000),
+            { kind: "ItemState", event: "e-x", arm: "host", wall_ms: 200_100, scenario_ms: 4_000 },
+            ...turn("e-y", 203_000, 207_000, 4_000),
+        ];
+        const resumed = armClock(cut, "host");
+        expect(resumed?.(5_000)).toBe("ambiguous");
+        // A stamp of turn X from before turn Y's range has one turn.
+        expect(resumed?.(1_200)).toBe(200);
+    });
+
+    test("an offset written again leaves one wall time, and a stamp reads up to a second early", () => {
+        const again = [
+            offset(1_000, 0, 0),
+            offset(10_500, 0, 9_000),
+            ...turn("e-z", 10_600, 14_600, 9_000),
+        ];
+        const clock2 = armClock(again, "host");
+        // A commit at wall 10,800 is recorded as second 10,000, under either copy of the offset.
+        expect(clock2?.(10_000)).toBe(9_000);
     });
 
     test("a written commit the clock cannot place leaves the repository without a record", () => {

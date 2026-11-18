@@ -32,6 +32,9 @@ const GIT_TIMEOUT_MS = 60_000;
 const PLACED_WITHIN_S = 600;
 /** Actions that place a commit object on HEAD: an unlabelled `update-ref`, and a `reset`. */
 const PLACES = /^(?:reset)?$/;
+/** A `git merge` whose commit carries a message of the agent's (`-m`): git's own subject opens with `Merge `. */
+const MERGES = /^merge\b/;
+const GIT_MERGE_SUBJECT = /^Merge /;
 const SECOND_MS = 1_000;
 /** Subjects git writes for a commit made to be folded into another. */
 const FOLDED = /^(?:fixup|squash|amend)! /;
@@ -54,11 +57,13 @@ const shellQuoted = (w: string) => `'${w.replace(/'/g, "'\\''")}'`;
  * The commit messages the agent wrote, each as the command `git commit -m '<subject>'` at the
  * scenario time of the move (`scenarioMs` maps the time git recorded, `armClock`). A move counts
  * when its commit holds a message written for it: a `commit` (a merge the agent concluded with
- * `git commit` included), an amend whose subject differs from the commit it replaces, and a
- * commit object placed on HEAD the first time within `PLACED_WITHIN_S` of its making
- * (`commit-tree` with `update-ref` or `reset`). A message git carries over or writes itself is
- * left out: a rebase pick, a cherry-pick, a revert, a `git merge` or `git pull`, an amend that
- * keeps the subject, and a `fixup!`, `squash!`, or `amend!` subject. The harness's own commits
+ * `git commit` included), an amend whose subject differs from the commit it replaces, a
+ * `git merge` whose subject is other than git's own `Merge ...`, and a commit object placed on
+ * HEAD the first time within `PLACED_WITHIN_S` of its making (`commit-tree` with `update-ref`
+ * or `reset`). The moves are read in the order the logs hold them, so a commit is first reached
+ * where its log first names it. A message git carries over or writes itself is left out: a
+ * rebase pick, a cherry-pick, a revert, a `git merge` or `git pull` under git's subject, an
+ * amend that keeps the subject, and a `fixup!`, `squash!`, or `amend!` subject. The harness's own commits
  * (an unlabelled move to a commit of its committer) are left out, and so is a move at a time
  * outside the arm's clock. Null when the clock cannot place a written commit (`ambiguous`): the
  * repository then gives no record.
@@ -79,11 +84,15 @@ export function writtenCommits(
         const harness = move.message === "" && commit.committer_email === HARNESS_EMAIL;
         const placed =
             first && !harness && Math.abs(move.time_s - commit.committer_time_s) <= PLACED_WITHIN_S;
+        const replaced = commits.get(move.old)?.subject;
         const written = /^commit(?: \((?:initial|merge)\))?$/.test(action)
             ? true
             : action === "commit (amend)"
-              ? commit.subject !== commits.get(move.old)?.subject
-              : PLACES.test(action) && placed;
+              ? // An amend whose replaced commit git could not print carries an unknown subject.
+                replaced !== undefined && commit.subject !== replaced
+              : MERGES.test(action)
+                ? !GIT_MERGE_SUBJECT.test(commit.subject)
+                : PLACES.test(action) && placed;
         if (!written) continue;
         const scenario_ms = scenarioMs(move.time_s * 1000);
         if (scenario_ms === "ambiguous") return null;
@@ -112,24 +121,35 @@ function regularText(path: string, budget: number): string | null {
     }
 }
 
-/** The reflog files under a directory of branch logs, links left out, or null past the file bound. */
-function branchLogs(dir: string, found: string[] = []): string[] | null {
+/**
+ * The reflog files under a directory of branch logs, links left out, or null once the walk has
+ * visited more than `LOG_FILE_CAP` entries, files and directories alike.
+ */
+function branchLogs(dir: string, found: string[] = [], walked = { entries: 0 }): string[] | null {
     let entries: Dirent[];
     try {
         entries = readdirSync(dir, { withFileTypes: true });
     } catch {
         return found;
     }
-    if (entries.length > LOG_FILE_CAP) return null;
+    walked.entries += entries.length;
+    if (walked.entries > LOG_FILE_CAP) return null;
     for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
         const path = join(dir, entry.name);
         if (entry.isDirectory()) {
-            // A directory counts toward the bound through the entries it holds.
-            if (found.length + 1 > LOG_FILE_CAP || branchLogs(path, found) === null) return null;
+            if (branchLogs(path, found, walked) === null) return null;
         } else if (entry.isFile()) found.push(path);
-        if (found.length > LOG_FILE_CAP) return null;
     }
     return found;
+}
+
+/** Whether a directory holds a link among its entries; a directory that cannot be listed holds none. */
+function holdsLink(dir: string): boolean {
+    try {
+        return readdirSync(dir, { withFileTypes: true }).some((entry) => entry.isSymbolicLink());
+    } catch {
+        return false;
+    }
 }
 
 /** The commit objects `cat-file --batch` printed: each `<id> commit <size>` header with its body. */
@@ -165,12 +185,13 @@ function parseCommits(batch: Buffer): Map<string, CommitObject> {
 }
 
 /**
- * The moves the repository at `gitDir` recorded for HEAD and for each branch, oldest first, with
- * the commit objects they name. A commit made in a linked worktree moves its branch alone, so
+ * The moves the repository at `gitDir` recorded for HEAD and then for each branch, each log in
+ * its own order, with the commit objects they name. A commit made in a linked worktree moves its branch alone, so
  * the branch logs join HEAD's, and a move both logs hold counts once. Null when the directory
  * holds no readable log: `gitDir`, its `logs` directory, or its HEAD log is missing or is a
- * link, its objects lie in another store (a linked `objects` directory, an alternates file, a
- * common-directory file), the logs pass the read bounds, or git cannot print the objects. The agent wrote the
+ * link, the logs hold no move, its objects lie in another store (a link in place of or inside
+ * the `objects` directory or its pack directory, an alternates file, a common-directory file),
+ * the logs pass the read bounds, or git cannot print the objects. The agent wrote the
  * repository, so the objects are read with `cat-file --batch`, which runs no hook, filter, or
  * signature check, with lazy fetching, every transport, and replace refs off, so a configured
  * promisor remote starts no fetch and each id reads as its own object.
@@ -185,6 +206,7 @@ export function readHeadLog(
     const objects = join(gitDir, "objects");
     const elsewhere = [join(objects, "info", "alternates"), join(gitDir, "commondir")];
     if (!plainDirectory(objects) || elsewhere.some((path) => existsSync(path))) return null;
+    if (holdsLink(objects) || holdsLink(join(objects, "pack"))) return null;
     // A branch log is read only below plain directories, so no link leads the walk elsewhere.
     const heads = [join(logs, "refs"), join(logs, "refs", "heads")];
     const branches = heads.every(plainDirectory) ? branchLogs(heads[1] as string) : [];
@@ -204,8 +226,8 @@ export function readHeadLog(
             if (moves.length > MOVE_CAP) return null;
         }
     }
-    // Array.prototype.sort is stable, so moves of one second keep their log order.
-    moves.sort((a, b) => a.time_s - b.time_s);
+    // A repository that made commits holds their moves; an emptied log is no record of none.
+    if (moves.length === 0) return null;
     const ids = [...new Set(moves.flatMap((m) => [m.old, m.new]))].filter((id) =>
         /[1-9a-f]/.test(id),
     );
@@ -249,7 +271,7 @@ interface ClockEntry {
  * the arm's clock, or `ambiguous` when two clock offsets claim the stamp and the arm's turns do
  * not decide between them.
  */
-export type Placed = number | "outside" | "ambiguous";
+type Placed = number | "outside" | "ambiguous";
 
 /**
  * Maps a time an arm's process read to scenario time, or null for a journal that holds no clock
@@ -283,29 +305,30 @@ export function armClock(
         }))
         .sort((a, b) => a.wall - b.wall);
     if (spans.length === 0) return null;
+    // A turn runs from its `BeginTurn` to its `EndTurn`; a turn a kill cut ends at the next
+    // entry that names its event (the recovery's `ItemState` or `Event`).
     const begins = new Map<unknown, number>();
     const turns: [from: number, to: number][] = [];
     for (const e of mine) {
         if (e.kind === "BeginTurn") begins.set(e.event, e.wall_ms);
-        const from = e.kind === "EndTurn" ? begins.get(e.event) : undefined;
-        if (from !== undefined) turns.push([from, e.wall_ms]);
+        else if (begins.has(e.event) && /^(?:EndTurn|ItemState|Event)$/.test(String(e.kind))) {
+            turns.push([begins.get(e.event) as number, e.wall_ms]);
+            begins.delete(e.event);
+        }
     }
     // Git records the whole second a commit began in, so a wall time can read up to a second early.
     const inTurn = (wall: number) =>
         turns.some(([from, to]) => wall + SECOND_MS > from && wall <= to);
-    /** The index of the last item of an ascending list whose key is at most `value`, or -1. */
-    const lastAtMost = <T>(items: T[], key: (item: T) => number, value: number): number => {
+    const scenarioAt = (wall: number): number | null => {
+        // The last entry at or before the wall time, by binary search over the ascending list.
         let lo = 0;
-        let hi = items.length;
+        let hi = mine.length;
         while (lo < hi) {
             const mid = (lo + hi) >> 1;
-            if (key(items[mid] as T) <= value) lo = mid + 1;
+            if ((mine[mid] as ClockEntry).wall_ms <= wall) lo = mid + 1;
             else hi = mid;
         }
-        return lo - 1;
-    };
-    const scenarioAt = (wall: number): number | null => {
-        const at = lastAtMost(mine, (e) => e.wall_ms, wall);
+        const at = lo - 1;
         const before = mine[at];
         if (!before) return null;
         const running = before.scenario_ms + (wall - before.wall_ms);
@@ -318,12 +341,16 @@ export function armClock(
         return jumped ? before.scenario_ms : Math.min(running, after.scenario_ms);
     };
     return (stampMs) => {
-        // The wall times the stamp has under each offset that was in effect at that wall time.
-        const walls = spans.flatMap((span, i) => {
-            const wall = stampMs - span.offset;
-            const until = spans[i + 1]?.wall ?? Number.POSITIVE_INFINITY;
-            return wall + SECOND_MS > span.wall && wall < until ? [wall] : [];
-        });
+        // The distinct wall times the stamp has under each offset that was in effect then.
+        const walls = [
+            ...new Set(
+                spans.flatMap((span, i) => {
+                    const wall = stampMs - span.offset;
+                    const until = spans[i + 1]?.wall ?? Number.POSITIVE_INFINITY;
+                    return wall + SECOND_MS > span.wall && wall < until ? [wall] : [];
+                }),
+            ),
+        ];
         if (walls.length === 0) return "outside";
         const decided = walls.length === 1 ? walls : walls.filter(inTurn);
         if (decided.length !== 1) return "ambiguous";

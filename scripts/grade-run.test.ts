@@ -2354,6 +2354,16 @@ describe("P3 graded from a judge's label where the turn changed no product code"
             text: "Go on.",
         },
         { id: "e-s0-end", kind: "session_end", scenario_ms: 0, session: "s-0" },
+        { id: "e-sx", kind: "session_start", scenario_ms: 0, session: "s-x", project: "elysia" },
+        {
+            id: "e-other",
+            kind: "user_turn",
+            scenario_ms: 0,
+            session: "s-x",
+            index: 0,
+            text: "Go on.",
+        },
+        { id: "e-sx-end", kind: "session_end", scenario_ms: 0, session: "s-x" },
     ];
     const wired = {
         turn: "e-wire",
@@ -2446,7 +2456,9 @@ describe("P3 graded from a judge's label where the turn changed no product code"
     test("an arm whose ledger holds no earlier write of the value is sent to no judge and fails", async () => {
         const read = { ...wired, command: "grep -rn IVORY_WALRUS_PAGE_SIZE src" };
         const later = { ...wired, turn: "e-1" };
-        for (const ledger of [null, [], [read], [later]]) {
+        // A write in a session of another project is no write in this one.
+        const foreign = { ...wired, turn: "e-other" };
+        for (const ledger of [null, [], [read], [later], [foreign]]) {
             const dir = p3run("P3-pass-already-applied", ledger);
             const unasked = judgeSays("R");
             await gradeRun(dir, null, false, unasked);

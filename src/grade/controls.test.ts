@@ -54,7 +54,7 @@ interface Turn {
     /** The label the judge step hands the grader for a P3 turn that awaits one. */
     label?: AppliedLabel;
     /** The arm's commands of earlier turns in the project that carry a P3 item's current value. */
-    earlier?: string[];
+    earlier?: (string | { command: string; exit: number | null })[];
     calls?: Partial<CallView>[];
 }
 
@@ -1987,6 +1987,13 @@ describe("grading revision 13: product code apart from tests and comments", () =
             ],
         };
         expect(outcome(p1, both)).toEqual(["fail", "a governed construct breaks the rule"]);
+        const reverse = {
+            files: [
+                { path: "src/cmd/get.rs", lines: [`pub const ${token}_MAX_KEYS: usize = 64;`] },
+                ...inTests("FIXTURE_KEYS").files,
+            ],
+        };
+        expect(outcome(p1, reverse)).toEqual(["pass"]);
     });
 
     test("P3: the value is used where product code holds it", () => {
@@ -2084,21 +2091,45 @@ describe("grading revision 13: product code apart from tests and comments", () =
         // An arm that never wrote the value is sent to no judge: the turn fails with no label.
         expect(outcome(p3, { answer: already })).toEqual(none);
         expect(outcome(p3, { answer: already, earlier: [] })).toEqual(none);
-        // A read, a search, or a memory call that names the value wrote nothing.
-        for (const inspected of [
+        // A read, a search, a memory call, a command that only prints the value, a failed or
+        // unfinished edit, an edit that removes the value, and an edit of a test wrote nothing.
+        const edit = (path: string, change: object) => `edit ${path}\n${JSON.stringify([change])}`;
+        for (const unwritten of [
             `grep -rn ${current} src`,
             `cat src/limits/max_connections.rs | grep ${current}`,
             `read src/limits/max_connections.rs ${current}`,
             `eidnara_search {"query":"${current}"}`,
+            `echo ${current}`,
+            `grep ${current} src/server.rs && touch seen`,
+            `cargo test pool_${current}`,
+            { command: edit("src/server.rs", { newText: `Semaphore::new(${current})` }), exit: 1 },
+            {
+                command: edit("src/server.rs", { newText: `Semaphore::new(${current})` }),
+                exit: null,
+            },
+            edit("src/server.rs", { oldText: `// proposed ${current}`, newText: "" }),
+            edit("tests/server.rs", { newText: `assert_eq!(max(), ${current});` }),
         ]) {
-            expect([inspected, ...outcome(p3, { answer: already, earlier: [inspected] })]).toEqual([
-                inspected,
+            const text = typeof unwritten === "string" ? unwritten : unwritten.command;
+            expect([text, ...outcome(p3, { answer: already, earlier: [unwritten] })]).toEqual([
+                text,
                 ...none,
             ]);
         }
-        // A shell edit that carries the value is a write of it.
-        const edited = [`sed -i 's/with_capacity(64)/with_capacity(${current})/' src/server.rs`];
-        expect(grade(p3, { answer: already, earlier: edited, label: "R" }).verdict).toBe("pass");
+        // A shell edit that carries the value is a write of it, whatever a later part exits with.
+        for (const written of [
+            `sed -i 's/with_capacity(64)/with_capacity(${current})/' src/server.rs`,
+            {
+                command: `sed -i 's/64/${current}/' src/server.rs && cargo check | tail -1`,
+                exit: 1,
+            },
+            `python3 - <<'EOF'\nopen('src/server.rs','a').write('const MAX: usize = ${current};')\nEOF`,
+            `write src/server.rs\nconst MAX: usize = ${current};`,
+        ]) {
+            const text = typeof written === "string" ? written : written.command;
+            const g = grade(p3, { answer: already, earlier: [written], label: "R" });
+            expect([text, g.verdict]).toEqual([text, "pass"]);
+        }
     });
 
     test("P4: a quoted example in a comment is no literal, and a test's status is no refusal of the product", () => {

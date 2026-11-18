@@ -21,7 +21,12 @@ import { git } from "../git";
 import type { Artefact, CallView, Command, Snapshot } from "../grade/artefacts";
 import { assertArtefactsOnly, GradeRefused } from "../grade/artefacts";
 import { type GradeRecord, gradeItem, graderDigest } from "../grade/probes";
-import { readToolLedger, sourceEvents, withSourceCommands } from "../grade/source-commands";
+import {
+    readToolLedger,
+    sourceEvents,
+    withEarlierWrites,
+    withSourceCommands,
+} from "../grade/source-commands";
 import { armProfile, deliveryOf } from "../hosts/profiles";
 import { SnapshotRecorder } from "../hosts/snapshot";
 import type { ConverseBody } from "../proxy/classify";
@@ -569,12 +574,18 @@ function gradeRepeat(
     );
     const events = source.scenario.events as unknown as Record<string, unknown>[];
     const sources = sourceEvents(source.probe, events);
-    const snap = withSourceCommands(
-        { ...row, artefacts: [...row.artefacts, ...prior] },
+    const ledger = () => readToolLedger(join(source.dir, source.arm, "tools.jsonl"), source.arm);
+    const snap = withEarlierWrites(
+        withSourceCommands(
+            { ...row, artefacts: [...row.artefacts, ...prior] },
+            source.probe,
+            sources,
+            events,
+            ledger,
+        ),
         source.probe,
-        sources,
         events,
-        () => readToolLedger(join(source.dir, source.arm, "tools.jsonl"), source.arm),
+        ledger,
     );
     writeFileSync(join(armDir, "graded-snapshot.json"), `${JSON.stringify(snap)}\n`);
     const rules = loadPrereg(source.manifest.tier as never).grading;

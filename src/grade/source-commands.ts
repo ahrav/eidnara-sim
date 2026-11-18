@@ -74,28 +74,21 @@ export function withSourceCommands(
  * `withEarlierWrites` adds the `earlier` command log a P3 grader reads: the ledger's runs in
  * user turns of the probe's project that precede the probe's turn and whose text carries the
  * item's current value (every `must` pattern of its check). A session belongs to the project
- * its `session_start` names, or, without one, to the project of a probe in it. `ledger` gives
- * the arm's runs, or null for an arm without a tool ledger, which leaves the snapshot as it is.
+ * its `session_start` names. `ledger` gives the arm's runs, or null for an arm without a tool
+ * ledger, which leaves the snapshot as it is.
  */
 export function withEarlierWrites(
     snap: Snapshot,
     probe: ProbeItem,
-    scenario: {
-        events: readonly Record<string, unknown>[];
-        probes: readonly { session: string; project: string }[];
-    },
+    events: readonly Record<string, unknown>[],
     ledger: () => LedgerRun[] | null,
 ): Snapshot {
     if (probe.type !== "P3") return snap;
     const runs = ledger();
     if (runs === null) return snap;
-    const { events } = scenario;
-    const projectOf = new Map(scenario.probes.map((p) => [p.session, p.project]));
-    for (const e of events) {
-        if (e.kind === "session_start" && typeof e.project === "string") {
-            projectOf.set(String(e.session), e.project);
-        }
-    }
+    const projectOf = new Map(
+        events.filter((e) => e.kind === "session_start").map((e) => [String(e.session), e.project]),
+    );
     const to = events.findIndex((e) => e.id === probe.event);
     const turns = new Set(
         events

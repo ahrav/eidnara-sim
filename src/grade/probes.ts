@@ -649,7 +649,7 @@ function openingTags(c: Check, probe: ProbeItem): string[] {
     // The identity opens the text and something follows it there: a pattern that closes the
     // quote right after the identity asks for a whole literal, such as a log target.
     const opens = (t: string) =>
-        new RegExp(`["'\`\\]]\\\\?[[(]?${escapeRegex(escapeRegex(t))}(?!["'\`])`);
+        new RegExp(`["'\`\\]]\\\\?[[(]?${escapeRegex(escapeRegex(t))}(?!["'\`[])`);
     return tokens.filter((t) => (c.must ?? []).some((m) => opens(t).test(m)));
 }
 
@@ -1123,6 +1123,8 @@ const GIT_FLAG_GLOBALS =
 /** `git commit` short options that take a value, and those whose value can only be attached. */
 const COMMIT_VALUE_SHORT = "mFt";
 const COMMIT_ATTACHED_SHORT = "Su";
+/** A short option cluster of `git commit` that ends in an option whose value is the next word. */
+const VALUE_CLUSTER = new RegExp(`^-[A-Za-z]*[${COMMIT_VALUE_SHORT}]$`);
 /** Options that make `git commit` print status and commit nothing. */
 const STATUS_ONLY = /^--(porcelain|short|long|null)$/;
 /** Options with which Git builds the subject itself: `squash! ...`, `fixup! ...`, or a reused message. */
@@ -1171,7 +1173,7 @@ const makesCommit = (segment: string): boolean => {
         if (w === "--") break;
         if (w === "--dry-run") return false;
         // A short option cluster that ends in a value option, and the long forms, take the next word.
-        if (/^-[A-Za-z]*[mFt]$/.test(w) || /^--(?:message|file|template)$/.test(w)) j++;
+        if (VALUE_CLUSTER.test(w) || /^--(?:message|file|template)$/.test(w)) j++;
     }
     return true;
 };
@@ -2117,14 +2119,46 @@ export function p3Awaits(r: ArtefactReader, c: Check, probe: ProbeItem): boolean
 }
 
 /**
- * Whether the `earlier` command log holds a command of the arm, other than a research call or
- * an inspection, that carries the current value: an edit, a write, or a shell command that
- * applies it. A snapshot without that log holds no such command.
+ * Whether the `earlier` command log holds a command of the arm that wrote the current value
+ * into the project: an edit or write record of a product file that succeeded (exit 0) and
+ * whose new text carries the value, or a shell command that ran to its end and reached a
+ * writing part (`writes`) with the value among its applying parts. A read, a search, a failed
+ * edit, an edit that only removes the value, and a command that only prints it wrote nothing.
+ * A snapshot without that log holds no such command.
  */
 function wroteBefore(r: ArtefactReader, c: Check): boolean {
-    const earlier = r.added("earlier");
-    return earlier !== null && matchesAll(appliedText(earlier), c.must ?? []);
+    const must = c.must ?? [];
+    return (r.added("earlier") ?? []).some((x) => {
+        if (x.exit === null || researchCall(x)) return false;
+        const record = /^(edit|write) (\S+)\n([\s\S]*)$/.exec(x.command);
+        if (record) {
+            const [, tool, path, body] = record as unknown as [string, string, string, string];
+            const text = tool === "edit" ? newText(body) : body;
+            return x.exit === 0 && isProductPath(path) && matchesAll(text, must);
+        }
+        // A shell command's exit is its last part's; the parts read here are the ones it reached.
+        const parts = appliedParts(reachableParts(x.command, x.exit), false);
+        return parts.some(writes) && matchesAll(appliedText([x]), must);
+    });
 }
+
+/** The text an edit record puts in place: the `newText` of each replacement, or the record's body when it is no such list. */
+function newText(body: string): string {
+    try {
+        const edits: unknown = JSON.parse(body);
+        if (!Array.isArray(edits)) return body;
+        return edits.map((e) => String((e as { newText?: unknown })?.newText ?? "")).join("\n");
+    } catch {
+        return body;
+    }
+}
+
+/** Whether an executed part writes a file: a redirection to one, a heredoc it consumes, an in-place `sed` or `perl`, or `tee`, `patch`, or `git apply`. */
+const writes = (p: Segment): boolean =>
+    writesFile(p.seg) ||
+    p.body !== "" ||
+    /^(?:sed|perl)\b[^|;&]*\s-[A-Za-z]*i/.test(unprefixed(p.seg)) ||
+    /^(?:tee|patch|git\s+apply)\b/.test(unprefixed(p.seg));
 const P10_PROSE = 200;
 const NO_WORK = "no change and no written answer";
 

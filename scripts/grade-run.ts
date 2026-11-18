@@ -1394,7 +1394,7 @@ async function grade(dir: string, upstream: Upstream | null, regrade: boolean): 
                     () => ledger(arm),
                 );
                 const tools = join(dir, arm, "tools.jsonl");
-                const withEarlier = withEarlierWrites(withSource, probe, scenario, () =>
+                const withEarlier = withEarlierWrites(withSource, probe, scenario.events, () =>
                     existsSync(tools) ? ledger(arm) : null,
                 );
                 const recorded = withRecordedCommits(
