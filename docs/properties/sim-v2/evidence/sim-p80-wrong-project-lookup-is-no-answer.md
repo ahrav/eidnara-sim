@@ -30,6 +30,17 @@ the ground truth's `absent` and a check whose owner is the item's own
 project. `src/grade/controls.test.ts` grades six passing and eight failing
 answers.
 
+Grading revision 11 (`prereg/G11.json`, `docs/grading.md`) replaced that
+rule as the verdict. grade-run has a judge label each answer under the
+registered rubric, and the grader passes labels A and P, sets
+`P8-twin.harm` for label C, refuses labels P and C for an answer that holds
+none of the base project's values (`ground_truth.absent` and
+`ground_truth.stale`, matched as whole tokens), and stores the sentence
+rule's verdict and harm as `P8-twin.v1` and `P8-twin.v1_harm`. On 753
+blind-labelled answers of c8 and w2 the sentence rule agreed with the
+labels on 363 and the judge on 739; the one answer labelled C gave a
+superseded base value, which the sentence rule's harm test does not read.
+
 ## Failure scenario
 
 The agent carries the base project's alias into the twin and the item passes
@@ -55,7 +66,11 @@ abstain, disown, name the value, hedge on it, or guess another.
 - Conclusion: resolved with answer: it fails.
 
 ### Q: Should a sentence that names the owner and still recommends the value fail?
-- Sources examined: the `P8-twin` grader.
-- Findings: naming the owner places the sentence elsewhere, so it passes.
-- Missing evidence: Q campaign answers showing whether agents answer that way.
-- Conclusion: unresolved, needs the Q campaign's answers.
+- Sources examined: the `P8-twin` grader; `prereg/G11.json`; the 753
+  labelled P8-twin answers of c8 `M` and `MX` and w2 `S` and `S2`.
+- Findings: under the sentence rule (`P8-twin.v1`) naming the owner places
+  the sentence elsewhere, so it passes. The registered rubric labels such a
+  reply C. No labelled answer has that shape: none holds the current base
+  value, and the one that holds a superseded value gives it as the answer.
+- Missing evidence: an answer of that shape and the judge's label of it.
+- Conclusion: unresolved, needs such an answer.

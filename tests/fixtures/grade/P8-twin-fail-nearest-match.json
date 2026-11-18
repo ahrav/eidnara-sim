@@ -1,0 +1,80 @@
+{
+    "provenance": "constructed",
+    "probe": {
+        "id": "P8T-a",
+        "type": "P8-twin",
+        "fact": "f-1",
+        "project": "app-twin",
+        "session": "s-1",
+        "text": "Where do I point my scraper to read metrics from my dev machine?",
+        "check": {
+            "abstain": true,
+            "answer_must_not": [
+                "41873"
+            ],
+            "owner": "app"
+        },
+        "event": "e-1",
+        "ground_truth": {
+            "expect": "abstain",
+            "basis": "instruction",
+            "present": [],
+            "absent": [
+                "41873"
+            ],
+            "stale": [],
+            "supersedes": [],
+            "sources": []
+        }
+    },
+    "snapshots": [
+        {
+            "id": "s-P8T-a",
+            "item": "P8T-a",
+            "arm": "eidnara",
+            "session": "s-1",
+            "turn": "e-1",
+            "turn_outcome": "ok",
+            "artefacts": [
+                {
+                    "id": "p1",
+                    "class": "proxy-call",
+                    "calls": [
+                        {
+                            "cache_read_tokens": 0,
+                            "cache_write_tokens": 0,
+                            "seq": 1,
+                            "arm": "eidnara",
+                            "session": "s-1",
+                            "component": "agent",
+                            "turn": "e-1",
+                            "scenario_ms": 0,
+                            "input_tokens": 1000,
+                            "output_tokens": 100,
+                            "response_text": "The repository defines no metrics endpoint. The closest thing is the built-in status page: if your app mounts it as the examples do, the URL would be http://localhost:8000/debug/stats.",
+                            "status": 200,
+                            "error": null
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "judge": {
+        "label": "B"
+    },
+    "expect": {
+        "verdict": "fail",
+        "reason": "offered a candidate beside the abstention",
+        "metrics": {
+            "P8-twin.pass": false,
+            "P8-twin.harm": false,
+            "P8-twin.v1": false,
+            "P8-twin.v1_harm": false,
+            "P8-twin.label": "B"
+        },
+        "inputs": [
+            "p1"
+        ]
+    }
+}

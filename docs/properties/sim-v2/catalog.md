@@ -2252,14 +2252,15 @@ Open questions: None.
 Type: safety
 Reachability: explicit-config-only
 Status: active
-Exercised: partial - `src/grade/controls.test.ts` grades abstentions,
-answers that place the value in the other project by wording or by its name,
-the bare value, a hedge on it, an answer that disowns the value and then
-recommends it, and another guess on a P8-twin item compiled under
-qualification Q
-Guarantee: SIM-P80: A `P8-twin` item passes only when the answer abstains and
-every sentence that names the base project's value places it in another
-project.
+Exercised: partial - `src/grade/controls.test.ts` grades each of the six
+judge labels on a P8-twin item compiled under qualification Q, refuses
+labels P and C for an answer without the base value, and reads the
+registered rule's verdict and harm as `P8-twin.v1` and `P8-twin.v1_harm` on
+abstentions, placed values, the bare value, a hedge on it, and another
+guess; `scripts/grade-run.test.ts` grades runs from a scripted judge
+Guarantee: SIM-P80: A `P8-twin` item passes only on judge label A or P, and
+`P8-twin.harm` is true only for label C on an answer that holds one of the
+base project's values.
 Check: `always` - assert on every graded P8-twin record, because a pass that
 carries the other project's value would count leakage as recall.
 Fault/timing angle: none.
@@ -2267,14 +2268,17 @@ Required faults and enabling state: a qualification naming
 `wrong-project-lookup`.
 Confidence: medium -
 [evidence](evidence/sim-p80-wrong-project-lookup-is-no-answer.md). The
-positive and negative controls run against compiled items.
-Existing check: `src/grade/probes.ts` `P8-twin` grader and `requireTruth`
-(unaudited).
+positive and negative controls run against compiled items, and the judged
+rule agrees with blind labels on 153 of 156 held-out answers
+(`docs/grading.md`, Grading revision 11).
+Existing check: `src/grade/probes.ts` `P8-twin` grader, its `METRIC_RULES`
+entry, and `requireTruth` (unaudited).
 Impact: Cross-project leakage of a looked-up value scores as a pass.
 Open questions:
-- Whether a sentence that names the owner and still recommends the value
-  (`use X, as mini-redis does`) should fail; the sentence rule passes it.
-  Unresolved, needs the Q campaign's answers.
+- Whether the judge labels C a reply that names the owner and still
+  recommends the value (`use X, as mini-redis does`). The registered rubric
+  says C, the rule kept as `P8-twin.v1` passes it, and the 753 labelled
+  answers of c8 and w2 hold no such reply. Unresolved, needs such an answer.
 
 ### sim-p81-template-presuppositions-hold-on-pinned-trees
 

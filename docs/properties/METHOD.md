@@ -161,6 +161,10 @@ pass, through a value-shaped token the reply set aside or carried in an
 unrelated part and through wording outside its list, so a pass-rate
 difference between two builds under it (19 against 12 of 24) stood beside
 labels that differ by one answer the other way (23 against 24 of 24).
+P8-twin is the second case (Grading revision 11): its registered rule agreed
+with blind labels on 363 of 753 answers, failed 369 of the 715 answers the
+labels pass, and recorded no harm on the one answer that gave a superseded
+value of the other project as its own.
 
 - State the property in one sentence and write the rubric from it before
   any answer is labelled. Give every class a label, the passing one and each
@@ -197,6 +201,20 @@ labels that differ by one answer the other way (23 against 24 of 24).
   the label with the digests of the prompt and the answer, and reads a
   stored label on a later pass, so grading a run again gives the same
   verdicts.
+- When nearly every answer carries the passing label, a rule that passes
+  every answer scores that share. Report it beside each candidate, and
+  report how many failing answers each candidate fails and how many passing
+  answers it fails (P8-twin: 95% of the answers pass, the judge fails 8 of
+  the 10 failing test answers and the registered rule 2).
+- A fact the label rests on that an exact match can decide is computed and
+  given to the judge, and a label that needs the fact is refused without
+  it. The P8-twin harm label is accepted only for an answer that holds one
+  of the other project's values as a whole token.
+- Check what the labeller is told against what the answers call things.
+  The twin repositories name their package by the base project's name, and
+  a judge given both project names read `the server exposes no metrics` as
+  a statement about the other project until the rubric said the names are
+  shared.
 - Tuning a system to raise its score under a rule that has not passed this
   check is tuning to the grader.
 

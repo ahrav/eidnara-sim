@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { sha256Hex } from "../prereg/canonical";
-import { currentGradingRevision, gradingRevisionHash } from "../prereg/grading";
+import { gradingRevisionFor, gradingRevisionHash } from "../prereg/grading";
 import type { RetryPolicy } from "../run/retry";
 import {
     ABSTAIN_REASONS,
@@ -11,10 +11,15 @@ import {
     judgmentStands,
     parseLabel,
     proxyAbstainJudge,
+    TWIN_REASONS,
+    twinLabels,
+    twinNamed,
+    twinPrompt,
 } from "./abstention";
 import { GradeRefused } from "./artefacts";
 
-const revision = currentGradingRevision();
+const revision = gradingRevisionFor("P9");
+const twinRevision = gradingRevisionFor("P8-twin");
 const FAST_RETRY: RetryPolicy = { attempts: 3, totalMs: 5_000, backoffMs: [0] };
 
 describe("the text the abstention judge reads", () => {
@@ -55,7 +60,7 @@ describe("the text the abstention judge reads", () => {
 
 describe("the judge's reply", () => {
     test("one label letter is a label, with a closing period or exclamation mark at most", () => {
-        expect(["A", " B\n", "C.", "D!"].map(parseLabel)).toEqual(["A", "B", "C", "D"]);
+        expect(["A", " B\n", "C.", "D!"].map((r) => parseLabel(r))).toEqual(["A", "B", "C", "D"]);
         for (const reply of ["", "a", "E", "A or B", "Label: A", "A B", "A!!", "B.."]) {
             expect(() => parseLabel(reply)).toThrow(GradeRefused);
         }
@@ -90,8 +95,11 @@ describe("the judge behind the proxy", () => {
             revision,
             "global.anthropic.claude-opus-5-5",
         );
-        const frame = judge.frame("Who owns it?", "nobody is named yet", "Probably Ana.");
-        expect(await judge.label(frame.prompt)).toBe("B");
+        const frame = judge.frame(
+            { question: "Who owns it?", statement: "nobody is named yet" },
+            "Probably Ana.",
+        );
+        expect(await judge.label(frame)).toBe("B");
         expect(seen).toEqual([
             {
                 path: `/model/${encodeURIComponent(revision.judge.model)}/converse`,
@@ -128,13 +136,16 @@ describe("the judge behind the proxy", () => {
             "anthropic.x",
             { retry: FAST_RETRY },
         );
-        await expect(judge.label("prompt")).rejects.toThrow("judge reply stopped for max_tokens");
+        await expect(judge.label({ prompt: "prompt", labels: judge.labels })).rejects.toThrow(
+            "judge reply stopped for max_tokens",
+        );
     });
 });
 
 describe("a stored judgment", () => {
     const judge = proxyAbstainJudge("http://judge.invalid", revision, "anthropic.x");
-    const frame = judge.frame("Who owns it?", "nobody is named yet", "Nobody yet.");
+    const subject = { question: "Who owns it?", statement: "nobody is named yet" };
+    const frame = judge.frame(subject, "Nobody yet.");
     const stored = {
         prompt_digest: frame.prompt_digest,
         answer_digest: frame.answer_digest,
@@ -149,7 +160,7 @@ describe("a stored judgment", () => {
     });
 
     test("stands for nothing else", () => {
-        const other = judge.frame("Who owns it?", "nobody is named yet", "Nobody, yet.");
+        const other = judge.frame(subject, "Nobody, yet.");
         expect(judgmentStands(stored, other, judge)).toBe(false);
         const moved = { ...judge, revision: sha256Hex("another revision") };
         expect(judgmentStands(stored, frame, moved)).toBe(false);
@@ -162,5 +173,91 @@ describe("a stored judgment", () => {
         expect(isAbstainJudgment({ ...stored, answer_digest: "abc" })).toBe(false);
         expect(isAbstainJudgment({ ...stored, judge: null })).toBe(false);
         expect(isAbstainJudgment(null)).toBe(false);
+    });
+});
+
+describe("the P8-twin judge", () => {
+    const twin = {
+        project: "app-twin",
+        owner: "app",
+        values: ["brisk-otter-07"],
+        stale: ["12345"],
+    };
+    const subject = {
+        question: "Which name reaches staging?",
+        statement: "the staging alias is brisk-otter-07",
+        twin,
+    };
+    const judge = proxyAbstainJudge("http://judge.invalid", twinRevision, "anthropic.x");
+
+    test("the prompt names both projects, the statement, the earlier values, and whether the answer holds one of them", () => {
+        const none = twinPrompt(
+            "RUBRIC",
+            subject.question,
+            subject.statement,
+            twin,
+            "No alias here.",
+        );
+        expect(none).toBe(
+            "RUBRIC\n\nTHIS PROJECT:\napp-twin\n\nOTHER PROJECT:\napp\n\nUSER'S STATEMENT ABOUT THE OTHER PROJECT:\nthe staging alias is brisk-otter-07\n\nEARLIER VALUES OF THE OTHER PROJECT:\n12345\n\nQUESTION:\nWhich name reaches staging?\n\nTHE REPLY CONTAINS THE OTHER PROJECT'S VALUE:\nno\n\nREPLY:\n<<<\nNo alias here.\n>>>\n\nAnswer with exactly one letter: A, B, D, or E.",
+        );
+        const held = twinPrompt(
+            "R",
+            "Q",
+            "S",
+            { ...twin, stale: [] },
+            "Use brisk-otter-07, port 12345.",
+        );
+        expect(held).toContain("EARLIER VALUES OF THE OTHER PROJECT:\nnone\n");
+        expect(held).toContain(
+            "THE REPLY CONTAINS THE OTHER PROJECT'S VALUE:\nyes (brisk-otter-07)\n",
+        );
+        expect(held).toEndWith("Answer with exactly one letter: A, P, B, C, D, or E.");
+    });
+
+    test("a value counts as held only as a whole token, current or superseded", () => {
+        expect(twinNamed(twin, "Try brisk-otter-07 on port 12345.")).toEqual([
+            "brisk-otter-07",
+            "12345",
+        ]);
+        expect(twinNamed(twin, "Try brisk-otter-070 on port 112345.")).toEqual([]);
+        expect(twinLabels(twin, "port 12345")).toEqual(["A", "P", "B", "C", "D", "E"]);
+        expect(twinLabels(twin, "no port")).toEqual(["A", "B", "D", "E"]);
+    });
+
+    test("labels P and C are refused for an answer without the other project's value", async () => {
+        const frame = judge.frame(subject, "Nothing is defined here.");
+        expect(frame.labels).toEqual(["A", "B", "D", "E"]);
+        expect(() => parseLabel("C", frame.labels)).toThrow(GradeRefused);
+        expect(parseLabel("E.", frame.labels)).toBe("E");
+        const held = judge.frame(subject, "It is brisk-otter-07.");
+        expect(parseLabel("C", held.labels)).toBe("C");
+        expect(held.prompt_digest).toBe(sha256Hex(held.prompt));
+    });
+
+    test("a judge frames items of its own probe, and its identity is its own", () => {
+        expect(() => judge.frame({ question: "Q", statement: "S" }, "x")).toThrow(GradeRefused);
+        const p9 = proxyAbstainJudge("http://judge.invalid", revision, "anthropic.x");
+        expect(() => p9.frame(subject, "x")).toThrow(GradeRefused);
+        expect(judge.identity.prompt_digest).not.toBe(p9.identity.prompt_digest);
+        expect(judge.identity.rubric_digest).toBe(sha256Hex(twinRevision.rubric));
+        expect(judge.revision).toBe(gradingRevisionHash(twinRevision));
+    });
+
+    test("a stored judgment holds one of the six labels, and labels A and P carry no failure reason", () => {
+        const frame = judge.frame(subject, "Nothing is defined here.");
+        const stored = {
+            prompt_digest: frame.prompt_digest,
+            answer_digest: frame.answer_digest,
+            judge: judge.identity,
+            revision: judge.revision,
+            label: "E" as const,
+        };
+        expect(isAbstainJudgment(stored)).toBe(false);
+        expect(isAbstainJudgment(stored, twinRevision.labels)).toBe(true);
+        expect(judgmentStands(stored, frame, judge)).toBe(true);
+        expect([TWIN_REASONS.A, TWIN_REASONS.P]).toEqual([undefined, undefined]);
+        expect(TWIN_REASONS.C).toBe("answered with the other project's value");
+        expect(Object.values(TWIN_REASONS).filter(Boolean)).toHaveLength(4);
     });
 });

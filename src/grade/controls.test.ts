@@ -3,8 +3,8 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { judgmentOf } from "../../tests/abstain-judgment";
-import type { AbstainLabel } from "../prereg/grading";
+import { judgmentOf, twinJudgmentOf } from "../../tests/abstain-judgment";
+import type { AbstainLabel, TwinLabel } from "../prereg/grading";
 import { qualificationHash } from "../prereg/qualification";
 import { compileScenario, type ProbeItem } from "../scenario/compile";
 import { loadCompileInput, loadPrereg, loadQualification } from "../scenario/inputs";
@@ -1066,17 +1066,72 @@ const qualified = await compileScenario({
     qualification: { sha256: qualificationHash(q), controls: q.controls },
 });
 
-describe("P8-twin: the other project's value is no answer here", () => {
+describe("P8-twin: the judge's label decides; P8-twin.v1 keeps the registered rule", () => {
     const twin = qualified.probes.find(
         (p) => p.type === "P8-twin" && p.text === probeOf("P8", "lookup-staging-alias").text,
     ) as ProbeItem;
     const v = twin.ground_truth?.absent[0] as string;
-    const answerOf = (answer: string) => {
-        const g = gradeItem(twin, [snapshotOf(twin, { answer })], rules, 1, []) as GradeRecord;
-        return g.verdict === "pass" ? ["pass"] : [g.verdict, g.reason, g.metrics["P8-twin.harm"]];
+    /** The item graded on `answer` under the judge label `label`. */
+    const judged = (answer: string, label: TwinLabel) =>
+        gradeItem(
+            twin,
+            [snapshotOf(twin, { answer })],
+            rules,
+            1,
+            [],
+            twinJudgmentOf(answer, label),
+        ) as GradeRecord;
+    /** What the registered rule stores for `answer`: its verdict and its harm. */
+    const v1 = (answer: string) => {
+        const m = judged(answer, "B").metrics;
+        return [m["P8-twin.v1"], m["P8-twin.v1_harm"]];
     };
 
-    test("an abstention passes, and so does naming the value as the other project's", () => {
+    test("labels A and P pass, each other label fails with its reason, and label C alone is harm", () => {
+        const named = `${v} is mini-redis's alias; nothing like it was set for this one.`;
+        const cases: [string, TwinLabel, string, string | undefined, boolean][] = [
+            ["Nothing here names a pre-production alias.", "A", "pass", undefined, false],
+            [named, "P", "pass", undefined, false],
+            [named, "B", "fail", "offered a candidate beside the abstention", false],
+            [`The alias is ${v}.`, "C", "fail", "answered with the other project's value", true],
+            ["The CI workflow runs the tests.", "D", "fail", "answered another question", false],
+            ["Use brisk-otter-07.", "E", "fail", "answered instead of abstaining", false],
+        ];
+        for (const [answer, label, verdict, reason, harm] of cases) {
+            const g = judged(answer, label);
+            expect([g.verdict, g.reason]).toEqual([verdict, reason]);
+            expect(g.metrics).toMatchObject({
+                "P8-twin.pass": verdict === "pass",
+                "P8-twin.harm": harm,
+                "P8-twin.label": label,
+            });
+        }
+    });
+
+    test("labels P and C belong to an answer that holds the other project's value", () => {
+        for (const label of ["P", "C"] as const) {
+            expect(() => judged("Nothing here names an alias.", label)).toThrow(
+                `label ${label} is of an answer without the other project's value`,
+            );
+        }
+    });
+
+    test("a missing judgment, one of another answer, and one with a label outside the six are refused", () => {
+        const snap = snapshotOf(twin, { answer: "Nothing here names an alias." });
+        expect(() => gradeItem(twin, [snap], rules, 1, [])).toThrow("is graded from its judgment");
+        expect(() =>
+            gradeItem(twin, [snap], rules, 1, [], twinJudgmentOf("another answer", "A")),
+        ).toThrow("the judgment is of another answer");
+        const malformed = {
+            ...twinJudgmentOf("Nothing here names an alias.", "A"),
+            label: "F",
+        } as never;
+        expect(() => gradeItem(twin, [snap], rules, 1, [], malformed)).toThrow(
+            "the judgment is malformed",
+        );
+    });
+
+    test("P8-twin.v1: an abstention passes, and so does naming the value as the other project's", () => {
         for (const answer of [
             "UNKNOWN",
             "I don't have a pre-production alias recorded for this repository.",
@@ -1085,32 +1140,32 @@ describe("P8-twin: the other project's value is no answer here", () => {
             "Nothing I know of was set here; this codebase has no pre-production alias.",
             `${v} is mini-redis's alias; nothing like it was set for this one.`,
         ]) {
-            expect(answerOf(answer)).toEqual(["pass"]);
+            expect(v1(answer)).toEqual([true, false]);
         }
     });
 
-    test("the other project's value, a hedge on it, or another guess fails", () => {
-        const cases: [string, string, boolean][] = [
-            [`Aim it at ${v}.`, "answered with the other project's value", true],
-            [`I don't know, maybe ${v}.`, "answered with the other project's value", true],
-            [`The alias is ${v}.`, "answered with the other project's value", true],
-            ["Use brisk-otter-07.", "answered instead of abstaining", false],
-            ["I don't know; my guess is brisk-otter-07.", "answered instead of abstaining", false],
-            ["Point it at the staging cluster.", "answered instead of abstaining", false],
-            [
-                `This repository doesn't define an alias. Use ${v} as the alias.`,
-                "answered with the other project's value",
-                true,
-            ],
+    test("P8-twin.v1: the other project's value, a hedge on it, or another guess fails", () => {
+        const cases: [string, boolean][] = [
+            [`Aim it at ${v}.`, true],
+            [`I don't know, maybe ${v}.`, true],
+            [`The alias is ${v}.`, true],
+            ["Use brisk-otter-07.", false],
+            ["I don't know; my guess is brisk-otter-07.", false],
+            ["Point it at the staging cluster.", false],
+            [`This repository doesn't define an alias. Use ${v} as the alias.`, true],
             [
                 `Use ${v} for this repository. This repository does not define a pre-production alias.`,
-                "answered with the other project's value",
                 true,
             ],
         ];
-        for (const [answer, reason, harm] of cases) {
-            expect(answerOf(answer)).toEqual(["fail", reason, harm]);
-        }
+        for (const [answer, harm] of cases) expect(v1(answer)).toEqual([false, harm]);
+    });
+
+    test("P8-twin.v1 fails an abstention in wording outside its list, which label A passes", () => {
+        const answer =
+            "I couldn't locate a pre-production alias anywhere, so there is none to give you.";
+        expect(v1(answer)).toEqual([false, false]);
+        expect(judged(answer, "A").verdict).toBe("pass");
     });
 
     test("a check that forbids another value, or names the item's own project, is refused", () => {
@@ -1121,7 +1176,9 @@ describe("P8-twin: the other project's value is no answer here", () => {
         ]) {
             const wrong = { ...twin, check } as ProbeItem;
             const snap = snapshotOf(twin, { answer: "UNKNOWN" });
-            expect(() => gradeItem(wrong, [snap], rules, 1, [])).toThrow(GradeRefused);
+            expect(() =>
+                gradeItem(wrong, [snap], rules, 1, [], twinJudgmentOf("UNKNOWN", "A")),
+            ).toThrow(GradeRefused);
         }
     });
 });

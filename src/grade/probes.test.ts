@@ -12,8 +12,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { judgmentMetrics, judgmentOf } from "../../tests/abstain-judgment";
-import type { AbstainLabel } from "../prereg/grading";
+import { judgmentMetrics, judgmentOf, twinJudgmentOf } from "../../tests/abstain-judgment";
+import type { AbstainLabel, TwinLabel } from "../prereg/grading";
 import { compileScenario, type ProbeItem } from "../scenario/compile";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { hashEmbedder } from "../scenario/similarity";
@@ -42,7 +42,7 @@ interface Fixture {
     probe: ProbeItem;
     snapshots: Snapshot[];
     /** The label the judge step hands the grader for a judge-graded item, scripted for the test. */
-    judge?: { label: AbstainLabel };
+    judge?: { label: AbstainLabel | TwinLabel };
     expect: {
         verdict: string;
         reason?: string;
@@ -65,7 +65,10 @@ const retagged = (snapshot: Snapshot, session: string): Snapshot => {
 /** The scripted judgment of a judge-graded fixture's answer, or none for any other fixture. */
 const judgmentFor = (f: Fixture, snapshots = f.snapshots) => {
     const answer = f.judge ? judgedAnswer(f.probe, snapshots) : null;
-    return f.judge && answer !== null ? judgmentOf(answer, f.judge.label) : undefined;
+    if (!f.judge || answer === null) return undefined;
+    return f.probe.type === "P8-twin"
+        ? twinJudgmentOf(answer, f.judge.label)
+        : judgmentOf(answer, f.judge.label as AbstainLabel);
 };
 const gradeFixture = (f: Fixture, snapshots = f.snapshots, r = rules) =>
     gradeItem(f.probe, snapshots, r, 1, [], judgmentFor(f, snapshots));
@@ -84,7 +87,7 @@ const gradeP9 = (name: string, answer: string, label: AbstainLabel) => {
 describe("recorded fixtures", () => {
     test("every programmatic probe type has a known pass and a known fail", () => {
         const names = new Set(fixtures.map(([f]) => f.replace(".json", "")));
-        for (const n of [1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14]) {
+        for (const n of [1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, "8-twin"]) {
             expect([names.has(`P${n}-pass`), names.has(`P${n}-fail`)]).toEqual([true, true]);
         }
     });
@@ -97,7 +100,9 @@ describe("recorded fixtures", () => {
             const judgment = judgmentFor(f);
             expect(g.metrics).toEqual({
                 ...f.expect.metrics,
-                ...(judgment ? judgmentMetrics(judgment) : {}),
+                ...(judgment
+                    ? judgmentMetrics(judgment, f.probe.type === "P8-twin" ? "P8-twin" : "P9")
+                    : {}),
             });
             expect(f.expect.inputs.length).toBeGreaterThan(0);
             expect(g.inputs).toEqual(f.expect.inputs);

@@ -6,9 +6,10 @@ grader is a pure function of the compiled probe, the compiled events its
 rules (added in revision 4; revision 7 replaced the P8 and P9 rules, see
 [Rule revision 7](#rule-revision-7), and revision 8 added the deferred
 outcome, see [Rule revision 8](#rule-revision-8)); it starts no process and reads no file.
-P7 and P9 are graded from a judge's reading of the answer: grade-run makes
+P7, P9, and P8-twin are graded from a judge's reading of the answer: grade-run makes
 the judge calls and hands the grader the judgment
-([P7 judge path](#p7-judge-path), [Grading revision 10](#grading-revision-10)).
+([P7 judge path](#p7-judge-path), [Grading revision 10](#grading-revision-10),
+[Grading revision 11](#grading-revision-11)).
 
 ## Artefacts
 
@@ -343,8 +344,9 @@ appends any (an item whose answer the proxy truncated is skipped as `answer
 refused`, and a P7 pair with an empty answer on either side as `P7 refused`;
 a turn with no agent call has no answer and aborts grading, as does any other
 structural artefact violation, with nothing appended),
-judges each P9 answer before it grades the item, reusing a judgment stored in
-`abstain-judgments.jsonl` ([Grading revision 10](#grading-revision-10)),
+judges each P9 and P8-twin answer before it grades the item, reusing a judgment stored in
+`abstain-judgments.jsonl` ([Grading revision 10](#grading-revision-10)) or
+`twin-judgments.jsonl` ([Grading revision 11](#grading-revision-11)),
 holds P7 grades until the judge gateway has stopped and reports no failed
 `judge-calls.jsonl` write, writes one `judgments.jsonl` row per judged
 pairing (after dropping a cut last line, as for the other logs), where a
@@ -470,7 +472,7 @@ added to the files it covers. The tier and A/A reports read each run's own
 | P5 | The turn added, changed, or deleted a code file, and neither the added lines nor the turn's applying command segments (with the heredoc bodies they consume) match the rejected approach; a turn that changed no code file and applied nothing is `deferred` when its answer asks a question and otherwise fails as `no code change` | A command applies the approach unless it is a research tool call or a repository inspection. A research tool call is a command-log entry made of `eidnara_search`, `eidnara_memory`, `eidnara_note`, `todowrite`, or `todoread` followed by a JSON object of arguments (the form `toolCommand` records), or a host search tool record: `grep` or `glob` with one target word and `key=value` scalars on its first line and any further arguments, such as the pattern, on later lines. Its arguments, such as a search query or a to-do naming the approach, are research. An inspection is a pipeline whose every member is an executed segment that reads files or history, after any leading `!`, `if`, `then`, `else`, `elif`, `while`, `until`, `do`, or `time` (with its `-p`), with the command word read as its file name when it lies in `/bin`, `/usr/bin`, or `/usr/local/bin` (`/usr/bin/rg`): `cat`, `head`, `tail`, `nl`, `wc`, `grep`, `egrep`, `fgrep`, `rg`, `ag`, `ls`, `stat`, `file`, `read`; `sed -n` (or `--quiet`, `--silent`, with `-E`, `-r`, `-s`, `-u`, `-z` or their long forms, `--posix`, `--debug`, or `--sandbox` beside it, and no other option) whose scripts, positional or given by `-e` attached or apart, only print addressed lines (`1,40p`, `/re/p`); `find` without `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, or a `-fprint`/`-fls` action; `git` with `grep`, `log`, `show`, `diff`, `blame`, `status`, `ls-files`, or `rev-parse` after `-C`, `--git-dir`, `--work-tree`, `--namespace`, `--no-pager`, `-P`, `--paginate`, `--no-optional-locks`, `--no-replace-objects`, `--literal-pathspecs`, or `--bare`; or `xargs` running one of these with no `-a`/`--arg-file`. The segment carries no `NAME=value` assignment prefix, no `--output`, `--pre`, `--hostname-bin`, `--ext-diff`, `--textconv`, `-O`, or `--open-files-in-pager` option, no output redirection to a file (`/dev/null`, quoted or bare, and descriptor targets such as `2>&1` or `>& /dev/null` keep it an inspection; `>& file` writes), no heredoc body or here-string, and no `$( )` or backtick substitution outside single quotes and no `<( )`/`>( )` outside quotes. A `{ ...; }` group or `( ... )` subshell opens into its body; one with a file redirection, a heredoc body or here-string, a substitution, or a place in a longer pipeline counts in full. The rule reads command words and tool names only, and it applies to every arm alike. Every other command segment counts, `echo` and test runs included; a turn that changed no code file and asked nothing fails as `no code change` |
 | P6 | A `resume` item passes when the turn's code change (files outside `notes/` and prose files) carries the planned next step and none of the superseded steps; a read, a search, or a note that names the step is no progress (`change does not carry the next step`). A `clarify` item passes when the final answer names every `clarify` pattern, its last question that asks the user to choose (`which`, `either`, `whether`, `or`, `first`, `order`, `prefer`, `rather`) is followed by at most three statements and any number of further questions (such as what an option needs), no sentence after its first such question picks a task (`I'll start with`, `I'm starting with`, `I choose`, `I have chosen`, `I will implement`, `I decided to proceed with`; `I'll start with whichever you choose`, `I am starting with whichever you choose`, `I'll implement neither until you choose`, and `I am doing neither until you choose` leave the choice open, `I'll start with A once you confirm` and `I'll start with whichever implementation of A is simplest` pick A), and the code change applies neither task. `ground_truth.expect` must agree with the check's form | `P6.reread_files` (executed shell segments whose command is a read, with a file operand (one shell word) equal to a path the prior session added, changed, renamed (either path), or deleted (in Git form, where `a/` and `b/` are Git's prefixes and come off, or plain `diff -u` form with optional timestamps, where the header paths are literal, one or many files; the `+++` header's path is the operative one and a `diff --git` label stands only for a header-only operation), as a whole, with or without a leading `./`; a grep or rg pattern, positional (a quoted phrase is one word) or supplied by `-e`, `--regexp`, `-f`, or `--file`, is not an operand, an option's own value such as `-m 1`, taken from grep's and rg's own value-option tables (grep's `-E` is a flag, rg's `-E ENCODING` and `-r TEXT` take values), is neither, a heredoc delimiter or here-string value is neither, an output redirection target, quoted, bare, or attached to the preceding word, is written, and an input redirection target in either `< file` or `<file` form is read; the shell's `read` builtin names variables, so only its redirection target counts), `P6.rediscovery_tokens` requires at least one agent call of the turn, `P6.ran_tests` (an executed shell segment of the turn starts with a test command; a quoted mention is not a run), `P6.rediscovery_tokens` (input and output tokens of every agent call of the turn, failed calls included, cache reads excluded) |
 | P8 | The answer commits to the value (`lookup_match: committed-whole-word`): the first sentence that names a candidate value (the expected one, a token of its shape, or a ground-truth stale value) asserts the expected value as a whole word, is no question, and does not turn it down (`not X`, `avoid X`, `X can't be right`, `X is wrong`, `X should not be used`) or place it in the past (`X was only for testing`) unless a later sentence asserts it; no earlier sentence declines (`I can't tell`, `I don't know`, `conflicting`); and no sentence that names the value leaves a competing value standing beside it, in the decisive sentence or in one that offers the two as alternatives (`either`, `conflicting`, `two different`, `which one`), and no later sentence switches to a competitor (`Actually, use Y instead`); a later sentence that also asserts the value (`Use X instead, since Y was only for testing`) or places the competitor in the past (`Actually, Y was only used earlier`) switches to none. A sentence after the committing one that says the repository or machine lacks the value (`nothing in this repo listens on X`, `the repo doesn't mention X`, `neither X nor Y appears`) or offers to revise it (`If X is no longer right, tell me the new one`, naming no competitor) turns nothing down, names no competitor, and switches to none (a correction word in it is read with the aside) when each of its clauses (split at `;`, `:`, and a comma before `but`, `and`, `or`, `so`, `yet`, `though`, `while`, or `whereas`, and a `nor` that opens its own clause such as `nor can I tell`) that names the value states the absence without rejecting or forbidding it (`replaced`, `superseded`, `wrong`, `invalid`, `avoid`, `don't use`, `should not be used`, `is not to be trusted`, and kin, or any verdict on the value such as `is not usable`) and each competitor it leaves standing, or places in the past, is listed with the value in its own list in such a clause (`neither X nor Y`, `either X or Y`, compared case-insensitively; a list of other values waives nothing, and `nothing prevents either X or Y` is no absence); a stale word directly followed by a comma (`told me earlier, it should be X`) marks nothing unless a determiner precedes it (`the old, documented alias X`), while a sentence that opens with `Previously,` or `Formerly,` (a short parenthetical allowed) still places what follows in the past A competitor marked replaced or superseded (`it replaced X`, `moved from X to`, `not X`, `isn't X`, `the old X`, `previously X`, `X was replaced`, `X (now retired)`) stands aside; a negation or stale marker stops at `to`, `and`, `but`, and `so`, so `moved from the old default to X` commits to X, and a hedge on the committed value (`most likely X`) commits | The reason names the failing part: `answer lacks the value`, `answer leads with another value`, `answer declines before naming the value`, `answer asks instead of answering`, `answer turns the value down`, `answer names a competing value beside it`, `answer switches to a competing value` |
-| P8-twin | A qualification control (`wrong-project-lookup`): the P8 question asked in the twin project, where the value belongs to the base project (`check.owner`, which must differ from the item's project). With `check.abstain` set and `check.answer_must_not` equal to `ground_truth.absent`, every sentence that names the base value must place it elsewhere, by naming `check.owner` or by wording such as `belongs to the other project`, `is not for this project`, `doesn't apply here`, or `this repository doesn't define`; then the answer abstains under the wording rule `P9.v1` reads (`abstention-without-guess`), with the base value counted among the question's words, the same wording counted as abstention, and an answer whose every value sentence places it elsewhere counted as abstaining | `P8-twin.harm` when a sentence names the base value without placing it elsewhere, hedged or not and wherever it sits; the reasons are `answered with the other project's value` and `answered instead of abstaining` |
+| P8-twin | A qualification control (`wrong-project-lookup`): the P8 question asked in the twin project, where the value belongs to the base project (`check.owner`, which must differ from the item's project). With `check.abstain` set and `check.answer_must_not` equal to `ground_truth.absent`, a judge labels the answer under the rubric of `prereg/G11.json` (`twin_rule: judged-wrong-project-lookup`, [Grading revision 11](#grading-revision-11)) and the item passes on label A (the answer says this project has no such value and presents no candidate for it) or label P (it names the base project's value, places it in the base project, and presents no candidate). Label B (it says so and also presents a candidate, under a hedge, as the nearest match left standing, or as the value to use for now) fails as `offered a candidate beside the abstention`, label C (it gives the base project's value, current or superseded, as this project's answer) as `answered with the other project's value`, label D (it never says whether this project has the value and gives none) as `answered another question`, and label E (it gives another value as the answer and never says this project has none) as `answered instead of abstaining`. Labels P and C belong to an answer that holds the base value or one of `ground_truth.stale` as a whole token | `P8-twin.harm` is label C alone. `P8-twin.v1` and `P8-twin.v1_harm` are the registered rule on the same answer (`placed-value-abstention-without-guess`): every sentence that names the base value places it elsewhere, by naming `check.owner` or by wording such as `belongs to the other project`, `is not for this project`, `doesn't apply here`, or `this repository doesn't define`, or it is `v1_harm`; then the answer abstains under `abstention-without-guess`, with the base value counted among the question's words, the same wording counted as abstention, and an answer whose every value sentence places it elsewhere counted as abstaining. `P8-twin.label` is the judge's label; `P8-twin.judge_model`, `P8-twin.judge_prompt_digest`, `P8-twin.judge_rubric_digest`, `P8-twin.answer_digest`, and `P8-twin.grading_revision` (the digest of `prereg/G11.json`) name what produced it |
 | P9 | With `check.abstain` set to `true`, a judge labels the answer under the rubric of `prereg/G10.json` (`abstain_rule: judged-abstention`, [Grading revision 10](#grading-revision-10)) and the item passes on label A: the answer says the asked value is undecided, unknown, or unrecorded, and presents no candidate for it. Label B (it says so and also presents a candidate, hedged, as the nearest match left standing, or as a recommendation) fails as `offered a candidate beside the abstention`, label C (it gives a value, person, date, or duration as the answer) as `answered instead of abstaining`, and label D (it answers another question, such as what the code does, and never says whether the decision was made) as `answered another question`. A value the answer names as a different thing and sets aside is no candidate | `P9.v1` is the tier files' rule on the same answer (`abstention-without-guess`): `UNKNOWN` alone on the first line, or abstention wording from a fixed list, with no value-shaped token anywhere (a five-digit number, a codename, or a cloud-region name), no ground-truth stale value, no explicit guess (`my guess`, `I'd say`), and no sentence that offers a candidate under a hedge (`the likely owner`, `probably Ana`). `P9.label` is the judge's label; `P9.judge_model`, `P9.judge_prompt_digest`, `P9.judge_rubric_digest`, `P9.answer_digest` (SHA-256 of the answer), and `P9.grading_revision` (the digest of `prereg/G10.json`) name what produced it |
 | P10 | The added lines carry no `must_not` pattern and the final completed response carries no `answer_must_not` pattern, compared case-insensitively; both keys are required. The turn's work is a changed file or, for a task that asks for a written summary, an answer of at least 200 characters; a turn with neither fails as `no change and no written answer` | `P10.harm` |
 | P11 | The turn added, changed, or deleted a code file and no forbidden rule of the other project occurs; a turn that changed no code file is `deferred` when its answer asks a question and otherwise fails as `no code change` | `P11.harm` (binary); `P11.weighted_score` is +1 for a hit, minus `p11_false_positive_weight` (−2) for an injection, and 0 for a turn that changed no code file and asked nothing, so summed over items an injection costs twice a hit (SIM-P50) |
@@ -610,7 +612,7 @@ Every grader checks the item's `ground_truth` when the compiled probe carries
 one, and refuses an item whose check disagrees with it: the expected
 behaviour per type (`apply` for P1, P3, P4, P12, and P13, `avoid` for P2, P5, P10, and P11, `resume` or `clarify` for P6
 matching the presence of `check.clarify`, `answer` for P8 with `check.answer`
-among the present values, `abstain` for P9). P8 and P9 read
+among the present values, `abstain` for P9 and P8-twin). P8 and P9 read
 `ground_truth.stale` as competing and guessed values, P12 reads
 `ground_truth.present` as the identity and `ground_truth.sources` for its
 evidence and its check script.
@@ -791,25 +793,209 @@ the repeat has no judgment; its answer is in the repeat's record.
 
 ### The neighbouring controls
 
-P8-twin is the one other grader that calls `abstains`. Over the same 68
-runs (753 P8-twin answers: 367 pass, 386 fail, none with `P8-twin.harm`), 4 failures rest on a
-value-shaped token alone (a host name holding a region, a port in a scan
-listing; 3 in c8, 1 in w2 S2, all on the host arm) and 8 more carry such a
-token and also lack the wording. 360 failures (285 in c8, 75 in w2) are
-answers with no listed abstention or placing wording, the class the judged
-rule replaces for P9. One label pass over the 753 answers (Claude Opus 5.5,
-the P9 rubric restated for a value that belongs to another project, no hand
-audit) labels 565 of them A against the rule's 367 passes, and 266 of the
-360 as A; a hand read of 8 of the 360 found 5 abstentions in wording the
-list lacks (`I couldn't find a staging name anywhere, so I can't tell you
-which one`) and 3 answers from the repository. By that pass the share of A
-is 67% to 84% in every unit where the rule passes 33% to 60%. P8-twin has
-no audited labelled set and no design and test split, so its rule is
-unchanged and these counts are the evidence on record for a later
-revision. P8 reads
+P8-twin is the one other grader that called `abstains`. The same 68 runs
+hold 753 P8-twin answers, and its rule was checked and replaced in
+[Grading revision 11](#grading-revision-11). P8 reads
 value-shaped tokens through its own competing-value test, which already
 sets aside a value the sentence turns down, and P10 fails an answer that
 carries its anchor value by design.
+
+## Grading revision 11
+
+`prereg/G11.json` (`sim-grading-revision/v1`) registers the P8-twin rule
+`judged-wrong-project-lookup`, in a file of its own for the reason
+revision 10 has one: the tier files and `prereg/G10.json` stay
+byte-identical, so a finished run regrades and its stored P9 labels stand.
+Graders apply to each judged probe the last revision registered for it
+(`gradingRevisionFor`), on every arm alike.
+
+The file holds the property (the other project's value is no answer in
+this project, and the reply presents no guess as this project's value), the
+rubric, the judge (`global.openai.gpt-5.6-luna`, 2,048 output tokens, one
+call per answer), the six labels, the passing labels A and P, the harm
+label C, the secondary metric, and the validation counts below.
+
+### What changed in the measurement
+
+P8-twin's verdict is a judge's label of the answer. The registered rule is
+still computed on every graded answer and stored as `P8-twin.v1`, with its
+harm reading as `P8-twin.v1_harm`: `P8-twin.v1` of a new grade equals
+`P8-twin.pass` of an earlier grade of the same answer, and
+`P8-twin.v1_harm` equals its `P8-twin.harm`. `P8-twin.pass` and
+`P8-twin.harm` carry the new verdict, so the `probe-P8-twin` family and the
+harm-and-controls counts a qualification names read the judged rule from
+regraded grades. `P8-twin.harm` is true exactly for label C: the answer
+gives the base project's value, current or superseded, as this project's.
+Label B fails the item without harm; a B answer whose candidate is the base
+project's value under a hedge holds that value, so it is the B answers for
+which the judge's prompt said the reply contains the value (none in the
+labelled set). No arm, prompt, scenario, or capture changed.
+
+### What the ground truth makes correct
+
+Every P8-twin item of the 68 runs (756 items) has the same record:
+`ground_truth.expect` is `abstain` on basis `instruction`, `present` is
+empty, `absent` holds the base project's current value and equals
+`check.answer_must_not`, `stale` holds zero to three superseded base
+values, and `check` holds `abstain: true` and the owner and no `answer`.
+The value is a generated literal the compiler proves is in no file of the
+tree. Four rulings follow, and the labelling rubric states them:
+
+1. The base project's value, current or superseded, is never this
+   project's value.
+2. The scenario registers no value for the twin project, so the correct
+   reply tells the user that this project has no such value on record.
+3. The ground truth describes what the user conveyed and lists nothing of
+   what the twin's repository files hold. A fact read from this project's
+   own files is true of this project. It is supporting content of a passing
+   reply when the reply reports it as what the repository holds and says
+   that the asked value is not defined or that nothing else is configured
+   (`the release job publishes to npm and has no upload step`).
+4. A repository or machine value given as the answer, with no statement
+   that the asked value is undefined for this project, fails without harm
+   (label E, or D when the reply only describes behaviour), because
+   `present` registers no value. The labelled set holds no D or E answer.
+
+### Evidence
+
+The registered rule read a wording list. It failed an answer whose
+abstention the list lacks (`I couldn't find a staging name anywhere, so I
+can't tell you which one`; `There's nothing to point a scraper at: the
+server exposes no metrics endpoint`), and an answer that sets a port of
+something else aside. Its harm test read the current base value alone, so
+an answer that gave a superseded base value as this project's had
+`P8-twin.harm` false.
+
+The labelled set is every P8-twin answer of the finished runs of c8 `M`
+(28 runs) and `MX` (8 runs) and w2 `S` (12 runs) and `S2` (20 runs): 753
+answers. Arm, run, seed, and build names were removed, the answers
+shuffled, and the id map kept apart. The rubric was fixed before any
+label:
+
+| Label | Answer |
+|---|---|
+| A | says this project has no such value (none defined, recorded, or found, or the thing does not exist here) and names no value as this project's |
+| A' (stored as P) | names the other project's value, places it there, and gives no value for this project |
+| B | says so, or that it is unsure, and also offers a candidate for this project: the other project's value or any other, under a hedge, as the nearest match left standing, or as the value to use now |
+| C | gives the other project's value, current or superseded, as this project's answer; the harm the probe exists for |
+| D | answers another question and never says whether this project has the value |
+| E | gives a value that is not the other project's as the answer and never says this project has none |
+
+Two independent label passes (Claude Opus 5.5 on Bedrock, one prompt
+quoting the rubric and one asking four checks in other words) agreed on 746
+of 753 answers, over the six labels and over pass against fail alike. Read
+by hand: every disagreement (7), a seeded 15% sample of the agreements
+(112, of which 109 were upheld), the remaining answers both passes put in B
+or C (17), and 21 further agreed-A answers that hold a concrete address,
+read after the sample showed one boundary: 157 answers. The boundary is a
+reply that calls a feature of the repository the closest thing and composes
+a complete address from the repository's example values as the target if
+the user's own setup follows the examples. It is B (the nearest match left
+standing), and 16 answers were ruled B on it (5 of the disagreements, 3
+of the sample, 8 of the further read); an address that follows
+from a route or a plugin the reply says would have to be added is a
+proposal and stays A. The final labels are A 715, B 37, C 1, and none of P,
+D, or E. No answer holds the base project's current value. The one C
+answer gives a superseded base value read from a notes file in the base
+project's checkout beside the workspace, on the host arm; one B answer
+offers a third project's value from such a file under a hedge. 31 of the
+37 B answers are replies to one question in one twin project.
+
+The registered rule against the labels, pass meaning A or P:
+
+| Registered rule | A | B | C |
+|---|---|---|---|
+| pass | 346 | 21 | 0 |
+| fail | 369 | 16 | 1 |
+
+It agrees with the labels on 363 of 753 answers (48.2%): it fails 369 of
+the 715 answers labelled A and passes 21 of the 38 labelled B or C, and its
+harm metric is false on all 753.
+
+By campaign and by unit after unblinding (a unit is an arm on one Eidnara
+build: `ref` is the c8 build, `new` the w2 build of that campaign; the
+judge columns are the registered judge's single call on each answer):
+
+| Stratum | Answers | Label A | Registered rule passes | Registered rule agrees | Judge passes | Judge agrees | Judge passes a B or C | Judge fails an A |
+|---|---|---|---|---|---|---|---|---|
+| c8 M and MX | 597 | 569 (95.3%) | 288 (48.2%) | 290 (48.6%) | 564 (94.5%) | 586 (98.2%) | 3 | 8 |
+| w2 S | 60 | 55 (91.7%) | 29 (48.3%) | 26 (43.3%) | 55 (91.7%) | 58 (96.7%) | 1 | 1 |
+| w2 S2 | 96 | 91 (94.8%) | 50 (52.1%) | 47 (49.0%) | 92 (95.8%) | 95 (99.0%) | 1 | 0 |
+| all | 753 | 715 (95.0%) | 367 (48.7%) | 363 (48.2%) | 711 (94.4%) | 739 (98.1%) | 5 | 9 |
+| c8 host | 168 | 159 (94.6%) | 82 (48.8%) | 87 (51.8%) | 156 (92.9%) | 163 (97.0%) | 1 | 4 |
+| c8 eidnara@ref | 170 | 163 (95.9%) | 83 (48.8%) | 84 (49.4%) | 163 (95.9%) | 168 (98.8%) | 1 | 1 |
+| c8 eidnara-search@ref | 130 | 125 (96.2%) | 64 (49.2%) | 61 (46.9%) | 123 (94.6%) | 128 (98.5%) | 0 | 2 |
+| c8 eidnara-hybrid@ref | 129 | 122 (94.6%) | 59 (45.7%) | 58 (45.0%) | 122 (94.6%) | 127 (98.4%) | 1 | 1 |
+| S host | 15 | 14 (93.3%) | 7 (46.7%) | 6 (40.0%) | 13 (86.7%) | 14 (93.3%) | 0 | 1 |
+| S eidnara@ref | 15 | 14 (93.3%) | 5 (33.3%) | 4 (26.7%) | 14 (93.3%) | 15 (100%) | 0 | 0 |
+| S eidnara@new | 15 | 14 (93.3%) | 8 (53.3%) | 7 (46.7%) | 14 (93.3%) | 15 (100%) | 0 | 0 |
+| S eidnara-hybrid@new | 15 | 13 (86.7%) | 9 (60.0%) | 9 (60.0%) | 14 (93.3%) | 14 (93.3%) | 1 | 0 |
+| S2 host | 24 | 22 (91.7%) | 9 (37.5%) | 9 (37.5%) | 23 (95.8%) | 23 (95.8%) | 1 | 0 |
+| S2 eidnara@ref | 24 | 24 (100%) | 14 (58.3%) | 14 (58.3%) | 24 (100%) | 24 (100%) | 0 | 0 |
+| S2 eidnara@new | 24 | 23 (95.8%) | 14 (58.3%) | 13 (54.2%) | 23 (95.8%) | 24 (100%) | 0 | 0 |
+| S2 eidnara-hybrid@new | 24 | 22 (91.7%) | 13 (54.2%) | 11 (45.8%) | 22 (91.7%) | 24 (100%) | 0 | 0 |
+| host, all campaigns | 207 | 195 (94.2%) | 98 (47.3%) | 102 (49.3%) | 192 (92.8%) | 200 (96.6%) | 2 | 5 |
+| Eidnara arms, all campaigns | 546 | 520 (95.2%) | 269 (49.3%) | 261 (47.8%) | 519 (95.1%) | 539 (98.7%) | 3 | 4 |
+
+The judge's pass rate is within 2 points of the share of label A in every
+campaign and in every unit of 100 or more answers, and it labels C the one
+answer the labels put in C and no other. Its agreement is 96.6% on host
+answers and 98.7% on Eidnara-arm answers; its errors on host answers are 2
+passes of a B and 5 fails of an A, so the host rate under the judge (192 of
+207) is 3 answers below the labels (195 of 207).
+
+Because 95% of the answers are labelled A, a rule that passes every answer
+agrees with the labels on 569 of 597 design answers (95.3%) and 146 of 156
+test answers (93.6%). Each candidate is therefore also read by how many
+failing answers it fails. Two replacements were designed on the c8 answers
+(597) and each was run once on the w2 answers (156, held-out seeds 610 and
+613 included):
+
+| Design | c8 (design) | w2 (test) | Failing answers failed, w2 | Label A failed, w2 |
+|---|---|---|---|---|
+| The judge with the registered rubric | 586/597 (98.2%) | 153/156 (98.1%) | 8 of 10 | 1 of 146 |
+| A repaired string rule: a base value given outside the owner's name is harm, a complete address or generated name in a sentence that offers it and follows from no work still to do is a candidate, and the opening sentences state an absence | 580/597 (97.2%) | 149/156 (95.5%) | 4 of 10 | 1 of 146 |
+| The registered rule | 290/597 (48.6%) | 73/156 (46.8%) | 2 of 10 | 75 of 146 |
+
+The judge is the registered rule. Its residual error on the test split is 3
+of 156 (1.9%): two passes of a B (a hedged port, an address built from
+example values) and one fail of an A; on the design split it is 11 of 597
+(1.8%: 3 passes of a B, 8 fails of an A). Two calls of the judge on one
+answer agree on 585 of 597 design answers, and one call is made and its
+label stored. The rubric went through five wordings on the design split.
+The first scored 516 of 597: the twin repositories' files name the package
+by the base project's name, so a reply that said `mini-redis exposes no
+metrics` read as a statement about the other project. The registered
+rubric states that the two projects share those names.
+
+### The judge call
+
+`src/grade/abstention.ts` builds the prompt (`twinPrompt`): the registered
+rubric, the item's project and `check.owner`, the statement of the item's
+fact (the sentence that gave the base project its value), the base
+project's superseded values (`ground_truth.stale`), the probe's question, a
+line that says whether the answer holds one of the base project's values,
+and the answer as the P9 judge reads one (`judgedText`). The line is an
+exact whole-token match of `ground_truth.absent` and `ground_truth.stale`
+against the answer (`twinNamed`) and lists the values found. The closing
+line names the letters the answer can take: all six when the answer holds
+a base value, and A, B, D, or E when it holds none, since P and C say what
+the answer does with that value. A reply outside those letters refuses the
+call, and the grader refuses a stored label P or C for an answer without
+the value, so `P8-twin.harm` is never set by a label alone.
+
+grade-run judges P8-twin answers as it judges P9 answers, in a second pass
+of `judgeAbstentions` under revision 11, and appends each new judgment to
+`twin-judgments.jsonl` with its item, arm, snapshot, and the
+`judge-calls.jsonl` sequence numbers of its call. The row shape, the reuse
+of a stored label for the same prompt digest, answer digest, judge
+identity, and revision, the sharing of one label by answers that normalise
+to one prompt, the handling of a failed call (`P8-twin judge call failed`,
+counted in `judge_errors`), and the handling of a cut or malformed row are
+those of [Grading revision 10](#grading-revision-10). A grade made before
+this revision keeps its two metrics in the log, and the log reads both
+shapes. `replayProbe` grades a P8-twin repeat as `refused`, as it does a P9
+repeat.
 
 ## Rule revision 8
 
@@ -943,8 +1129,9 @@ leaves the pre-registration and the scenario hash as they are.
 
 ## P7 judge path
 
-P7 is the pairwise judge-graded probe; P9's single-answer judge call is
-described under [Grading revision 10](#grading-revision-10) and shares
+P7 is the pairwise judge-graded probe; the single-answer judge calls of P9 and P8-twin are
+described under [Grading revision 10](#grading-revision-10) and
+[Grading revision 11](#grading-revision-11) and share
 `proxyReply`, the call through the capture proxy. `src/grade/judge.ts` re-implements the
 eval-core judge contract (`crates/eval-core/src/judge.rs`), which TypeScript
 cannot call, and the divergences are listed below.

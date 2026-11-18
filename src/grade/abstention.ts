@@ -5,6 +5,8 @@ import {
     type AbstainLabel,
     type GradingRevision,
     gradingRevisionHash,
+    TWIN_LABELS,
+    type TwinLabel,
 } from "../prereg/grading";
 import { GradeRefused } from "./artefacts";
 import {
@@ -15,6 +17,7 @@ import {
     type ProxyJudgeOptions,
     proxyReply,
 } from "./judge";
+import { carries } from "./text";
 
 /** What stands in for an arm name in the text the abstention judge reads. */
 const REDACTED = "[name]";
@@ -66,16 +69,80 @@ export function abstainPrompt(
     return `${rubric}\n\nQUESTION:\n${question}\n\nUSER'S EARLIER STATEMENT:\n${statement}\n\nREPLY:\n<<<\n${judgedText(answer)}\n>>>\n\nAnswer with exactly one letter: ${ABSTAIN_LABELS.slice(0, -1).join(", ")}, or ${ABSTAIN_LABELS.at(-1)}.`;
 }
 
-/** The judge's identity for a revision: its model, the prompt frame with the preprocessing version and the arm-name pattern, and the rubric. */
+/** What a P8-twin item gives its judge beside the question, the statement, and the answer. */
+export interface TwinSubject {
+    /** The project the question is asked in. */
+    project: string;
+    /** The project the stated value belongs to (`check.owner`). */
+    owner: string;
+    /** The owner's current value (`ground_truth.absent`). */
+    values: readonly string[];
+    /** The owner's superseded values (`ground_truth.stale`). */
+    stale: readonly string[];
+}
+
+/** The owner's values, current and superseded, that `answer` holds as whole tokens. */
+export const twinNamed = (twin: TwinSubject, answer: string): string[] =>
+    [...new Set([...twin.values, ...twin.stale])].filter((v) => carries(answer, v));
+
+/** The labels an answer can take: P and C belong to an answer that holds one of the owner's values. */
+export const twinLabels = (twin: TwinSubject, answer: string): readonly TwinLabel[] =>
+    twinNamed(twin, answer).length > 0
+        ? TWIN_LABELS
+        : TWIN_LABELS.filter((l) => l !== "P" && l !== "C");
+
+const letters = (labels: readonly string[]) =>
+    `${labels.slice(0, -1).join(", ")}, or ${labels.at(-1)}`;
+
+/**
+ * The prompt for one answer to a P8-twin item: the registered rubric, the two project names,
+ * the statement that gave the other project its value, that project's superseded values, the
+ * probe's question, whether the answer holds one of the other project's values (an exact token
+ * match, with the values it holds), the answer, and the letters that answer can take.
+ */
+export function twinPrompt(
+    rubric: string,
+    question: string,
+    statement: string,
+    twin: TwinSubject,
+    answer: string,
+): string {
+    const earlier = twin.stale.length > 0 ? twin.stale.join(", ") : "none";
+    const named = twinNamed(twin, answer);
+    const holds = named.length > 0 ? `yes (${named.join(", ")})` : "no";
+    return `${rubric}\n\nTHIS PROJECT:\n${twin.project}\n\nOTHER PROJECT:\n${twin.owner}\n\nUSER'S STATEMENT ABOUT THE OTHER PROJECT:\n${statement}\n\nEARLIER VALUES OF THE OTHER PROJECT:\n${earlier}\n\nQUESTION:\n${question}\n\nTHE REPLY CONTAINS THE OTHER PROJECT'S VALUE:\n${holds}\n\nREPLY:\n<<<\n${judgedText(answer)}\n>>>\n\nAnswer with exactly one letter: ${letters(twinLabels(twin, answer))}.`;
+}
+
+/** What a judge reads of an item beside its answer; `twin` marks a P8-twin item. */
+export interface JudgedSubject {
+    question: string;
+    /** The statement of the item's fact: what left the value open (P9), or what gave the other project its value (P8-twin). */
+    statement: string;
+    twin?: TwinSubject;
+}
+
+const EMPTY_TWIN: TwinSubject = { project: "", owner: "", values: ["x"], stale: [] };
+
+/**
+ * The judge's identity for a revision: its model, the prompt frame of the revision's probe with
+ * the preprocessing version and the arm-name pattern, and the rubric. The P8-twin frame is taken
+ * for an answer without the other project's value and for one that holds it.
+ */
 export function abstainIdentity(revision: GradingRevision): JudgeIdentity {
+    const frame =
+        revision.probe === "P9"
+            ? abstainPrompt("", "", "", "")
+            : `${twinPrompt("", "", "", EMPTY_TWIN, "")}\n${twinPrompt("", "", "", EMPTY_TWIN, "x")}`;
     return {
         model: revision.judge.model,
         prompt_digest: sha256Hex(
-            `${PREPROCESSING_VERSION}\n${REDACTED}\n${ARM_NAMES.source}\n${abstainPrompt("", "", "", "")}`,
+            `${PREPROCESSING_VERSION}\n${REDACTED}\n${ARM_NAMES.source}\n${frame}`,
         ),
         rubric_digest: sha256Hex(revision.rubric),
     };
 }
+
+export type JudgedLabel = AbstainLabel | TwinLabel;
 
 /**
  * A judge's label of one answer. `prompt_digest` covers the rubric, question, statement, and
@@ -88,25 +155,35 @@ export interface AbstainJudgment {
     judge: JudgeIdentity;
     /** `gradingRevisionHash` of the revision whose rubric and judge made the label. */
     revision: string;
-    label: AbstainLabel;
+    label: JudgedLabel;
 }
 
-export function parseLabel(text: string): AbstainLabel {
+/** The label a judge's reply holds, one of `labels`: the letter, with one closing `.` or `!` at most. */
+export function parseLabel<L extends string = AbstainLabel>(
+    text: string,
+    labels: readonly L[] = ABSTAIN_LABELS as unknown as readonly L[],
+): L {
     const letter = text.trim().replace(/[.!]$/, "");
-    if ((ABSTAIN_LABELS as readonly string[]).includes(letter)) return letter as AbstainLabel;
+    const found = labels.find((l) => l === letter);
+    if (found !== undefined) return found;
     throw new GradeRefused(`judge reply ${JSON.stringify(text.slice(0, 80))} is not a label`);
+}
+
+/** The prompt for an answer, the digests a judgment of it carries, and the labels it can take. */
+export interface JudgedFrame {
+    prompt: string;
+    prompt_digest: string;
+    answer_digest: string;
+    labels: readonly JudgedLabel[];
 }
 
 export interface AbstainJudge {
     identity: JudgeIdentity;
     revision: string;
-    /** The prompt for an answer and the digests a judgment of it carries. */
-    frame(
-        question: string,
-        statement: string,
-        answer: string,
-    ): { prompt: string; prompt_digest: string; answer_digest: string };
-    label(prompt: string): Promise<AbstainLabel>;
+    /** The revision's labels. */
+    labels: readonly JudgedLabel[];
+    frame(subject: JudgedSubject, answer: string): JudgedFrame;
+    label(frame: Pick<JudgedFrame, "prompt" | "labels">): Promise<JudgedLabel>;
 }
 
 /** The revision's judge behind the capture proxy; it refuses a model of the agent's family. */
@@ -126,15 +203,22 @@ export function proxyAbstainJudge(
     return {
         identity: abstainIdentity(revision),
         revision: gradingRevisionHash(revision),
-        frame(question, statement, answer) {
-            const prompt = abstainPrompt(revision.rubric, question, statement, answer);
+        labels: revision.labels,
+        frame({ question, statement, twin }, answer) {
+            if ((revision.probe === "P8-twin") !== (twin !== undefined)) {
+                throw new GradeRefused(`a ${revision.probe} judge frames an item of its probe`);
+            }
+            const prompt = twin
+                ? twinPrompt(revision.rubric, question, statement, twin, answer)
+                : abstainPrompt(revision.rubric, question, statement, answer);
             return {
                 prompt,
                 prompt_digest: sha256Hex(prompt),
                 answer_digest: sha256Hex(answer),
+                labels: twin ? twinLabels(twin, answer) : revision.labels,
             };
         },
-        label: async (prompt) => parseLabel(await reply(prompt)),
+        label: async ({ prompt, labels }) => parseLabel(await reply(prompt), labels),
     };
 }
 
@@ -156,8 +240,11 @@ export const judgmentStands = (
 
 const hex = (v: unknown) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v);
 
-/** Whether a parsed row of `abstain-judgments.jsonl` holds a judgment. */
-export function isAbstainJudgment(value: unknown): value is AbstainJudgment {
+/** Whether a parsed row of a judgment log holds a judgment with one of `labels`. */
+export function isAbstainJudgment(
+    value: unknown,
+    labels: readonly string[] = ABSTAIN_LABELS,
+): value is AbstainJudgment {
     if (typeof value !== "object" || value === null) return false;
     const j = value as Record<string, unknown>;
     const judge = j.judge as Record<string, unknown> | null;
@@ -165,7 +252,7 @@ export function isAbstainJudgment(value: unknown): value is AbstainJudgment {
         hex(j.prompt_digest) &&
         hex(j.answer_digest) &&
         hex(j.revision) &&
-        (ABSTAIN_LABELS as readonly unknown[]).includes(j.label) &&
+        (labels as readonly unknown[]).includes(j.label) &&
         typeof judge === "object" &&
         judge !== null &&
         typeof judge.model === "string" &&
@@ -180,4 +267,14 @@ export const ABSTAIN_REASONS: Record<AbstainLabel, string | undefined> = {
     B: "offered a candidate beside the abstention",
     C: "answered instead of abstaining",
     D: "answered another question",
+};
+
+/** Why each failing P8-twin label fails; labels A and P pass, and label C is the harm. */
+export const TWIN_REASONS: Record<TwinLabel, string | undefined> = {
+    A: undefined,
+    P: undefined,
+    B: "offered a candidate beside the abstention",
+    C: "answered with the other project's value",
+    D: "answered another question",
+    E: "answered instead of abstaining",
 };

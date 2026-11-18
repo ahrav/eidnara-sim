@@ -15,8 +15,10 @@ import {
     type AbstainJudge,
     type AbstainJudgment,
     isAbstainJudgment,
+    type JudgedFrame,
     judgmentStands,
     proxyAbstainJudge,
+    type TwinSubject,
 } from "../src/grade/abstention";
 import {
     AnswerRefused,
@@ -62,7 +64,7 @@ import {
 } from "../src/grade/source-commands";
 import { armBase, requireSeedOrder } from "../src/hosts/arms";
 import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
-import { currentGradingRevision, type GradingRevision } from "../src/prereg/grading";
+import { type GradingRevision, gradingRevisionFor, JUDGED_PROBES } from "../src/prereg/grading";
 import { qualificationSeed } from "../src/prereg/qualification";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bedrockUpstream, Gateway, type Upstream } from "../src/proxy/gateway";
@@ -483,17 +485,27 @@ export interface Abstention {
     snapshots: Snapshot[];
     sources: ReturnType<typeof sourceEvents>;
     answer: string;
-    /** The statement that left the asked value open, from the item's fact. */
+    /** The statement of the item's fact: what left the asked value open (P9), or what gave the other project its value (P8-twin). */
     statement: string;
+    /** A P8-twin item's two projects and the other project's values. */
+    twin?: TwinSubject;
 }
 
 export const ABSTAIN_JUDGMENTS = "abstain-judgments.jsonl";
 export const ABSTAIN_JUDGE_FAILED = "P9 judge call failed";
+export const TWIN_JUDGMENTS = "twin-judgments.jsonl";
+export const TWIN_JUDGE_FAILED = "P8-twin judge call failed";
+/** The judgment log and the skip reason of a failed call, per judged probe. */
+const JUDGED_LOGS = {
+    P9: [ABSTAIN_JUDGMENTS, ABSTAIN_JUDGE_FAILED],
+    "P8-twin": [TWIN_JUDGMENTS, TWIN_JUDGE_FAILED],
+} as const;
 
 /**
- * Labels each answer under the grading revision's rubric and judge. A label belongs to a
- * prompt: answers that normalise to one prompt share one label, whichever arm gave them, and
- * each answer has a row of its own in `abstain-judgments.jsonl`. A stored row for the same
+ * Labels each answer of one judged probe under its grading revision's rubric and judge. A label
+ * belongs to a prompt: answers that normalise to one prompt share one label, whichever arm gave
+ * them, and each answer has a row of its own in the probe's judgment log
+ * (`abstain-judgments.jsonl` for P9, `twin-judgments.jsonl` for P8-twin). A stored row for the same
  * prompt, answer, judge, and revision stands, so a later pass, a regrade included, reads the
  * stored label and calls no judge. A prompt without a label gets one call through a gateway
  * this starts, logged to `judge-calls.jsonl`, and each new row is appended with the sequence
@@ -511,7 +523,8 @@ export async function judgeAbstentions(o: {
     skip: (arm: string, why: string) => void;
 }): Promise<{ judgments: Map<Abstention, AbstainJudgment>; judgeErrors: number }> {
     const { items, dir, upstream, seed, revision, models, skip } = o;
-    const log = join(dir, ABSTAIN_JUDGMENTS);
+    const [logName, failed] = JUDGED_LOGS[revision.probe];
+    const log = join(dir, logName);
     requireAppendable(log);
     // A label belongs to a prompt. Each answer keeps a row of its own, and every answer that
     // normalises to one prompt carries that prompt's one label, whichever arm gave it.
@@ -532,7 +545,7 @@ export async function judgeAbstentions(o: {
             }
             const judgment = row?.judgment;
             const calls = row?.calls;
-            if (!isAbstainJudgment(judgment) || !Array.isArray(calls)) {
+            if (!isAbstainJudgment(judgment, revision.labels) || !Array.isArray(calls)) {
                 throw new Error(`${log}: line ${i + 1} holds no abstention judgment`);
             }
             rows.set(keyOf(judgment), judgment);
@@ -554,10 +567,15 @@ export async function judgeAbstentions(o: {
         }
     }
     const judgments = new Map<Abstention, AbstainJudgment>();
-    type Frame = ReturnType<AbstainJudge["frame"]>;
+    type Frame = JudgedFrame;
     const pending: { item: Abstention; frame: Frame }[] = [];
     for (const item of items) {
-        const frame = offline.frame(item.probe.text ?? "", item.statement, item.answer);
+        const subject = {
+            question: item.probe.text ?? "",
+            statement: item.statement,
+            twin: item.twin,
+        };
+        const frame = offline.frame(subject, item.answer);
         const kept = rows.get(keyOf(frame));
         if (kept && judgmentStands(kept, frame, offline)) judgments.set(item, kept);
         else pending.push({ item, frame });
@@ -585,8 +603,8 @@ export async function judgeAbstentions(o: {
     let judgeErrors = 0;
     let lost = false;
     if (unlabelled.length > 0) {
-        if (!upstream) throw new Error("P9 judging needs the sim config");
-        const { records, gateway } = judgeGateway(dir, ABSTAIN_JUDGMENTS, upstream, seed);
+        if (!upstream) throw new Error(`${revision.probe} judging needs the sim config`);
+        const { records, gateway } = judgeGateway(dir, logName, upstream, seed);
         try {
             await gateway.start();
             const judge = framer(gateway.urls[0] as string);
@@ -598,7 +616,7 @@ export async function judgeAbstentions(o: {
                 }
                 const firstCall = records.records.length;
                 try {
-                    const label = await judge.label(frame.prompt);
+                    const label = await judge.label(frame);
                     const judgment = {
                         prompt_digest: frame.prompt_digest,
                         answer_digest: frame.answer_digest,
@@ -613,7 +631,7 @@ export async function judgeAbstentions(o: {
                 } catch (caught) {
                     if (!(caught instanceof GradeRefused)) throw caught;
                     judgeErrors++;
-                    skip(item.arm, ABSTAIN_JUDGE_FAILED);
+                    skip(item.arm, failed);
                     console.error(`${item.probe.id} (${item.arm}): ${String(caught)}`);
                 }
             }
@@ -628,7 +646,7 @@ export async function judgeAbstentions(o: {
         if (lost) {
             judgeErrors += gateway.failures.length;
             for (const f of gateway.failures) console.error(`judge-calls.jsonl: ${String(f)}`);
-            for (const { item, called } of fresh) if (called) skip(item.arm, ABSTAIN_JUDGE_FAILED);
+            for (const { item, called } of fresh) if (called) skip(item.arm, failed);
         }
     }
     // A row whose label a stored row made stands whatever became of this pass's call records.
@@ -1246,7 +1264,6 @@ async function grade(dir: string, upstream: Upstream | null, regrade: boolean): 
         judgeFirewall("http://judge.invalid", rules, models);
         if (!upstream) throw new Error("P7 judging needs the sim config");
     }
-    const revision = currentGradingRevision();
     // A scenario without a fact list holds no judged item.
     const statements = new Map((scenario.facts ?? []).map((f) => [f.id, f.statement]));
     const abstentions: Abstention[] = [];
@@ -1339,6 +1356,15 @@ async function grade(dir: string, upstream: Upstream | null, regrade: boolean): 
                             sources,
                             answer,
                             statement,
+                            twin:
+                                probe.type === "P8-twin"
+                                    ? {
+                                          project: probe.project,
+                                          owner: (probe.check as { owner: string }).owner,
+                                          values: probe.ground_truth?.absent ?? [],
+                                          stale: probe.ground_truth?.stale ?? [],
+                                      }
+                                    : undefined,
                         });
                         continue;
                     }
@@ -1354,13 +1380,15 @@ async function grade(dir: string, upstream: Upstream | null, regrade: boolean): 
         }
     }
 
-    if (abstentions.length > 0) {
+    for (const judgedProbe of JUDGED_PROBES) {
+        const items = abstentions.filter((a) => a.probe.type === judgedProbe);
+        if (items.length === 0) continue;
         const judged = await judgeAbstentions({
-            items: abstentions,
+            items,
             dir,
             upstream,
             seed: manifest.seed,
-            revision,
+            revision: gradingRevisionFor(judgedProbe),
             models,
             skip,
         });

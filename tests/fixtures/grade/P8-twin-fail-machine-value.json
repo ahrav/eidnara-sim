@@ -1,0 +1,80 @@
+{
+    "provenance": "constructed",
+    "probe": {
+        "id": "P8T-a",
+        "type": "P8-twin",
+        "fact": "f-1",
+        "project": "app-twin",
+        "session": "s-1",
+        "text": "Where do I point my scraper to read metrics from my dev machine?",
+        "check": {
+            "abstain": true,
+            "answer_must_not": [
+                "41873"
+            ],
+            "owner": "app"
+        },
+        "event": "e-1",
+        "ground_truth": {
+            "expect": "abstain",
+            "basis": "instruction",
+            "present": [],
+            "absent": [
+                "41873"
+            ],
+            "stale": [],
+            "supersedes": [],
+            "sources": []
+        }
+    },
+    "snapshots": [
+        {
+            "id": "s-P8T-a",
+            "item": "P8T-a",
+            "arm": "eidnara",
+            "session": "s-1",
+            "turn": "e-1",
+            "turn_outcome": "ok",
+            "artefacts": [
+                {
+                    "id": "p1",
+                    "class": "proxy-call",
+                    "calls": [
+                        {
+                            "cache_read_tokens": 0,
+                            "cache_write_tokens": 0,
+                            "seq": 1,
+                            "arm": "eidnara",
+                            "session": "s-1",
+                            "component": "agent",
+                            "turn": "e-1",
+                            "scenario_ms": 0,
+                            "input_tokens": 1000,
+                            "output_tokens": 100,
+                            "response_text": "Point the scraper at http://127.0.0.1:4001/metrics, the proxy that is running on this machine.",
+                            "status": 200,
+                            "error": null
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "judge": {
+        "label": "E"
+    },
+    "expect": {
+        "verdict": "fail",
+        "reason": "answered instead of abstaining",
+        "metrics": {
+            "P8-twin.pass": false,
+            "P8-twin.harm": false,
+            "P8-twin.v1": false,
+            "P8-twin.v1_harm": false,
+            "P8-twin.label": "E"
+        },
+        "inputs": [
+            "p1"
+        ]
+    }
+}

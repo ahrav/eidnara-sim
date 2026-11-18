@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-    currentGradingRevision,
+    type AbstainRevision,
     GRADING_REVISIONS,
-    type GradingRevision,
+    gradingRevisionFor,
     gradingRevisionHash,
     gradingRevisionPath,
     loadGradingRevision,
@@ -12,7 +12,8 @@ import {
 } from "./grading";
 import { TIERS } from "./schema";
 
-const g10 = loadGradingRevision("G10");
+const g10 = gradingRevisionFor("P9");
+const g11 = gradingRevisionFor("P8-twin");
 const edited = (change: (r: Record<string, unknown>) => void) => {
     const copy = structuredClone(g10) as unknown as Record<string, unknown>;
     change(copy);
@@ -20,9 +21,65 @@ const edited = (change: (r: Record<string, unknown>) => void) => {
 };
 
 describe("grading revisions", () => {
-    test("every registered revision loads, and graders apply the last one", () => {
+    test("every registered revision loads, and graders apply the last one of each probe", () => {
         for (const id of GRADING_REVISIONS) expect(loadGradingRevision(id).id).toBe(id);
-        expect<string>(currentGradingRevision().id).toBe(GRADING_REVISIONS.at(-1) as string);
+        expect<string>(g10.id).toBe("G10");
+        expect<string>(g11.id).toBe("G11");
+    });
+
+    test("G11 grades P8-twin by a judge's label, keeps the registered rule as P8-twin.v1, passes labels A and P, and counts label C as harm", () => {
+        expect(g11).toMatchObject({
+            probe: "P8-twin",
+            twin_rule: "judged-wrong-project-lookup",
+            secondary_metric: { name: "P8-twin.v1", rule: "placed-value-abstention-without-guess" },
+            labels: ["A", "P", "B", "C", "D", "E"],
+            pass_labels: ["A", "P"],
+            harm_labels: ["C"],
+            judge: { calls: 1, model: g10.judge.model },
+        });
+        expect(validateGradingRevision(g11)).toEqual([]);
+        const v = g11.validation;
+        expect(v.design.answers + v.test.answers).toBe(v.labelled_answers);
+        const rate = (s: { agreed: number; answers: number }) => s.agreed / s.answers;
+        expect(rate(v.test)).toBeGreaterThan(rate(v.superseded_rule));
+        // The share of passing labels is what a rule that passes every answer scores.
+        expect(rate(v.test)).toBeGreaterThan(
+            (v.label_counts.A + v.label_counts.P) / v.labelled_answers,
+        );
+    });
+
+    test("a P8-twin revision is held to its own shape", () => {
+        const twin = (change: (r: Record<string, unknown>) => void) => {
+            const copy = structuredClone(g11) as unknown as Record<string, unknown>;
+            change(copy);
+            return validateGradingRevision(copy);
+        };
+        expect(twin((r) => Object.assign(r, { harm_labels: ["B", "C"] }))).toEqual([
+            "harm_labels: expected C alone",
+        ]);
+        expect(twin((r) => Object.assign(r, { pass_labels: ["A"] }))).toEqual([
+            "pass_labels: expected A, P",
+        ]);
+        expect(twin((r) => Object.assign(r, { abstain_rule: "judged-abstention" }))).toEqual([
+            "revision.abstain_rule: unknown key",
+        ]);
+        expect(twin((r) => Object.assign(r, { rubric: "A: x\nB: x\nC: x\nD: x" }))).toEqual([
+            "rubric: defines no label P",
+            "rubric: defines no label E",
+        ]);
+        expect(
+            twin((r) => {
+                const v = r.validation as { label_pass_agreement: Record<string, string> };
+                v.label_pass_agreement = { four_class: "0.9", pass_fail: "0.9" };
+            }),
+        ).toEqual([
+            "validation.label_pass_agreement.four_class: unknown key",
+            "validation.label_pass_agreement.six_class: missing",
+            "validation.label_pass_agreement: expected canonical decimals in [0, 1]",
+        ]);
+        expect(twin((r) => Object.assign(r, { probe: "P8" }))).toContain(
+            "probe: expected P9 or P8-twin",
+        );
     });
 
     test("G10 grades P9 by a judge's label, keeps the tier rule as P9.v1, and passes label A alone", () => {
@@ -57,7 +114,7 @@ describe("grading revisions", () => {
     test("a changed rubric, judge, or count changes the digest", () => {
         const base = gradingRevisionHash(g10);
         expect(base).toMatch(/^[0-9a-f]{64}$/);
-        const variants: GradingRevision[] = [
+        const variants: AbstainRevision[] = [
             { ...g10, rubric: `${g10.rubric} More.` },
             { ...g10, judge: { ...g10.judge, model: "global.openai.other" } },
             { ...g10, validation: { ...g10.validation, hand_audited: 1 } },
