@@ -37,10 +37,13 @@ import {
     type DaemonCapabilities,
     deliveryOf,
     isArmName,
+    PROMPT_CACHING,
+    type PromptCaching,
 } from "../hosts/profiles";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import {
     buildRefusal,
+    promptCachingOf,
     type Qualification,
     qualificationHash,
     qualificationSeed,
@@ -49,7 +52,13 @@ import type { Preregistration, Tier } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import { bedrockUpstream, Gateway } from "../proxy/gateway";
 import { FaultInjector, restoreOrder } from "../proxy/inject";
-import { type CallRecord, RecordWriter, recordProblems } from "../proxy/records";
+import {
+    CacheGaps,
+    type CallRecord,
+    HARNESS_COMPONENTS,
+    RecordWriter,
+    recordProblems,
+} from "../proxy/records";
 import { RequestPartLog, RequestStore } from "../proxy/requests";
 import { Rng } from "../rng";
 import {
@@ -92,8 +101,9 @@ import {
 import { writeAtomic } from "./atomic";
 import { sessionViews, withUserTurns } from "./callviews";
 import {
-    armMismatches,
     bootMismatches,
+    CachingTally,
+    capabilityRecord,
     type ExpectedNote,
     logLength,
     observeArm,
@@ -114,7 +124,7 @@ import { plainPath } from "./launcher";
 import { ORACLE_OPENING, oracleBackground } from "./oracle-note";
 import { contains, realExisting } from "./paths";
 import { type Preflight, piCli, preflight, preflightDrift } from "./preflight";
-import { PRICE_TABLE, type PriceTable } from "./price";
+import { isPriceTable, type PriceTable, priceTableFor } from "./price";
 import { running } from "./procs";
 import { gatewayRetry, transientUserSim, withRetry } from "./retry";
 import { ResourceSampler } from "./sampler";
@@ -228,7 +238,15 @@ export interface Manifest {
      */
     wall_budget_ms?: number | null;
     base_wall_ms: number;
-    /** The rates the cost panel prices this run's calls at, fixed when the run starts. */
+    /**
+     * The prompt-caching condition every arm ran under, from the run's qualification; a manifest
+     * from before the field ran `off`. A resume must present the same.
+     */
+    prompt_caching?: PromptCaching;
+    /**
+     * The rates the cost panel prices this run's calls at, fixed when the run starts:
+     * `priceTableFor` the run's prompt-caching condition.
+     */
     price_table: PriceTable;
     preflight: Preflight;
 }
@@ -523,18 +541,11 @@ function manifestProblems(m: Manifest, compiledEvents: number): string[] {
     if (typeof m.user_sim_model !== "string" || m.user_sim_model === "") {
         problems.push("user_sim_model is not a name");
     }
-    const price = m.price_table as Partial<PriceTable> | undefined;
-    const rates = price?.rates as Record<string, unknown> | undefined;
-    if (
-        typeof price?.version !== "string" ||
-        price.version === "" ||
-        typeof rates !== "object" ||
-        rates === null ||
-        ["input", "output", "cache_read", "cache_write"].some(
-            (k) => typeof rates[k] !== "number" || !Number.isFinite(rates[k]) || rates[k] < 0,
-        )
-    ) {
+    if (!isPriceTable(m.price_table)) {
         problems.push("price_table is not a versioned table of non-negative rates");
+    }
+    if (m.prompt_caching !== undefined && !PROMPT_CACHING.includes(m.prompt_caching)) {
+        problems.push(`prompt_caching ${m.prompt_caching} is neither on nor off`);
     }
     return problems;
 }
@@ -1570,6 +1581,7 @@ export async function loadManifest(
         turns_await_jobs: o.turnsAwaitJobs ?? false,
         qualification: qualificationRef(o),
         wall_budget_ms: requireWallBudget(o.wallBudgetMs) ?? null,
+        prompt_caching: promptCachingOf(qualificationOf(o)),
     };
     /** Computed once the inputs it hashes exist: before the probe on a resume, after it on a first run. */
     const digests = () => ({
@@ -1651,11 +1663,12 @@ export async function loadManifest(
             turns_await_jobs: o.turnsAwaitJobs !== undefined,
             wall_budget_ms: o.wallBudgetMs !== undefined,
         };
-        // A manifest from before qualifications or wall budgets names neither.
+        // A manifest from before qualifications, wall budgets, or the caching condition names none.
         const recorded = {
             ...manifest,
             qualification: manifest.qualification ?? null,
             wall_budget_ms: manifest.wall_budget_ms ?? null,
+            prompt_caching: manifest.prompt_caching ?? "off",
         };
         const differs = Object.entries(wanted).filter(
             ([k, v]) => given[k] !== false && !sameJson(recorded[k as keyof Manifest], v),
@@ -1735,7 +1748,7 @@ export async function loadManifest(
         eidnara_build: bind(wanted.order),
         tape_sha256: tapeDigests(wanted.tapes),
         base_wall_ms: Date.now(),
-        price_table: PRICE_TABLE,
+        price_table: priceTableFor(wanted.prompt_caching),
         preflight: checks,
     };
     writeAtomic(path, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -2158,9 +2171,14 @@ async function runArms(
         }
     };
     closeEnded();
+    // The run's caching condition decides whether a record carries its cache gaps; a resume
+    // rebuilds the last served receipt times from the log.
+    const caching = manifest.prompt_caching ?? "off";
+    const cacheGaps = caching === "on" ? new CacheGaps() : null;
     readCallLog(
         callsPath,
         (r) => {
+            cacheGaps?.note(r);
             noteAgent(r);
             sessionCalls.note(r);
             firstArrival = Math.max(firstArrival, (r.arrival ?? r.seq) + 1);
@@ -2254,7 +2272,12 @@ async function runArms(
     let jobSeq = journal.entries.filter((e) => e.kind === "RegisterJob").length;
     class RunRecords extends RecordWriter {
         override write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
-            const record = super.write(partial);
+            const record = super.write(
+                cacheGaps && !HARNESS_COMPONENTS.has(partial.component)
+                    ? { ...partial, cache_gap: cacheGaps.of(partial) }
+                    : partial,
+            );
+            cacheGaps?.note(record);
             noteAgent(record);
             sessionCalls.noteWritten(record);
             return record;
@@ -2452,38 +2475,43 @@ async function runArms(
     const verifyArm = (arm: string, armRoot: string) => {
         if (unchecked.has(arm)) requireBoots(arm, armRoot);
         const observed = observeArm(arm, o.host, armRoot, components.get(arm) ?? {});
-        if (manifest.order.some(oracle) || armProfile(arm).plugin) {
-            // A recovered row says what the user-sim decided; the host may or may not have the turn.
-            const turns = journal.entries.filter(
-                (t) => t.kind === "UserTurn" && t.arm === arm && t.delivered === true,
-            );
-            const notes: ExpectedNote[] = oracle(arm)
-                ? turns.flatMap((t) => {
-                      const event = String(t.event);
-                      const background = backgrounds.get(event);
-                      const text = scriptedById.get(event)?.text;
-                      if (!background || text === undefined) return [];
-                      const owed = t.recovered !== true;
-                      return [{ event, session: String(t.session), background, text, owed }];
-                  })
-                : [];
-            const parts = new RequestPartLog(join(o.out, "requests.jsonl"));
-            try {
-                const armCalls: (Pick<
-                    CallRecord,
-                    "seq" | "component" | "session" | "turn" | "request"
-                > &
-                    Partial<Pick<CallRecord, "started_wall_ms" | "wall_ms" | "status">>)[] = [];
-                eachJsonl<CallRecord>(callsPath, (c) => {
-                    if (c.arm !== arm) return;
-                    const { seq, component, session, turn, request, started_wall_ms, wall_ms } = c;
-                    const times = { started_wall_ms, wall_ms, status: c.status };
-                    if (component === "memory_capture") {
-                        armCalls.push({ seq, component, session, turn, ...times });
-                    } else if (component === "agent" && request) {
-                        armCalls.push({ seq, component, session, turn, request, ...times });
-                    }
-                });
+        const reads = manifest.order.some(oracle) || armProfile(arm).plugin;
+        const parts = new RequestPartLog(join(o.out, "requests.jsonl"));
+        try {
+            const cached = new CachingTally(parts);
+            const armCalls: (Pick<
+                CallRecord,
+                "seq" | "component" | "session" | "turn" | "request"
+            > &
+                Partial<Pick<CallRecord, "started_wall_ms" | "wall_ms" | "status">>)[] = [];
+            eachJsonl<CallRecord>(callsPath, (c) => {
+                if (c.arm !== arm) return;
+                cached.add(c);
+                if (!reads) return;
+                const { seq, component, session, turn, request, started_wall_ms, wall_ms } = c;
+                const times = { started_wall_ms, wall_ms, status: c.status };
+                if (component === "memory_capture") {
+                    armCalls.push({ seq, component, session, turn, ...times });
+                } else if (component === "agent" && request) {
+                    armCalls.push({ seq, component, session, turn, request, ...times });
+                }
+            });
+            observed.prompt_caching = cached.observation();
+            if (reads) {
+                // A recovered row says what the user-sim decided; the host may or may not have the turn.
+                const turns = journal.entries.filter(
+                    (t) => t.kind === "UserTurn" && t.arm === arm && t.delivered === true,
+                );
+                const notes: ExpectedNote[] = oracle(arm)
+                    ? turns.flatMap((t) => {
+                          const event = String(t.event);
+                          const background = backgrounds.get(event);
+                          const text = scriptedById.get(event)?.text;
+                          if (!background || text === undefined) return [];
+                          const owed = t.recovered !== true;
+                          return [{ event, session: String(t.session), background, text, owed }];
+                      })
+                    : [];
                 const statements = observed.statements;
                 // A statement whose payload names no session stands for any capturing session.
                 const sessions = statements
@@ -2497,9 +2525,9 @@ async function runArms(
                     sessions,
                     projectOf,
                 );
-            } finally {
-                parts.close();
             }
+        } finally {
+            parts.close();
         }
         const build = auditedBuild(manifest.eidnara_build?.commit ?? "");
         if (armProfile(arm).daemon !== null && !build) {
@@ -2507,13 +2535,8 @@ async function runArms(
                 `manifest.json eidnara_build ${manifest.eidnara_build?.commit} names no audited build`,
             );
         }
-        const mismatches = armMismatches(observed, build);
-        const record = {
-            profile: armProfile(arm),
-            eidnara_build: manifest.eidnara_build,
-            observed,
-            mismatches,
-        };
+        const record = capabilityRecord(observed, manifest.eidnara_build, build, caching);
+        const { mismatches } = record;
         writeAtomic(join(o.out, arm, "capabilities.json"), `${JSON.stringify(record, null, 2)}\n`);
         if (mismatches.length > 0) {
             throw new HarnessFailure(`arm ${arm} capability mismatch: ${mismatches.join("; ")}`);
@@ -2541,6 +2564,7 @@ async function runArms(
             models: manifest.models,
             contextLimit: manifest.context_limit,
             ...(manifest.side_model ? { sideModel: manifest.side_model } : {}),
+            promptCaching: caching,
             turnDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
             transcriptPaths: hostRow.transcript_paths,
             hostVersions: {

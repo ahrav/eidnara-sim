@@ -29,6 +29,7 @@ import {
     opencodeInstall,
     PI_EXIT_EVENT_MS,
     PiSimHost,
+    piModelName,
     processMemoryBlock,
     progressBlock,
 } from "./arms";
@@ -1649,3 +1650,136 @@ test("the OpenCode knowledge-only arm turns host compaction on and Eidnara compa
         expect(opts.eidnaraConfig.compaction).toEqual({ enabled: eidnara });
     }
 });
+
+const OPUS = "global.anthropic.claude-opus-5-5";
+const HAIKU = "global.anthropic.claude-haiku-5-5";
+
+/** Pi's `models.json` as `writeConfigs` writes it for `caching`, with the agent and side models. */
+function piModelsJson(caching: "on" | "off" | undefined): string {
+    const ctx = { ...context(runDir()), model: OPUS, sideModel: HAIKU };
+    const host = new PiSimHost(caching === undefined ? ctx : { ...ctx, promptCaching: caching });
+    (host as Untyped).writeConfigs(null);
+    return readFileSync(join(host.agentDir, "models.json"), "utf8");
+}
+
+test("Pi's model definitions are today's bytes with caching off, and differ in the name alone with it on", () => {
+    const definition = (id: string, name: string) => ({
+        id,
+        name,
+        api: "bedrock-converse-stream",
+        reasoning: false,
+        input: ["text"],
+        contextWindow: 1000,
+        maxTokens: 8192,
+        cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    });
+    const file = (name: (id: string) => string) =>
+        JSON.stringify(
+            {
+                providers: {
+                    "amazon-bedrock": {
+                        baseUrl: "http://127.0.0.1:2",
+                        models: [OPUS, HAIKU].map((id) => definition(id, name(id))),
+                    },
+                },
+            },
+            null,
+            2,
+        );
+    expect(piModelsJson(undefined)).toBe(file((id) => id));
+    expect(piModelsJson("off")).toBe(file((id) => id));
+    expect(piModelsJson("on")).toBe(file((id) => `${id} (cache points as claude -4- models)`));
+    expect(piModelName(OPUS, "off")).toBe(OPUS);
+    // Pi matches `-4-` in a name that names a Claude model, and no adaptive-thinking family.
+    expect(piModelName(OPUS, "on")).toContain("-4-");
+    expect(piModelName(OPUS, "on")).not.toMatch(/opus-4-|sonnet-4-|fable-5/);
+});
+
+const PI_AI = join(
+    loadConfig().pi_install,
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/compat.js",
+);
+const POINT = { cachePoint: { type: "default" } };
+
+/** The Converse input the pinned Pi builds from one `models.json` definition, taken before it is sent. */
+async function piRequest(definition: Record<string, unknown>, tools: boolean): Promise<Untyped> {
+    const { streamSimple } = await import(PI_AI);
+    const model = { ...definition, provider: "amazon-bedrock", baseUrl: "http://127.0.0.1:9" };
+    const call = { type: "toolCall", id: "t1", name: "bash", arguments: { command: "ls" } };
+    const context = {
+        systemPrompt: "You are a coding agent.",
+        tools: tools
+            ? [{ name: "bash", description: "run", parameters: { type: "object", properties: {} } }]
+            : [],
+        messages: [
+            { role: "user", content: "first", timestamp: 1 },
+            {
+                role: "assistant",
+                content: [{ type: "text", text: "calling" }, call],
+                api: "bedrock-converse-stream",
+                provider: "amazon-bedrock",
+                model: definition.id,
+                usage: {},
+                stopReason: "toolUse",
+                timestamp: 2,
+            },
+            {
+                role: "toolResult",
+                toolCallId: "t1",
+                toolName: "bash",
+                content: [{ type: "text", text: "a b" }],
+                isError: false,
+                timestamp: 3,
+            },
+        ],
+    };
+    let seen: Untyped;
+    const stream = streamSimple(model, context, {
+        env: { AWS_ACCESS_KEY_ID: "x", AWS_SECRET_ACCESS_KEY: "y", AWS_REGION: "us-west-2" },
+        maxRetries: 0,
+        onPayload: (payload: Untyped) => {
+            seen = JSON.parse(JSON.stringify(payload));
+            throw new Error("captured");
+        },
+    });
+    for await (const _ of stream) {
+        // The stream ends with the capture's error; the request never leaves the process.
+    }
+    return seen;
+}
+
+test.skipIf(!existsSync(PI_AI))(
+    "the pinned Pi builds today's request with caching off, and the same request plus its two cache points with it on",
+    async () => {
+        const definitions = (caching: "on" | "off" | undefined) =>
+            JSON.parse(piModelsJson(caching)).providers["amazon-bedrock"].models as Untyped[];
+        for (const [index, id] of [OPUS, HAIKU].entries()) {
+            for (const tools of [true, false]) {
+                // Pi names a model by its id when the file gives no name.
+                const { name: _name, ...unnamed } = definitions(undefined)[index];
+                const today = await piRequest(unnamed, tools);
+                const off = await piRequest(definitions("off")[index], tools);
+                const on = await piRequest(definitions("on")[index], tools);
+                expect(JSON.stringify(off)).toBe(JSON.stringify(today));
+                expect(JSON.stringify(off)).not.toContain("cachePoint");
+                expect(on.modelId).toBe(id);
+                expect(on.system.at(-1)).toEqual(POINT);
+                expect(on.messages.at(-1).content.at(-1)).toEqual(POINT);
+                const points = (blocks: Untyped[]) => blocks.filter((b) => "cachePoint" in b);
+                const placed = [on.system, ...on.messages.map((m: Untyped) => m.content)];
+                expect(placed.flatMap(points)).toEqual([POINT, POINT]);
+                // Without the two blocks the request is the caching-off request, byte for byte.
+                const without = (blocks: Untyped[]) => blocks.filter((b) => !("cachePoint" in b));
+                const stripped = {
+                    ...on,
+                    system: without(on.system),
+                    messages: on.messages.map((m: Untyped) => ({
+                        ...m,
+                        content: without(m.content),
+                    })),
+                };
+                expect(JSON.stringify(stripped)).toBe(JSON.stringify(off));
+            }
+        }
+    },
+);

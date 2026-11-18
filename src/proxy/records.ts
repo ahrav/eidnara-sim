@@ -27,6 +27,9 @@ export const COMPONENTS = [
 ] as const;
 export type Component = (typeof COMPONENTS)[number];
 
+/** The components the harness itself records: its own callers and the requests the proxy refused. */
+export const HARNESS_COMPONENTS: ReadonlySet<string> = new Set(["user-sim", "judge", "rejected"]);
+
 export interface CallRecord {
     seq: number;
     arm: string;
@@ -39,8 +42,12 @@ export interface CallRecord {
     finish_reason: string | null;
     input_tokens: number;
     output_tokens: number;
+    /** Prompt tokens the provider read from its cache; `input_tokens` leaves them and the writes out. */
     cache_read_tokens: number;
+    /** Prompt tokens the call wrote to the provider's cache, at either lifetime. */
     cache_write_tokens: number;
+    /** Of `cache_write_tokens`, the tokens written with the 1-hour lifetime; absent when none. */
+    cache_write_1h_tokens?: number;
     started_wall_ms: number;
     wall_ms: number;
     scenario_ms: number;
@@ -73,6 +80,95 @@ export interface CallRecord {
      * turn's first answer.
      */
     origin_turn?: string;
+    /** On a run with prompt caching on: the time since the calls whose cached prefix this one can read (`CacheGaps`). */
+    cache_gap?: CacheGap;
+}
+
+/**
+ * The provider's cache lifetime for the cache points a host places by default: Bedrock keeps a
+ * prefix for 5 minutes after its last read, and Pi's default retention (`short`) and OpenCode's
+ * default breakpoint name no longer one.
+ */
+const CACHE_TTL_MS = 300_000;
+
+/** Scenario and wall time from one call's receipt to a later call's receipt. */
+export interface Gap {
+    scenario_ms: number;
+    wall_ms: number;
+}
+
+/**
+ * How long before a call the provider last served a call that shares its cached prefix. `session`
+ * is measured from the previous served call of the same arm, session, and component, whose
+ * request the conversation extends; `arm` from the previous served call of the same arm and
+ * component in any session, which shares the system prompt and tool definitions. Each is null for
+ * the first such call. The provider's cache lives `ttl_ms` of wall time after its last read. A
+ * run's wall clock skips the idle time between turns that scenario time keeps, so a
+ * `scenario_ms` gap above `ttl_ms` with a `wall_ms` gap inside it marks a call whose cache read
+ * a user at the scenario's pace would have paid as a cache write.
+ */
+export interface CacheGap {
+    /** The cache lifetime the gaps are read against. */
+    ttl_ms: number;
+    session: Gap | null;
+    arm: Gap | null;
+}
+
+type Served = Pick<
+    CallRecord,
+    | "arm"
+    | "session"
+    | "component"
+    | "scenario_ms"
+    | "started_wall_ms"
+    | "status"
+    | "input_tokens"
+    | "cache_read_tokens"
+    | "cache_write_tokens"
+>;
+
+/**
+ * The receipt times of the last served call per arm, session, and component, fed every call
+ * record in write order. A call counts as served when the provider answered it with prompt usage,
+ * since only such a call reads or writes the provider's cache; a call the proxy faulted or the
+ * provider refused leaves the times as they were.
+ */
+export class CacheGaps {
+    private readonly last = new Map<string, Gap>();
+
+    /** The gaps of `call`, read before `note` records it. */
+    of(
+        call: Pick<Served, "arm" | "session" | "component" | "scenario_ms" | "started_wall_ms">,
+    ): CacheGap {
+        const since = (key: string): Gap | null => {
+            const prev = this.last.get(key);
+            if (!prev) return null;
+            // A call received before the previous one's receipt overlapped it; the gap is none.
+            return {
+                scenario_ms: Math.max(0, call.scenario_ms - prev.scenario_ms),
+                wall_ms: Math.max(0, call.started_wall_ms - prev.wall_ms),
+            };
+        };
+        const [arm, session] = CacheGaps.keys(call);
+        return { ttl_ms: CACHE_TTL_MS, session: since(session), arm: since(arm) };
+    }
+
+    note(call: Served): void {
+        const prompt = call.input_tokens + call.cache_read_tokens + call.cache_write_tokens;
+        if (call.status !== 200 || prompt <= 0) return;
+        for (const key of CacheGaps.keys(call)) {
+            const prev = this.last.get(key);
+            this.last.set(key, {
+                scenario_ms: Math.max(prev?.scenario_ms ?? 0, call.scenario_ms),
+                wall_ms: Math.max(prev?.wall_ms ?? 0, call.started_wall_ms),
+            });
+        }
+    }
+
+    private static keys(call: Pick<Served, "arm" | "session" | "component">): [string, string] {
+        const arm = JSON.stringify([call.arm, call.component]);
+        return [arm, JSON.stringify([call.arm, call.component, call.session])];
+    }
 }
 
 /** Characters of relayed response text a record keeps; a text this long may have been cut. */
@@ -120,7 +216,42 @@ export function recordProblems(input: Partial<CallRecord> | Record<string, unkno
     }
     if (value.request !== undefined && !isRequestRef(value.request))
         problems.push("request invalid");
+    const hour = value.cache_write_1h_tokens;
+    if (
+        hour !== undefined &&
+        !(
+            Number.isFinite(hour) &&
+            (hour as number) > 0 &&
+            (hour as number) <= (value.cache_write_tokens as number)
+        )
+    ) {
+        problems.push("cache_write_1h_tokens invalid");
+    }
+    if (value.cache_gap !== undefined && !isCacheGap(value.cache_gap)) {
+        problems.push("cache_gap invalid");
+    }
     return problems;
+}
+
+function isCacheGap(value: unknown): value is CacheGap {
+    const gap = (v: unknown) =>
+        v === null ||
+        (typeof v === "object" &&
+            ["scenario_ms", "wall_ms"].every((k) => {
+                const n = (v as Record<string, unknown>)[k];
+                return Number.isFinite(n) && (n as number) >= 0;
+            }));
+    const g = value as Partial<CacheGap> | null;
+    return (
+        typeof g === "object" &&
+        g !== null &&
+        Number.isFinite(g.ttl_ms) &&
+        (g.ttl_ms as number) > 0 &&
+        "session" in g &&
+        "arm" in g &&
+        gap(g.session) &&
+        gap(g.arm)
+    );
 }
 
 /** The last newline-terminated line of a file whose complete prefix ends at `end`, read backwards in chunks. */

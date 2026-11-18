@@ -1,0 +1,39 @@
+{
+    "schema": "sim-qualification/v1",
+    "id": "PCH",
+    "revision": 1,
+    "frozen": true,
+    "tier": "M",
+    "tier_preregistration_sha256": "d1b8c9694586ff9fe2c3b55b0f98fa2e564da270d2f19d3c9d8eb8181398cd06",
+    "corpus": "held-out",
+    "seeds": [
+        605
+    ],
+    "hosts": [
+        "pi"
+    ],
+    "arms": {
+        "run": [
+            "host",
+            "eidnara"
+        ],
+        "order_by_seed": [
+            [
+                "host",
+                "eidnara"
+            ]
+        ]
+    },
+    "contrasts": [
+        [
+            "eidnara",
+            "host"
+        ]
+    ],
+    "controls": [
+        "wrong-project-lookup"
+    ],
+    "no_source_control": "host",
+    "prompt_caching": "on",
+    "claim": "descriptive"
+}

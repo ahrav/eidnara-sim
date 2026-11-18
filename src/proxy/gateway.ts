@@ -149,7 +149,9 @@ export interface GatewayOptions {
 
 const ROUTE = /^\/model\/([^/]+)\/(converse-stream|converse)$/;
 const MAX_BODY = 32 * 1024 * 1024;
-type Usage = Record<string, number>;
+type Usage = Record<string, number> & {
+    cacheDetails?: Array<{ ttl?: string; inputTokens?: number }>;
+};
 type Done = Partial<CallRecord> &
     Pick<CallRecord, "component" | "componentSource" | "model" | "status">;
 
@@ -833,6 +835,20 @@ export class Gateway {
             output_tokens: usage.outputTokens ?? 0,
             cache_read_tokens: usage.cacheReadInputTokens ?? 0,
             cache_write_tokens: usage.cacheWriteInputTokens ?? 0,
+            ...hourWrites(usage),
         };
     }
+}
+
+/**
+ * The tokens a call wrote with the 1-hour lifetime, from the usage's per-lifetime `cacheDetails`,
+ * capped at the call's cache writes; no field when there are none, as for every default cache point.
+ */
+function hourWrites(usage: Usage): { cache_write_1h_tokens?: number } {
+    const details = Array.isArray(usage.cacheDetails) ? usage.cacheDetails : [];
+    const hour = details
+        .filter((d) => d?.ttl === "1h" && Number.isFinite(d.inputTokens))
+        .reduce((n, d) => n + (d.inputTokens as number), 0);
+    const written = Math.min(hour, usage.cacheWriteInputTokens ?? 0);
+    return written > 0 ? { cache_write_1h_tokens: written } : {};
 }

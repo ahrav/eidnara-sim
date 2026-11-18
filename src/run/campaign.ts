@@ -9,10 +9,9 @@ import {
     statfsSync,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { sameSet } from "../prereg/validate";
 import { interruptions } from "./interruptions";
 import { type Entry, readJournal } from "./journal";
-import { PRICE_TABLE, type Price } from "./price";
+import { callUsd, isPriceTable, PRICE_TABLE, type Price } from "./price";
 
 /** USD per million tokens, by token class. */
 export type Prices = Price;
@@ -159,19 +158,10 @@ export function parseCampaign(raw: unknown): CampaignSpec {
             if (n > max) problems.push(`group ${g} has ${n} runs, more than max_concurrent ${max}`);
         }
     }
-    const prices = o?.prices as Record<string, unknown> | undefined;
-    if (
-        prices !== undefined &&
-        !(
-            typeof prices === "object" &&
-            prices !== null &&
-            sameSet(Object.keys(prices), ["cache_read", "cache_write", "input", "output"]) &&
-            Object.values(prices).every(
-                (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
-            )
-        )
-    ) {
-        problems.push("prices needs non-negative input, output, cache_read, and cache_write");
+    if (o?.prices !== undefined && !isPriceTable({ version: "campaign", rates: o.prices })) {
+        problems.push(
+            "prices needs non-negative input, output, cache_read, and cache_write, and may name cache_write_1h",
+        );
     }
     const cap = o?.spend_cap_usd;
     if (cap != null && !(typeof cap === "number" && Number.isFinite(cap) && cap > 0)) {
@@ -270,14 +260,18 @@ const HEAD_BYTES = 256;
 
 const tokens = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
 
-/** The USD cost of one call record at `prices`. */
-export function callUsd(c: Record<string, unknown>, prices: Prices): number {
-    return (
-        (tokens(c.input_tokens) * prices.input +
-            tokens(c.output_tokens) * prices.output +
-            tokens(c.cache_read_tokens) * prices.cache_read +
-            tokens(c.cache_write_tokens) * prices.cache_write) /
-        1e6
+/** The USD cost of one call record at `prices`; a field that is not a positive number counts as 0. */
+export function recordUsd(c: Record<string, unknown>, prices: Prices): number {
+    const written = tokens(c.cache_write_tokens);
+    return callUsd(
+        {
+            input_tokens: tokens(c.input_tokens),
+            output_tokens: tokens(c.output_tokens),
+            cache_read_tokens: tokens(c.cache_read_tokens),
+            cache_write_tokens: written,
+            cache_write_1h_tokens: Math.min(written, tokens(c.cache_write_1h_tokens)),
+        },
+        prices,
     );
 }
 
@@ -328,7 +322,7 @@ export function readSpend(path: string, prev: Spend, prices: Prices): Spend {
                 }
                 if (c === null || typeof c !== "object" || Array.isArray(c)) continue;
                 const record = c as Record<string, unknown>;
-                const usd = callUsd(record, prices);
+                const usd = recordUsd(record, prices);
                 const component =
                     typeof record.component === "string" ? record.component : "unknown";
                 spend.usd += usd;

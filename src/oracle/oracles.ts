@@ -1,5 +1,6 @@
 import { armBase } from "../hosts/arms";
 import { armProfile } from "../hosts/profiles";
+import { HARNESS_COMPONENTS } from "../proxy/records";
 import type { HeldCall } from "../run/calllog";
 import type { ArmLogs, RunLogs, Sample } from "./logs";
 
@@ -31,7 +32,7 @@ const CAPTURE_REFUSED =
     /memory capture output rejected|capture output (does not match the JSON schema|version is unsupported|exceeds (its decision bounds|\d+ bytes)|has no source id|has an unclosed code fence|names an unknown or duplicate source)/;
 /** The harness's own wording for a turn that hit its deadline: OpenCode's `turn deadline <N> ms`, Pi's `Timed out after <N>ms`. */
 const DEADLINE = /turn deadline \d+ ms|Timed out after \d+ ?ms/;
-export const HARNESS = new Set(["user-sim", "judge", "rejected"]);
+export const HARNESS = HARNESS_COMPONENTS;
 /** Calls that count as progress after a completed agent call: model work and persistence (SIM-P39); a title call is neither. */
 const PROGRESS = new Set([
     "agent",

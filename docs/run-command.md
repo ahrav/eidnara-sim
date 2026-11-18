@@ -140,6 +140,14 @@ also carry these optional sections and fields:
   (P1 to P14, P8-twin) that must not regress; `budget_usd` holds the
   expected spend range, `low` at most `high`; `cost_per_arm_seed_usd` holds
   one expected cost per run arm.
+- `prompt_caching`: `on` or `off`, the prompt-caching condition of every
+  arm; a registration that names none runs `off`. Under `on` the run makes
+  Pi place its Bedrock cache points for the measured model, checks that
+  each arm's requests carry them, records each call's cache gaps, and
+  prices its calls at the `v2` table (`docs/hosts.md`, Prompt caching;
+  `docs/report.md`, Cost). The field is part of the registration's hash.
+  Every registration through W2S2H names none, so its hash, its requests,
+  and its prices are what they were.
 
 Revision 2 registers whole-scenario A/A controls `host~aa` and `eidnara~aa`
 on seed 102, hold-out seed 103 over `eidnara` then `host`, and the ranking
@@ -227,6 +235,14 @@ after the first run. Each seed is four runs launched together, as for W2S.
 The budget is $7k to $16k for W2S2's twelve runs and $3k to $8k for
 W2S2H's eight, from the first focused run's $1.09 to $1.30 per event over
 590, 677, 747, 751, and 323 events.
+
+`--qualification PCH` (`prereg/PCH.json`, revision 1) is the prompt-caching
+pilot: tier M on Pi over C8H's held-out seed 605 with `host` and `eidnara`
+(host first), the contrast `eidnara` vs `host`, C8H's
+`wrong-project-lookup` control, `host` as the no-source control, and
+`prompt_caching: "on"`. The scenario holds C8H's items for the seed
+(`docs/scenario.md`). It names no `builds` section, so a run binds the
+audited build its clone holds.
 
 `--qualification H` runs the held-out registration `prereg/H.json`
 (revision 2, which re-pins the M digest after tier revision 9). It binds tier M, selects the `held-out` corpus split, runs
@@ -391,7 +407,9 @@ toolchain wrappers are created exclusively after removing any planted name.
    working-tree digest omits them; `absent` when not built), each ordered
    arm's profile with the user-tier `eidnara.jsonc` and daemon configuration
    it writes (`arms`, `docs/hosts.md`), the
-   Bedrock region and profile name, base wall time, price table (the version
+   Bedrock region and profile name, base wall time, the prompt-caching
+   condition the qualification registers (`prompt_caching`, `off` for a tier
+   run), the price table that condition selects (the version
    and rates the report prices the run's calls at), and preflight result. The working-tree digest hashes an
    untracked symlink's target text.
    A later invocation refuses a manifest whose `schema` is not
@@ -627,8 +645,10 @@ field keeps every record. Every `poll_ms` the supervisor:
   campaign's total spend, `spend_cap_usd`, `max_concurrent`, and the slots
   held. A run's spend (`spend_usd`, `spend_calls`, `spend_by_component`) sums
   every complete record of its `calls.jsonl` at `prices` (USD per million
-  input, output, cache-read, and cache-write tokens; c7's 5, 25, 0.5, and
-  6.25 by default, charged to every component and model); a complete line
+  input, output, cache-read, and cache-write tokens, and optionally
+  `cache_write_1h` for 1-hour cache writes; c7's 5, 25, 0.5, and
+  6.25 by default, charged to every component and model, so a campaign over
+  a caching-on registration names the `v2` rates of `docs/report.md`); a complete line
   that is not a JSON object counts for nothing. The supervisor reads each
   file from where the last poll stopped, and from its start after a restart
   or when the file shrank or was replaced (another inode, or first bytes

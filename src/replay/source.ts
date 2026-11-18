@@ -3,9 +3,10 @@ import { dirname, join } from "node:path";
 import { assertArtefactsOnly, type Snapshot } from "../grade/artefacts";
 import { GradeLog, type GradeRecord } from "../grade/probes";
 import { CONTROL_LABEL } from "../hosts/arms";
-import { isArmName } from "../hosts/profiles";
+import { isArmName, type PromptCaching } from "../hosts/profiles";
 import { type CallRecord, recordProblems } from "../proxy/records";
 import { type Entry, eachLine, readJournal } from "../run/journal";
+import { isPriceTable, type PriceTable } from "../run/price";
 import { requireDeclaredProjects } from "../run/run";
 import type { ScenarioEvent } from "../run/scheduler";
 import { type ProbeItem, type Scenario, scenarioHash } from "../scenario/compile";
@@ -28,7 +29,9 @@ export interface ProbeSource {
         context_limit: number;
         side_model: string | null;
         events: number;
-        price_table: { version: string; rates: Record<string, number> };
+        price_table: PriceTable;
+        /** The run's prompt-caching condition; a manifest from before the field ran `off`. */
+        prompt_caching?: PromptCaching;
     };
     scenario: Scenario;
     journal: Entry[];
@@ -78,7 +81,6 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
     if (manifest.schema !== MANIFEST_SCHEMA) {
         throw new Error(`manifest.json is ${String(manifest.schema)}, not ${MANIFEST_SCHEMA}`);
     }
-    const rates = Object.values(manifest.price_table?.rates ?? {});
     const fields: [string, boolean][] = [
         ["base_wall_ms", Number.isSafeInteger(manifest.base_wall_ms)],
         [
@@ -91,13 +93,7 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
                 manifest.models.length > 0 &&
                 manifest.models.every((m) => typeof m === "string" && m.length > 0),
         ],
-        [
-            "price_table",
-            ["input", "output", "cache_read", "cache_write"].every((k) => {
-                const r = (manifest.price_table?.rates ?? {})[k];
-                return typeof r === "number" && Number.isFinite(r) && r >= 0;
-            }) && rates.length === 4,
-        ],
+        ["price_table", isPriceTable(manifest.price_table)],
         ["order", Array.isArray(manifest.order)],
     ];
     const bad = fields.filter(([, ok]) => !ok).map(([k]) => k);

@@ -18,9 +18,14 @@ import {
     capabilityGaps,
     DAEMON_VARIANTS,
 } from "../hosts/profiles";
+import type { RequestPart } from "../proxy/requests";
 import {
     armMismatches,
     bootMismatches,
+    CachingTally,
+    cachePointsOf,
+    cachingMismatches,
+    capabilityRecord,
     logLength,
     observeArm,
     openItemsOf,
@@ -866,4 +871,114 @@ test("a hard-linked plugin log is refused rather than read", () => {
     const root = armRoot([PI_ON]);
     linkSync(join(root, "eidnara.log"), join(root, "second-name"));
     expect(() => readPluginLog(join(root, "eidnara.log"))).toThrow(/single-link regular file/);
+});
+
+const POINT = { cachePoint: { type: "default" } };
+
+test("cache points are counted in a system part, a message, and a tool list", () => {
+    expect(cachePointsOf({ field: "system", value: [{ text: "s" }, POINT] })).toBe(1);
+    expect(
+        cachePointsOf({
+            field: "messages",
+            value: { role: "user", content: [{ text: "a" }, POINT, { text: "b" }, POINT] },
+        }),
+    ).toBe(2);
+    expect(
+        cachePointsOf({
+            field: "toolConfig",
+            value: { tools: [{ toolSpec: { name: "x" } }, POINT] },
+        }),
+    ).toBe(1);
+    // A text that names a cache point is text.
+    expect(
+        cachePointsOf({
+            field: "messages",
+            value: { role: "user", content: [{ text: '{"cachePoint":{"type":"default"}}' }] },
+        }),
+    ).toBe(0);
+    expect(cachePointsOf({ field: "inferenceConfig", value: { maxTokens: 1 } })).toBe(0);
+    expect(cachePointsOf({ field: "messages", value: [] })).toBe(0);
+});
+
+test("an arm's caching observation counts requests with cache points and the cache tokens by component", () => {
+    const parts = new Map<string, RequestPart>([
+        ["sys", { field: "system", value: [{ text: "s" }] }],
+        ["sys+", { field: "system", value: [{ text: "s" }, POINT] }],
+        ["u1", { field: "messages", value: { role: "user", content: [{ text: "a" }] } }],
+        ["u1+", { field: "messages", value: { role: "user", content: [{ text: "a" }, POINT] } }],
+    ]);
+    const tokens = { input_tokens: 4, cache_read_tokens: 100, cache_write_tokens: 10 };
+    const request = (ids: string[]) => ({ sha256: "x", bytes: 1, parts: ids });
+    const tally = new CachingTally(parts);
+    tally.add({ component: "agent", request: request(["sys+", "u1+"]), ...tokens });
+    tally.add({ component: "agent", request: request(["sys", "u1+"]), ...tokens });
+    tally.add({ component: "agent", ...tokens });
+    tally.add({ component: "memory_capture", request: request(["sys", "u1"]), ...tokens });
+    tally.add({ component: "other", request: request(["sys", "u1"]), ...tokens });
+    tally.add({ component: "user-sim", request: request(["sys+"]), ...tokens });
+    tally.add({ component: "rejected", ...tokens });
+    const observed = tally.observation();
+    expect(observed).toEqual({
+        components: {
+            agent: {
+                requests: 2,
+                with_cache_points: 2,
+                input_tokens: 12,
+                cache_read_tokens: 300,
+                cache_write_tokens: 30,
+            },
+            memory_capture: {
+                requests: 1,
+                with_cache_points: 0,
+                input_tokens: 4,
+                cache_read_tokens: 100,
+                cache_write_tokens: 10,
+            },
+            other: {
+                requests: 1,
+                with_cache_points: 0,
+                input_tokens: 4,
+                cache_read_tokens: 100,
+                cache_write_tokens: 10,
+            },
+        },
+    });
+    // A request the proxy could not attribute to a host caller is recorded and held to nothing.
+    expect(cachingMismatches("on", observed)).toEqual([
+        "1 memory_capture requests and none carries a cache point, but the run registers prompt caching on",
+    ]);
+    // Under `off` the host's own model matching decides, so cache points are recorded and accepted.
+    expect(cachingMismatches("off", observed)).toEqual([]);
+    expect(cachingMismatches("on", undefined)).toEqual([]);
+    const all = new CachingTally(parts);
+    all.add({ component: "agent", request: request(["sys+", "u1"]), ...tokens });
+    expect(cachingMismatches("on", all.observation())).toEqual([]);
+});
+
+test("the capability record names the run's caching condition beside what the arm's requests show", () => {
+    const observed = observeArm("host", "pi", armRoot([]), { agent: 2 });
+    const counts = (with_cache_points: number) => ({
+        requests: 2,
+        with_cache_points,
+        input_tokens: 8,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+    });
+    observed.prompt_caching = { components: { agent: counts(0) } };
+    const off = capabilityRecord(observed, null, undefined, "off");
+    expect(off).toMatchObject({
+        profile: armProfile("host"),
+        eidnara_build: null,
+        prompt_caching: "off",
+        observed: { prompt_caching: { components: { agent: { with_cache_points: 0 } } } },
+        mismatches: [],
+    });
+    expect(capabilityRecord(observed, null, undefined, "on").mismatches).toEqual([
+        "2 agent requests and none carries a cache point, but the run registers prompt caching on",
+    ]);
+    observed.prompt_caching = { components: { agent: counts(2) } };
+    expect(capabilityRecord(observed, null, undefined, "on")).toMatchObject({
+        prompt_caching: "on",
+        mismatches: [],
+    });
 });

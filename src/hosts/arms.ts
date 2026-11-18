@@ -25,7 +25,7 @@ import { parentPid, processStart, stopOwnedTree } from "../run/procs";
 import type { DaemonStatusReading, SearchProgress } from "../run/sampler";
 import { FAKETIME_LIB, faketimeEnv } from "../run/timeinject";
 import { sandboxPath, toolbinDir, toolchainEnv } from "../run/toolchain";
-import { ARM_PROFILES, type ArmName, deliveryOf } from "./profiles";
+import { ARM_PROFILES, type ArmName, deliveryOf, type PromptCaching } from "./profiles";
 
 export type { ArmName };
 
@@ -96,6 +96,8 @@ export interface HostContext {
     contextLimit: number;
     /** The model of Eidnara's own summarizer and researcher calls; the agent model by default. */
     sideModel?: string;
+    /** The run's registered prompt-caching condition; `off` when absent. */
+    promptCaching?: PromptCaching;
     now?: () => number;
     /**
      * The host invokes `onTool` as it records a run; `drainTools` invokes it for the runs it
@@ -213,6 +215,18 @@ export const payloadManifest = (checkout: string) =>
 export function piModels(ctx: Pick<HostContext, "model" | "sideModel">): string[] {
     return [...new Set([ctx.model, ...(ctx.sideModel ? [ctx.sideModel] : [])])];
 }
+
+/**
+ * The display name Pi's `models.json` gives model `id`. Pi's Bedrock client places its cache
+ * points (one after the system prompt, one at the end of the last user message) when the id or
+ * the name of a Claude model holds a family string it knows (`supportsPromptCaching` in pi-ai's
+ * `bedrock-converse-stream.js`: `-4-` in 0.80.2, and `opus-5` from 0.87). Under `on` the name
+ * carries `-4-`, so every Pi caller that reads the definition (the agent loop, Pi's compaction,
+ * the plugin's `streamSimple` calls, and the child `pi` a subagent runs in) places them; the
+ * request's `modelId` is the id either way. Under `off` the name is the id, as Pi defaults it.
+ */
+export const piModelName = (id: string, caching: PromptCaching): string =>
+    caching === "on" ? `${id} (cache points as claude -4- models)` : id;
 
 /**
  * The user-tier `eidnara.jsonc` an Eidnara arm writes. `compaction.enabled` is the arm's
@@ -796,7 +810,7 @@ export class PiSimHost extends SimHost {
         this.writeControlFile(join(agentDir, "settings.json"), JSON.stringify(settings, null, 2));
         const models = piModels(this.ctx).map((id) => ({
             id,
-            name: id,
+            name: piModelName(id, this.ctx.promptCaching ?? "off"),
             api: "bedrock-converse-stream",
             reasoning: false,
             input: ["text"],

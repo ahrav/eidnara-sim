@@ -22,10 +22,11 @@ import {
     type DaemonVariant,
     deliveryOf,
     FIXTURE_READER_LAG_COMMITS,
+    type PromptCaching,
 } from "../hosts/profiles";
 import type { ConverseBody } from "../proxy/classify";
-import type { CallRecord } from "../proxy/records";
-import { type PartLookup, rebuildRequest } from "../proxy/requests";
+import { type CallRecord, HARNESS_COMPONENTS } from "../proxy/records";
+import { type PartLookup, type RequestPart, rebuildRequest } from "../proxy/requests";
 import { ORACLE_OPENING } from "./oracle-note";
 
 /** The model-call components only the Eidnara plugin and daemon make. */
@@ -81,6 +82,111 @@ export interface ArmObservation {
     daemon_routes?: DaemonRouteObservation;
     /** The daemon status readings in the arm's `resources.jsonl`; absent on observations recorded before they were read. */
     daemon_status?: DaemonStatusObservation;
+    /** The cache points and cache tokens of the arm's calls; absent on observations recorded before they were read. */
+    prompt_caching?: CachingObservation;
+}
+
+/** One component's calls as the provider's cache saw them. */
+export interface CachingCount {
+    /** Calls whose forwarded body the run stored. */
+    requests: number;
+    /** Of those, the calls whose body carries at least one cache point. */
+    with_cache_points: number;
+    /** The provider's prompt usage summed over the component's calls. */
+    input_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+}
+
+/** An arm's calls by component, the harness's own callers and refused requests left out. */
+export interface CachingObservation {
+    components: Record<string, CachingCount>;
+}
+
+/**
+ * The cache point blocks a stored part carries: among a `system` part's blocks, a message's
+ * content blocks, or a `toolConfig` part's tools, the three places Bedrock accepts one.
+ */
+export function cachePointsOf(part: RequestPart): number {
+    const value = part.value as { content?: unknown; tools?: unknown } | null;
+    const blocks =
+        part.field === "system"
+            ? value
+            : part.field === "messages"
+              ? value?.content
+              : part.field === "toolConfig"
+                ? value?.tools
+                : null;
+    return (Array.isArray(blocks) ? blocks : []).filter(
+        (b) => typeof b === "object" && b !== null && "cachePoint" in b,
+    ).length;
+}
+
+/** Builds an arm's `CachingObservation` from its call records; each stored part is read once. */
+export class CachingTally {
+    private readonly components: Record<string, CachingCount> = {};
+    private readonly points = new Map<string, number>();
+
+    constructor(private readonly parts: PartLookup) {}
+
+    add(
+        call: Pick<
+            CallRecord,
+            "component" | "request" | "input_tokens" | "cache_read_tokens" | "cache_write_tokens"
+        >,
+    ): void {
+        if (HARNESS_COMPONENTS.has(call.component)) return;
+        const count = (this.components[call.component] ??= {
+            requests: 0,
+            with_cache_points: 0,
+            input_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        });
+        count.input_tokens += call.input_tokens;
+        count.cache_read_tokens += call.cache_read_tokens;
+        count.cache_write_tokens += call.cache_write_tokens;
+        if (!call.request) return;
+        count.requests++;
+        if (call.request.parts.some((id) => this.pointsOf(id) > 0)) count.with_cache_points++;
+    }
+
+    private pointsOf(id: string): number {
+        let n = this.points.get(id);
+        if (n === undefined) {
+            const part = this.parts.get(id);
+            n = part ? cachePointsOf(part) : 0;
+            this.points.set(id, n);
+        }
+        return n;
+    }
+
+    observation(): CachingObservation {
+        return { components: this.components };
+    }
+}
+
+/** The components whose calls go through the host's own model client, which places the cache points. */
+const CACHED_CALLERS: readonly string[] = ["agent", "native_compaction", ...EIDNARA_COMPONENTS];
+
+/**
+ * What an arm's requests show against the run's prompt-caching condition. Under `on` the host's
+ * client places cache points on every request it sends, so one of its callers with stored
+ * requests and none carrying a point ran outside the condition. Under `off` the host's own model
+ * matching decides, so the observation stands as recorded.
+ */
+export function cachingMismatches(
+    condition: PromptCaching,
+    o: CachingObservation | undefined,
+): string[] {
+    if (condition !== "on" || !o) return [];
+    return Object.entries(o.components)
+        .filter(([component]) => CACHED_CALLERS.includes(component))
+        .filter(([, c]) => c.requests > 0 && c.with_cache_points === 0)
+        .map(
+            ([component, c]) =>
+                `${c.requests} ${component} requests and none carries a cache point, but the run registers prompt caching on`,
+        );
 }
 
 /**
@@ -1077,6 +1183,29 @@ export function armMismatches(
         }
     }
     return out;
+}
+
+/**
+ * The arm's `capabilities.json`: its profile, the build the run bound (`eidnaraBuild`, as the
+ * manifest records it), the run's prompt-caching condition, what the evidence shows, and every
+ * difference between the two.
+ */
+export function capabilityRecord<B>(
+    observed: ArmObservation,
+    eidnaraBuild: B,
+    build: AuditedBuild | undefined,
+    caching: PromptCaching,
+) {
+    return {
+        profile: armProfile(observed.arm),
+        eidnara_build: eidnaraBuild,
+        prompt_caching: caching,
+        observed,
+        mismatches: [
+            ...armMismatches(observed, build),
+            ...cachingMismatches(caching, observed.prompt_caching),
+        ],
+    };
 }
 
 /**

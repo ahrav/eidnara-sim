@@ -799,7 +799,7 @@ function repeatResult(
     if (NOTE_VARIANTS.has(variant) && !turn.applications.some((a) => a.changed)) {
         failures.push(`${variant} changed no agent request`);
     }
-    const rates = source.manifest.price_table.rates as never;
+    const rates = source.manifest.price_table.rates;
     const cost = componentCosts(turn.records, rates);
     const own = componentCosts(
         turn.records.filter((r) => r.turn === source.event.id),
@@ -848,7 +848,7 @@ function failedRepeat(
     const reason = caught instanceof Error ? caught.message : String(caught);
     const logged = join(repeatDir, "calls.jsonl");
     const records = existsSync(logged) ? readJsonl<CallRecord>(logged) : [];
-    const rates = source.manifest.price_table.rates as never;
+    const rates = source.manifest.price_table.rates;
     const cost = componentCosts(records, rates);
     const own = componentCosts(
         records.filter((r) => r.turn === source.event.id),
@@ -1065,6 +1065,7 @@ async function replayInto(
                 models: source.manifest.models,
                 contextLimit: source.manifest.context_limit,
                 sideModel: source.manifest.side_model,
+                promptCaching: source.manifest.prompt_caching ?? "off",
                 turnDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
                 project: source.project,
                 corpus: join(ROOT, "corpus", "repos", source.project),

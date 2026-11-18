@@ -246,3 +246,16 @@ only runs that share it, and a tape replay takes only sources that ran
 under the same rule; a manifest without the field ran with `true`.
 eval-core's `run_identity` has no scheduling component, so carrying it
 there needs `eval-manifest/v10`; no extension is made here.
+
+`manifest.prompt_caching` records the prompt-caching condition the run's
+qualification registers (`on` or `off`; a manifest without the field ran
+`off`), and `manifest.price_table` the rates that condition selects. Both
+are run identity components: the condition changes each request's cache
+points and the table its cost, a registration gives all its runs one
+condition, and the tier report pools only runs that share a price table.
+The claim boundary's first exclusion stands under either value: cache
+warmth runs in wall time, and each call record of a caching-on run carries
+the scenario and wall time since the calls whose prefix it can read, so an
+analysis reconstructs it. eval-core's `run_identity` has no provider-cache
+component, so carrying it there needs `eval-manifest/v10`; no extension is
+made here.

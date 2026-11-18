@@ -18,7 +18,6 @@ import {
     alertKey,
     alerts,
     C7_PRICES,
-    callUsd,
     decide,
     groupKey,
     noSpend,
@@ -26,6 +25,7 @@ import {
     parseCampaign,
     type RunRecord,
     readSpend,
+    recordUsd,
     runEnv,
     runProgress,
     sameLaunch,
@@ -563,7 +563,20 @@ test("spend reads only complete call records, and starts over on a shrunk or rep
     expect(readSpend(path, second, C7_PRICES)).toEqual(second);
     writeFileSync(path, `${rec("agent", 0, 40_000)}\n`);
     expect(readSpend(path, second, C7_PRICES)).toMatchObject({ usd: 1, calls: 1 });
-    expect(callUsd({ input_tokens: -5, output_tokens: "x" }, C7_PRICES)).toBe(0);
+    expect(recordUsd({ input_tokens: -5, output_tokens: "x" }, C7_PRICES)).toBe(0);
+    // A caching-on campaign prices cache reads at 0.2 and writes at 5, or 8 for 1-hour writes.
+    const cached = { input: 4, output: 20, cache_read: 0.2, cache_write: 5, cache_write_1h: 8 };
+    const tokens = { input_tokens: 0, cache_read_tokens: 1_000_000, cache_write_tokens: 200_000 };
+    expect(recordUsd(tokens, cached)).toBeCloseTo(0.2 + 1, 9);
+    expect(recordUsd({ ...tokens, cache_write_1h_tokens: 100_000 }, cached)).toBeCloseTo(
+        0.2 + 0.5 + 0.8,
+        9,
+    );
+    // A 1-hour count past the call's writes prices the writes it has.
+    expect(recordUsd({ ...tokens, cache_write_1h_tokens: 900_000 }, cached)).toBeCloseTo(
+        0.2 + 1.6,
+        9,
+    );
     // A file replaced by one whose first bytes differ is read from its start, even when it is
     // larger than the old offset and reuses the inode.
     const before = readSpend(path, noSpend(), C7_PRICES);
@@ -601,6 +614,8 @@ test("a campaign file with a group larger than max_concurrent, bad prices, or a 
     expect(() => parseCampaign({ ...base, runs, prices: { input: 5 } })).toThrow("prices needs");
     const custom = { input: 1, output: 2, cache_read: 0, cache_write: 3 };
     expect(parseCampaign({ ...base, runs, prices: custom }).prices).toEqual(custom);
+    const hourly = { ...custom, cache_write_1h: 4 };
+    expect(parseCampaign({ ...base, runs, prices: hourly }).prices).toEqual(hourly);
     expect(() => parseCampaign({ ...base, runs, prices: { ...custom, output: -1 } })).toThrow(
         "prices needs",
     );

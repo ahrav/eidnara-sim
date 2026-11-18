@@ -54,7 +54,8 @@ rest. The writer refuses a record that lacks any field below.
 | `component`, `componentSource` | The calling component and whether the caller `asserted` it or the proxy `inferred` it |
 | `model`, `status`, `error` | Model id, the HTTP status the gateway sent (0 when it sent none, including when the client disconnected before the answer), and the error text or `null` |
 | `finish_reason` | The stream's `messageStop.stopReason` or the response's `stopReason`; `stream_cut` when the answer carried no stop reason, including a stream that ended or failed before both `messageStop` and `metadata` arrived, and a stream the client left before it ended (relaying stops at the first event the client cannot receive, and the record holds the text delivered up to it; a non-streaming reply the client left before is recorded with `client disconnected before the response was delivered` and no text); `null` when the call had no answer |
-| `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` | Provider usage |
+| `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` | Provider usage. The provider counts a prompt token once: `cache_read_tokens` are the tokens it read from its prompt cache, `cache_write_tokens` the tokens it wrote there, and `input_tokens` the rest of the prompt, so the prompt is the sum of the three |
+| `cache_write_1h_tokens` | Of `cache_write_tokens`, the tokens written with the 1-hour lifetime, from the usage's `cacheDetails`; present only when above 0 |
 | `started_wall_ms`, `wall_ms` | Receipt time, and write time clamped so it never decreases in `seq` order and never precedes the record's own receipt (SIM-P15) |
 | `scenario_ms` | The scheduler's clock at receipt (SIM-P15) |
 | `first_byte_ms` | Milliseconds from receipt to the first answer byte the transport accepted for the host, after any `slow_stream` delay and including an injected fault's answer; `null` for a rejected request and when the host left first |
@@ -63,6 +64,7 @@ rest. The writer refuses a record that lacks any field below.
 | `stripped` | Request fields the proxy removed, keyed by path; present only when it removed one |
 | `arrival` | The request's arrival ordinal within its proxy process, assigned at the first byte; a resume replays records by this ordinal, falling back to `started_wall_ms` then `seq` for records written before it existed |
 | `request` | The forwarded body: `sha256` of the JSON handed upstream (after `stripped` removals), its UTF-8 `bytes`, and `parts`, the ids of its stored parts in body order (see Request bodies); present on every classified call of a run that stores bodies |
+| `cache_gap` | On a run with prompt caching on (`docs/hosts.md`), for every call but the harness's own (`user-sim`, `rejected`): `ttl_ms`, the provider's default cache lifetime the gaps are read against (300,000); `session`, the scenario and wall time (`scenario_ms`, `wall_ms`) from the receipt of the previous served call of the same arm, session, and component to this call's receipt, and `arm`, the same from the previous served call of the same arm and component in any session; each is `null` for the first such call. A call is served when the provider answered it with prompt usage. A call received before the previous one's receipt has gaps of 0. A resume rebuilds the receipt times from the call log |
 | `origin_turn` | On a `memory_capture`, `memory_classifier`, or `history_summarizer` call: the session's preceding turn, when the call was received after the next turn began and before that turn's first agent answer was recorded; absent otherwise |
 
 ## Request bodies
@@ -83,6 +85,12 @@ fails part-way is truncated back to the last complete line, and the store
 refuses later writes when that truncation fails. A body the store cannot write leaves the record without `request` and
 adds a gateway failure, which fails the run at stop. An injected fault's
 request is stored too; its record's `fault_ref` shows that no provider saw it.
+
+A cache point is a block of the body like any other, so a stored request
+carries the host's cache points where the host put them. Pi puts one on
+the last message of a request, so the message that ends one request is a
+different part, without the point, in the next, and a caching-on run
+stores those messages twice.
 
 A gateway built with a `transform` option hands it each classified body, with
 the call's component and scope, after `stripUnsupported` and before the store

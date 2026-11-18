@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { Rng } from "../rng";
 import { Gateway, type Upstream } from "./gateway";
 import { FaultInjector } from "./inject";
-import { RecordWriter, recordProblems } from "./records";
+import { CacheGaps, RecordWriter, recordProblems } from "./records";
 import {
     partId,
     RequestPartLog,
@@ -268,4 +268,175 @@ test("a background call names its origin turn; an agent call keeps the turn in s
     expect(bg?.origin_turn).toBe("e-1");
     expect(fg?.component).toBe("agent");
     expect(fg?.origin_turn).toBeUndefined();
+});
+
+test("a body with cache points is forwarded and stored whole, and a 1-hour write is recorded", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-requests-"));
+    const path = join(dir, "requests.jsonl");
+    const requests = new RequestStore(path);
+    const records = new RecordWriter(null);
+    const point = { cachePoint: { type: "default" } };
+    const usages = [
+        { inputTokens: 4, outputTokens: 1, cacheReadInputTokens: 0, cacheWriteInputTokens: 900 },
+        {
+            inputTokens: 4,
+            outputTokens: 1,
+            cacheReadInputTokens: 900,
+            cacheWriteInputTokens: 300,
+            cacheDetails: [
+                { ttl: "5m", inputTokens: 100 },
+                { ttl: "1h", inputTokens: 200 },
+            ],
+        },
+    ];
+    const seen: unknown[] = [];
+    const upstream: Upstream = {
+        async converse(_model, body) {
+            seen.push(JSON.parse(JSON.stringify(body)));
+            const message = { role: "assistant", content: [{ text: "ok" }] };
+            return { json: { output: { message }, stopReason: "end_turn", usage: usages.shift() } };
+        },
+    };
+    const gateway = new Gateway({
+        upstream,
+        records,
+        injector: new FaultInjector([], new Rng(1), 1_000),
+        rng: new Rng(1),
+        clock: { scenarioMs: () => 0 },
+        scope: () => ({ arm: "a", session: "s", turn: "t" }),
+        requests,
+    });
+    await gateway.start();
+    gateways.push(gateway);
+    const body = {
+        system: [{ text: "You are a coding agent." }, point],
+        messages: [{ role: "user", content: [{ text: "Fix the bug." }, point] }],
+        toolConfig: { tools: [{ toolSpec: { name: "bash" } }] },
+    };
+    for (let i = 0; i < 2; i++) {
+        const response = await fetch(`${gateway.urls[0]}/model/m/converse`, {
+            method: "POST",
+            body: JSON.stringify(body),
+        });
+        await response.text();
+    }
+    await gateway.stop();
+    requests.close();
+    expect(seen).toEqual([body, body]);
+    const [first, second] = records.records;
+    const parts = readRequestParts(path);
+    expect(rebuildRequest(first?.request as never, parts)).toEqual(body);
+    expect(first?.request?.bytes).toBe(Buffer.byteLength(JSON.stringify(body)));
+    expect(first).toMatchObject({ input_tokens: 4, cache_read_tokens: 0, cache_write_tokens: 900 });
+    expect(first && "cache_write_1h_tokens" in first).toBe(false);
+    expect(second).toMatchObject({
+        cache_read_tokens: 900,
+        cache_write_tokens: 300,
+        cache_write_1h_tokens: 200,
+    });
+    expect(recordProblems(second as object)).toEqual([]);
+    expect(recordProblems({ ...second, cache_write_1h_tokens: 301 })).toEqual([
+        "cache_write_1h_tokens invalid",
+    ]);
+});
+
+const served = (
+    arm: string,
+    session: string,
+    component: string,
+    scenario_ms: number,
+    started_wall_ms: number,
+) => ({
+    arm,
+    session,
+    component: component as "agent",
+    scenario_ms,
+    started_wall_ms,
+    status: 200,
+    input_tokens: 4,
+    cache_read_tokens: 0,
+    cache_write_tokens: 100,
+});
+
+test("a call's cache gaps run from the last served call of its session and of its arm", () => {
+    const gaps = new CacheGaps();
+    const first = served("host", "s-1", "agent", 1_000, 50_000);
+    expect(gaps.of(first)).toEqual({ ttl_ms: 300_000, session: null, arm: null });
+    gaps.note(first);
+    // Six scenario minutes later and two wall seconds later: the idle gap the wall clock skips.
+    const next = served("host", "s-1", "agent", 361_000, 52_000);
+    expect(gaps.of(next)).toEqual({
+        ttl_ms: 300_000,
+        session: { scenario_ms: 360_000, wall_ms: 2_000 },
+        arm: { scenario_ms: 360_000, wall_ms: 2_000 },
+    });
+    gaps.note(next);
+    // A new session shares the arm's prefix alone; another component and another arm share none.
+    expect(gaps.of(served("host", "s-2", "agent", 400_000, 53_000))).toEqual({
+        ttl_ms: 300_000,
+        session: null,
+        arm: { scenario_ms: 39_000, wall_ms: 1_000 },
+    });
+    expect(gaps.of(served("host", "s-1", "memory_capture", 400_000, 53_000))).toMatchObject({
+        session: null,
+        arm: null,
+    });
+    expect(gaps.of(served("eidnara", "s-1", "agent", 400_000, 53_000))).toMatchObject({
+        session: null,
+        arm: null,
+    });
+});
+
+test("a call the provider never served leaves the cache gaps as they were", () => {
+    const gaps = new CacheGaps();
+    gaps.note(served("host", "s-1", "agent", 1_000, 50_000));
+    gaps.note({ ...served("host", "s-1", "agent", 2_000, 51_000), status: 429 });
+    gaps.note({
+        ...served("host", "s-1", "agent", 3_000, 52_000),
+        input_tokens: 0,
+        cache_write_tokens: 0,
+    });
+    const later = served("host", "s-1", "agent", 4_000, 53_000);
+    expect(gaps.of(later).session).toEqual({ scenario_ms: 3_000, wall_ms: 3_000 });
+    // A call received before the last served one overlapped it.
+    expect(gaps.of(served("host", "s-1", "agent", 500, 49_000)).session).toEqual({
+        scenario_ms: 0,
+        wall_ms: 0,
+    });
+});
+
+test("a record's cache gap is two gaps or nulls of non-negative times", () => {
+    const base = new RecordWriter(null).write({
+        arm: "a",
+        session: "s",
+        turn: null,
+        component: "agent",
+        componentSource: "inferred",
+        model: "m",
+        status: 200,
+        finish_reason: "end_turn",
+        input_tokens: 1,
+        output_tokens: 1,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        started_wall_ms: 1,
+        scenario_ms: 1,
+        first_byte_ms: 1,
+        proxy_retries: 0,
+        fault_ref: null,
+        error: null,
+        cache_gap: { ttl_ms: 300_000, session: { scenario_ms: 5, wall_ms: 1 }, arm: null },
+    });
+    expect(recordProblems(base)).toEqual([]);
+    const ttl_ms = 300_000;
+    for (const cache_gap of [
+        { ttl_ms, session: null },
+        { session: null, arm: null },
+        { ttl_ms: 0, session: null, arm: null },
+        { ttl_ms, session: { scenario_ms: -1, wall_ms: 0 }, arm: null },
+        { ttl_ms, session: { scenario_ms: 1 }, arm: null },
+        "none",
+    ]) {
+        expect(recordProblems({ ...base, cache_gap })).toEqual(["cache_gap invalid"]);
+    }
 });
