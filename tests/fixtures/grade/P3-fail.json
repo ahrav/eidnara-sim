@@ -31,6 +31,27 @@
           "class": "diff",
           "role": "turn",
           "patch": "diff --git a/src/cmd/scan.rs b/src/cmd/scan.rs\n--- a/src/cmd/scan.rs\n+++ b/src/cmd/scan.rs\n@@ -1,0 +1,1 @@\n+let page = 30632;\n"
+        },
+        {
+          "id": "p1",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "seq": 1,
+              "arm": "eidnara",
+              "session": "s-1",
+              "component": "agent",
+              "turn": "e-1",
+              "scenario_ms": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "response_text": "The page size is set.",
+              "status": 200,
+              "error": null
+            }
+          ]
         }
       ]
     }
@@ -41,10 +62,12 @@
     "metrics": {
       "P3.pass": false,
       "P3.reliance": "stale",
-      "P3.harm": true
+      "P3.harm": true,
+      "P3.v1": false
     },
     "inputs": [
-      "d1"
+      "d1",
+      "p1"
     ]
   }
 }

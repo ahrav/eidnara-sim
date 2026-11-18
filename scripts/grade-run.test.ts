@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { SimConfig } from "../src/config/config";
 import { loadRun as loadEvidence } from "../src/evidence/load";
+import { git } from "../src/git";
 import type { CallView, Snapshot } from "../src/grade/artefacts";
 import { GradeLog, P7_HOST_ELSEWHERE, P7_MEMORY_ELSEWHERE } from "../src/grade/probes";
 import { armProfile } from "../src/hosts/profiles";
@@ -31,6 +32,8 @@ import { loadPrereg } from "../src/scenario/inputs";
 import {
     ABSTAIN_JUDGE_FAILED,
     ABSTAIN_JUDGMENTS,
+    APPLIED_JUDGE_FAILED,
+    APPLIED_JUDGMENTS,
     gradeRun,
     requireCapabilities,
     TWIN_JUDGE_FAILED,
@@ -195,7 +198,14 @@ function withTurnIndices(s: Snapshot): Snapshot {
     } as Snapshot;
 }
 
-function snapshot(dir: string, arm: string, given: Snapshot, journaled = true): void {
+function snapshot(
+    dir: string,
+    arm: string,
+    given: Snapshot,
+    journaled = true,
+    /** The scenario time the turn's `EndTurn` is journaled at. */
+    endMs = 0,
+): void {
     const indexed = withTurnIndices(given);
     const session = indexed.session ?? "s-1";
     const s = {
@@ -223,7 +233,7 @@ function snapshot(dir: string, arm: string, given: Snapshot, journaled = true): 
             wall_ms: seq,
             kind: "EndTurn",
             arm,
-            scenario_ms: 0,
+            scenario_ms: endMs,
             event: s.turn,
             outcome: s.turn_outcome === "ok" ? "ok" : "boom",
             probe: s.item,
@@ -2308,5 +2318,254 @@ describe("P8-twin graded from a judge's label", () => {
                 "line 1 holds no abstention judgment",
             );
         }
+    });
+});
+
+describe("P3 graded from a judge's label where the turn changed no product code", () => {
+    const statement = "the scan page size is 63646";
+    const judgeSays = (reply: string): Upstream & { prompts: string[] } => {
+        const up = {
+            prompts: [] as string[],
+            async converse(_model: string, body: { messages?: unknown }) {
+                const [first] = body.messages as { content: { text: string }[] }[];
+                up.prompts.push(first?.content[0]?.text ?? "");
+                const message = { role: "assistant", content: [{ text: reply }] };
+                const usage = { inputTokens: 1, outputTokens: 1 };
+                return { json: { output: { message }, stopReason: "end_turn", usage } };
+            },
+        };
+        return up as unknown as Upstream & { prompts: string[] };
+    };
+    // An earlier session of the project, in which the arm wired the constant into the code.
+    const prelude = [
+        {
+            id: "e-s0",
+            kind: "session_start",
+            scenario_ms: 0,
+            session: "s-0",
+            project: "mini-redis",
+        },
+        {
+            id: "e-wire",
+            kind: "user_turn",
+            scenario_ms: 0,
+            session: "s-0",
+            index: 0,
+            text: "Go on.",
+        },
+        { id: "e-s0-end", kind: "session_end", scenario_ms: 0, session: "s-0" },
+        { id: "e-sx", kind: "session_start", scenario_ms: 0, session: "s-x", project: "elysia" },
+        {
+            id: "e-other",
+            kind: "user_turn",
+            scenario_ms: 0,
+            session: "s-x",
+            index: 0,
+            text: "Go on.",
+        },
+        { id: "e-sx-end", kind: "session_end", scenario_ms: 0, session: "s-x" },
+    ];
+    const wired = {
+        turn: "e-wire",
+        command: 'edit src/cmd/scan.rs\n[{"newText":"let page = IVORY_WALRUS_PAGE_SIZE;"}]',
+        exit: 0,
+        scenario_ms: 0,
+    };
+    /** A run of the fixture's turn; `ledger` is the arm's tool ledger, absent when null. */
+    const p3run = (name: string, ledger: Record<string, unknown>[] | null = [wired]) => {
+        const f = fixture(name);
+        const dir = run({
+            probes: [f.probe],
+            prelude,
+            order: ["eidnara"],
+            facts: [{ id: "f-1", statement }],
+        });
+        // The run's capture holds no `earlier` log; grade-run builds it from the ledger.
+        const captured = structuredClone(f.snapshots[0]) as Snapshot;
+        captured.artefacts = captured.artefacts.filter(
+            (a) => !(a.class === "command-log" && a.role === "earlier"),
+        );
+        snapshot(dir, "eidnara", { ...captured, item: f.probe.id });
+        if (ledger) {
+            writeFileSync(
+                join(dir, "eidnara", "tools.jsonl"),
+                ledger.map((l) => `${JSON.stringify(l)}\n`).join(""),
+            );
+        }
+        return dir;
+    };
+    const grades = (dir: string) => new GradeLog(join(dir, "grades.jsonl")).all();
+
+    test("label R passes the turn, the prompt carries the task and both values, and a regrade calls no judge", async () => {
+        const dir = p3run("P3-pass-already-applied");
+        const judge = judgeSays("R");
+        const summary = await gradeRun(dir, null, false, judge);
+        expect(summary.verdicts).toEqual({ "eidnara/P3": { pass: 1 } });
+        expect(summary.judge_errors).toBe(0);
+        const [g] = grades(dir);
+        expect(g?.metrics).toMatchObject({
+            "P3.pass": true,
+            "P3.reliance": "authoritative",
+            "P3.v1": false,
+            "P3.label": "R",
+            "P3.judge_model": "global.openai.gpt-5.6-luna",
+        });
+        expect(judge.prompts).toHaveLength(1);
+        const prompt = judge.prompts[0] as string;
+        expect(prompt).toContain("TASK:\nSet the scan page size to the agreed figure.\n");
+        expect(prompt).toContain(
+            "CURRENT VALUE (the figure, and the constant that holds it):\n63646, IVORY_WALRUS\n",
+        );
+        expect(prompt).toContain("SUPERSEDED VALUES:\n30632\n");
+        expect(prompt).toContain("already set from IVORY_WALRUS_PAGE_SIZE");
+        expect(prompt.endsWith("Answer with exactly one letter: R, S, Q, or N.")).toBe(true);
+        const rows = readFileSync(join(dir, APPLIED_JUDGMENTS), "utf8").trim().split("\n");
+        expect(JSON.parse(rows[0] as string)).toMatchObject({
+            item: "P3-c",
+            arm: "eidnara",
+            judgment: { label: "R", answer_digest: g?.metrics["P3.answer_digest"] },
+        });
+        const silent = judgeSays("Q");
+        await gradeRun(dir, null, true, silent);
+        expect(silent.prompts).toHaveLength(0);
+        expect(grades(dir).at(-1)?.verdict).toBe("pass");
+    });
+
+    test("another label fails the turn, and a turn whose product code decides is graded with no judge", async () => {
+        const dir = p3run("P3-fail-asks-which");
+        await gradeRun(dir, null, false, judgeSays("Q"));
+        const [g] = grades(dir);
+        expect([g?.verdict, g?.reason, g?.metrics["P3.label"]]).toEqual([
+            "fail",
+            "relied on neither",
+            "Q",
+        ]);
+        const decided = p3run("P3-pass");
+        const unasked = judgeSays("R");
+        await gradeRun(decided, null, false, unasked);
+        expect(unasked.prompts).toHaveLength(0);
+        expect(existsSync(join(decided, APPLIED_JUDGMENTS))).toBe(false);
+        expect(grades(decided)[0]?.metrics).toEqual({
+            "P3.pass": true,
+            "P3.reliance": "authoritative",
+            "P3.harm": false,
+            "P3.v1": true,
+        });
+    });
+
+    test("an arm whose ledger holds no earlier write of the value is sent to no judge and fails", async () => {
+        const read = { ...wired, command: "grep -rn IVORY_WALRUS_PAGE_SIZE src" };
+        const later = { ...wired, turn: "e-1" };
+        // A write in a session of another project is no write in this one.
+        const foreign = { ...wired, turn: "e-other" };
+        for (const ledger of [null, [], [read], [later], [foreign]]) {
+            const dir = p3run("P3-pass-already-applied", ledger);
+            const unasked = judgeSays("R");
+            await gradeRun(dir, null, false, unasked);
+            expect(unasked.prompts).toHaveLength(0);
+            const [g] = grades(dir);
+            expect([g?.verdict, g?.reason, g?.metrics["P3.label"]]).toEqual([
+                "fail",
+                "relied on neither",
+                undefined,
+            ]);
+        }
+    });
+
+    test("a reply that is no label leaves the item ungraded as a judge error", async () => {
+        const dir = p3run("P3-pass-already-applied");
+        const summary = await gradeRun(dir, null, false, judgeSays("Probably R"));
+        expect(summary.judge_errors).toBe(1);
+        expect(summary.skipped.eidnara).toMatchObject({ [APPLIED_JUDGE_FAILED]: 1 });
+        expect(existsSync(join(dir, "grades.jsonl")) ? grades(dir) : []).toEqual([]);
+    });
+});
+
+describe("P13 reads the commits git recorded in the arm's project repository", () => {
+    const EPOCH_S = 1_700_000_000;
+    const TURN_END_MS = 120_000;
+    const f = fixture("P13-pass");
+    // The fold is a call of the probe's own turn, so the run's capture gives it a turn index.
+    const captured = structuredClone(f.snapshots[0]) as Snapshot;
+    for (const a of captured.artefacts) {
+        if (a.class === "proxy-call") for (const c of a.calls) c.turn = "e-1";
+    }
+    /** A run of the P13 fixture whose arm clock starts at `EPOCH_S`, with the probe turn ending at `TURN_END_MS`. */
+    const p13run = () => {
+        const dir = run({ probes: [f.probe], unended: { host: ["e-1"] } });
+        snapshot(dir, "eidnara", { ...captured, item: f.probe.id }, true, TURN_END_MS);
+        journalAppend(dir, {
+            seq: 900,
+            wall_ms: EPOCH_S * 1000,
+            kind: "ClockOffset",
+            arm: "eidnara",
+            scenario_ms: 0,
+            offset_s: 0,
+            offset_wall_ms: EPOCH_S * 1000,
+        });
+        return dir;
+    };
+    /** The project repository of the arm, with one commit per subject at the given scenario second. */
+    const repository = (dir: string, commits: [subject: string, atSeconds: number][]) => {
+        const repo = join(dir, "eidnara", "r", "workspaces", "mini-redis");
+        mkdirSync(repo, { recursive: true });
+        const at = (seconds: number) => {
+            const date = `${EPOCH_S + seconds} +0000`;
+            return {
+                GIT_AUTHOR_NAME: "agent",
+                GIT_AUTHOR_EMAIL: "agent@example.invalid",
+                GIT_COMMITTER_NAME: "agent",
+                GIT_COMMITTER_EMAIL: "agent@example.invalid",
+                GIT_AUTHOR_DATE: date,
+                GIT_COMMITTER_DATE: date,
+            };
+        };
+        git(repo, ["init", "-q", "-b", "main"], at(0));
+        for (const [subject, seconds] of commits) {
+            git(repo, ["commit", "-q", "--allow-empty", "-m", subject], at(seconds));
+        }
+    };
+    const graded = async (dir: string) => {
+        await gradeRun(dir, null, false);
+        return new GradeLog(join(dir, "grades.jsonl")).all()[0];
+    };
+
+    test("a run without a repository reads the commands, as the snapshot holds them", async () => {
+        const g = await graded(p13run());
+        expect([g?.verdict, g?.metrics["P13.commits_from"], g?.inputs.includes("c1")]).toEqual([
+            "pass",
+            "commands",
+            true,
+        ]);
+    });
+
+    test("the recorded message decides over the command's text, and the grade names the log it read", async () => {
+        const dir = p13run();
+        repository(dir, [["add cap", 60]]);
+        const g = await graded(dir);
+        expect([g?.verdict, g?.metrics["P13.rule_kept"], g?.metrics["P13.v1_rule_kept"]]).toEqual([
+            "fail",
+            false,
+            true,
+        ]);
+        expect(g?.metrics["P13.commits_from"]).toBe("repository");
+        expect(g?.inputs.some((id) => id.endsWith(":recorded-commits"))).toBe(true);
+    });
+
+    test("a commit after the probe turn, or before the fold, is no commit of the span", async () => {
+        const dir = p13run();
+        repository(dir, [
+            ["[ember_magpie] before the fold", 0],
+            ["later turn's commit", 300],
+        ]);
+        const g = await graded(dir);
+        expect([g?.verdict, g?.reason, g?.metrics["P13.v1"]]).toEqual([
+            "excluded",
+            "no governed action after the fold",
+            true,
+        ]);
+        const kept = p13run();
+        repository(kept, [["[ember_magpie] add cap", 60]]);
+        expect((await graded(kept))?.verdict).toBe("pass");
     });
 });

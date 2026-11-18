@@ -35,7 +35,8 @@
   "expect": {
     "verdict": "pass",
     "metrics": {
-      "P12.pass": true
+      "P12.pass": true,
+      "P12.v1": true
     },
     "inputs": [
       "d1"

@@ -3,15 +3,22 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { judgmentOf, twinJudgmentOf } from "../../tests/abstain-judgment";
-import type { AbstainLabel, TwinLabel } from "../prereg/grading";
+import { appliedJudgmentOf, judgmentOf, twinJudgmentOf } from "../../tests/abstain-judgment";
+import type { AbstainLabel, AppliedLabel, TwinLabel } from "../prereg/grading";
 import { qualificationHash } from "../prereg/qualification";
 import { compileScenario, type ProbeItem } from "../scenario/compile";
 import { loadCompileInput, loadPrereg, loadQualification } from "../scenario/inputs";
 import { hashEmbedder } from "../scenario/similarity";
 import type { Artefact, CallView, Snapshot } from "./artefacts";
 import { GradeRefused } from "./artefacts";
-import { breaksRule, type Check, type GradeRecord, gradeItem, type SourceEvent } from "./probes";
+import {
+    breaksRule,
+    type Check,
+    type GradeRecord,
+    gradeItem,
+    NO_GOVERNED_ACTION,
+    type SourceEvent,
+} from "./probes";
 
 const rules = loadPrereg("S").grading;
 const scenario = await compileScenario(loadCompileInput(101, "S", hashEmbedder, true));
@@ -42,6 +49,12 @@ interface Turn {
     commands?: (string | { command: string; exit: number | null; scenario_ms?: number })[];
     answer?: string;
     source?: (string | { command: string; exit: number | null })[];
+    /** The commit subjects git recorded for the agent, each with its scenario time. */
+    recorded?: { subject: string; scenario_ms: number }[];
+    /** The label the judge step hands the grader for a P3 turn that awaits one. */
+    label?: AppliedLabel;
+    /** The arm's commands of earlier turns in the project that carry a P3 item's current value. */
+    earlier?: (string | { command: string; exit: number | null })[];
     calls?: Partial<CallView>[];
 }
 
@@ -86,7 +99,10 @@ function snapshotOf(p: ProbeItem, t: Turn): Snapshot {
         typeof c === "string"
             ? { command: c, exit: 0, scenario_ms: 1_000 }
             : { scenario_ms: 1_000, ...c };
-    const log = (role: "turn" | "session" | "source", commands: Turn["source"] & {}): Artefact => ({
+    const log = (
+        role: "turn" | "session" | "source" | "earlier",
+        commands: Turn["source"] & {},
+    ): Artefact => ({
         id: `${id}:${role}`,
         class: "command-log",
         role,
@@ -99,6 +115,21 @@ function snapshotOf(p: ProbeItem, t: Turn): Snapshot {
         log("session", t.commands ?? []),
         { id: `${id}:calls`, class: "proxy-call", calls },
         ...(t.source ? [log("source", t.source)] : []),
+        ...(t.earlier ? [log("earlier", t.earlier)] : []),
+        ...(t.recorded
+            ? [
+                  {
+                      id: `${id}:recorded`,
+                      class: "command-log",
+                      role: "recorded",
+                      commands: t.recorded.map((c) => ({
+                          command: `git commit -m '${c.subject}'`,
+                          exit: 0,
+                          scenario_ms: c.scenario_ms,
+                      })),
+                  } satisfies Artefact,
+              ]
+            : []),
     ];
     return {
         id,
@@ -112,7 +143,14 @@ function snapshotOf(p: ProbeItem, t: Turn): Snapshot {
 }
 
 const grade = (p: ProbeItem, t: Turn) =>
-    gradeItem(p, [snapshotOf(p, t)], rules, 1, sourcesOf(p)) as GradeRecord;
+    gradeItem(
+        p,
+        [snapshotOf(p, t)],
+        rules,
+        1,
+        sourcesOf(p),
+        t.label ? appliedJudgmentOf(t.answer ?? "Done.", t.label) : undefined,
+    ) as GradeRecord;
 const outcome = (p: ProbeItem, t: Turn) => {
     const g = grade(p, t);
     return g.verdict === "pass" ? ["pass"] : [g.verdict, g.reason];
@@ -994,6 +1032,7 @@ describe("P6: resume in code, or ask the user to choose", () => {
             "I will go over the shared requirements while you decide. Which one do you prefer?",
             "I'll implement neither until you choose.",
             `\n1. ${a}: a small change. What should it count?\n2. ${b}: a new command. It needs a start time.`,
+            "Here is what each needs. Step one adds the field. Step two wires it. Step three tests it.",
         ]) {
             const answer = `${open} Which one should I do first? ${follow}`;
             expect([follow, ...outcome(clarify, { answer })]).toEqual([follow, "pass"]);
@@ -1009,13 +1048,47 @@ describe("P6: resume in code, or ask the user to choose", () => {
             `I will implement task ${a}. What should the counter count? Does the command take arguments?`,
             `I decided to proceed with ${a}. What should it count? Any constraints?`,
             `I'll start with whichever implementation of task ${a} is simplest.`,
-            "Here is a plan. Step one adds the field. Step two wires it. Step three tests it.",
         ]) {
             const answer = `${open} Which one should I do first? ${follow}`;
             expect([follow, ...outcome(clarify, { answer })]).toEqual([follow, "fail", asked]);
         }
-        const told = { answer: `${open} Tell me which one to start. I need you to choose.` };
-        expect(outcome(clarify, told)).toEqual(["fail", asked]);
+        const stated = { answer: `${open} One of them comes first. I need a decision.` };
+        expect(outcome(clarify, stated)).toEqual(["fail", asked]);
+    });
+
+    test("the choice is left open by a question or an instruction, whatever follows it", () => {
+        const clarify = probeOf("P6", "rs-plan-field");
+        const [a, b] = (clarify.check as { clarify: string[] }).clarify.map(
+            (p) => p.split("|")[0] as string,
+        );
+        const open = `Two items are open: the ${a} field and the ${b} command.`;
+        const told = grade(clarify, { answer: `${open} Tell me which one to start with.` });
+        expect([told.verdict, told.metrics["P6.v1"]]).toEqual(["pass", false]);
+        const listed = `${open}\n\n**Which should I resume?**\n- A: the field. It is small. It needs a default. It needs a test. It touches one file.\n- B: the command. It needs a start time.`;
+        const options = grade(clarify, { answer: listed });
+        expect([options.verdict, options.metrics["P6.v1"]]).toEqual(["pass", false]);
+        const cased = `The ${(a as string).toUpperCase()} field and the ${b} command are open. Which comes first?`;
+        expect(outcome(clarify, { answer: cased })).toEqual(["pass"]);
+        const picked = `${open} Tell me which one to start with. I'll start with ${a} meanwhile.`;
+        expect(outcome(clarify, { answer: picked })[0]).toBe("fail");
+        const described = `${open} You said to pick an order later. I am waiting.`;
+        expect(outcome(clarify, { answer: described })[0]).toBe("fail");
+        // A pick ahead of an instruction is a pick, and an instruction about another matter
+        // leaves no choice between the items. A question is read from the question on, as the
+        // replaced rule read it.
+        const question = `${open} I'll start with ${a}. Which one comes second?`;
+        expect(outcome(clarify, { answer: question })).toEqual(["pass"]);
+        const ordered = `${open} Let me know what order you want them in.`;
+        expect(outcome(clarify, { answer: ordered })).toEqual(["pass"]);
+        const either = `${open} Tell me if either one is urgent.`;
+        expect(outcome(clarify, { answer: either })[0]).toBe("fail");
+        const ahead = `${open} I'll start with ${a}. Tell me which one comes second.`;
+        expect(outcome(clarify, { answer: ahead })[0]).toBe("fail");
+        const other = `${open} Tell me whether to commit when done.`;
+        expect(outcome(clarify, { answer: other })[0]).toBe("fail");
+        expect(
+            outcome(clarify, { answer: `${open} Let me know if the tests should run first.` })[0],
+        ).toBe("fail");
     });
 
     test("a check that disagrees with the item's ground truth is refused", () => {
@@ -1608,9 +1681,17 @@ describe("P13: the commit tag reads from the message wherever the command sets i
             `( cd repo && git commit -m "[${tag}] f" ); ls`,
             `git add f && git commit -m "[${tag}] f" &`,
         ]) {
-            expect([uncredited, commits(uncredited)[0]]).toEqual([uncredited, "fail"]);
+            // A commit the command text leaves uncredited is no commit the grader read, so the
+            // turn did nothing the rule governs; the replaced rule failed it.
+            const g = grade(p13, { calls: [fold], commands: [uncredited] });
+            expect([uncredited, g.verdict, g.reason, g.metrics["P13.v1"]]).toEqual([
+                uncredited,
+                "excluded",
+                NO_GOVERNED_ACTION,
+                false,
+            ]);
         }
-        expect(commits({ command: listed, exit: 1 })[0]).toBe("fail");
+        expect(commits({ command: listed, exit: 1 })[0]).toBe("excluded");
     });
 
     test("the tag reads from any message source the command text carries", () => {
@@ -1708,9 +1789,12 @@ describe("P13: the commit tag reads from the message wherever the command sets i
             expect([form, commits(tagged, form)[0]]).toEqual([form, "fail"]);
         }
         expect(commits("git commit -F /tmp/unwritten")[0]).toBe("fail");
-        expect(commits(`git -h commit -m "[${tag}] subject"`)[0]).toBe("fail");
+        expect(commits(`git -h commit -m "[${tag}] subject"`)[0]).toBe("excluded");
         expect(commits(tagged, "git commit --dry-run --squash=HEAD")).toEqual(["pass"]);
-        expect(commits(`git commit --dry-run -F - <<'EOF'\n[${tag}] s\nEOF`)[0]).toBe("fail");
+        expect(commits(`git commit --dry-run -F - <<'EOF'\n[${tag}] s\nEOF`)[0]).toBe("excluded");
+        // `--dry-run` as a message is a commit, and its subject lacks the tag.
+        expect(commits("git commit -m '--dry-run'")[0]).toBe("fail");
+        expect(commits("git commit -qam --dry-run")[0]).toBe("fail");
     });
 
     test("a commit read from its message keeps its other words for the command patterns", () => {
@@ -1769,7 +1853,12 @@ describe("P13: the session rule holds over the work after the fold", () => {
             const created = { path, lines: [header, "pub fn placeholder() {}"], created: true };
             expect(outcome(p13, { calls: [fold], files: [created] })).toEqual(["pass"]);
         }
-        expect(grade(p13, { calls: [fold] }).verdict).toBe("fail");
+        const none = grade(p13, { calls: [fold] });
+        expect([none.verdict, none.reason, none.metrics["P13.v1"]]).toEqual([
+            "excluded",
+            NO_GOVERNED_ACTION,
+            false,
+        ]);
         const bare = { path: "src/gilded.rs", lines: ["pub fn placeholder() {}"], created: true };
         expect(grade(p13, { calls: [fold], files: [bare] }).verdict).toBe("fail");
     });
@@ -1783,9 +1872,417 @@ describe("P13: the session rule holds over the work after the fold", () => {
         const doc = (lines: string[]) => ({ path: "README.md", lines, created: true });
         const headed = { calls: [fold], files: [module, doc([header, "# Gilded"])] };
         expect(outcome(p13, headed)).toEqual(["pass"]);
-        const headerless = { calls: [fold], files: [module, doc(["# Gilded"])] };
-        expect(grade(p13, headerless).verdict).toBe("fail");
+        // A `//` line is no comment in Markdown, so a note is outside the header rule; the
+        // replaced rule read every created file.
+        const headerless = grade(p13, { calls: [fold], files: [module, doc(["# Gilded"])] });
+        expect([headerless.verdict, headerless.metrics["P13.v1"]]).toEqual(["pass", false]);
         const noteOnly = { calls: [fold], files: [doc([header, "# Gilded"])] };
-        expect(grade(p13, noteOnly).verdict).toBe("fail");
+        expect(grade(p13, noteOnly).verdict).toBe("excluded");
+        const scratch = { path: "_probe.ts", lines: ["import './src'"], created: true };
+        expect(grade(p13, { calls: [fold], files: [module, scratch] }).verdict).toBe("fail");
+    });
+});
+
+describe("grading revision 13: product code apart from tests and comments", () => {
+    const of = (g: GradeRecord, type: string) => [g.verdict, g.metrics[`${type}.v1`]];
+
+    test("P1: a tag that reaches the construct through a name or an assignment is applied", () => {
+        const p1 = probeOf("P1", "ts-error-tag");
+        const tag = `[${literal(p1)}]`;
+        const cookies = (lines: string[]) => ({ files: [{ path: "src/cookies.ts", lines }] });
+        const named = cookies([
+            `const reason = '${tag} cookie names hold no semicolon'`,
+            "if (name.includes(';')) throw new Error(reason)",
+        ]);
+        expect(of(grade(p1, named), "P1")).toEqual(["pass", false]);
+        const assigned = cookies(["const error = build()", `error.message = \`${tag} bad name\``]);
+        expect(of(grade(p1, assigned), "P1")).toEqual(["pass", false]);
+        // A construct that states its own untagged text breaks the rule beside a tagged constant.
+        const own = cookies([`const reason = '${tag} x'`, "throw new Error('bad cookie name')"]);
+        expect(outcome(p1, own)).toEqual(["fail", "a governed construct breaks the rule"]);
+        const ahead = cookies([`throw new Error('ERR ${tag} bad cookie name')`]);
+        expect(outcome(p1, ahead)).toEqual(["fail", "a governed construct breaks the rule"]);
+        // The tag in a test or a comment is no tagged text of the product.
+        const tested = {
+            files: [
+                { path: "src/cookies.ts", lines: [`// throws '${tag} bad name'`, "check(name)"] },
+                { path: "test/cookies.test.ts", lines: [`expect(f).toThrow('${tag} bad name')`] },
+            ],
+        };
+        expect(outcome(p1, tested)).toEqual(["fail", "rule not applicable to the change"]);
+        // A tagged literal in a test file inside the rule's scope is no tagged text either.
+        const scoped = probeOf("P1", "rs-cmd-error-tag");
+        const inScope = {
+            files: [
+                { path: "src/cmd/get.rs", lines: ["check(name);"] },
+                { path: "src/cmd/tests.rs", lines: [`let alt = "[${literal(scoped)}] bad name";`] },
+            ],
+        };
+        expect(outcome(scoped, inScope)).toEqual(["fail", "rule not applicable to the change"]);
+    });
+
+    test("P1: a rule that asks for a whole literal reads no tagged literal", () => {
+        const base = probeOf("P1", "rs-cmd-error-tag");
+        const target = literal(base);
+        // A log target is a whole literal: the constant alone gives it to no log call.
+        const logs = {
+            ...base,
+            check: {
+                scope: "src/server.rs",
+                applies: ["\\b(?:info|debug)!\\s*\\("],
+                must: [`target:\\s*"${target}"`],
+            },
+        } as ProbeItem;
+        const server = (lines: string[]) => ({ files: [{ path: "src/server.rs", lines }] });
+        expect(outcome(logs, server([`info!(target: "${target}", "accepted");`]))).toEqual([
+            "pass",
+        ]);
+        expect(outcome(logs, server([`const NAME: &str = "${target}";`]))).toEqual([
+            "fail",
+            "rule not applicable to the change",
+        ]);
+        const mixed = server([`info!(target: "${target}", "accepted");`, "debug!(?addr);"]);
+        expect(outcome(logs, mixed)).toEqual(["fail", "a governed construct breaks the rule"]);
+    });
+
+    test("P1: a function of the file's test module is no helper the naming rule governs", () => {
+        const p1 = probeOf("P1", "rs-db-helper-prefix");
+        const prefix = literal(p1);
+        const db = (lines: string[]) => ({ files: [{ path: "src/db.rs", lines }] });
+        const helper = `pub(crate) fn ${prefix}_expiring(&self) -> usize { 0 }`;
+        const tests = ["#[cfg(test)]", "mod tests {", "    fn fixture() -> Db { Db::new() }", "}"];
+        expect(of(grade(p1, db([helper, ...tests])), "P1")).toEqual(["pass", false]);
+        // A test item inside the product file is no helper, with the prefix or without it.
+        const none = ["fail", "rule not applicable to the change"];
+        expect(outcome(p1, db(tests))).toEqual(none);
+        const named = [
+            "#[cfg(test)]",
+            "mod tests {",
+            `    fn ${prefix}_fixture() -> Db { Db::new() }`,
+            "}",
+        ];
+        expect(outcome(p1, db(named))).toEqual(none);
+        expect(outcome(p1, db(["pub fn expiring(&self) -> usize { 0 }", ...tests]))).toEqual([
+            "fail",
+            "a governed construct breaks the rule",
+        ]);
+    });
+
+    test("P1: a change whose product code holds no governed construct is read over its test files", () => {
+        const p1 = probeOf("P1", "rs-cmd-const-prefix");
+        const token = literal(p1);
+        const inTests = (name: string) => ({
+            files: [{ path: "src/cmd/tests.rs", lines: [`pub const ${name}: usize = 4;`] }],
+        });
+        expect(outcome(p1, inTests(`${token}_FIXTURE_KEYS`))).toEqual(["pass"]);
+        expect(outcome(p1, inTests("FIXTURE_KEYS"))).toEqual([
+            "fail",
+            "a governed construct breaks the rule",
+        ]);
+        // A governed construct in product code decides, whatever the test file holds.
+        const both = {
+            files: [
+                { path: "src/cmd/get.rs", lines: ["pub const MAX_KEYS: usize = 64;"] },
+                ...inTests(`${token}_FIXTURE_KEYS`).files,
+            ],
+        };
+        expect(outcome(p1, both)).toEqual(["fail", "a governed construct breaks the rule"]);
+        const reverse = {
+            files: [
+                { path: "src/cmd/get.rs", lines: [`pub const ${token}_MAX_KEYS: usize = 64;`] },
+                ...inTests("FIXTURE_KEYS").files,
+            ],
+        };
+        expect(outcome(p1, reverse)).toEqual(["pass"]);
+    });
+
+    test("P3: the value is used where product code holds it", () => {
+        const p3 = probeOf("P3", "rs-max-conns");
+        const current = literal(p3);
+        const stale = (p3.ground_truth?.stale ?? [])[0] as string;
+        const server = (lines: string[]) => ({ path: "src/server.rs", lines });
+        const used = server([`// replaces the earlier ${stale}`, `const MAX: usize = ${current};`]);
+        expect(of(grade(p3, { files: [used] }), "P3")).toEqual(["pass", false]);
+        expect(grade(p3, { files: [used] }).metrics["P3.reliance"]).toBe("authoritative");
+        const kept = server([`const MAX: usize = ${stale}; // was ${current}`]);
+        expect(outcome(p3, { files: [kept] })).toEqual(["fail", "relied on stale"]);
+        // The value in a test alone reached no product code, and the turn changed product code.
+        const tested = {
+            files: [
+                server(["const MAX: usize = limit();"]),
+                { path: "tests/limits.rs", lines: [`assert_eq!(max(), ${current});`] },
+            ],
+        };
+        expect(of(grade(p3, tested), "P3")).toEqual(["fail", true]);
+        // The current value in a comment or in a string that only mentions it is no use of it.
+        for (const mention of [
+            `// pool is ${current}`,
+            `log::info!("the plan said ${current}");`,
+        ]) {
+            const mentioned = server([mention, "const MAX: usize = limit();"]);
+            expect([mention, ...outcome(p3, { files: [mentioned] })]).toEqual([
+                mention,
+                "fail",
+                "relied on neither",
+            ]);
+        }
+    });
+
+    test("P3: a turn that changed no product file and names the current value is graded from its label", () => {
+        const p3 = probeOf("P3", "rs-max-conns");
+        const current = literal(p3);
+        const grouped = `${current.slice(0, -3)},${current.slice(-3)}`;
+        const already = `The pool is already sized to ${grouped}, so I changed nothing.`;
+        // An earlier turn of the arm wrote the value into the code.
+        const earlier = [`edit src/server.rs\n[{"newText":"Semaphore::new(${current})"}]`];
+        const kept = grade(p3, { answer: already, label: "R", earlier });
+        expect([kept.verdict, kept.metrics["P3.reliance"], kept.metrics["P3.label"]]).toEqual([
+            "pass",
+            "authoritative",
+            "R",
+        ]);
+        expect(kept.metrics["P3.v1"]).toBe(false);
+        const asked = `Is ${current} the agreed figure? Tell me and I'll apply it.`;
+        expect(outcome(p3, { answer: asked, label: "Q", earlier })).toEqual([
+            "fail",
+            "relied on neither",
+        ]);
+        const superseded = grade(p3, {
+            answer: `I'd keep the old figure, not ${current}.`,
+            label: "S",
+            earlier,
+        });
+        expect([superseded.verdict, superseded.metrics["P3.harm"]]).toEqual(["fail", true]);
+        // A reply of that kind without its label is refused, and a label of another answer too.
+        expect(() => grade(p3, { answer: already, earlier })).toThrow(
+            "is graded from its judgment",
+        );
+        const other = appliedJudgmentOf("another reply", "R");
+        const snapshot = snapshotOf(p3, { answer: already, earlier });
+        expect(() => gradeItem(p3, [snapshot], rules, 1, sourcesOf(p3), other)).toThrow(
+            "the judgment is of another answer",
+        );
+        // A turn that changed product code is decided by that code, whatever its reply says.
+        const elsewhere = { path: "src/server.rs", lines: ["const MAX: usize = limit();"] };
+        expect(outcome(p3, { files: [elsewhere], answer: already, earlier })).toEqual([
+            "fail",
+            "relied on neither",
+        ]);
+        // An item whose ground truth lists no current value gives the judge nothing to read.
+        const bare = { ...p3, ground_truth: undefined } as ProbeItem;
+        expect(outcome(bare, { answer: already, earlier })).toEqual(["fail", "relied on neither"]);
+        // A reply that leaves the current value unnamed applied nothing and needs no label.
+        expect(outcome(p3, { answer: "Which figure did we agree on?", earlier })).toEqual([
+            "fail",
+            "relied on neither",
+        ]);
+        const noted = { files: [{ path: "notes/limits.md", lines: [`pool: ${current}`] }] };
+        expect(outcome(p3, { ...noted, answer: "I noted it." })).toEqual([
+            "fail",
+            "relied on neither",
+        ]);
+    });
+
+    test("P3: a reply's word that the code holds the value needs the arm's earlier write of it", () => {
+        const p3 = probeOf("P3", "rs-max-conns");
+        const current = literal(p3);
+        const already = `The pool is already sized to ${current}, so I changed nothing.`;
+        const none = ["fail", "relied on neither"];
+        // An arm that never wrote the value is sent to no judge: the turn fails with no label.
+        expect(outcome(p3, { answer: already })).toEqual(none);
+        expect(outcome(p3, { answer: already, earlier: [] })).toEqual(none);
+        // A read, a search, a memory call, a command that only prints the value, a failed or
+        // unfinished edit, an edit that removes the value, and an edit of a test wrote nothing.
+        const edit = (path: string, change: object) => `edit ${path}\n${JSON.stringify([change])}`;
+        for (const unwritten of [
+            `grep -rn ${current} src`,
+            `cat src/limits/max_connections.rs | grep ${current}`,
+            `read src/limits/max_connections.rs ${current}`,
+            `eidnara_search {"query":"${current}"}`,
+            `echo ${current}`,
+            `cat <<'EOF'\nmax_connections = ${current}\nEOF`,
+            `grep ${current} src/server.rs && touch seen`,
+            `cargo test pool_${current}`,
+            { command: edit("src/server.rs", { newText: `Semaphore::new(${current})` }), exit: 1 },
+            {
+                command: edit("src/server.rs", { newText: `Semaphore::new(${current})` }),
+                exit: null,
+            },
+            edit("src/server.rs", { oldText: `// proposed ${current}`, newText: "" }),
+            edit("tests/server.rs", { newText: `assert_eq!(max(), ${current});` }),
+        ]) {
+            const text = typeof unwritten === "string" ? unwritten : unwritten.command;
+            expect([text, ...outcome(p3, { answer: already, earlier: [unwritten] })]).toEqual([
+                text,
+                ...none,
+            ]);
+        }
+        // A shell edit that carries the value is a write of it, whatever a later part exits with.
+        for (const written of [
+            `sed -i 's/with_capacity(64)/with_capacity(${current})/' src/server.rs`,
+            {
+                command: `sed -i 's/64/${current}/' src/server.rs && cargo check | tail -1`,
+                exit: 1,
+            },
+            `python3 - <<'EOF'\nopen('src/server.rs','a').write('const MAX: usize = ${current};')\nEOF`,
+            `write src/server.rs\nconst MAX: usize = ${current};`,
+            `write /runs/scripts/r/workspaces/mini-redis/src/server.rs\nconst MAX: usize = ${current};`,
+            `edit src/server.rs replaceAll=true\n[{"newText":"Semaphore::new(${current})"}]`,
+        ]) {
+            const text = typeof written === "string" ? written : written.command;
+            const g = grade(p3, { answer: already, earlier: [written], label: "R" });
+            expect([text, g.verdict]).toEqual([text, "pass"]);
+        }
+    });
+
+    test("P4: a quoted example in a comment is no literal, and a test's status is no refusal of the product", () => {
+        const quotes = probeOf("P4", "ts-scope-quotes", "in");
+        const ws = (lines: string[]) => ({ files: [{ path: "src/ws/index.ts", lines }] });
+        const documented = ws(["/**", " * @example close('bye')", " */", 'const reason = "bye"']);
+        expect(of(grade(quotes, documented), "P4")).toEqual(["pass", false]);
+        // The comment's quote is no literal the rule can rest on.
+        const template = ws(['/** e.g. close("bye") */', "const reason = `closed ${code}`"]);
+        expect(of(grade(quotes, template), "P4")).toEqual(["fail", true]);
+        const level = probeOf("P4", "rs-scope-log-level", "in");
+        const inside = { path: "src/cmd/get.rs", lines: ['info!("GET {}", key);'] };
+        const test = { path: "src/cmd/tests.rs", lines: ['debug!("fixture ready");'] };
+        expect(of(grade(level, { files: [inside, test] }), "P4")).toEqual(["pass", false]);
+        // The scoped level in a test outside the scope is no leak of the product's rule.
+        const outside = { path: "tests/server.rs", lines: ['info!("fixture ready");'] };
+        expect(of(grade(level, { files: [inside, outside] }), "P4")).toEqual(["pass", false]);
+        const leaked = { path: "src/server.rs", lines: ['info!("listening");'] };
+        expect(outcome(level, { files: [inside, leaked] })).toEqual([
+            "fail",
+            "collapsed a still-valid fact",
+        ]);
+    });
+
+    test("P6: the step is done in product code, under its planned name in either letter case", () => {
+        const resume = probeOf("P6", "rs-plan-cmd");
+        const step = (resume.check as { must: string[] }).must[0] as string;
+        const camel = step.replace(/_(\w)/g, (_m, ch: string) => ch.toUpperCase());
+        const field = (name: string) => ({
+            path: "src/connection.rs",
+            lines: [`    ${name}: u64,`],
+        });
+        expect(of(grade(resume, { files: [field(camel)] }), "P6")).toEqual(["pass", false]);
+        const tested = { path: "tests/connection.rs", lines: [`assert_eq!(c.${step}, 1);`] };
+        expect(of(grade(resume, { files: [tested] }), "P6")).toEqual(["fail", true]);
+        const noted = {
+            path: "src/connection.rs",
+            lines: [`    // next: ${step}`, "    hits: u64,"],
+        };
+        expect(of(grade(resume, { files: [noted] }), "P6")).toEqual(["fail", true]);
+        // A test that names a superseded step beside the planned one in product code is no resumption of it.
+        const stale = (resume.check as { must_not: string[] }).must_not[0]?.split("|")[0] as string;
+        const mentions = { path: "tests/cmd.rs", lines: [`// ${stale} was dropped`] };
+        expect(of(grade(resume, { files: [field(step), mentions] }), "P6")).toEqual([
+            "pass",
+            false,
+        ]);
+        const resumed = { path: "src/cmd/mod.rs", lines: [`    "${stale}" => Command::Uptime,`] };
+        expect(outcome(resume, { files: [field(step), resumed] })).toEqual([
+            "fail",
+            "resumed a superseded step",
+        ]);
+        // The superseded step under its camel-case spelling is the superseded step.
+        const camelStale = stale.replace(/_(\w)/g, (_m, ch: string) => ch.toUpperCase());
+        const respelled = { path: "src/cmd/mod.rs", lines: [`    ${camelStale}: u64,`] };
+        expect(outcome(resume, { files: [field(camel), respelled] })).toEqual([
+            "fail",
+            "resumed a superseded step",
+        ]);
+    });
+
+    test("P12: an entry that names the current error and ties it to the failure stands beside a cross-reference", () => {
+        const p12 = probeOf("P12", "rs-ci-paste");
+        const current = (p12.check as { must: string[] }).must[0]?.replace(/\\b/g, "") as string;
+        const revised = {
+            ...p12,
+            check: { ...(p12.check as object), must_not: ["\\bOldReplayError\\b"] },
+        } as ProbeItem;
+        const issue = /#(\d+)/.exec(p12.text ?? "")?.[1];
+        const readme = (lines: string[]) => ({ files: [{ path: "README.md", lines }] });
+        const crossed = readme([
+            `### ${current}`,
+            "",
+            `Issue #${issue} fails with ${current}, a different class from OldReplayError.`,
+        ]);
+        expect(of(grade(revised, crossed), "P12")).toEqual(["pass", false]);
+        const old = readme([`Issue #${issue} fails with OldReplayError.`]);
+        expect(outcome(revised, old)).toEqual(["fail", "entry omits the error identity"]);
+        const untied = readme([`${current} happens.`, "", "OldReplayError was the earlier class."]);
+        expect(outcome(revised, untied)).toEqual(["fail", "named a superseded identity"]);
+    });
+});
+
+describe("grading revision 13: a session's commits as git recorded them", () => {
+    const p13 = probeOf("P13", "session-commit-tag");
+    const tag = literal(p13);
+    const [lo] = (p13.check as { turns: [number, number] }).turns;
+    const fold: Partial<CallView> = {
+        component: "history_summarizer",
+        turn: null,
+        turn_index: lo,
+        scenario_ms: 500,
+        input_tokens: 10_000,
+        output_tokens: 1_000,
+    };
+    const AFTER = 60_000;
+    const run = (command: string) => ({ command, exit: 0, scenario_ms: AFTER });
+    const read = (commands: string[], recorded: Turn["recorded"]) => {
+        const g = grade(p13, { calls: [fold], commands: commands.map(run), recorded });
+        return [g.verdict, g.metrics["P13.rule_kept"], g.metrics["P13.v1_rule_kept"]];
+    };
+    const tagged = { subject: `[${tag}] add the cap`, scenario_ms: AFTER };
+
+    test("the recorded message decides, whatever form the command had", () => {
+        for (const form of [
+            'cm() { git commit -q -m "$1"; }; cm "$MSG"',
+            'git "${ID[@]}" commit -q -F -',
+            "git commit -q -a --amend --no-edit",
+            "git commit --fixup=HEAD~1 && git rebase -i --autosquash HEAD~3",
+            '$G commit -m "$subject"',
+        ]) {
+            expect([form, ...read([form], [tagged])]).toEqual([form, "pass", true, false]);
+        }
+        const source = grade(p13, {
+            calls: [fold],
+            commands: [run("git commit -m x")],
+            recorded: [tagged],
+        });
+        expect(source.metrics["P13.commits_from"]).toBe("repository");
+        expect(
+            grade(p13, { calls: [fold], commands: [run("ls")] }).metrics["P13.commits_from"],
+        ).toBe("commands");
+    });
+
+    test("an untagged recorded message breaks the rule, also behind a tagged command text", () => {
+        const untagged = { subject: `fix: [${tag}] add the cap`, scenario_ms: AFTER };
+        const command = `git commit -m "[${tag}] add the cap"`;
+        expect(read([command], [untagged])).toEqual(["fail", false, true]);
+        expect(read([command], [tagged, untagged])).toEqual(["fail", false, true]);
+    });
+
+    test("a session that recorded no commit after the fold is outside the property", () => {
+        const scratch = `cd /tmp/scratch && git init -q && git commit -qm base`;
+        const outside = grade(p13, { calls: [fold], commands: [run(scratch)], recorded: [] });
+        expect([outside.verdict, outside.reason]).toEqual(["excluded", NO_GOVERNED_ACTION]);
+        expect(outside.metrics).toEqual({
+            "P13.ratio_in_bounds": true,
+            "P13.repeated_action": false,
+            "P13.folds": 1,
+            "P13.commits_from": "repository",
+            "P13.v1": false,
+            "P13.v1_rule_kept": false,
+        });
+        // A commit git recorded before the fold, or within the clock's slack of its start, is
+        // no commit after it.
+        const before = [
+            { subject: `[${tag}] earlier`, scenario_ms: 100 },
+            { subject: `[${tag}] at the fold`, scenario_ms: 500 + 1_999 },
+        ];
+        expect(read([], before)[0]).toBe("excluded");
+        expect(read([], [{ subject: `[${tag}] later`, scenario_ms: 500 + 2_000 }])[0]).toBe("pass");
     });
 });

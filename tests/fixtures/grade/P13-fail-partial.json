@@ -80,7 +80,10 @@
       "P13.rule_kept": true,
       "P13.ratio_in_bounds": true,
       "P13.repeated_action": true,
-      "P13.folds": 1
+      "P13.folds": 1,
+      "P13.commits_from": "commands",
+      "P13.v1": false,
+      "P13.v1_rule_kept": true
     },
     "inputs": [
       "c1",

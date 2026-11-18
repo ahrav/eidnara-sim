@@ -189,8 +189,11 @@ digest and size, the count of rewritten requests (null when the turn
 process left no record of its applications), the request prefix
 comparison, failures, notes, and the clock lag. The verdict is the grade's
 (`pass`, `fail`, or `excluded`), `refused` with the grader's reason (a P9
-or P8-twin repeat that reaches its grader with a completed answer is `refused`: its
-verdict is a judge's label, which grade-run obtains and a repeat does not),
+or P8-twin repeat that reaches its grader with a completed answer, and a P3
+repeat that awaits a label, is `refused`: its
+verdict is a judge's label, which grade-run obtains and a repeat does not;
+a P13 repeat is graded on the commands of its turn, since the replay
+rebuilds the workspace repository with its reflogs removed),
 `turn-failed` when the probe turn failed, `no-snapshot`, or `harness-failed`
 whenever the repeat recorded a failure: a transform that threw, a note
 variant that changed nothing, a daemon exit, a proxy failure, a driver stop

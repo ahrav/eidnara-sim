@@ -14,6 +14,7 @@ import { loadConfig, type SimConfig } from "../src/config/config";
 import {
     type AbstainJudge,
     type AbstainJudgment,
+    type AppliedSubject,
     isAbstainJudgment,
     type JudgedFrame,
     judgmentStands,
@@ -25,11 +26,18 @@ import {
     ArtefactReader,
     assertArtefactsOnly,
     type CallView,
+    type Command,
     EvidenceRefused,
     GradeRefused,
     NO_RESPONSE,
     type Snapshot,
 } from "../src/grade/artefacts";
+import {
+    armClock,
+    readHeadLog,
+    withRecordedCommits,
+    writtenCommits,
+} from "../src/grade/commit-log";
 import {
     BlindingRefused,
     gradeP7,
@@ -60,6 +68,7 @@ import {
     type LedgerRun,
     readToolLedger,
     sourceEvents,
+    withEarlierWrites,
     withSourceCommands,
 } from "../src/grade/source-commands";
 import { armBase, requireSeedOrder } from "../src/hosts/arms";
@@ -500,23 +509,29 @@ export interface Abstention {
     statement: string;
     /** A P8-twin item's two projects and the other project's values. */
     twin?: TwinSubject;
+    /** A P3 item's current value and the values it replaced. */
+    value?: AppliedSubject;
 }
 
 export const ABSTAIN_JUDGMENTS = "abstain-judgments.jsonl";
 export const ABSTAIN_JUDGE_FAILED = "P9 judge call failed";
 export const TWIN_JUDGMENTS = "twin-judgments.jsonl";
 export const TWIN_JUDGE_FAILED = "P8-twin judge call failed";
+export const APPLIED_JUDGMENTS = "applied-judgments.jsonl";
+export const APPLIED_JUDGE_FAILED = "P3 judge call failed";
 /** The judgment log and the skip reason of a failed call, per judged probe. */
 const JUDGED_LOGS = {
     P9: [ABSTAIN_JUDGMENTS, ABSTAIN_JUDGE_FAILED],
     "P8-twin": [TWIN_JUDGMENTS, TWIN_JUDGE_FAILED],
+    P3: [APPLIED_JUDGMENTS, APPLIED_JUDGE_FAILED],
 } as const;
 
 /**
  * Labels each answer of one judged probe under its grading revision's rubric and judge. A label
  * belongs to a prompt: answers that normalise to one prompt share one label, whichever arm gave
  * them, and each answer has a row of its own in the probe's judgment log
- * (`abstain-judgments.jsonl` for P9, `twin-judgments.jsonl` for P8-twin). A stored row for the same
+ * (`abstain-judgments.jsonl` for P9, `twin-judgments.jsonl` for P8-twin, `applied-judgments.jsonl`
+ * for the P3 turns a judge labels). A stored row for the same
  * prompt, answer, judge, and revision stands, so a later pass, a regrade included, reads the
  * stored label and calls no judge. A prompt without a label gets one call through a gateway
  * this starts, logged to `judge-calls.jsonl`, and each new row is appended with the sequence
@@ -591,6 +606,7 @@ export async function judgeAbstentions(o: {
             question: item.probe.text ?? "",
             statement: item.statement,
             twin: item.twin,
+            value: item.value,
         };
         const frame = offline.frame(subject, item.answer);
         const kept = rows.get(keyOf(frame));
@@ -1314,6 +1330,28 @@ async function grade(dir: string, upstream: Upstream | null, regrade: boolean): 
         return runs;
     };
 
+    const written = new Map<string, Command[] | null>();
+    /**
+     * The commit messages git recorded for the agent in an arm's project repository
+     * (`writtenCommits`), read once, or null when the run holds no readable repository or the
+     * journal no clock offset for the arm.
+     */
+    const writtenBy = (arm: string, project: string): Command[] | null => {
+        const key = `${arm}/${project}`;
+        if (!written.has(key)) {
+            const clock = armClock(entries, arm);
+            const log = clock
+                ? readHeadLog(join(dir, arm, "r", "workspaces", project, ".git"))
+                : null;
+            written.set(key, clock && log ? writtenCommits(log.moves, log.commits, clock) : null);
+        }
+        return written.get(key) ?? null;
+    };
+    /** The scenario time an arm's turn ended at, from its last journaled `EndTurn`. */
+    const turnEnd = (arm: string, event: string | undefined): number =>
+        entries.filter((e) => e.kind === "EndTurn" && e.arm === arm && e.event === event).at(-1)
+            ?.scenario_ms ?? Number.POSITIVE_INFINITY;
+
     for (const probe of scenario.probes.filter((p) => p.type !== "P7")) {
         const sources = sourceEvents(probe, scenario.events);
         for (const arm of arms) {
@@ -1355,7 +1393,17 @@ async function grade(dir: string, upstream: Upstream | null, regrade: boolean): 
                     scenario.events,
                     () => ledger(arm),
                 );
-                const graded = [withSource, ...later];
+                const tools = join(dir, arm, "tools.jsonl");
+                const withEarlier = withEarlierWrites(withSource, probe, scenario.events, () =>
+                    existsSync(tools) ? ledger(arm) : null,
+                );
+                const recorded = withRecordedCommits(
+                    withEarlier,
+                    probe,
+                    () => writtenBy(arm, probe.project),
+                    () => turnEnd(arm, probe.event),
+                );
+                const graded = [recorded, ...later];
                 if (JUDGED_ANSWER_TYPES.includes(probe.type)) {
                     const answer = judgedAnswer(probe, graded, sources);
                     if (answer !== null) {
@@ -1380,6 +1428,18 @@ async function grade(dir: string, upstream: Upstream | null, regrade: boolean): 
                                           owner: (probe.check as { owner: string }).owner,
                                           values: probe.ground_truth?.absent ?? [],
                                           stale: probe.ground_truth?.stale ?? [],
+                                      }
+                                    : undefined,
+                            value:
+                                probe.type === "P3"
+                                    ? {
+                                          current: (probe.ground_truth?.present ?? []).flat(),
+                                          stale: [
+                                              ...new Set([
+                                                  ...(probe.ground_truth?.stale ?? []),
+                                                  ...(probe.ground_truth?.absent ?? []),
+                                              ]),
+                                          ],
                                       }
                                     : undefined,
                         });

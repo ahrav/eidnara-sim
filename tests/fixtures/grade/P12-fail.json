@@ -36,7 +36,8 @@
     "verdict": "fail",
     "reason": "entry omits the error identity",
     "metrics": {
-      "P12.pass": false
+      "P12.pass": false,
+      "P12.v1": false
     },
     "inputs": [
       "d1"

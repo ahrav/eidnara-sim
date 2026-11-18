@@ -171,6 +171,20 @@ The rule it replaced agreed with blind labels on 536 of 637 turns: it failed
 held the rejected call) and 28 turns that handed the decision back without
 a question mark. The registered replacement agrees on 623 of the 637 (487 of
 500 design turns, 136 of 137 test turns).
+The positive, diff-graded probes are the fourth case (Grading revisions 13
+and 14). Over 3,698 labelled turns of P1, P3, P4, P6, P12, and P13 the
+rules these revisions replace erred mostly as false fails, 118 of them,
+and 100 of those fell on the memory arms, so those rules understated one
+side: a tag carried
+through a constant, a figure the code already held, a superseded error
+class cited as a cross-reference, and a commit whose message the command
+text hid behind a variable or a shell function. The replacements read
+product code apart from tests and comments (P1 reads the tests and
+support code of a change that holds no governed unit in product code, and
+a P4 rule over literals reads the literals of test files too) and read a
+commit's message from git's own record, and a judge labels the reply of a P3 turn that
+changed no product code, in a project where the arm wrote the value
+earlier and the reply names it.
 
 - State the property in one sentence and write the rubric from it before
   any answer is labelled. Give every class a label, the passing one and each

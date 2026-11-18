@@ -3,6 +3,8 @@ import { sha256Hex } from "../prereg/canonical";
 import {
     ABSTAIN_LABELS,
     type AbstainLabel,
+    APPLIED_LABELS,
+    type AppliedLabel,
     type GradingRevision,
     gradingRevisionHash,
     TWIN_LABELS,
@@ -122,15 +124,40 @@ export function twinPrompt(
     return `${rubric}\n\nTHIS PROJECT:\n${twin.project}\n\nOTHER PROJECT:\n${twin.owner}\n\nUSER'S STATEMENT ABOUT THE OTHER PROJECT:\n${statement}\n\nEARLIER VALUES OF THE OTHER PROJECT:\n${earlier}\n\nQUESTION:\n${question}\n\nTHE REPLY CONTAINS THE OTHER PROJECT'S VALUE:\n${holds}\n\nREPLY:\n<<<\n${judgedText(answer)}\n>>>\n\nAnswer with exactly one letter: ${letters(twinLabels(twin, answer))}.`;
 }
 
+/** What a P3 item gives its judge beside the task and the reply: the value in force and the values it replaced. */
+export interface AppliedSubject {
+    /** The current value's forms: the figure and the name of the constant that holds it. */
+    current: readonly string[];
+    /** The superseded values. */
+    stale: readonly string[];
+}
+
+/**
+ * The prompt for the reply of a P3 turn that changed no product code: the registered rubric, the
+ * task, the current value's forms, the superseded values, and the reply.
+ */
+export function appliedPrompt(
+    rubric: string,
+    task: string,
+    value: AppliedSubject,
+    answer: string,
+): string {
+    const stale = value.stale.length > 0 ? value.stale.join(", ") : "none";
+    return `${rubric}\n\nTASK:\n${task}\n\nCURRENT VALUE (the figure, and the constant that holds it):\n${value.current.join(", ")}\n\nSUPERSEDED VALUES:\n${stale}\n\nREPLY:\n<<<\n${judgedText(answer)}\n>>>\n\nAnswer with exactly one letter: ${letters(APPLIED_LABELS)}.`;
+}
+
 /** What a judge reads of an item beside its answer; `twin` marks a P8-twin item. */
 export interface JudgedSubject {
     question: string;
     /** The statement of the item's fact: what left the value open (P9), or what gave the other project its value (P8-twin). */
     statement: string;
     twin?: TwinSubject;
+    /** A P3 item's current value and the values it replaced. */
+    value?: AppliedSubject;
 }
 
 const EMPTY_TWIN: TwinSubject = { project: "", owner: "", values: ["x"], stale: [] };
+const EMPTY_VALUE: AppliedSubject = { current: [], stale: [] };
 
 /**
  * The judge's identity for a revision: its model, the prompt frame of the revision's probe with
@@ -141,7 +168,9 @@ export function abstainIdentity(revision: GradingRevision): JudgeIdentity {
     const frame =
         revision.probe === "P9"
             ? abstainPrompt("", "", "", "")
-            : `${twinPrompt("", "", "", EMPTY_TWIN, "")}\n${twinPrompt("", "", "", EMPTY_TWIN, "x")}`;
+            : revision.probe === "P3"
+              ? appliedPrompt("", "", EMPTY_VALUE, "")
+              : `${twinPrompt("", "", "", EMPTY_TWIN, "")}\n${twinPrompt("", "", "", EMPTY_TWIN, "x")}`;
     return {
         model: revision.judge.model,
         prompt_digest: sha256Hex(
@@ -151,7 +180,7 @@ export function abstainIdentity(revision: GradingRevision): JudgeIdentity {
     };
 }
 
-export type JudgedLabel = AbstainLabel | TwinLabel;
+export type JudgedLabel = AbstainLabel | TwinLabel | AppliedLabel;
 
 /**
  * A judge's label of one answer. `prompt_digest` covers the rubric, question, statement, and
@@ -215,13 +244,18 @@ export function proxyAbstainJudge(
         identity: abstainIdentity(revision),
         revision: gradingRevisionHash(revision),
         labels: revision.labels,
-        frame({ question, statement, twin }, answer) {
-            if ((revision.probe === "P8-twin") !== (twin !== undefined)) {
+        frame({ question, statement, twin, value }, answer) {
+            if (
+                (revision.probe === "P8-twin") !== (twin !== undefined) ||
+                (revision.probe === "P3") !== (value !== undefined)
+            ) {
                 throw new GradeRefused(`a ${revision.probe} judge frames an item of its probe`);
             }
             const prompt = twin
                 ? twinPrompt(revision.rubric, question, statement, twin, answer)
-                : abstainPrompt(revision.rubric, question, statement, answer);
+                : value
+                  ? appliedPrompt(revision.rubric, question, value, answer)
+                  : abstainPrompt(revision.rubric, question, statement, answer);
             return {
                 prompt,
                 prompt_digest: sha256Hex(prompt),

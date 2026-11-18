@@ -2,6 +2,8 @@ import { codeMask, type DiffFile, type DiffHunk, pattern } from "./text";
 
 /** Source files of the languages whose comments and string literals `codeMask` reads. */
 const SOURCE = /\.(?:rs|go|[cm]?[jt]sx?)$/i;
+/** Whether the path is a source file of a language where `//` opens a comment. */
+export const isSourcePath = (path: string): boolean => SOURCE.test(path);
 /**
  * Paths of code that checks, measures, or demonstrates the product, and of generated source. A
  * rejected approach a test exercises is named there, and the product is what uses or avoids it
@@ -155,6 +157,15 @@ export interface ProductCode {
  * stretch on its own, so a pattern that spans lines matches only lines adjacent in the file.
  */
 export function productCode(file: DiffFile): ProductCode {
+    return addedCode(file, true);
+}
+
+/**
+ * The code a file's hunks add, read as `productCode` reads it, with the lines of Rust test items
+ * left out when `withoutTests` holds and kept otherwise: a support file's test functions are
+ * the code it adds.
+ */
+export function addedCode(file: DiffFile, withoutTests = false): ProductCode {
     const rust = file.path.endsWith(".rs");
     const code: string[] = [];
     const mask: string[] = [];
@@ -163,7 +174,7 @@ export function productCode(file: DiffFile): ProductCode {
             hunk.lines.map((l) => l.slice(1)),
             rust,
         );
-        const test = rust ? rustTestLines(masked, hunk.section) : [];
+        const test = rust && withoutTests ? rustTestLines(masked, hunk.section) : [];
         let adjacent = false;
         for (const [i, line] of hunk.lines.entries()) {
             const product = line.startsWith("+") && !test[i];

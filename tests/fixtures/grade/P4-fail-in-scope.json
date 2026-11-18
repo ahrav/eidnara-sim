@@ -42,7 +42,8 @@
     "metrics": {
       "P4.pass": false,
       "P4.harm": false,
-      "P4.collapsed": false
+      "P4.collapsed": false,
+      "P4.v1": false
     },
     "inputs": [
       "d1"
