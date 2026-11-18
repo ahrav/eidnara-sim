@@ -225,7 +225,9 @@ a question mark. The registered replacement agrees on 623 of the 637 (487 of
   at most two points below the judge's, and fix that choice before the test
   run: the rule regrades a finished run with no model call. Register it
   with the same evidence as a judged rule (P5: 136 of 137 test turns, above
-  the judge's 133).
+  the judge's 133). A judge rubric that carries rulings from the label
+  audit has seen the shapes of both splits, so say so beside its test
+  agreement: the comparison then favours the judge.
 - A token rule reads where the token stands. A pattern for a rejected call
   matched tests that exercised it and comments that said it was avoided, and
   an arm that remembers the rejection writes such lines more often (label M:

@@ -243,6 +243,13 @@ describe("rule revisions", () => {
             expect(prereg.grading.no_change_question).toBe(g12.supersedes.value);
             expect(prereg.revision).toBeLessThanOrEqual(g12.supersedes.tier_revisions_through);
         }
+        // The registered bound is the last revision a tier file reached.
+        const last = Math.max(
+            ...TIERS.map(
+                (tier) => JSON.parse(readFileSync(join(dir, `${tier}.json`), "utf8")).revision,
+            ),
+        );
+        expect(g12.supersedes.tier_revisions_through).toBe(last);
     });
 
     test("on each split the rules agree with the labels more often than the replaced rules do over both splits, and the P5 rule's test agreement is at most two points below the judge's", () => {
@@ -338,6 +345,9 @@ describe("rule revisions", () => {
             "rubric: defines no label Q",
             "rubric: defines no label N",
         ]);
+        expect(edited((r) => Object.assign(r, { rubric: "U: \nK: b\nM: c\nQ: d\nN: e" }))).toEqual([
+            "rubric: defines no label U",
+        ]);
         expect(
             edited((r) => {
                 (reuse(r).label_counts as Record<string, number>).U = 1;
@@ -403,6 +413,15 @@ describe("rule revisions", () => {
                 (reuse(r) as Record<string, unknown>).labelled_items = { valueOf: null };
             }),
         ).toContain("validation.reuse.hand_audited: expected a count within the labelled items");
+        expect(
+            edited((r) => {
+                const total = { valueOf: null, toString: null };
+                Object.assign(reuse(r), { labelled_items: total });
+                Object.assign(reuse(r).superseded_rule as object, { items: total });
+            }),
+        ).toContain(
+            "validation.reuse.superseded_rule: expected its agreement over the labelled items",
+        );
         expect(validateRuleRevision(null)).toEqual(["expected an object"]);
     });
 });

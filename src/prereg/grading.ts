@@ -181,7 +181,7 @@ function rubricErrors(rubric: unknown, labels: readonly string[]): string[] {
         return ["rubric: expected trimmed text"];
     }
     return labels
-        .filter((label) => !new RegExp(`^${label}: `, "m").test(rubric))
+        .filter((label) => !new RegExp(`^${label}: \\S`, "m").test(rubric))
         .map((label) => `rubric: defines no label ${label}`);
 }
 
@@ -225,6 +225,7 @@ function labelledSetErrors(
     if (isObj(old)) errors.push(...keysOf(old, [unit, "agreed"], `${at}.superseded_rule`));
     if (
         !isObj(old) ||
+        !count(old[unit]) ||
         old[unit] !== total ||
         !count(old.agreed) ||
         (old.agreed as number) > (old[unit] as number)

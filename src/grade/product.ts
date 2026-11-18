@@ -48,7 +48,7 @@ const ATTRIBUTE = /^\s*#\[/;
 const TEST_MODULE = /^\s*(?:pub(?:\([^)\n]*\))?\s+)?mod\s+(?:tests?|\w+_tests?|tests?_\w+)\s*\{/;
 const indentOf = (line: string) => /^\s*/.exec(line)?.[0] ?? "";
 const END = "end_of_hunk";
-/** The line between two stretches of added code that the file holds apart; a match that holds it counts for nothing. */
+/** The line between two stretches of added code that the file holds apart; each stretch is matched on its own. */
 const GAP = "\u0000";
 
 /**
@@ -125,8 +125,8 @@ function rustTestLines(lines: string[], section: string): boolean[] {
         const attribute = testAttribute(line);
         if (attribute > 0) {
             const item = line.slice(attribute);
-            if (item.trim() === "") pending = true;
-            else headerLine(item, indentOf(line), true);
+            pending = item.trim() === "";
+            if (!pending) headerLine(item, indentOf(line), true);
             return true;
         }
         if (pending && (ATTRIBUTE.test(line) || blank)) return true;
@@ -151,8 +151,8 @@ export interface ProductCode {
  * The product code a file's hunks add: its added lines, with comments and literals read over
  * each hunk's new-side lines (`maskHunk`), and in a Rust file without the lines of test items
  * (`rustTestLines`). Added lines that the file holds apart (a context line, a test line, or
- * another hunk lies between them) are joined across a `GAP` line, so a pattern that spans lines
- * matches only lines that are adjacent in the file.
+ * another hunk lies between them) are joined across a `GAP` line, and `matchesCode` reads each
+ * stretch on its own, so a pattern that spans lines matches only lines adjacent in the file.
  */
 export function productCode(file: DiffFile): ProductCode {
     const rust = file.path.endsWith(".rs");
@@ -185,15 +185,20 @@ export function productCode(file: DiffFile): ProductCode {
  * Whether some pattern matches product code: a match in the comment-free text that covers at
  * least one character outside string-literal contents. A pattern that names a literal with its
  * quotes (`"math/rand"`) or a keyword before one (`throw '`) therefore matches, and a name that
- * a message or a test title only mentions stays unmatched.
+ * a message or a test title only mentions stays unmatched. Each stretch of adjacent added lines
+ * is matched on its own.
  */
 export function matchesCode(product: ProductCode, sources: string[]): boolean {
+    const masks = product.mask.split(`\n${GAP}\n`);
+    const stretches = product.code.split(`\n${GAP}\n`).map((code, i) => [code, masks[i] ?? ""]);
     return sources.some((source) => {
         const re = pattern(source);
-        for (const m of product.code.matchAll(new RegExp(re.source, `${re.flags}g`))) {
-            if (m[0].includes(GAP)) continue;
-            if (/\S/.test(product.mask.slice(m.index, m.index + m[0].length))) return true;
-        }
-        return false;
+        const global = new RegExp(re.source, `${re.flags}g`);
+        return stretches.some(([code = "", mask = ""]) => {
+            for (const m of code.matchAll(global)) {
+                if (/\S/.test(mask.slice(m.index, m.index + m[0].length))) return true;
+            }
+            return false;
+        });
     });
 }

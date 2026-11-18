@@ -251,6 +251,15 @@ describe("product code", () => {
         expect(productCode(context).code).toBe("pub fn sweep() { thread::sleep(D); }");
     });
 
+    test("a test attribute beside its item on one line claims that item alone", () => {
+        const inline = added("src/lib.rs", [
+            "#[cfg(test)]",
+            "#[test] fn probe() {}",
+            "fn live() { std::thread::sleep(D); }",
+        ]);
+        expect(productCode(inline).code).toBe("fn live() { std::thread::sleep(D); }");
+    });
+
     test("a function under a test attribute stays out in a file that holds no test module", () => {
         const standalone = added("src/lib.rs", [
             "#[test]",
@@ -282,6 +291,11 @@ describe("product code", () => {
             ["", ["+new Map()"]],
         ]);
         expect(matchesCode(productCode(hunks), pattern)).toBe(false);
+        // A greedy pattern that could run into a later stretch still matches inside its own.
+        const greedy = fileOf("src/a.ts", [
+            ["", ["+setInterval(sweep, 1000);", " keep();", "+finish();"]],
+        ]);
+        expect(matchesCode(productCode(greedy), ["setInterval\\([\\s\\S]*\\)"])).toBe(true);
     });
 
     test("a block comment the hunk opens and that closes below it covers the added lines inside it", () => {

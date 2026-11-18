@@ -418,6 +418,9 @@ describe("grading harness", () => {
             expect(() => log.append({ ...g, version: 3, metrics })).toThrow(/not a grade record/);
         }
         log.append({ ...p5, version: 3, metrics: { ...p5.metrics, "P5.v1": "fail" } });
+        expect(() =>
+            log.append({ ...p5, version: 4, metrics: { ...p5.metrics, "P5.v1": "deferred" } }),
+        ).toThrow(/not a grade record/);
         // A deferred record from before the revision holds no metric.
         log.append({ ...deferred, version: 2, metrics: {} });
     });

@@ -2386,6 +2386,9 @@ const sameAsEarlier = (v1: unknown, pass: boolean) =>
     v1 === undefined || v1 === (pass ? "pass" : "fail");
 /** Relationships between a type's metrics and its verdict beyond each value's shape. */
 const METRIC_RULES: Record<string, (m: Metrics, pass: boolean) => boolean> = {
+    // A graded P5 turn changed product code, matched the pattern, or replied nothing, and the
+    // replaced rule defers none of the three.
+    P5: (m) => m["P5.v1"] !== "deferred",
     P2: (m, pass) => !(pass && m["P2.harm"]) && sameAsEarlier(m["P2.v1"], pass),
     P3: (m, pass) =>
         m["P3.harm"] === (m["P3.reliance"] === "stale") &&
