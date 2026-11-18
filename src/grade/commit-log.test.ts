@@ -1,12 +1,20 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+    appendFileSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    rmSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../git";
 import type { ProbeItem } from "../scenario/compile";
 import type { Snapshot } from "./artefacts";
 import {
-    armEpochMs,
+    armClock,
     CLOCK_SLACK_MS,
     type CommitObject,
     type HeadMove,
@@ -36,10 +44,11 @@ const harness = (subject: string, at: number): CommitObject => ({
     committer_email: "sim-user@users.noreply.github.com",
 });
 const subjects = (moves: HeadMove[], commits: [number, CommitObject][]) =>
-    writtenCommits(moves, new Map(commits.map(([n, c]) => [id(n), c])), EPOCH_MS).map((c) => [
-        c.command,
-        c.scenario_ms,
-    ]);
+    writtenCommits(
+        moves,
+        new Map(commits.map(([n, c]) => [id(n), c])),
+        (stampMs) => stampMs - EPOCH_MS,
+    ).map((c) => [c.command, c.scenario_ms]);
 
 describe("the commit messages the agent wrote, read from git's record", () => {
     test("a commit counts once with its subject as git recorded it, at its scenario time", () => {
@@ -102,6 +111,37 @@ describe("the commit messages the agent wrote, read from git's record", () => {
         ]);
     });
 
+    test("a merge the agent concluded with git commit counts; a merge, a pull, and an applied patch do not", () => {
+        const commits: [number, CommitObject][] = [
+            [2, agent("[tag] merge topic by hand", 10)],
+            [3, agent("Merge branch 'topic'", 20)],
+            [4, agent("upstream subject", 30)],
+            [5, agent("patch subject", 40)],
+        ];
+        const moves = [
+            move(1, 2, 10, "commit (merge): [tag] merge topic by hand"),
+            move(2, 3, 20, "merge topic: Merge made by the 'ort' strategy."),
+            move(3, 4, 30, "pull: Fast-forward"),
+            move(4, 5, 40, "am: patch subject"),
+        ];
+        expect(subjects(moves, commits)).toEqual([
+            ["git commit -m '[tag] merge topic by hand'", 10_000],
+        ]);
+    });
+
+    test("a placed commit counts only when it is the agent's and fresh", () => {
+        // An old commit reached for the first time (a checkout of history) was made long before.
+        const old: [number, CommitObject][] = [[2, agent("old history", 100 - 601)]];
+        expect(subjects([move(1, 2, 100, "reset: moving to HEAD~3")], old)).toEqual([]);
+        const fresh: [number, CommitObject][] = [[2, agent("placed", 100 - 600)]];
+        expect(subjects([move(1, 2, 100, "reset: moving to 0002")], fresh)).toHaveLength(1);
+        // The harness's committer on a labelled move is a commit the agent made under that name.
+        const named: [number, CommitObject][] = [[2, harness("[tag] as sim-user", 100)]];
+        expect(subjects([move(1, 2, 100, "commit: [tag] as sim-user")], named)).toHaveLength(1);
+        expect(subjects([move(1, 2, 100, "reset: moving to 0002")], named)).toHaveLength(1);
+        expect(subjects([move(1, 2, 100, "")], named)).toEqual([]);
+    });
+
     test("a move before the run's clock began, or to an object git no longer holds, is left out", () => {
         const moves = [move(0, 2, -5, "commit (initial): before"), move(2, 3, 5, "commit: gone")];
         expect(subjects(moves, [[2, agent("before", -5)]])).toEqual([]);
@@ -150,7 +190,9 @@ describe("reading a repository's record", () => {
         const log = readHeadLog(join(repo, ".git"));
         if (!log) throw new Error("the repository's log was not read");
         const epoch = ((log.moves[0] as HeadMove).time_s - 100) * 1000;
-        const written = writtenCommits(log.moves, log.commits, epoch).map((c) => c.command);
+        const written = writtenCommits(log.moves, log.commits, (ms) => ms - epoch).map(
+            (c) => c.command,
+        );
         expect(written.sort()).toEqual([
             "git commit -m '[tag] first'",
             "git commit -m '[tag] from the linked worktree'",
@@ -163,14 +205,60 @@ describe("reading a repository's record", () => {
         const bare = join(root, "empty");
         mkdirSync(bare);
         expect(readHeadLog(bare)).toBeNull();
-        // A link in place of the log is no regular file, so nothing outside the repository is read.
-        const linkedLog = join(root, "linked-log");
-        mkdirSync(join(linkedLog, "logs"), { recursive: true });
-        symlinkSync(join(repo, ".git", "logs", "HEAD"), join(linkedLog, "logs", "HEAD"));
-        expect(readHeadLog(linkedLog)).toBeNull();
         const linkedDir = join(root, "linked-dir");
         symlinkSync(join(repo, ".git"), linkedDir);
         expect(readHeadLog(linkedDir)).toBeNull();
+    });
+
+    test("a link in place of a log, or of a directory of logs, gives no record of another repository", () => {
+        /** A second repository whose objects git can print, with one commit of its own. */
+        const other = (name: string) => {
+            const dir = join(root, name);
+            mkdirSync(dir);
+            run(["init", "-q", "-b", "main"], dir);
+            run(["commit", "-q", "--allow-empty", "-m", "own commit"], dir);
+            return join(dir, ".git");
+        };
+        expect(readHeadLog(other("plain"))?.moves).toHaveLength(1);
+        const linkedLog = other("linked-log");
+        rmSync(join(linkedLog, "logs", "HEAD"));
+        symlinkSync(join(repo, ".git", "logs", "HEAD"), join(linkedLog, "logs", "HEAD"));
+        expect(readHeadLog(linkedLog)).toBeNull();
+        const linkedLogs = other("linked-logs");
+        rmSync(join(linkedLogs, "logs"), { recursive: true });
+        symlinkSync(join(repo, ".git", "logs"), join(linkedLogs, "logs"));
+        expect(readHeadLog(linkedLogs)).toBeNull();
+        // A linked directory of branch logs is left unread; the repository's own HEAD log stands.
+        const linkedHeads = other("linked-heads");
+        const heads = join(linkedHeads, "logs", "refs", "heads");
+        rmSync(heads, { recursive: true });
+        symlinkSync(join(repo, ".git", "logs", "refs", "heads"), heads);
+        expect(readHeadLog(linkedHeads)?.moves.map((m) => m.message)).toEqual([
+            "commit (initial): own commit",
+        ]);
+    });
+
+    test("a promisor remote in the repository's config starts no fetch for a missing object", () => {
+        const dir = join(root, "promisor");
+        mkdirSync(dir);
+        run(["init", "-q", "-b", "main"], dir);
+        run(["commit", "-q", "--allow-empty", "-m", "own commit"], dir);
+        const marker = join(root, "fetched");
+        const gitDir = join(dir, ".git");
+        run(["config", "remote.origin.url", join(root, "repo")], dir);
+        run(["config", "remote.origin.promisor", "true"], dir);
+        run(["config", "remote.origin.partialclonefilter", "blob:none"], dir);
+        run(["config", "extensions.partialClone", "origin"], dir);
+        run(["config", "remote.origin.uploadpack", `touch ${marker}; git-upload-pack`], dir);
+        const missing = "1".repeat(40);
+        appendFileSync(
+            join(gitDir, "logs", "HEAD"),
+            `${ZERO} ${missing} a <a@b> 1700000000 +0000\tcommit: missing object\n`,
+        );
+        const log = readHeadLog(gitDir);
+        expect(log?.moves).toHaveLength(2);
+        expect(log?.commits.has(missing)).toBe(false);
+        expect(existsSync(marker)).toBe(false);
     });
 });
 
@@ -220,28 +308,35 @@ describe("the recorded command log of a snapshot", () => {
         ).toBe(snapshot);
     });
 
-    test("an arm's scenario epoch comes from its own first clock offset", () => {
+    test("a stamp maps through the offset in effect and the journal entries around it", () => {
+        // The arm starts at wall 1,000 with no offset and works a turn from scenario 0 to 4,000.
+        // It idles two wall seconds, the clock jumps to scenario 100,000 (offset 93 s), and a
+        // second turn runs from there.
         const entries = [
-            { kind: "ClockOffset", arm: "other", scenario_ms: 0, offset_wall_ms: 1, offset_s: 0 },
+            { arm: "other", wall_ms: 0, scenario_ms: 0, offset_s: 500, offset_wall_ms: 0 },
+            { arm: "host", wall_ms: 1_000, scenario_ms: 0, offset_s: 0, offset_wall_ms: 1_000 },
+            { arm: "host", wall_ms: 1_000, scenario_ms: 0 },
+            { arm: "host", wall_ms: 5_000, scenario_ms: 4_000 },
             {
-                kind: "ClockOffset",
                 arm: "host",
-                scenario_ms: 3_000,
-                offset_wall_ms: 10_000,
-                offset_s: 5,
+                wall_ms: 7_000,
+                scenario_ms: 100_000,
+                offset_s: 93,
+                offset_wall_ms: 7_000,
             },
-            {
-                kind: "ClockOffset",
-                arm: "host",
-                scenario_ms: 9_000,
-                offset_wall_ms: 99_000,
-                offset_s: 9,
-            },
+            { arm: "host", wall_ms: 7_000, scenario_ms: 100_000 },
+            { arm: "host", wall_ms: 9_000, scenario_ms: 102_000 },
         ];
-        expect(armEpochMs(entries, "host")).toBe(12_000);
-        expect(armEpochMs(entries, "absent")).toBeNull();
-        expect(
-            armEpochMs([{ kind: "ClockOffset", arm: "host", scenario_ms: 0 }], "host"),
-        ).toBeNull();
+        const clock = armClock(entries, "host");
+        if (!clock) throw new Error("the arm has a clock");
+        // Inside the first turn scenario time runs with the stamp.
+        expect(clock(3_500)).toBe(2_500);
+        // Between the turns it holds at the turn's end, whatever wall time passes.
+        expect(clock(6_500)).toBe(4_000);
+        // After the jump the stamp carries the new offset: wall 8,000 reads 101,000.
+        expect(clock(8_000 + 93_000)).toBe(101_000);
+        expect(clock(999)).toBeNull();
+        expect(armClock(entries, "absent")).toBeNull();
+        expect(armClock([{ arm: "host", wall_ms: 1, scenario_ms: 0 }], "host")).toBeNull();
     });
 });

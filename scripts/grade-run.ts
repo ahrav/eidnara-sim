@@ -33,7 +33,7 @@ import {
     type Snapshot,
 } from "../src/grade/artefacts";
 import {
-    armEpochMs,
+    armClock,
     readHeadLog,
     withRecordedCommits,
     writtenCommits,
@@ -1338,17 +1338,11 @@ async function grade(dir: string, upstream: Upstream | null, regrade: boolean): 
     const writtenBy = (arm: string, project: string): Command[] | null => {
         const key = `${arm}/${project}`;
         if (!written.has(key)) {
-            const epoch = armEpochMs(entries, arm);
-            const log =
-                epoch === null
-                    ? null
-                    : readHeadLog(join(dir, arm, "r", "workspaces", project, ".git"));
-            written.set(
-                key,
-                epoch === null || log === null
-                    ? null
-                    : writtenCommits(log.moves, log.commits, epoch),
-            );
+            const clock = armClock(entries, arm);
+            const log = clock
+                ? readHeadLog(join(dir, arm, "r", "workspaces", project, ".git"))
+                : null;
+            written.set(key, clock && log ? writtenCommits(log.moves, log.commits, clock) : null);
         }
         return written.get(key) ?? null;
     };

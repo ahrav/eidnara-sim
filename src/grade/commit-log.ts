@@ -21,7 +21,7 @@ export interface CommitObject {
 
 /** The committer the harness's own commits carry (`src/hosts/driver.ts`). */
 const HARNESS_EMAIL = "sim-user@users.noreply.github.com";
-/** Reflog lines and bytes read at most; a longer log gives no commit log. */
+/** Reflog moves, bytes over every log file, and branch logs read at most; a repository past a bound gives no commit log. */
 const MOVE_CAP = 100_000;
 const LOG_BYTE_CAP = 64 << 20;
 const LOG_FILE_CAP = 1_000;
@@ -47,19 +47,20 @@ const shellQuoted = (w: string) => `'${w.replace(/'/g, "'\\''")}'`;
 
 /**
  * The commit messages the agent wrote, each as the command `git commit -m '<subject>'` at the
- * scenario time git recorded it (`epochMs` is the wall time of scenario time 0 on the arm's
- * clock). A move counts when its commit holds a message written for it: a `commit`, an amend
- * whose subject differs from the commit it replaces, and a commit object placed on HEAD the
- * first time within `PLACED_WITHIN_S` of its making (`commit-tree` with `update-ref` or
- * `reset`). A message git carries over or writes itself is left out: a rebase pick, a
- * cherry-pick, a revert, a merge, an amend that keeps the subject, and a `fixup!`, `squash!`,
- * or `amend!` subject. The harness's own commits (an unlabelled move to a commit of its
- * committer) are left out.
+ * scenario time of the move (`scenarioMs` maps the time git recorded, `armClock`). A move counts
+ * when its commit holds a message written for it: a `commit` (a merge the agent concluded with
+ * `git commit` included), an amend whose subject differs from the commit it replaces, and a
+ * commit object placed on HEAD the first time within `PLACED_WITHIN_S` of its making
+ * (`commit-tree` with `update-ref` or `reset`). A message git carries over or writes itself is
+ * left out: a rebase pick, a cherry-pick, a revert, a `git merge` or `git pull`, an amend that
+ * keeps the subject, and a `fixup!`, `squash!`, or `amend!` subject. The harness's own commits
+ * (an unlabelled move to a commit of its committer) are left out, and so is a move at a time
+ * outside the arm's clock.
  */
 export function writtenCommits(
     moves: HeadMove[],
     commits: ReadonlyMap<string, CommitObject>,
-    epochMs: number,
+    scenarioMs: (stampMs: number) => number | null,
 ): Command[] {
     const seen = new Set<string>();
     const out: Command[] = [];
@@ -67,8 +68,9 @@ export function writtenCommits(
         const first = !seen.has(move.new);
         seen.add(move.new);
         const commit = commits.get(move.new);
-        const scenario_ms = move.time_s * 1000 - epochMs;
-        if (!commit || scenario_ms < 0 || FOLDED.test(commit.subject)) continue;
+        const scenario_ms = scenarioMs(move.time_s * 1000);
+        if (!commit || scenario_ms === null || scenario_ms < 0) continue;
+        if (FOLDED.test(commit.subject)) continue;
         const action = move.message.split(":", 1)[0] ?? "";
         const harness = move.message === "" && commit.committer_email === HARNESS_EMAIL;
         const placed =
@@ -84,11 +86,20 @@ export function writtenCommits(
     return out;
 }
 
-/** A regular file's text when it lies within the byte bound, or null; a link is no regular file. */
-function regularText(path: string): string | null {
+/** Whether `path` is a directory itself, a link to one excluded. */
+function plainDirectory(path: string): boolean {
+    try {
+        return lstatSync(path).isDirectory();
+    } catch {
+        return false;
+    }
+}
+
+/** A regular file's text when it holds at most `budget` bytes, or null; a link is no regular file. */
+function regularText(path: string, budget: number): string | null {
     try {
         const stat = lstatSync(path);
-        return stat.isFile() && stat.size <= LOG_BYTE_CAP ? readFileSync(path, "utf8") : null;
+        return stat.isFile() && stat.size <= budget ? readFileSync(path, "utf8") : null;
     } catch {
         return null;
     }
@@ -147,33 +158,36 @@ function parseCommits(batch: Buffer): Map<string, CommitObject> {
  * The moves the repository at `gitDir` recorded for HEAD and for each branch, oldest first, with
  * the commit objects they name. A commit made in a linked worktree moves its branch alone, so
  * the branch logs join HEAD's, and a move both logs hold counts once. Null when the directory
- * holds no readable log: `gitDir` or its HEAD log is missing or is no plain directory or file,
- * a log passes the read bounds, or git cannot print the objects. The objects are read with
- * `cat-file --batch`, which runs no hook, filter, or signature check of the repository.
+ * holds no readable log: `gitDir`, its `logs` directory, or its HEAD log is missing or is a
+ * link, the logs pass the read bounds, or git cannot print the objects. The agent wrote the
+ * repository, so the objects are read with `cat-file --batch`, which runs no hook, filter, or
+ * signature check, with lazy fetching and replace refs off, so a configured promisor remote
+ * starts no fetch and each id reads as its own object.
  */
 export function readHeadLog(
     gitDir: string,
 ): { moves: HeadMove[]; commits: Map<string, CommitObject> } | null {
-    try {
-        if (!lstatSync(gitDir).isDirectory()) return null;
-    } catch {
-        return null;
-    }
-    const head = regularText(join(gitDir, "logs", "HEAD"));
-    const branches = branchLogs(join(gitDir, "logs", "refs", "heads"));
-    if (head === null || branches === null) return null;
+    const logs = join(gitDir, "logs");
+    if (!plainDirectory(gitDir) || !plainDirectory(logs)) return null;
+    // A branch log is read only below plain directories, so no link leads the walk elsewhere.
+    const heads = [join(logs, "refs"), join(logs, "refs", "heads")];
+    const branches = heads.every(plainDirectory) ? branchLogs(heads[1] as string) : [];
+    if (branches === null) return null;
     const seen = new Set<string>();
     const moves: HeadMove[] = [];
-    for (const text of [head, ...branches.map(regularText)]) {
+    let budget = LOG_BYTE_CAP;
+    for (const path of [join(logs, "HEAD"), ...branches]) {
+        const text = regularText(path, budget);
         if (text === null) return null;
+        budget -= Buffer.byteLength(text);
         for (const move of parseHeadLog(text)) {
             const key = `${move.old} ${move.new} ${move.time_s} ${move.message}`;
             if (seen.has(key)) continue;
             seen.add(key);
             moves.push(move);
+            if (moves.length > MOVE_CAP) return null;
         }
     }
-    if (moves.length > MOVE_CAP) return null;
     // Array.prototype.sort is stable, so moves of one second keep their log order.
     moves.sort((a, b) => a.time_s - b.time_s);
     const ids = [...new Set(moves.flatMap((m) => [m.old, m.new]))].filter((id) =>
@@ -184,7 +198,7 @@ export function readHeadLog(
         const batch = gitBytes(
             gitDir,
             ["--git-dir=.", "cat-file", "--batch"],
-            { GIT_OPTIONAL_LOCKS: "0" },
+            { GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1", GIT_NO_REPLACE_OBJECTS: "1" },
             GIT_TIMEOUT_MS,
             { input: Buffer.from(`${ids.join("\n")}\n`) },
         );
@@ -194,32 +208,81 @@ export function readHeadLog(
     }
 }
 
-/**
- * The wall time of scenario time 0 on an arm's clock, from the arm's first journaled clock
- * offset, or null for a journal without one. The arm's processes read wall time plus the
- * offset, so a time git recorded maps to scenario time as `time - epoch`, within the whole
- * second the offset is rounded to.
- */
-export function armEpochMs(
-    entries: readonly {
-        kind: string;
-        arm: string | null;
-        scenario_ms: number;
-        [k: string]: unknown;
-    }[],
-    arm: string,
-): number | null {
-    const first = entries.find((e) => e.kind === "ClockOffset" && e.arm === arm);
-    const wall = first?.offset_wall_ms;
-    const offset = first?.offset_s;
-    if (!first || typeof wall !== "number" || typeof offset !== "number") return null;
-    const epoch = wall + offset * 1000 - first.scenario_ms;
-    return Number.isFinite(epoch) ? epoch : null;
+/** The least lead of scenario time over wall time between two journal entries that marks a clock jump. */
+const JUMP_MS = 1_000;
+
+/** A journal entry as the clock reads it; a clock entry carries the offset the arm's processes read from then on. */
+interface ClockEntry {
+    arm: string | null;
+    wall_ms: number;
+    scenario_ms: number;
+    offset_s?: unknown;
+    offset_wall_ms?: unknown;
 }
 
 /**
- * How far a recorded commit's scenario time can lie from the time its command ran: the arm's
- * clock offset is a whole second, and git records whole seconds.
+ * Maps a time an arm's process read to scenario time, or null for a journal that holds no clock
+ * offset for the arm. The arm's processes read wall time plus a whole-second offset the harness
+ * sets at the arm's start and at each clock jump, and scenario time runs at wall speed inside a
+ * turn and holds still between turns. A stamp is taken back to wall time through the offset in
+ * effect when it was read, and that wall time is placed between the arm's journal entries
+ * around it: the earlier entry's scenario time plus the wall time since, at most the later
+ * entry's scenario time, and the earlier entry's scenario time when the later one is a clock
+ * jump. A stamp from before the arm's first offset maps to null.
+ */
+export function armClock(
+    entries: readonly ClockEntry[],
+    arm: string,
+): ((stampMs: number) => number | null) | null {
+    const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+    const mine = entries
+        .filter((e) => e.arm === arm && finite(e.wall_ms) && finite(e.scenario_ms))
+        .map((e, i) => ({ e, i }))
+        .sort((a, b) => a.e.wall_ms - b.e.wall_ms || a.i - b.i)
+        .map(({ e }) => e);
+    const spans = mine
+        .filter((e) => finite(e.offset_s))
+        .map((e) => {
+            const offset = (e.offset_s as number) * 1000;
+            return {
+                offset,
+                from: (finite(e.offset_wall_ms) ? e.offset_wall_ms : e.wall_ms) + offset,
+            };
+        })
+        .sort((a, b) => a.from - b.from);
+    if (spans.length === 0) return null;
+    /** The index of the last item of an ascending list whose key is at most `value`, or -1. */
+    const lastAtMost = <T>(items: T[], key: (item: T) => number, value: number): number => {
+        let lo = 0;
+        let hi = items.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (key(items[mid] as T) <= value) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo - 1;
+    };
+    return (stampMs) => {
+        const span = spans[lastAtMost(spans, (s) => s.from, stampMs)];
+        if (!span) return null;
+        const wall = stampMs - span.offset;
+        const at = lastAtMost(mine, (e) => e.wall_ms, wall);
+        const before = mine[at];
+        if (!before) return null;
+        const running = before.scenario_ms + (wall - before.wall_ms);
+        const after = mine[at + 1];
+        if (!after) return running;
+        // An entry that lies further ahead in scenario time than in wall time is a clock jump,
+        // which the harness makes while the arm is idle: the clock stood still up to it.
+        const jumped =
+            after.scenario_ms - before.scenario_ms > after.wall_ms - before.wall_ms + JUMP_MS;
+        return jumped ? before.scenario_ms : Math.min(running, after.scenario_ms);
+    };
+}
+
+/**
+ * How far a recorded commit's scenario time can lie from the time its command ran: git records
+ * whole seconds, and the arm's clock offset is a whole second.
  */
 export const CLOCK_SLACK_MS = 2_000;
 

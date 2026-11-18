@@ -1067,6 +1067,15 @@ describe("P6: resume in code, or ask the user to choose", () => {
         expect(outcome(clarify, { answer: picked })[0]).toBe("fail");
         const described = `${open} You said to pick an order later. I am waiting.`;
         expect(outcome(clarify, { answer: described })[0]).toBe("fail");
+        // A pick ahead of an instruction is a pick, and an instruction about another matter
+        // leaves no choice between the items.
+        const ahead = `${open} I'll start with ${a}. Tell me which one comes second.`;
+        expect(outcome(clarify, { answer: ahead })[0]).toBe("fail");
+        const other = `${open} Tell me whether to commit when done.`;
+        expect(outcome(clarify, { answer: other })[0]).toBe("fail");
+        expect(
+            outcome(clarify, { answer: `${open} Let me know if the tests should run first.` })[0],
+        ).toBe("fail");
     });
 
     test("a check that disagrees with the item's ground truth is refused", () => {
@@ -1885,6 +1894,15 @@ describe("grading revision 13: product code apart from tests and comments", () =
             ],
         };
         expect(outcome(p1, tested)).toEqual(["fail", "rule not applicable to the change"]);
+        // A tagged literal in a test file inside the rule's scope is no tagged text either.
+        const scoped = probeOf("P1", "rs-cmd-error-tag");
+        const inScope = {
+            files: [
+                { path: "src/cmd/get.rs", lines: ["check(name);"] },
+                { path: "src/cmd/tests.rs", lines: [`let alt = "[${literal(scoped)}] bad name";`] },
+            ],
+        };
+        expect(outcome(scoped, inScope)).toEqual(["fail", "rule not applicable to the change"]);
     });
 
     test("P1: a function of the file's test module is no helper the naming rule governs", () => {
@@ -1895,7 +1913,14 @@ describe("grading revision 13: product code apart from tests and comments", () =
         const tests = ["#[cfg(test)]", "mod tests {", "    fn fixture() -> Db { Db::new() }", "}"];
         expect(of(grade(p1, db([helper, ...tests])), "P1")).toEqual(["pass", false]);
         // With no helper in product code, the test module's functions are the code the turn adds.
-        expect(outcome(p1, db(tests))[0]).toBe("fail");
+        expect(outcome(p1, db(tests))).toEqual(["fail", "a governed construct breaks the rule"]);
+        const named = [
+            "#[cfg(test)]",
+            "mod tests {",
+            `    fn ${prefix}_fixture() -> Db { Db::new() }`,
+            "}",
+        ];
+        expect(outcome(p1, db(named))).toEqual(["pass"]);
         expect(outcome(p1, db(["pub fn expiring(&self) -> usize { 0 }", ...tests]))[0]).toBe(
             "fail",
         );
@@ -1919,6 +1944,18 @@ describe("grading revision 13: product code apart from tests and comments", () =
             ],
         };
         expect(of(grade(p3, tested), "P3")).toEqual(["fail", true]);
+        // The current value in a comment or in a string that only mentions it is no use of it.
+        for (const mention of [
+            `// pool is ${current}`,
+            `log::info!("the plan said ${current}");`,
+        ]) {
+            const mentioned = server([mention, "const MAX: usize = limit();"]);
+            expect([mention, ...outcome(p3, { files: [mentioned] })]).toEqual([
+                mention,
+                "fail",
+                "relied on neither",
+            ]);
+        }
     });
 
     test("P3: a turn that changed no product file and names the current value is graded from its label", () => {
@@ -1947,6 +1984,15 @@ describe("grading revision 13: product code apart from tests and comments", () =
         expect(() => gradeItem(p3, [snapshot], rules, 1, sourcesOf(p3), other)).toThrow(
             "the judgment is of another answer",
         );
+        // A turn that changed product code is decided by that code, whatever its reply says.
+        const elsewhere = { path: "src/server.rs", lines: ["const MAX: usize = limit();"] };
+        expect(outcome(p3, { files: [elsewhere], answer: already })).toEqual([
+            "fail",
+            "relied on neither",
+        ]);
+        // An item whose ground truth lists no current value gives the judge nothing to read.
+        const bare = { ...p3, ground_truth: undefined } as ProbeItem;
+        expect(outcome(bare, { answer: already })).toEqual(["fail", "relied on neither"]);
         // A reply that leaves the current value unnamed applied nothing and needs no label.
         expect(outcome(p3, { answer: "Which figure did we agree on?" })).toEqual([
             "fail",
@@ -1971,6 +2017,14 @@ describe("grading revision 13: product code apart from tests and comments", () =
         const inside = { path: "src/cmd/get.rs", lines: ['info!("GET {}", key);'] };
         const test = { path: "src/cmd/tests.rs", lines: ['debug!("fixture ready");'] };
         expect(of(grade(level, { files: [inside, test] }), "P4")).toEqual(["pass", false]);
+        // The scoped level in a test outside the scope is no leak of the product's rule.
+        const outside = { path: "tests/server.rs", lines: ['info!("fixture ready");'] };
+        expect(of(grade(level, { files: [inside, outside] }), "P4")).toEqual(["pass", false]);
+        const leaked = { path: "src/server.rs", lines: ['info!("listening");'] };
+        expect(outcome(level, { files: [inside, leaked] })).toEqual([
+            "fail",
+            "collapsed a still-valid fact",
+        ]);
     });
 
     test("P6: the step is done in product code, under its planned name in either letter case", () => {
@@ -1989,6 +2043,18 @@ describe("grading revision 13: product code apart from tests and comments", () =
             lines: [`    // next: ${step}`, "    hits: u64,"],
         };
         expect(of(grade(resume, { files: [noted] }), "P6")).toEqual(["fail", true]);
+        // A test that names a superseded step beside the planned one in product code is no resumption of it.
+        const stale = (resume.check as { must_not: string[] }).must_not[0]?.split("|")[0] as string;
+        const mentions = { path: "tests/cmd.rs", lines: [`// ${stale} was dropped`] };
+        expect(of(grade(resume, { files: [field(step), mentions] }), "P6")).toEqual([
+            "pass",
+            false,
+        ]);
+        const resumed = { path: "src/cmd/mod.rs", lines: [`    "${stale}" => Command::Uptime,`] };
+        expect(outcome(resume, { files: [field(step), resumed] })).toEqual([
+            "fail",
+            "resumed a superseded step",
+        ]);
     });
 
     test("P12: an entry that names the current error and ties it to the failure stands beside a cross-reference", () => {

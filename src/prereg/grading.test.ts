@@ -582,6 +582,13 @@ describe("the positive-probe revision", () => {
         ).toEqual([
             "rules[5].secondary_metric: expected P12.v1 under entry-without-superseded-identity",
         ]);
+        const renamed = { name: "P12.v1", rule: "added-lines-match" };
+        expect(edited((r) => Object.assign(rule(r, 5), { secondary_metric: renamed }))).toEqual([
+            "rules[5].secondary_metric: expected P12.v1 under entry-without-superseded-identity",
+        ]);
+        expect(edited((r) => Object.assign(rule(r, 0), { labels: ["A", "X"] }))).toEqual([
+            "rules[0].labels: expected A, X, S, I, Q, N",
+        ]);
         expect(edited((r) => Object.assign(rule(r, 4), { rubric: "A: x\nP: x\nX: x" }))).toEqual([
             "rules[4].rubric: defines no label N",
         ]);

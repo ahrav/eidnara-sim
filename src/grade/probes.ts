@@ -1495,17 +1495,20 @@ const asksToChoose = (answer: string) => {
 };
 /** A sentence that hands the choice back as an instruction: `Tell me which item to start with`. */
 const HANDS_BACK =
-    /^\W*(?:please\s+)?(?:tell me|let me know|say|pick|choose|decide)\b[^.?!\n]*\b(?:which|whether|either|first|order)\b/i;
+    /^\W*(?:please\s+)?(?:tell me|let me know|say|pick|choose|decide)\b[^.?!\n]*\b(?:which|order)\b/i;
 /**
- * The answer leaves the choice to the user (`clarify_rule: choice-left-open`, `prereg/G13.json`):
- * some sentence asks the user to choose, as a question or as an instruction, and no sentence
+ * The answer leaves the choice to the user (`choice-left-open`, `prereg/G13.json`): some sentence
+ * asks the user to choose, as a question or as an instruction to say which, and no sentence
  * after the first such one picks a task (`COMMITS`). What follows the request, an option list or
- * a note on another matter, leaves it standing.
+ * a note on another matter, leaves it standing. An instruction is the weaker form, so a pick
+ * anywhere in the answer, ahead of it too, makes the answer a pick.
  */
 const leavesChoice = (answer: string) => {
     const all = sentences(answer);
     const first = all.findIndex((s) => (s.endsWith("?") && CHOICE.test(s)) || HANDS_BACK.test(s));
-    return first >= 0 && !all.slice(first + 1).some((s) => COMMITS.test(s));
+    if (first < 0) return false;
+    const asked = (all[first] as string).endsWith("?");
+    return !all.slice(asked ? first + 1 : 0).some((s) => COMMITS.test(s));
 };
 /** `text` with each camel-case word boundary written as an underscore, in lower case. */
 const snakeCased = (text: string) => text.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
@@ -2082,9 +2085,11 @@ const ungrouped = (answer: string) => answer.replace(/(?<=\d),(?=\d{3})/g, "");
  * Whether a P3 turn is graded from a judge's label of its reply (`prereg/G14.json`): it changed
  * no product file, its product code holds neither value, and its final reply names the current
  * value. Such a reply can say that the code already uses the value, and the judge reads whether
- * it does. A turn whose reply leaves the current value unnamed applied nothing and fails.
+ * it does. A turn whose reply leaves the current value unnamed applied nothing and fails, and
+ * so does a turn of an item whose ground truth lists no current value for the judge to read.
  */
-export function p3Awaits(r: ArtefactReader, c: Check): boolean {
+export function p3Awaits(r: ArtefactReader, c: Check, probe: ProbeItem): boolean {
+    if ((probe.ground_truth?.present ?? []).flat().length === 0) return false;
     const w = turnWork(r, c);
     const used = p3Use(w, c);
     if (used.current || used.stale || productChanged(r)) return false;
@@ -2145,7 +2150,7 @@ const GRADERS: Record<string, Grader> = {
         const v1 = held(w, c) && !broken(w, c);
         const used = p3Use(w, c);
         let label: AppliedLabel | undefined;
-        if (p3Awaits(r, c)) {
+        if (p3Awaits(r, c, p)) {
             if (judged === undefined) {
                 throw new GradeRefused(`P3 item ${p.id} is graded from its judgment`);
             }
@@ -2481,7 +2486,7 @@ export function judgedAnswer(
     const reader = new ArtefactReader(first, namedBy(check));
     if (reader.responseIncomplete()) return null;
     // A judge labels the reply of a P3 turn only when its product code decides nothing.
-    if (probe.type === "P3" && !p3Awaits(reader, check)) return null;
+    if (probe.type === "P3" && !p3Awaits(reader, check, probe)) return null;
     return reader.answer();
 }
 

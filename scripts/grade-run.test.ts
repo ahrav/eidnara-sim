@@ -2429,7 +2429,7 @@ describe("P13 reads the commits git recorded in the arm's project repository", (
         snapshot(dir, "eidnara", { ...captured, item: f.probe.id }, true, TURN_END_MS);
         journalAppend(dir, {
             seq: 900,
-            wall_ms: 900,
+            wall_ms: EPOCH_S * 1000,
             kind: "ClockOffset",
             arm: "eidnara",
             scenario_ms: 0,
