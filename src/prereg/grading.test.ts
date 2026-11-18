@@ -121,6 +121,17 @@ describe("grading revisions", () => {
         ).toEqual([
             "validation: a campaign lies in the design split or the test split, one of them",
         ]);
+        expect(
+            edited((r) => {
+                (r.validation as { design: { campaigns: string[] } }).design.campaigns = ["C9"];
+            }),
+        ).toEqual(["validation.design.campaigns: expected distinct qualification registrations"]);
+        expect(
+            edited((r) => {
+                const v = r.validation as { test: { answers: number; agreed: number } };
+                Object.assign(v.test, { answers: 0, agreed: 0 });
+            }),
+        ).toContain("validation.test: expected agreed answers within the answer count");
         // A revision that is no number is named, and the checks that read it still return.
         expect(
             edited((r) => Object.assign(r, { revision: { valueOf: null, toString: null } })),

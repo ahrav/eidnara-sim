@@ -43,10 +43,15 @@ const ARM_NAMES = new RegExp(
  * An answer as the abstention judge reads it: normalised as a P7 answer is, with every arm name
  * replaced by `[name]`. A registered arm name is replaced whole (`eidnara-kl`), and a one-word
  * arm token is replaced inside a longer word too, so a tool named after an arm keeps its suffix
- * and loses the name.
+ * and loses the name. A run of three or more `<` or `>` is written with spaces between the
+ * marks, which keeps the prompt's reply frame distinct from the reply's text.
  */
 export const judgedText = (answer: string): string =>
-    normalise(answer).replace(ARM_NAMES, REDACTED);
+    normalise(answer)
+        .replace(ARM_NAMES, REDACTED)
+        // The prompt frames the reply between `<<<` and `>>>`; a run of three inside it is spaced
+        // apart, so the frame's own marks are the only ones the judge reads.
+        .replace(/<{3,}|>{3,}/g, (run) => run.split("").join(" "));
 
 /**
  * The prompt for one answer to a P9 item: the registered rubric, the probe's question, the

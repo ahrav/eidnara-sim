@@ -750,7 +750,9 @@ probe's question, the statement of the item's fact (the sentence that left
 the value open), and the answer, normalised as a P7 answer is, with every
 arm name replaced by `[name]`: a registered arm name of several words whole
 (`eidnara-kl`, `eidnara-hybrid`), then the tokens of `ARM_TOKENS`, a one-word
-token inside a longer word too. The reply must be one letter of A to D,
+token inside a longer word too. A run of three or more `<` or `>` in the
+answer is written with spaces between the marks, so the `<<<` and `>>>` that
+frame the reply in the prompt are the frame's alone. The reply must be one letter of A to D,
 with one closing `.` or `!` at most; any other reply, and a reply whose
 `stopReason` is not `end_turn`, refuses the call. `proxyAbstainJudge` sends
 the prompt through the capture proxy with the `judge` component header, with

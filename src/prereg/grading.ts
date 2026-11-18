@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalJson, isCanonicalDecimal, sha256Hex } from "./canonical";
+import { QUALIFICATIONS } from "./qualification";
 
 export const GRADING_SCHEMA = "sim-grading-revision/v1";
 /** The grading revisions under `prereg/`, oldest first; graders apply the last one. */
@@ -74,10 +75,20 @@ function splitErrors(v: unknown, at: string): string[] {
     if (!isObj(v)) return [`${at}: expected an object`];
     const errors = keysOf(v, ["campaigns", "answers", "agreed"], at);
     const names = v.campaigns;
-    if (!Array.isArray(names) || names.length === 0 || names.some((c) => typeof c !== "string")) {
-        errors.push(`${at}.campaigns: expected registration names`);
+    if (
+        !Array.isArray(names) ||
+        names.length === 0 ||
+        names.some((c) => !(QUALIFICATIONS as readonly unknown[]).includes(c)) ||
+        new Set(names).size !== names.length
+    ) {
+        errors.push(`${at}.campaigns: expected distinct qualification registrations`);
     }
-    if (!count(v.answers) || !count(v.agreed) || (v.agreed as number) > (v.answers as number)) {
+    if (
+        !count(v.answers) ||
+        (v.answers as number) < 1 ||
+        !count(v.agreed) ||
+        (v.agreed as number) > (v.answers as number)
+    ) {
         errors.push(`${at}: expected agreed answers within the answer count`);
     }
     return errors;
