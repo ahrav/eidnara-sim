@@ -85,10 +85,14 @@ export interface TwinSubject {
 export const twinNamed = (twin: TwinSubject, answer: string): string[] =>
     [...new Set([...twin.values, ...twin.stale])].filter((v) => carries(answer, v));
 
-/** The labels an answer can take: P and C belong to an answer that holds one of the owner's values. */
+/**
+ * The labels an answer can take. P and C say what the answer does with one of the owner's
+ * values, so they belong to an answer that holds one, and A belongs to an answer that holds
+ * none: a pass on an answer that holds the value is label P.
+ */
 export const twinLabels = (twin: TwinSubject, answer: string): readonly TwinLabel[] =>
     twinNamed(twin, answer).length > 0
-        ? TWIN_LABELS
+        ? TWIN_LABELS.filter((l) => l !== "A")
         : TWIN_LABELS.filter((l) => l !== "P" && l !== "C");
 
 const letters = (labels: readonly string[]) =>

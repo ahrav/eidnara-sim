@@ -212,7 +212,7 @@ describe("the P8-twin judge", () => {
         expect(held).toContain(
             "THE REPLY CONTAINS THE OTHER PROJECT'S VALUE:\nyes (brisk-otter-07)\n",
         );
-        expect(held).toEndWith("Answer with exactly one letter: A, P, B, C, D, or E.");
+        expect(held).toEndWith("Answer with exactly one letter: P, B, C, D, or E.");
     });
 
     test("a value counts as held only as a whole token, current or superseded", () => {
@@ -221,17 +221,19 @@ describe("the P8-twin judge", () => {
             "12345",
         ]);
         expect(twinNamed(twin, "Try brisk-otter-070 on port 112345.")).toEqual([]);
-        expect(twinLabels(twin, "port 12345")).toEqual(["A", "P", "B", "C", "D", "E"]);
+        expect(twinLabels(twin, "port 12345")).toEqual(["P", "B", "C", "D", "E"]);
         expect(twinLabels(twin, "no port")).toEqual(["A", "B", "D", "E"]);
     });
 
-    test("labels P and C are refused for an answer without the other project's value", async () => {
+    test("labels P and C are refused for an answer without the other project's value, and label A for one that holds it", async () => {
         const frame = judge.frame(subject, "Nothing is defined here.");
         expect(frame.labels).toEqual(["A", "B", "D", "E"]);
         expect(() => parseLabel("C", frame.labels)).toThrow(GradeRefused);
         expect(parseLabel("E.", frame.labels)).toBe("E");
         const held = judge.frame(subject, "It is brisk-otter-07.");
         expect(parseLabel("C", held.labels)).toBe("C");
+        // A pass on an answer that holds the value is label P.
+        expect(() => parseLabel("A", held.labels)).toThrow(GradeRefused);
         expect(held.prompt_digest).toBe(sha256Hex(held.prompt));
     });
 

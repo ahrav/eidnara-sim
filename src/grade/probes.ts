@@ -24,6 +24,7 @@ import {
     type AbstainJudgment,
     isAbstainJudgment,
     TWIN_REASONS,
+    twinLabels,
     twinNamed,
 } from "./abstention";
 import {
@@ -1931,10 +1932,11 @@ const GRADERS: Record<string, Grader> = {
         const stale = p.ground_truth?.stale ?? [];
         const twin = { project: p.project, owner: c.owner ?? "", values, stale };
         // Labels P and C say what the answer does with the other project's value, so they
-        // belong to an answer that holds it.
-        if ((label === "P" || label === "C") && twinNamed(twin, answer).length === 0) {
+        // belong to an answer that holds it, and label A to one that holds none.
+        if (!twinLabels(twin, answer).includes(label)) {
+            const held = twinNamed(twin, answer).length > 0 ? "with" : "without";
             throw new GradeRefused(
-                `P8-twin item ${p.id}: label ${label} is of an answer without the other project's value`,
+                `P8-twin item ${p.id}: label ${label} is of an answer ${held} the other project's value`,
             );
         }
         const v1 = twinV1(answer, p.text ?? "", values, stale, c.owner);

@@ -1108,12 +1108,15 @@ describe("P8-twin: the judge's label decides; P8-twin.v1 keeps the registered ru
         }
     });
 
-    test("labels P and C belong to an answer that holds the other project's value", () => {
+    test("labels P and C belong to an answer that holds the other project's value, and label A to one that holds none", () => {
         for (const label of ["P", "C"] as const) {
             expect(() => judged("Nothing here names an alias.", label)).toThrow(
                 `label ${label} is of an answer without the other project's value`,
             );
         }
+        expect(() => judged(`Nothing here names an alias; ${v} is elsewhere.`, "A")).toThrow(
+            "label A is of an answer with the other project's value",
+        );
     });
 
     test("a missing judgment, one of another answer, and one with a label outside the six are refused", () => {

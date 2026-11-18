@@ -35,7 +35,8 @@ rule as the verdict. grade-run has a judge label each answer under the
 registered rubric, and the grader passes labels A and P, sets
 `P8-twin.harm` for label C, refuses labels P and C for an answer that holds
 none of the base project's values (`ground_truth.absent` and
-`ground_truth.stale`, matched as whole tokens), and stores the sentence
+`ground_truth.stale`, matched as whole tokens) and label A for an answer
+that holds one, and stores the sentence
 rule's verdict and harm as `P8-twin.v1` and `P8-twin.v1_harm`. On 753
 blind-labelled answers of c8 and w2 the sentence rule agreed with the
 labels on 363 and the judge on 739; the one answer labelled C gave a

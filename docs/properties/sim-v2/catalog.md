@@ -2254,7 +2254,8 @@ Reachability: explicit-config-only
 Status: active
 Exercised: partial - `src/grade/controls.test.ts` grades each of the six
 judge labels on a P8-twin item compiled under qualification Q, refuses
-labels P and C for an answer without the base value, and reads the
+labels P and C for an answer without the base value and label A for one
+that holds it, and reads the
 registered rule's verdict and harm as `P8-twin.v1` and `P8-twin.v1_harm` on
 abstentions, placed values, the bare value, a hedge on it, and another
 guess; `scripts/grade-run.test.ts` grades runs from a scripted judge
