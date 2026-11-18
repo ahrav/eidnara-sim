@@ -333,7 +333,11 @@ function requireCheckedSchema(schema: unknown): void {
  */
 export function requireCapabilities(
     dir: string,
-    manifest: { schema?: unknown; arms?: Record<string, { profile?: unknown }> },
+    manifest: {
+        schema?: unknown;
+        arms?: Record<string, { profile?: unknown }>;
+        prompt_caching?: unknown;
+    },
     arms: readonly string[],
     entries: readonly Entry[],
 ): void {
@@ -341,7 +345,12 @@ export function requireCapabilities(
     for (const arm of arms) {
         if (!entries.some((e) => e.kind === "EndArm" && e.arm === arm)) continue;
         const path = join(dir, arm, "capabilities.json");
-        let record: { mismatches?: unknown; profile?: unknown; observed?: { arm?: unknown } };
+        let record: {
+            mismatches?: unknown;
+            profile?: unknown;
+            observed?: { arm?: unknown };
+            prompt_caching?: unknown;
+        };
         try {
             record = JSON.parse(readFileSync(path, "utf8"));
         } catch (caught) {
@@ -349,12 +358,14 @@ export function requireCapabilities(
                 `arm ${arm} ended with no readable ${path}: ${(caught as Error).message}`,
             );
         }
-        // The record must be this arm's own, under the profile the manifest pinned for it.
+        // The record must be this arm's own, under the profile and the prompt-caching condition
+        // the manifest pinned; a record or a manifest from before the condition ran with it off.
         const profile = manifest.arms?.[arm]?.profile;
         if (
             record.observed?.arm !== arm ||
             profile === undefined ||
-            canonicalJson(record.profile) !== canonicalJson(profile)
+            canonicalJson(record.profile) !== canonicalJson(profile) ||
+            (record.prompt_caching ?? "off") !== (manifest.prompt_caching ?? "off")
         ) {
             throw new Error(
                 `${path} is not the capability record of arm ${arm} as the manifest pins it`,

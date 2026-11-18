@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { assertArtefactsOnly, type Snapshot } from "../grade/artefacts";
 import { GradeLog, type GradeRecord } from "../grade/probes";
 import { CONTROL_LABEL } from "../hosts/arms";
-import { isArmName, type PromptCaching } from "../hosts/profiles";
+import { isArmName, PROMPT_CACHING, type PromptCaching } from "../hosts/profiles";
 import { type CallRecord, recordProblems } from "../proxy/records";
 import { type Entry, eachLine, readJournal } from "../run/journal";
 import { isPriceTable, type PriceTable } from "../run/price";
@@ -94,6 +94,11 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
                 manifest.models.every((m) => typeof m === "string" && m.length > 0),
         ],
         ["price_table", isPriceTable(manifest.price_table)],
+        [
+            "prompt_caching",
+            manifest.prompt_caching === undefined ||
+                PROMPT_CACHING.includes(manifest.prompt_caching),
+        ],
         ["order", Array.isArray(manifest.order)],
     ];
     const bad = fields.filter(([, ok]) => !ok).map(([k]) => k);

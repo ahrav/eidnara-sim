@@ -313,7 +313,8 @@ A qualification registers `prompt_caching: "on"` or `"off"` for all its
 arms (`docs/run-command.md`); a tier run and a registration that names
 none run `off`. The manifest records the condition as `prompt_caching`, a
 resume compares it, and each arm's `capabilities.json` repeats it beside
-what the arm's requests show.
+what the arm's requests show; `grade-run` and the probe replay take an
+arm's record only when its condition equals the manifest's.
 
 Pi 0.80.2's Bedrock client (`bedrock-converse-stream.js` in pi-ai) places
 a cache point after the system prompt and one at the end of the last
@@ -341,7 +342,7 @@ reads that definition:
 | `native_compaction` | Pi's compaction, through the same client | system, last user message |
 | `memory_capture` | the plugin's `streamSimple` call with the model from Pi's registry (`packages/pi-plugin/src/memory-capture-native.ts`) | system, the one user message |
 | `history_summarizer`, `context_researcher`, `memory_classifier` | a child `pi --print --mode json --no-session` (`packages/pi-plugin/src/subagent-runner.ts`), which reads the arm's `models.json` | system, last user message |
-| `user-sim`, `judge` | the harness, straight to the proxy | none; their bodies and prices are the same under both values |
+| `user-sim`, `judge` | the harness, straight to the proxy | none; their bodies are the same under both values, and the report prices them at the run's table |
 
 The host arm and the Eidnara arms therefore run under one policy, set by
 Pi. A capture or summarizer call writes its own user message to the cache
@@ -414,7 +415,11 @@ complete evidence only when the two agree:
   them carry a cache point, and the input, cache-read, and cache-write
   tokens. Under `on`, a caller that goes through the host's model client
   (`agent`, `native_compaction`, and the Eidnara components) with stored
-  requests of which none carries a cache point is a mismatch. A mismatch
+  requests of which none carries a cache point is a mismatch. The run
+  applies the same rule at every `session_end` to the requests counted as
+  this invocation's calls started (`call_started` names each body's cache
+  points), and a mismatch there fails the event like a boot mismatch, so a
+  host that places no cache point stops after one session. A mismatch
   leaves `EndArm` unwritten, so the run is incomplete and a resume checks the
   same evidence again: a host-only arm with a plugin boot
   or an Eidnara component call; an arm with Eidnara compaction on that

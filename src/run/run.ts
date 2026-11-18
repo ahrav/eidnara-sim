@@ -52,13 +52,7 @@ import type { Preregistration, Tier } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import { bedrockUpstream, Gateway } from "../proxy/gateway";
 import { FaultInjector, restoreOrder } from "../proxy/inject";
-import {
-    CacheGaps,
-    type CallRecord,
-    HARNESS_COMPONENTS,
-    RecordWriter,
-    recordProblems,
-} from "../proxy/records";
+import { CacheGaps, type CallRecord, RecordWriter, recordProblems } from "../proxy/records";
 import { RequestPartLog, RequestStore } from "../proxy/requests";
 import { Rng } from "../rng";
 import {
@@ -102,10 +96,13 @@ import { writeAtomic } from "./atomic";
 import { sessionViews, withUserTurns } from "./callviews";
 import {
     bootMismatches,
+    type CachingCount,
     CachingTally,
+    cachingMismatches,
     capabilityRecord,
     type ExpectedNote,
     logLength,
+    noteRequest,
     observeArm,
     observeDelivery,
     readPluginLog,
@@ -124,7 +121,7 @@ import { plainPath } from "./launcher";
 import { ORACLE_OPENING, oracleBackground } from "./oracle-note";
 import { contains, realExisting } from "./paths";
 import { type Preflight, piCli, preflight, preflightDrift } from "./preflight";
-import { isPriceTable, type PriceTable, priceTableFor } from "./price";
+import { isPriceTable, type PriceTable, pricedByCachedTable, priceTableFor } from "./price";
 import { running } from "./procs";
 import { gatewayRetry, transientUserSim, withRetry } from "./retry";
 import { ResourceSampler } from "./sampler";
@@ -1732,6 +1729,15 @@ export async function loadManifest(
         return revision ? { manifest, checks, revision } : { manifest, checks };
     }
     requireMechanisms(wanted.fault_override ?? scenario.faults, wanted.models);
+    // A caching-on run prices every host call at one model's rates, so its models are that model.
+    const unpriced = [...wanted.models, ...(wanted.side_model ? [wanted.side_model] : [])].filter(
+        (m) => wanted.prompt_caching === "on" && !pricedByCachedTable(m),
+    );
+    if (unpriced.length > 0) {
+        throw new HarnessFailure(
+            `prompt caching on prices calls at ${priceTableFor("on").version}, which holds no rates for ${unpriced.join(", ")}`,
+        );
+    }
     sources(
         wanted.tapes,
         wanted.events,
@@ -2175,6 +2181,8 @@ async function runArms(
     // rebuilds the last served receipt times from the log.
     const caching = manifest.prompt_caching ?? "off";
     const cacheGaps = caching === "on" ? new CacheGaps() : null;
+    /** Each arm's requests by component as this invocation's calls started, for the session-end check. */
+    const liveCaching = new Map<string, Record<string, CachingCount>>();
     readCallLog(
         callsPath,
         (r) => {
@@ -2272,12 +2280,7 @@ async function runArms(
     let jobSeq = journal.entries.filter((e) => e.kind === "RegisterJob").length;
     class RunRecords extends RecordWriter {
         override write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
-            const record = super.write(
-                cacheGaps && !HARNESS_COMPONENTS.has(partial.component)
-                    ? { ...partial, cache_gap: cacheGaps.of(partial) }
-                    : partial,
-            );
-            cacheGaps?.note(record);
+            const record = super.write(partial);
             noteAgent(record);
             sessionCalls.noteWritten(record);
             return record;
@@ -2291,7 +2294,11 @@ async function runArms(
     const requests = new RequestStore(join(o.out, "requests.jsonl"));
     const gateway = new Gateway({
         upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
-        records: new RunRecords(callsPath, { resume: true, retain: false }),
+        records: new RunRecords(callsPath, {
+            resume: true,
+            retain: false,
+            ...(cacheGaps ? { cacheGaps } : {}),
+        }),
         injector,
         rng: new Rng((seed ^ 0x27d4eb2f) >>> 0),
         clock: { scenarioMs: now },
@@ -2312,6 +2319,11 @@ async function runArms(
             return scheduler.jobHold(`request-${jobSeq++}`);
         },
         observe: (e) => {
+            if (caching === "on") {
+                const seen = liveCaching.get(scope.arm) ?? {};
+                liveCaching.set(scope.arm, seen);
+                noteRequest(seen, e.component, e.cache_points);
+            }
             if (scheduler.runningArm() !== scope.arm) return;
             scheduler.observe(e.component);
             return scheduler.jobHold(`${e.component}-${jobSeq++}`);
@@ -2465,6 +2477,14 @@ async function runArms(
         unchecked.delete(arm);
         const boots = readPluginLog(join(armRoot, "eidnara.log"), sessionMark.get(arm) ?? 0);
         const wrong = bootMismatches(armProfile(arm), boots);
+        if (wrong.length > 0) {
+            throw new HarnessFailure(`arm ${arm} capability mismatch: ${wrong.join("; ")}`);
+        }
+    };
+    // A session's requests against the run's caching condition, at its end: a host caller whose
+    // requests carry no cache point stops the run after one session's spend.
+    const requireCachePoints = (arm: string) => {
+        const wrong = cachingMismatches(caching, { components: liveCaching.get(arm) ?? {} });
         if (wrong.length > 0) {
             throw new HarnessFailure(`arm ${arm} capability mismatch: ${wrong.join("; ")}`);
         }
@@ -2663,6 +2683,7 @@ async function runArms(
                                 throw caught;
                             }
                             requireBoots(arm, armRoot);
+                            requireCachePoints(arm);
                             sessionCalls.close(arm, e.session);
                             return out;
                         }

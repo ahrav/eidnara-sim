@@ -832,8 +832,9 @@ describe("run inputs", () => {
         );
 
         const out = dir();
+        const opus = "global.anthropic.claude-opus-5-5";
         const o: RunOptions = {
-            config,
+            config: { ...config, agent_model: opus },
             tier: "M",
             seed: 605,
             host: "pi",
@@ -841,6 +842,19 @@ describe("run inputs", () => {
             qualification: "PCH",
         };
         const scenario = writeScenario(out, scenarioBody(605, "M"));
+        // The cached table holds one model's rates, so a run of any other model is refused unwritten.
+        const haiku = "global.anthropic.claude-haiku-5-5";
+        const others: [Partial<RunOptions>, string][] = [
+            [{ config }, "m"],
+            [{ models: [opus, "us.anthropic.claude-opus-5-5"] }, "us.anthropic.claude-opus-5-5"],
+            [{ sideModel: haiku }, haiku],
+        ];
+        for (const [other, named] of others) {
+            await expect(loadManifest({ ...o, ...other }, scenario, checks)).rejects.toThrow(
+                `which holds no rates for ${named}`,
+            );
+        }
+        expect(existsSync(join(out, "manifest.json"))).toBe(false);
         const on = await loadManifest(o, scenario, checks);
         expect(on.manifest.qualification?.id).toBe("PCH");
         expect(on.manifest.order).toEqual(["host", "eidnara"]);

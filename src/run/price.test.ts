@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import { componentCosts } from "../report/cost";
-import { CACHED_PRICE_TABLE, callUsd, isPriceTable, PRICE_TABLE, priceTableFor } from "./price";
+import {
+    CACHED_PRICE_TABLE,
+    callUsd,
+    isPriceTable,
+    PRICE_TABLE,
+    pricedByCachedTable,
+    priceTableFor,
+} from "./price";
 
 const call = {
     input_tokens: 1_000,
@@ -23,6 +30,20 @@ test("a caching-off run keeps the v1 table and a caching-on run takes the Opus 5
         cache_write: 5,
         cache_write_1h: 8,
     });
+});
+
+test("the cached table prices Claude Opus 5.5 through the global profile and no other model", () => {
+    expect(pricedByCachedTable("global.anthropic.claude-opus-5-5")).toBe(true);
+    expect(pricedByCachedTable("global.anthropic.claude-opus-5-5-v1:0")).toBe(true);
+    for (const other of [
+        "us.anthropic.claude-opus-5-5",
+        "anthropic.claude-opus-5-5",
+        "global.anthropic.claude-opus-5-50",
+        "global.anthropic.claude-opus-5",
+        "global.anthropic.claude-haiku-5-5",
+    ]) {
+        expect(pricedByCachedTable(other)).toBe(false);
+    }
 });
 
 test("each token class of a call takes its own rate", () => {

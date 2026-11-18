@@ -18,15 +18,16 @@ import {
     capabilityGaps,
     DAEMON_VARIANTS,
 } from "../hosts/profiles";
-import type { RequestPart } from "../proxy/requests";
+import { cachePointsOf, type RequestPart } from "../proxy/requests";
 import {
     armMismatches,
     bootMismatches,
+    type CachingCount,
     CachingTally,
-    cachePointsOf,
     cachingMismatches,
     capabilityRecord,
     logLength,
+    noteRequest,
     observeArm,
     openItemsOf,
     readDaemonStatus,
@@ -981,4 +982,20 @@ test("the capability record names the run's caching condition beside what the ar
         prompt_caching: "on",
         mismatches: [],
     });
+});
+
+test("requests counted as their calls start hold a session to the caching condition", () => {
+    const live: Record<string, CachingCount> = {};
+    noteRequest(live, "agent", 2);
+    noteRequest(live, "agent", 0);
+    noteRequest(live, "history_summarizer", 0);
+    noteRequest(live, "user-sim", 0);
+    expect(live.agent).toMatchObject({ requests: 2, with_cache_points: 1 });
+    expect(live["user-sim"]).toBeUndefined();
+    expect(cachingMismatches("on", { components: live })).toEqual([
+        "1 history_summarizer requests and none carries a cache point, but the run registers prompt caching on",
+    ]);
+    noteRequest(live, "history_summarizer", 2);
+    expect(cachingMismatches("on", { components: live })).toEqual([]);
+    expect(cachingMismatches("on", { components: {} })).toEqual([]);
 });

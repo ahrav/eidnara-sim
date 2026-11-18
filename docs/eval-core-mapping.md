@@ -249,10 +249,11 @@ there needs `eval-manifest/v10`; no extension is made here.
 
 `manifest.prompt_caching` records the prompt-caching condition the run's
 qualification registers (`on` or `off`; a manifest without the field ran
-`off`), and `manifest.price_table` the rates that condition selects. Both
-are run identity components: the condition changes each request's cache
-points and the table its cost, a registration gives all its runs one
-condition, and the tier report pools only runs that share a price table.
+`off`), and `manifest.price_table` the rates that condition selects. The
+condition changes each request's cache points and the table its cost.
+Both lie in the manifest's execution digest, a registration gives all its
+runs one condition, and the tier report's identity carries the price
+table, so it pools only runs that share one.
 The claim boundary's first exclusion stands under either value: cache
 warmth runs in wall time, and each call record of a caching-on run carries
 the scenario and wall time since the calls whose prefix it can read, so an

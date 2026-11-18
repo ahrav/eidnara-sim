@@ -8,6 +8,7 @@ import { Gateway, type Upstream } from "./gateway";
 import { FaultInjector } from "./inject";
 import { CacheGaps, RecordWriter, recordProblems } from "./records";
 import {
+    bodyCachePoints,
     partId,
     RequestPartLog,
     RequestStore,
@@ -297,6 +298,7 @@ test("a body with cache points is forwarded and stored whole, and a 1-hour write
             return { json: { output: { message }, stopReason: "end_turn", usage: usages.shift() } };
         },
     };
+    const started: number[] = [];
     const gateway = new Gateway({
         upstream,
         records,
@@ -305,6 +307,9 @@ test("a body with cache points is forwarded and stored whole, and a 1-hour write
         clock: { scenarioMs: () => 0 },
         scope: () => ({ arm: "a", session: "s", turn: "t" }),
         requests,
+        observe: (e) => {
+            started.push(e.cache_points);
+        },
     });
     await gateway.start();
     gateways.push(gateway);
@@ -323,6 +328,9 @@ test("a body with cache points is forwarded and stored whole, and a 1-hour write
     await gateway.stop();
     requests.close();
     expect(seen).toEqual([body, body]);
+    // Each call's start names the cache points of its body: one after the system prompt, one in the message.
+    expect(started).toEqual([2, 2]);
+    expect(bodyCachePoints({ ...body, system: [{ text: "s" }], messages: [turn("a")] })).toBe(0);
     const [first, second] = records.records;
     const parts = readRequestParts(path);
     expect(rebuildRequest(first?.request as never, parts)).toEqual(body);
@@ -346,12 +354,14 @@ const served = (
     component: string,
     scenario_ms: number,
     started_wall_ms: number,
+    first_byte_ms: number | null = 0,
 ) => ({
     arm,
     session,
     component: component as "agent",
     scenario_ms,
     started_wall_ms,
+    first_byte_ms,
     status: 200,
     input_tokens: 4,
     cache_read_tokens: 0,
@@ -387,6 +397,21 @@ test("a call's cache gaps run from the last served call of its session and of it
     });
 });
 
+test("a call's cache gaps run between answers, so a proxy retry's backoff falls on the call that waited", () => {
+    const gaps = new CacheGaps();
+    // Received at 0 and answered 90 s later, after the proxy's upstream retries.
+    gaps.note(served("host", "s-1", "agent", 0, 10_000, 90_000));
+    // Received 250 s after that receipt and answered 2 s later: 162 s after the earlier answer.
+    const next = served("host", "s-1", "agent", 250_000, 260_000, 2_000);
+    expect(gaps.of(next).session).toEqual({ scenario_ms: 162_000, wall_ms: 162_000 });
+    gaps.note(next);
+    // A call with no answer byte is measured from its receipt.
+    expect(gaps.of(served("host", "s-1", "agent", 300_000, 310_000, null)).session).toEqual({
+        scenario_ms: 48_000,
+        wall_ms: 48_000,
+    });
+});
+
 test("a call the provider never served leaves the cache gaps as they were", () => {
     const gaps = new CacheGaps();
     gaps.note(served("host", "s-1", "agent", 1_000, 50_000));
@@ -403,6 +428,49 @@ test("a call the provider never served leaves the cache gaps as they were", () =
         scenario_ms: 0,
         wall_ms: 0,
     });
+});
+
+test("a writer with a gap tracker stamps each host call, and a resumed tracker continues from the log", () => {
+    const record = (
+        component: "agent" | "user-sim",
+        scenario_ms: number,
+        started_wall_ms: number,
+    ) => ({
+        arm: "host",
+        session: "s-1",
+        turn: null,
+        component,
+        componentSource: "inferred" as const,
+        model: "m",
+        status: 200,
+        finish_reason: "end_turn",
+        input_tokens: 4,
+        output_tokens: 1,
+        cache_read_tokens: 0,
+        cache_write_tokens: 100,
+        started_wall_ms,
+        scenario_ms,
+        first_byte_ms: 1,
+        proxy_retries: 0,
+        fault_ref: null,
+        error: null,
+    });
+    const writer = new RecordWriter(null, { cacheGaps: new CacheGaps() });
+    const first = writer.write(record("agent", 1_000, 10_000));
+    const harness = writer.write(record("user-sim", 2_000, 11_000));
+    const second = writer.write(record("agent", 400_000, 12_000));
+    // The first call has no earlier call to measure from; the gap is read before the call is noted.
+    expect(first.cache_gap).toEqual({ ttl_ms: 300_000, session: null, arm: null });
+    expect(harness.cache_gap).toBeUndefined();
+    expect(second.cache_gap?.session).toEqual({ scenario_ms: 399_000, wall_ms: 2_000 });
+    expect(new RecordWriter(null).write(record("agent", 1, 1)).cache_gap).toBeUndefined();
+    // A resume feeds the tracker the log's records, in any order, and continues from the latest.
+    const resumed = new CacheGaps();
+    for (const r of [second, harness, first]) resumed.note(r);
+    const next = new RecordWriter(null, { cacheGaps: resumed }).write(
+        record("agent", 401_000, 13_000),
+    );
+    expect(next.cache_gap?.session).toEqual({ scenario_ms: 1_000, wall_ms: 1_000 });
 });
 
 test("a record's cache gap is two gaps or nulls of non-negative times", () => {

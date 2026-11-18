@@ -91,7 +91,7 @@ export interface CallRecord {
  */
 const CACHE_TTL_MS = 300_000;
 
-/** Scenario and wall time from one call's receipt to a later call's receipt. */
+/** Scenario and wall time from one call's answer to a later call's answer. */
 export interface Gap {
     scenario_ms: number;
     wall_ms: number;
@@ -114,39 +114,50 @@ export interface CacheGap {
     arm: Gap | null;
 }
 
-type Served = Pick<
+type Timed = Pick<
     CallRecord,
-    | "arm"
-    | "session"
-    | "component"
-    | "scenario_ms"
-    | "started_wall_ms"
-    | "status"
-    | "input_tokens"
-    | "cache_read_tokens"
-    | "cache_write_tokens"
+    "arm" | "session" | "component" | "scenario_ms" | "started_wall_ms" | "first_byte_ms"
 >;
+type Served = Timed &
+    Pick<CallRecord, "status" | "input_tokens" | "cache_read_tokens" | "cache_write_tokens">;
 
 /**
- * The receipt times of the last served call per arm, session, and component, fed every call
- * record in write order. A call counts as served when the provider answered it with prompt usage,
- * since only such a call reads or writes the provider's cache; a call the proxy faulted or the
- * provider refused leaves the times as they were.
+ * When the provider began to answer a call, on both clocks: its receipt plus the time to its
+ * first answer byte, which holds the proxy's upstream retries and their backoff. The provider
+ * reads the cache for the attempt it answers, and a prefix it writes can be read once that
+ * answer has started. Scenario time runs at wall speed while a call is in flight, so the same
+ * delay applies to both. A call with no answer keeps its receipt.
+ */
+const answeredAt = (call: Timed): Gap => {
+    const wait = Math.round(call.first_byte_ms ?? 0);
+    return { scenario_ms: call.scenario_ms + wait, wall_ms: call.started_wall_ms + wait };
+};
+
+/**
+ * The answer times (`answeredAt`) of the last served call per arm, session, and component, fed
+ * every call record in write order. A call counts as served when the provider answered it with
+ * prompt usage, since only such a call reads or writes the provider's cache; a call the proxy
+ * faulted or the provider refused leaves the times as they were.
  */
 export class CacheGaps {
     private readonly last = new Map<string, Gap>();
 
+    /** `partial` with its gaps, for a call of a host under test; the harness's own calls stay as they are. */
+    stamp<T extends Omit<CallRecord, "seq" | "wall_ms">>(partial: T): T {
+        if (HARNESS_COMPONENTS.has(partial.component)) return partial;
+        return { ...partial, cache_gap: this.of(partial) };
+    }
+
     /** The gaps of `call`, read before `note` records it. */
-    of(
-        call: Pick<Served, "arm" | "session" | "component" | "scenario_ms" | "started_wall_ms">,
-    ): CacheGap {
+    of(call: Timed): CacheGap {
+        const at = answeredAt(call);
         const since = (key: string): Gap | null => {
             const prev = this.last.get(key);
             if (!prev) return null;
-            // A call received before the previous one's receipt overlapped it; the gap is none.
+            // A call answered before the previous one's answer overlapped it; the gap is none.
             return {
-                scenario_ms: Math.max(0, call.scenario_ms - prev.scenario_ms),
-                wall_ms: Math.max(0, call.started_wall_ms - prev.wall_ms),
+                scenario_ms: Math.max(0, at.scenario_ms - prev.scenario_ms),
+                wall_ms: Math.max(0, at.wall_ms - prev.wall_ms),
             };
         };
         const [arm, session] = CacheGaps.keys(call);
@@ -156,16 +167,17 @@ export class CacheGaps {
     note(call: Served): void {
         const prompt = call.input_tokens + call.cache_read_tokens + call.cache_write_tokens;
         if (call.status !== 200 || prompt <= 0) return;
+        const at = answeredAt(call);
         for (const key of CacheGaps.keys(call)) {
             const prev = this.last.get(key);
             this.last.set(key, {
-                scenario_ms: Math.max(prev?.scenario_ms ?? 0, call.scenario_ms),
-                wall_ms: Math.max(prev?.wall_ms ?? 0, call.started_wall_ms),
+                scenario_ms: Math.max(prev?.scenario_ms ?? 0, at.scenario_ms),
+                wall_ms: Math.max(prev?.wall_ms ?? 0, at.wall_ms),
             });
         }
     }
 
-    private static keys(call: Pick<Served, "arm" | "session" | "component">): [string, string] {
+    private static keys(call: Pick<Timed, "arm" | "session" | "component">): [string, string] {
         const arm = JSON.stringify([call.arm, call.component]);
         return [arm, JSON.stringify([call.arm, call.component, call.session])];
     }
@@ -315,15 +327,22 @@ export class RecordWriter {
     private closed = false;
     readonly records: CallRecord[] = [];
     private readonly retain: boolean;
+    private readonly cacheGaps: CacheGaps | null;
 
     /**
      * `resume` reopens an existing journal: a line a kill cut mid-append is dropped and the
      * sequence continues after the last complete record. `retain` keeps every record in
      * `records` for callers that read them back in memory; a run-long writer passes false,
-     * since its records live on disk and in the run's per-session call views. The record file
-     * exists from construction, so a run with no calls still has a `calls.jsonl`.
+     * since its records live on disk and in the run's per-session call views. With `cacheGaps`,
+     * a caching-on run's tracker, each record of a host under test carries its `cache_gap` and
+     * is noted once written; a resume first feeds the tracker the records the log holds. The
+     * record file exists from construction, so a run with no calls still has a `calls.jsonl`.
      */
-    constructor(path: string | null, options: { resume?: boolean; retain?: boolean } = {}) {
+    constructor(
+        path: string | null,
+        options: { resume?: boolean; retain?: boolean; cacheGaps?: CacheGaps } = {},
+    ) {
+        this.cacheGaps = options.cacheGaps ?? null;
         this.retain = options.retain ?? true;
         const resume = options.resume ?? false;
         this.fd = path === null ? null : openJournal(path, resume);
@@ -368,12 +387,14 @@ export class RecordWriter {
             );
         }
         const wall_ms = Math.max(this.lastWall, partial.started_wall_ms, Date.now());
-        const record = { ...partial, seq: this.seq, wall_ms };
+        const stamped = this.cacheGaps ? this.cacheGaps.stamp(partial) : partial;
+        const record = { ...stamped, seq: this.seq, wall_ms };
         const problems = recordProblems(record);
         if (problems.length > 0) throw new Error(`call record refused: ${problems.join(", ")}`);
         if (this.fd !== null) this.append(this.fd, `${JSON.stringify(record)}\n`);
         this.seq++;
         this.lastWall = wall_ms;
+        this.cacheGaps?.note(record);
         if (this.retain) this.records.push(record);
         return record;
     }

@@ -24,7 +24,7 @@ import { COMPONENT_HEADER, type ConverseBody, classify } from "./classify";
 import { encodeError, encodeEvent, encodeException, wireJson } from "./eventstream";
 import { type FaultInjector, type Sink, sleep, writeFault } from "./inject";
 import { type CallRecord, type Component, RESPONSE_TEXT_LIMIT, type RecordWriter } from "./records";
-import type { RequestStore } from "./requests";
+import { bodyCachePoints, type RequestStore } from "./requests";
 
 export type UpstreamResponse =
     | { events: AsyncIterable<Record<string, unknown>> }
@@ -114,6 +114,8 @@ export interface CallStarted {
     kind: "call_started";
     component: Component;
     wall_ms: number;
+    /** The cache point blocks the forwarded body carries. */
+    cache_points: number;
 }
 
 export interface GatewayOptions {
@@ -635,9 +637,14 @@ export class Gateway {
             }
         }
         progress(done);
-        const event = { kind: "call_started", component: tag.component, wall_ms: Date.now() };
+        const event: CallStarted = {
+            kind: "call_started",
+            component: tag.component,
+            wall_ms: Date.now(),
+            cache_points: bodyCachePoints(body),
+        };
         try {
-            const ended = this.options.observe?.(event as CallStarted);
+            const ended = this.options.observe?.(event);
             if (typeof ended === "function") onEnd(ended as () => void);
         } catch (caught) {
             this.failures.push(caught as Error);

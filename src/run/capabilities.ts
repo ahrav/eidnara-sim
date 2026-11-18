@@ -26,7 +26,7 @@ import {
 } from "../hosts/profiles";
 import type { ConverseBody } from "../proxy/classify";
 import { type CallRecord, HARNESS_COMPONENTS } from "../proxy/records";
-import { type PartLookup, type RequestPart, rebuildRequest } from "../proxy/requests";
+import { cachePointsOf, type PartLookup, rebuildRequest } from "../proxy/requests";
 import { ORACLE_OPENING } from "./oracle-note";
 
 /** The model-call components only the Eidnara plugin and daemon make. */
@@ -103,23 +103,29 @@ export interface CachingObservation {
     components: Record<string, CachingCount>;
 }
 
+const countOf = (components: Record<string, CachingCount>, component: string): CachingCount =>
+    (components[component] ??= {
+        requests: 0,
+        with_cache_points: 0,
+        input_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+    });
+
 /**
- * The cache point blocks a stored part carries: among a `system` part's blocks, a message's
- * content blocks, or a `toolConfig` part's tools, the three places Bedrock accepts one.
+ * Counts one request of `component` that carries `points` cache points. The run counts each
+ * request as its call starts, so a session's end can hold the arm to the caching condition
+ * before the arm's finish reads the stored bodies.
  */
-export function cachePointsOf(part: RequestPart): number {
-    const value = part.value as { content?: unknown; tools?: unknown } | null;
-    const blocks =
-        part.field === "system"
-            ? value
-            : part.field === "messages"
-              ? value?.content
-              : part.field === "toolConfig"
-                ? value?.tools
-                : null;
-    return (Array.isArray(blocks) ? blocks : []).filter(
-        (b) => typeof b === "object" && b !== null && "cachePoint" in b,
-    ).length;
+export function noteRequest(
+    components: Record<string, CachingCount>,
+    component: string,
+    points: number,
+): void {
+    if (HARNESS_COMPONENTS.has(component)) return;
+    const count = countOf(components, component);
+    count.requests++;
+    if (points > 0) count.with_cache_points++;
 }
 
 /** Builds an arm's `CachingObservation` from its call records; each stored part is read once. */
@@ -136,19 +142,13 @@ export class CachingTally {
         >,
     ): void {
         if (HARNESS_COMPONENTS.has(call.component)) return;
-        const count = (this.components[call.component] ??= {
-            requests: 0,
-            with_cache_points: 0,
-            input_tokens: 0,
-            cache_read_tokens: 0,
-            cache_write_tokens: 0,
-        });
+        const count = countOf(this.components, call.component);
         count.input_tokens += call.input_tokens;
         count.cache_read_tokens += call.cache_read_tokens;
         count.cache_write_tokens += call.cache_write_tokens;
         if (!call.request) return;
-        count.requests++;
-        if (call.request.parts.some((id) => this.pointsOf(id) > 0)) count.with_cache_points++;
+        const points = call.request.parts.reduce((n, id) => n + this.pointsOf(id), 0);
+        noteRequest(this.components, call.component, points);
     }
 
     private pointsOf(id: string): number {

@@ -51,6 +51,13 @@ export function isPriceTable(table: unknown): table is PriceTable {
     return RATES.every(rate) && Object.keys(rates).every((k) => known.includes(k) && rate(k));
 }
 
+/**
+ * Whether `CACHED_PRICE_TABLE` holds `model`'s rates: Claude Opus 5.5 through the global inference
+ * profile. The in-Region profiles cost 10% more, and every other model has rates of its own.
+ */
+export const pricedByCachedTable = (model: string): boolean =>
+    /^global\.anthropic\.claude-opus-5-5(?![0-9])/.test(model);
+
 export const priceTableFor = (caching: PromptCaching): PriceTable =>
     caching === "on" ? CACHED_PRICE_TABLE : PRICE_TABLE;
 
