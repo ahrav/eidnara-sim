@@ -42,7 +42,14 @@ describe("product paths", () => {
             "src/index.spec.ts",
             "src/db_test.rs",
             "src/db_tests.rs",
+            "src/tests.rs",
+            "src/cmd/tests.rs",
+            "src/test.rs",
             "benches/parse.rs",
+            "bench/parse.rs",
+            "benchmarks/route.ts",
+            "benchmark/route.ts",
+            "fixtures/big.go",
             "examples/pub.rs",
             "_examples/rest/main.go",
             "example/a.ts",
@@ -112,44 +119,115 @@ describe("product code", () => {
         );
     });
 
-    test("a Rust test module, an item under cfg(test), and a hunk inside a test module stay out", () => {
+    test("a Rust test module stays out from its attribute to its closing brace, and the code after it stays in", () => {
         const inModule = added("src/db.rs", [
             "fn sweep() {}",
             "#[cfg(test)]",
             "mod tests {",
             "    use super::*;",
+            "",
             "    #[tokio::test]",
-            "    async fn idle() { time::interval(Duration::from_secs(1)); }",
+            "    async fn idle() {",
+            "        time::interval(Duration::from_secs(1));",
+            "    }",
+            "    fn second() { time::interval(D); }",
             "}",
             "fn after() { time::interval(Duration::from_secs(60)); }",
         ]);
         expect(productCode(inModule).code).toBe(
             "fn sweep() {}\nfn after() { time::interval(Duration::from_secs(60)); }",
         );
-        const item = added("src/db.rs", [
-            "#[cfg(test)]",
-            "use std::thread::sleep;",
-            "#[cfg(all(test, unix))]",
-            "#[allow(dead_code)]",
-            "fn pause() {",
-            "    std::thread::sleep(D);",
+        const oneLine = added("src/db.rs", [
+            "#[cfg(test)] mod tests {",
+            "    fn a() { thread::sleep(D); }",
             "}",
             "fn live() {}",
         ]);
-        expect(productCode(item).code).toBe("fn live() {}");
+        expect(productCode(oneLine).code).toBe("fn live() {}");
+        // A brace at column zero inside a raw string closes nothing.
+        const raw = added("src/db.rs", [
+            "mod tests {",
+            '    const J: &str = r#"',
+            "{",
+            "}",
+            '"#;',
+            "    fn a() { thread::sleep(D); }",
+            "}",
+            "fn live() {}",
+        ]);
+        expect(productCode(raw).code).toBe("fn live() {}");
+    });
+
+    test("an item under cfg(test) stays out through its header and body, and the item after it stays in", () => {
+        const items = added("src/db.rs", [
+            "#[cfg(test)]",
+            "use std::thread::sleep;",
+            "fn mid() {}",
+            "#[cfg(test)] use std::time::Instant;",
+            "fn mid2() {}",
+            "#[cfg(all(test, unix))]",
+            "#[allow(dead_code)]",
+            "fn pause(",
+            "    d: Duration,",
+            ") -> u32 {",
+            "    std::thread::sleep(d);",
+            "    0",
+            "}",
+            "#[cfg(test)]",
+            "static DELAYS: &[u32] = &[",
+            "    1,",
+            "];",
+            "#[cfg(test)]",
+            "impl<T> Probe<T>",
+            "where",
+            "    T: Send,",
+            "{",
+            "    fn nap(&self) { thread::sleep(D); }",
+            "}",
+            "#[cfg(not(test))]",
+            "fn live() { thread::sleep(D); }",
+        ]);
+        expect(productCode(items).code).toBe(
+            "fn mid() {}\nfn mid2() {}\n#[cfg(not(test))]\nfn live() { thread::sleep(D); }",
+        );
+    });
+
+    test("each hunk is read from its own header: inside a test module, or past one that closed above it", () => {
         const later = fileOf("src/db.rs", [
             ["", [" #[cfg(test)]", " mod tests {", "+    fn a() { thread::sleep(D); }"]],
-            ["", ["+    fn b() { thread::sleep(D); }", " }", "+fn c() { thread::sleep(D); }"]],
+            [
+                "mod tests {",
+                ["+    fn b() { thread::sleep(D); }", " }", "+fn c() { thread::sleep(D); }"],
+            ],
         ]);
         expect(productCode(later).code).toBe("fn c() { thread::sleep(D); }");
-        const headed = fileOf("src/db.rs", [
-            ["mod tests {", ["+    fn a() { thread::sleep(D); }", " }", "+fn d() {}"]],
-        ]);
-        expect(productCode(headed).code).toBe("fn d() {}");
         const named = fileOf("src/db.rs", [
             ["pub(crate) mod parse_tests {", ["+    fn a() { thread::sleep(D); }"]],
         ]);
         expect(productCode(named).code).toBe("");
+        // Git names the last column-zero line above the hunk, also when that module has closed.
+        const past = fileOf("src/db.rs", [
+            [
+                "mod tests {",
+                [" // a", " // b", " ", "+fn hash_off() {", "+    thread::sleep(D);", "+}"],
+            ],
+        ]);
+        expect(productCode(past).code).toBe("fn hash_off() {\n    thread::sleep(D);\n}");
+        // A test item left open at a hunk's end claims nothing in the next hunk.
+        const carried = fileOf("src/db.rs", [
+            ["", [" #[cfg(test)]", " impl Db {", "+    fn probe(&self) {}"]],
+            ["impl Db {", [" pub fn sweep() {", "+    thread::sleep(D);", " }"]],
+        ]);
+        expect(productCode(carried).code).toBe("    thread::sleep(D);");
+    });
+
+    test("a closing delimiter of a literal that opened above the hunk leaves the code after it in the code", () => {
+        const template = fileOf("src/compose.ts", [
+            ["", ["   WHERE id = $1", " `;", "+const cache = new Map();", " run(q)"]],
+        ]);
+        expect(matchesCode(productCode(template), ["new\\s+Map\\("])).toBe(true);
+        const raw = fileOf("mux.go", [["", ["   id = ?", " `", "+\ttime.Sleep(d)", " }"]]]);
+        expect(matchesCode(productCode(raw), ["time\\.Sleep"])).toBe(true);
     });
 
     test("a test attribute in a comment opens nothing, and other languages keep every added line", () => {

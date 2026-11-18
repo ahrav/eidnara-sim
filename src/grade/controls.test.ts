@@ -680,6 +680,10 @@ describe("P4: each side keeps its own rule, and a rule may not leak across the s
 
 describe("P5: the rejected approach stays out of the product code", () => {
     const p5 = probeOf("P5", "rs-no-global-mutex");
+    const digestFile: FileEdit = {
+        path: "src/cmd/digest.rs",
+        lines: ["let sum = crc32fast::hash(&value);"],
+    };
 
     test("a per-store lock passes; a global lock fails, and a no-op with an empty reply fails", () => {
         const sharded = {
@@ -747,6 +751,11 @@ describe("P5: the rejected approach stays out of the product code", () => {
                 "reused the rejected approach",
             ]);
         }
+        // A deleted product file is work, as a deleted code file was under the registered rule.
+        const removed = grade(blocking, {
+            files: [{ path: "src/cmd/legacy.rs", lines: ["fn legacy() {}"], deleted: true }],
+        });
+        expect([removed.verdict, removed.metrics["P5.v1"]]).toEqual(["pass", "pass"]);
         // Tests alone are no product change: the reply decides between a deferral and no work.
         const testsOnly = { files: [named[0] as FileEdit] };
         expect(outcome(blocking, testsOnly)).toEqual(["excluded", "deferred"]);
@@ -756,6 +765,31 @@ describe("P5: the rejected approach stays out of the product code", () => {
             "no code change",
             "fail",
         ]);
+    });
+
+    test("a check's path, first-line, and command channels read the product files and the executed commands", () => {
+        const blocking = probeOf("P5", "rs-no-spawn-blocking");
+        const withCheck = (check: Check, t: Turn) =>
+            outcome({ ...blocking, check: check as ProbeItem["check"] }, t);
+        const reuse = ["fail", "reused the rejected approach"];
+        const pool = (path: string): Turn => ({
+            files: [{ path, lines: ["// pool: blocking", "fn run() {}"], created: true }],
+        });
+        const paths = { paths_must_not: ["blocking_pool\\.rs$"] };
+        expect(withCheck(paths, pool("src/blocking_pool.rs"))).toEqual(reuse);
+        expect(withCheck(paths, pool("tests/blocking_pool.rs"))).toEqual(["excluded", "deferred"]);
+        const first = { first_line_must_not: ["pool: blocking"] };
+        expect(withCheck(first, pool("src/hash.rs"))).toEqual(reuse);
+        expect(
+            withCheck(first, { files: [...(pool("tests/hash.rs").files ?? []), digestFile] }),
+        ).toEqual(["pass"]);
+        const commands = { commands_must_not: ["cargo add rayon"] };
+        expect(withCheck(commands, { files: [digestFile], commands: ["cargo add rayon"] })).toEqual(
+            reuse,
+        );
+        expect(
+            withCheck(commands, { files: [digestFile], commands: ["echo cargo add rayon"] }),
+        ).toEqual(["pass"]);
     });
 
     test("searching, reading, or recording the approach is no use of it; a command applying it fails the registered rule alone", () => {

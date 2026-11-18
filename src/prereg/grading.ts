@@ -10,7 +10,7 @@ export const JUDGED_REVISIONS = ["G10", "G11"] as const;
 export const RULE_REVISIONS = ["G12"] as const;
 /** Every grading revision under `prereg/`, oldest first. */
 export const GRADING_REVISIONS = [...JUDGED_REVISIONS, ...RULE_REVISIONS] as const;
-export type GradingRevisionId = (typeof JUDGED_REVISIONS)[number];
+export type JudgedRevisionId = (typeof JUDGED_REVISIONS)[number];
 export const ABSTAIN_LABELS = ["A", "B", "C", "D"] as const;
 export type AbstainLabel = (typeof ABSTAIN_LABELS)[number];
 /** The P8-twin labels; `P` is the class the labelling rubric writes A'. */
@@ -29,7 +29,7 @@ interface Split {
 /** What every grading revision holds, over the labels `L` of its probe. */
 interface Revision<L extends string> {
     schema: typeof GRADING_SCHEMA;
-    id: GradingRevisionId;
+    id: JudgedRevisionId;
     revision: number;
     frozen: true;
     /** The property the probe names; the rubric's passing labels state it. */
@@ -156,6 +156,81 @@ function splitErrors(v: unknown, at: string, unit = "answers"): string[] {
     return errors;
 }
 
+/** The errors of a revision's `supersedes`: the tier rule `key` with the value `was`, and the last tier revision it held in. */
+function supersedesErrors(value: Obj, key: string, was: string): string[] {
+    const supersedes = value.supersedes;
+    const held =
+        isObj(supersedes) &&
+        supersedes.key === key &&
+        supersedes.value === was &&
+        Number.isSafeInteger(supersedes.tier_revisions_through) &&
+        !(
+            Number.isSafeInteger(value.revision) &&
+            (supersedes.tier_revisions_through as number) >= (value.revision as number)
+        ) &&
+        Object.keys(supersedes).length === 3;
+    return held ? [] : ["supersedes: expected the tier rule and the last tier revision it held in"];
+}
+
+/** The errors of a revision's rubric: trimmed text with a line that defines each label. */
+function rubricErrors(rubric: unknown, labels: readonly string[]): string[] {
+    if (typeof rubric !== "string" || rubric.trim() !== rubric || rubric === "") {
+        return ["rubric: expected trimmed text"];
+    }
+    return labels
+        .filter((label) => !new RegExp(`^${label}: `, "m").test(rubric))
+        .map((label) => `rubric: defines no label ${label}`);
+}
+
+/**
+ * The errors of one labelled set of a revision: its label counts sum to `total`, its design
+ * and test splits partition it over disjoint campaigns, the audit count lies within it, and the
+ * superseded rule's agreement is given over all of it. `unit` names the counted thing.
+ */
+function labelledSetErrors(
+    v: Obj,
+    at: string,
+    unit: "answers" | "items" | "turns",
+    labels: readonly string[],
+): string[] {
+    const total = v[`labelled_${unit}`];
+    const errors = [
+        ...splitErrors(v.design, `${at}.design`, unit),
+        ...splitErrors(v.test, `${at}.test`, unit),
+    ];
+    const campaigns = (s: unknown): unknown[] =>
+        isObj(s) && Array.isArray(s.campaigns) ? s.campaigns : [];
+    if (campaigns(v.test).some((c) => campaigns(v.design).includes(c))) {
+        errors.push(`${at}: a campaign lies in the design split or the test split, one of them`);
+    }
+    const counts = isObj(v.label_counts) ? v.label_counts : {};
+    errors.push(...keysOf(counts, labels, `${at}.label_counts`));
+    const sum = labels.reduce((n, l) => n + (count(counts[l]) ? Number(counts[l]) : NaN), 0);
+    if (!count(total) || sum !== total) {
+        errors.push(`${at}.label_counts: expected one count per label summing to labelled_${unit}`);
+    }
+    const sizes = [v.design, v.test].map((s) =>
+        isObj(s) && count(s[unit]) ? Number(s[unit]) : NaN,
+    );
+    if ((sizes[0] as number) + (sizes[1] as number) !== total) {
+        errors.push(`${at}: the design and test splits partition the labelled ${unit}`);
+    }
+    if (!count(v.hand_audited) || (v.hand_audited as number) > (total as number)) {
+        errors.push(`${at}.hand_audited: expected a count within the labelled ${unit}`);
+    }
+    const old = v.superseded_rule;
+    if (isObj(old)) errors.push(...keysOf(old, [unit, "agreed"], `${at}.superseded_rule`));
+    if (
+        !isObj(old) ||
+        old[unit] !== total ||
+        !count(old.agreed) ||
+        (old.agreed as number) > (old[unit] as number)
+    ) {
+        errors.push(`${at}.superseded_rule: expected its agreement over the labelled ${unit}`);
+    }
+    return errors;
+}
+
 /** Every way `value` departs from a grading revision; empty when it is one. */
 export function validateGradingRevision(value: unknown): string[] {
     if (!isObj(value)) return ["expected an object"];
@@ -199,18 +274,7 @@ export function validateGradingRevision(value: unknown): string[] {
     if (value[spec.rule[0]] !== spec.rule[1]) {
         errors.push(`${spec.rule[0]}: expected ${spec.rule[1]}`);
     }
-    const supersedes = value.supersedes;
-    if (
-        !isObj(supersedes) ||
-        supersedes.key !== "grading.abstain_rule" ||
-        supersedes.value !== "abstention-without-guess" ||
-        !Number.isSafeInteger(supersedes.tier_revisions_through) ||
-        (Number.isSafeInteger(value.revision) &&
-            (supersedes.tier_revisions_through as number) >= (value.revision as number)) ||
-        Object.keys(supersedes).length !== 3
-    ) {
-        errors.push("supersedes: expected the tier rule and the last tier revision it held in");
-    }
+    errors.push(...supersedesErrors(value, "grading.abstain_rule", "abstention-without-guess"));
     const secondary = value.secondary_metric;
     if (
         !isObj(secondary) ||
@@ -241,16 +305,7 @@ export function validateGradingRevision(value: unknown): string[] {
     ) {
         errors.push("judge: expected a model, a positive max_tokens, and one call per answer");
     }
-    const rubric = value.rubric;
-    if (typeof rubric !== "string" || rubric.trim() !== rubric || rubric === "") {
-        errors.push("rubric: expected trimmed text");
-    } else {
-        for (const label of spec.labels) {
-            if (!new RegExp(`^${label}: `, "m").test(rubric)) {
-                errors.push(`rubric: defines no label ${label}`);
-            }
-        }
-    }
+    errors.push(...rubricErrors(value.rubric, spec.labels));
     const v = value.validation;
     if (!isObj(v)) errors.push("validation: expected an object");
     else {
@@ -269,34 +324,7 @@ export function validateGradingRevision(value: unknown): string[] {
                 ],
                 "validation",
             ),
-            ...splitErrors(v.design, "validation.design"),
-            ...splitErrors(v.test, "validation.test"),
         );
-        const campaigns = (s: unknown): unknown[] =>
-            isObj(s) && Array.isArray(s.campaigns) ? s.campaigns : [];
-        const designed = campaigns(v.design);
-        if (campaigns(v.test).some((c) => designed.includes(c))) {
-            errors.push(
-                "validation: a campaign lies in the design split or the test split, one of them",
-            );
-        }
-        const counts = isObj(v.label_counts) ? v.label_counts : {};
-        errors.push(...keysOf(counts, spec.labels, "validation.label_counts"));
-        const total = spec.labels.reduce(
-            (n, l) => n + (count(counts[l]) ? Number(counts[l]) : NaN),
-            0,
-        );
-        if (!count(v.labelled_answers) || total !== v.labelled_answers) {
-            errors.push(
-                "validation.label_counts: expected one count per label summing to labelled_answers",
-            );
-        }
-        const splits = [v.design, v.test].map((s) =>
-            isObj(s) && count(s.answers) ? Number(s.answers) : NaN,
-        );
-        if ((splits[0] as number) + (splits[1] as number) !== v.labelled_answers) {
-            errors.push("validation: the design and test splits partition the labelled answers");
-        }
         if (!count(v.label_passes) || (v.label_passes as number) < 2) {
             errors.push("validation.label_passes: expected at least two independent passes");
         }
@@ -318,23 +346,7 @@ export function validateGradingRevision(value: unknown): string[] {
         ) {
             errors.push("validation.label_pass_agreement: expected canonical decimals in [0, 1]");
         }
-        if (!count(v.hand_audited) || (v.hand_audited as number) > (v.labelled_answers as number)) {
-            errors.push("validation.hand_audited: expected a count within the labelled answers");
-        }
-        const old = v.superseded_rule;
-        if (isObj(old)) {
-            errors.push(...keysOf(old, ["answers", "agreed"], "validation.superseded_rule"));
-        }
-        if (
-            !isObj(old) ||
-            old.answers !== v.labelled_answers ||
-            !count(old.agreed) ||
-            (old.agreed as number) > (old.answers as number)
-        ) {
-            errors.push(
-                "validation.superseded_rule: expected its agreement over the labelled answers",
-            );
-        }
+        errors.push(...labelledSetErrors(v, "validation", "answers", spec.labels));
     }
     return errors;
 }
@@ -376,10 +388,10 @@ export const RULE_SCHEMA = "sim-grading-rule-revision/v1";
 /** The probes revision 12 grades: P5 by `reuse_rule`, and all three by `deferral_rule`. */
 export const RULE_PROBES = ["P2", "P5", "P11"] as const;
 /** The P5 labels: reuse, another way, named only, defers or asks, no real work. */
-export const REUSE_LABELS = ["U", "K", "M", "Q", "N"] as const;
-export type ReuseLabel = (typeof REUSE_LABELS)[number];
+const REUSE_LABELS = ["U", "K", "M", "Q", "N"] as const;
+type ReuseLabel = (typeof REUSE_LABELS)[number];
 /** The labels of a turn that did no work: it hands the next step back, or hands nothing back. */
-export const DEFERRAL_LABELS = ["Q", "N"] as const;
+const DEFERRAL_LABELS = ["Q", "N"] as const;
 const REUSE_RULE = "product-code-match";
 const DEFERRAL_RULE = "no-work-reply";
 const SECONDARY = RULE_PROBES.map((probe) => ({
@@ -446,55 +458,6 @@ export interface RuleRevision {
     };
 }
 
-/**
- * The errors of one labelled set of a rule revision: its label counts sum to `total`, its design
- * and test splits partition it over disjoint campaigns, the audit count lies within it, and the
- * superseded rule's agreement is given over all of it. `unit` names the counted thing.
- */
-function labelledSetErrors(
-    v: Obj,
-    at: string,
-    unit: "items" | "turns",
-    labels: readonly string[],
-): string[] {
-    const total = v[`labelled_${unit}`];
-    const errors = [
-        ...splitErrors(v.design, `${at}.design`, unit),
-        ...splitErrors(v.test, `${at}.test`, unit),
-    ];
-    const campaigns = (s: unknown): unknown[] =>
-        isObj(s) && Array.isArray(s.campaigns) ? s.campaigns : [];
-    if (campaigns(v.test).some((c) => campaigns(v.design).includes(c))) {
-        errors.push(`${at}: a campaign lies in the design split or the test split, one of them`);
-    }
-    const counts = isObj(v.label_counts) ? v.label_counts : {};
-    errors.push(...keysOf(counts, labels, `${at}.label_counts`));
-    const sum = labels.reduce((n, l) => n + (count(counts[l]) ? Number(counts[l]) : NaN), 0);
-    if (!count(total) || sum !== total) {
-        errors.push(`${at}.label_counts: expected one count per label summing to labelled_${unit}`);
-    }
-    const sizes = [v.design, v.test].map((s) =>
-        isObj(s) && count(s[unit]) ? Number(s[unit]) : NaN,
-    );
-    if ((sizes[0] as number) + (sizes[1] as number) !== total) {
-        errors.push(`${at}: the design and test splits partition the labelled ${unit}`);
-    }
-    if (!count(v.hand_audited) || (v.hand_audited as number) > (total as number)) {
-        errors.push(`${at}.hand_audited: expected a count within the labelled ${unit}`);
-    }
-    const old = v.superseded_rule;
-    if (isObj(old)) errors.push(...keysOf(old, [unit, "agreed"], `${at}.superseded_rule`));
-    if (
-        !isObj(old) ||
-        old[unit] !== total ||
-        !count(old.agreed) ||
-        (old.agreed as number) > (old[unit] as number)
-    ) {
-        errors.push(`${at}.superseded_rule: expected its agreement over the labelled ${unit}`);
-    }
-    return errors;
-}
-
 /** Every way `value` departs from a rule revision; empty when it is one. */
 export function validateRuleRevision(value: unknown): string[] {
     if (!isObj(value)) return ["expected an object"];
@@ -537,18 +500,7 @@ export function validateRuleRevision(value: unknown): string[] {
     if (value.deferral_rule !== DEFERRAL_RULE) {
         errors.push(`deferral_rule: expected ${DEFERRAL_RULE}`);
     }
-    const supersedes = value.supersedes;
-    if (
-        !isObj(supersedes) ||
-        supersedes.key !== "grading.no_change_question" ||
-        supersedes.value !== "deferred" ||
-        !Number.isSafeInteger(supersedes.tier_revisions_through) ||
-        (Number.isSafeInteger(value.revision) &&
-            (supersedes.tier_revisions_through as number) >= (value.revision as number)) ||
-        Object.keys(supersedes).length !== 3
-    ) {
-        errors.push("supersedes: expected the tier rule and the last tier revision it held in");
-    }
+    errors.push(...supersedesErrors(value, "grading.no_change_question", "deferred"));
     const secondary = value.secondary_metrics;
     if (
         !Array.isArray(secondary) ||
@@ -572,16 +524,7 @@ export function validateRuleRevision(value: unknown): string[] {
     }
     if (!same(value.pass_labels, ["K", "M"])) errors.push("pass_labels: expected K, M");
     if (!same(value.deferred_labels, ["Q"])) errors.push("deferred_labels: expected Q alone");
-    const rubric = value.rubric;
-    if (typeof rubric !== "string" || rubric.trim() !== rubric || rubric === "") {
-        errors.push("rubric: expected trimmed text");
-    } else {
-        for (const label of REUSE_LABELS) {
-            if (!new RegExp(`^${label}: `, "m").test(rubric)) {
-                errors.push(`rubric: defines no label ${label}`);
-            }
-        }
-    }
+    errors.push(...rubricErrors(value.rubric, REUSE_LABELS));
     const v = value.validation;
     if (!isObj(v)) return [...errors, "validation: expected an object"];
     errors.push(...keysOf(v, ["reuse", "deferral"], "validation"));

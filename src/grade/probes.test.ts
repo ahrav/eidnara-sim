@@ -381,6 +381,27 @@ describe("grading harness", () => {
         expect(log.all().map((x) => x.version)).toEqual([1, 2]);
     });
 
+    test("a P2, P5, or P11 grade made before revision 12 reads back beside one that carries <type>.v1", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const log = new GradeLog(path);
+        for (const name of ["P2-pass", "P5-pass", "P11-pass", "P5-fail"]) {
+            const g = grade(name);
+            const type = g.probe_type;
+            const { [`${type}.v1`]: v1, ...before } = g.metrics;
+            expect(v1).toBe(g.verdict);
+            log.append({ ...g, metrics: before });
+            log.append({ ...g, version: 2 });
+        }
+        expect(log.all().map((g) => [g.probe_type, g.version])).toHaveLength(8);
+        // A graded record's `<type>.v1` is one of the three verdicts; a deferred record carries it too.
+        const p5 = grade("P5-pass");
+        expect(() =>
+            log.append({ ...p5, version: 3, metrics: { ...p5.metrics, "P5.v1": "maybe" } }),
+        ).toThrow(/not a grade record/);
+        log.append(grade("P5-deferred-scratch-command"));
+        expect(log.all().at(-1)?.metrics).toEqual({ "P5.v1": "fail" });
+    });
+
     test("P9.v1 applies the guess checks after a leading UNKNOWN line", () => {
         const g = gradeP9("P9-pass", "UNKNOWN\nProbably Alice owns it.", "B");
         expect(g.metrics["P9.v1"]).toBe(false);

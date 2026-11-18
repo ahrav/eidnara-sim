@@ -52,32 +52,27 @@ for (const id of QUALIFICATIONS) {
         );
     }
 }
-const revisions: [readonly string[], (id: string) => string][] = [
-    [
-        JUDGED_REVISIONS,
-        (id) => {
-            const revision = loadGradingRevision(id, dir);
-            return `${gradingRevisionHash(revision)} over ${revision.probe}`;
-        },
-    ],
-    [
-        RULE_REVISIONS,
-        (id) => {
-            const revision = loadRuleRevision(id, dir);
-            return `${ruleRevisionHash(revision)} over ${revision.probes.join(", ")}`;
-        },
-    ],
-];
-for (const [ids, accept] of revisions) {
-    for (const id of ids) {
-        try {
-            console.log(`${id}: accepted ${accept(id)}`);
-        } catch (cause) {
-            failed = true;
-            console.error(
-                `${id}: refused\n  ${cause instanceof Error ? cause.message : String(cause)}`,
-            );
-        }
+/** Prints the digest `accept` returns for a revision, or the reason it is refused. */
+const report = (id: string, accept: () => string) => {
+    try {
+        console.log(`${id}: accepted ${accept()}`);
+    } catch (cause) {
+        failed = true;
+        console.error(
+            `${id}: refused\n  ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
     }
+};
+for (const id of JUDGED_REVISIONS) {
+    report(id, () => {
+        const revision = loadGradingRevision(id, dir);
+        return `${gradingRevisionHash(revision)} over ${revision.probe}`;
+    });
+}
+for (const id of RULE_REVISIONS) {
+    report(id, () => {
+        const revision = loadRuleRevision(id, dir);
+        return `${ruleRevisionHash(revision)} over ${revision.probes.join(", ")}`;
+    });
 }
 process.exit(failed ? 1 : 0);

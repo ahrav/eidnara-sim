@@ -275,12 +275,35 @@ describe("rule revisions", () => {
     });
 
     test("each departure from the shape is named", () => {
+        const reuse = (r: Record<string, unknown>) =>
+            (r.validation as { reuse: Record<string, Record<string, unknown>> }).reuse;
+        const deferral = (r: Record<string, unknown>) =>
+            (r.validation as { deferral: Record<string, Record<string, unknown>> }).deferral;
         expect(edited((r) => Object.assign(r, { schema: "sim-grading-revision/v1" }))).toEqual([
             "schema: expected sim-grading-rule-revision/v1",
         ]);
         expect(edited((r) => Object.assign(r, { judge: {} }))).toEqual([
             "revision.judge: unknown key",
         ]);
+        expect(edited((r) => Object.assign(r, { frozen: false }))).toEqual([
+            "frozen: expected true",
+        ]);
+        expect(edited((r) => Object.assign(r, { labels: ["U", "K", "M", "Q"] }))).toEqual([
+            "labels: expected U, K, M, Q, N",
+        ]);
+        expect(edited((r) => Object.assign(r, { id: "G10", revision: 10 }))).toEqual([
+            "id: expected one of G12",
+        ]);
+        expect(
+            edited((r) => {
+                (reuse(r) as Record<string, unknown>).label_passes = 1;
+            }),
+        ).toEqual(["validation.reuse.label_passes: expected at least two independent passes"]);
+        expect(
+            edited((r) => {
+                (deferral(r) as Record<string, unknown>).hand_audited = 10_000;
+            }),
+        ).toEqual(["validation.deferral.hand_audited: expected a count within the labelled turns"]);
         expect(edited((r) => Object.assign(r, { probes: ["P5"] }))).toEqual([
             "probes: expected P2, P5, P11",
         ]);
@@ -315,10 +338,6 @@ describe("rule revisions", () => {
             "rubric: defines no label Q",
             "rubric: defines no label N",
         ]);
-        const reuse = (r: Record<string, unknown>) =>
-            (r.validation as { reuse: Record<string, Record<string, unknown>> }).reuse;
-        const deferral = (r: Record<string, unknown>) =>
-            (r.validation as { deferral: Record<string, Record<string, unknown>> }).deferral;
         expect(
             edited((r) => {
                 (reuse(r).label_counts as Record<string, number>).U = 1;
