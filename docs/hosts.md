@@ -333,15 +333,21 @@ Under `on`, `piModelName` writes each model of Pi's `models.json` with a
 display name that holds `-4-`, and Pi's own code places its two cache
 points. The model id, and with it the request's `modelId` and every other
 byte of the body, stays the same; Pi reads the name only to match model
-families and to show it. Every caller that reaches the model through Pi
-reads that definition:
+families and to show it. Every caller that runs in the arm's Pi reads
+that definition. The daemon's own model calls run in a child `pi` from the
+daemon's Pi closure, with a private home and Pi's built-in model list
+(`crates/host-runtime/src/model_execution/pi.rs`), where the arm's
+definition stays out of reach; for those the proxy places the same two
+cache points on a body that carries none (`daemonCachePoints`), which is
+what that Pi's client places for a model it recognises, and the call
+record names how many it placed as `cache_points_placed`:
 
 | Caller | Path to the model | Cache points under `on` |
 |---|---|---|
 | `agent` | Pi's agent loop | system, last user or tool-result message |
 | `native_compaction` | Pi's compaction, through the same client | system, last user message on Pi 0.80.2; none on Pi 0.87, which sends its compaction summary with cache retention `none` |
 | `memory_capture` | the plugin's `streamSimple` call with the model from Pi's registry (`packages/pi-plugin/src/memory-capture-native.ts`) | system, the one user message |
-| `history_summarizer`, `context_researcher`, `memory_classifier` | a child `pi --print --mode json --no-session` (`packages/pi-plugin/src/subagent-runner.ts`), which reads the arm's `models.json` | system, last user message |
+| `history_summarizer`, `context_researcher`, `memory_classifier` | the daemon's model-execution backend: a child `pi --print --mode json --no-session --no-tools` from the daemon's Pi closure, with its own home and a provider extension that sets the proxy's address | system, last user message, placed by the proxy |
 | `user-sim`, `judge` | the harness, straight to the proxy | none; their bodies are the same under both values, and the report prices them at the run's table |
 
 The host arm and the Eidnara arms therefore run under one policy, set by
@@ -421,8 +427,8 @@ complete evidence only when the two agree:
   check does not read), the arm's proxy calls by component, the run's
   `prompt_caching` condition, and `prompt_caching` under `observed`: per
   component the arm's hosts call from, the stored requests, how many of
-  them carry a cache point, and the input, cache-read, and cache-write
-  tokens. Under `on`, every stored request of the agent and of the
+  them carry a cache point, how many of those the proxy placed, and the
+  input, cache-read, and cache-write tokens. Under `on`, every stored request of the agent and of the
   Eidnara components carries a cache point; one without, or one with a
   part `requests.jsonl` lacks, is a mismatch. Pi's own compaction is
   recorded and held to nothing, since its cache points depend on the Pi

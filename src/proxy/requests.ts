@@ -75,6 +75,26 @@ export function cachePointsOf(part: RequestPart): number {
     ).length;
 }
 
+/**
+ * Places the two cache points Pi's Bedrock client places for a model it recognises: one after
+ * the system blocks, and one at the end of the last message when a user sent it. Returns how
+ * many it placed.
+ */
+export function placePiCachePoints(body: ConverseBody): number {
+    const point = () => ({ cachePoint: { type: "default" } });
+    let placed = 0;
+    if (Array.isArray(body.system) && body.system.length > 0) {
+        body.system.push(point());
+        placed++;
+    }
+    const last = Array.isArray(body.messages) ? body.messages.at(-1) : undefined;
+    if (last?.role === "user" && Array.isArray(last.content)) {
+        last.content.push(point());
+        placed++;
+    }
+    return placed;
+}
+
 /** The cache point blocks a body carries, over all its parts. */
 export const bodyCachePoints = (body: ConverseBody): number =>
     requestParts(body).reduce((n, part) => n + cachePointsOf(part), 0);

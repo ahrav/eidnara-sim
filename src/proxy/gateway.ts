@@ -146,6 +146,11 @@ export interface GatewayOptions {
     firstArrival?: number;
     /** Stores each classified call's forwarded body; the record names it as `request`. */
     requests?: RequestStore;
+    /**
+     * Places cache points in a classified body before it is stored and forwarded, and returns
+     * how many; the record names a positive count as `cache_points_placed`.
+     */
+    cachePoints?: (body: ConverseBody, component: Component) => number;
     transform?: (body: ConverseBody, component: Component, scope: Scope) => void;
 }
 
@@ -621,6 +626,12 @@ export class Gateway {
         }
         const stripped = stripUnsupported(model, body);
         if (stripped) done.stripped = stripped;
+        try {
+            const placed = this.options.cachePoints?.(body, tag.component) ?? 0;
+            if (placed > 0) done.cache_points_placed = placed;
+        } catch (caught) {
+            this.failures.push(caught as Error);
+        }
         if (this.options.transform) {
             try {
                 this.options.transform(body, tag.component, owner.scope);

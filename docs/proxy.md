@@ -64,6 +64,7 @@ rest. The writer refuses a record that lacks any field below.
 | `stripped` | Request fields the proxy removed, keyed by path; present only when it removed one |
 | `arrival` | The request's arrival ordinal within its proxy process, assigned at the first byte; a resume replays records by this ordinal, falling back to `started_wall_ms` then `seq` for records written before it existed |
 | `request` | The forwarded body: `sha256` of the JSON handed upstream (after `stripped` removals), its UTF-8 `bytes`, and `parts`, the ids of its stored parts in body order (see Request bodies); present on every classified call of a run that stores bodies |
+| `cache_points_placed` | Cache point blocks the proxy placed in the forwarded body before storing it, through `GatewayOptions.cachePoints`; present only when above 0. A caching-on run places Pi's two cache points on a daemon-run call (`history_summarizer`, `memory_classifier`, `context_researcher`) whose body carries none (`docs/hosts.md`, Prompt caching) |
 | `cache_gap` | On a run with prompt caching on (`docs/hosts.md`), for every call but the harness's own (`user-sim`, `judge`, and `rejected` records carry none): `ttl_ms`, the provider's default cache lifetime the gap is read against (300,000), and `session`, the scenario and wall time (`scenario_ms`, `wall_ms`) from the answer of the previous served call of the same arm, component, model, and session, whose conversation this call extends, to this call's answer; `null` for the first such call. A call's answer time is its receipt plus `first_byte_ms` on both clocks, so the backoff of the proxy's upstream retries falls on the call that waited; `first_byte_ms` also holds the delay of a `slow_stream` fault (2 s by default), which moves that call's answer time by as much; a call with no answer byte keeps its receipt. A call is served when the provider answered it with cache-read or cache-write tokens, the usage that shows it read or wrote the cache. The gap is read when the record is written, against the calls written before it, so when the later-answered of two overlapping calls of one key is written first, it measures from the call before both and the earlier-answered one records 0; an arm's agent calls run one at a time. A resume rebuilds the answer times from the call log. A session's first call reads only the tools and system prompt an earlier call wrote; which earlier call sent the same ones is read from the stored request parts, since Pi's system prompt names the session's workspace |
 | `origin_turn` | On a `memory_capture`, `memory_classifier`, or `history_summarizer` call: the session's preceding turn, when the call was received after the next turn began and before that turn's first agent answer was recorded; absent otherwise |
 
@@ -91,6 +92,13 @@ carries the host's cache points where the host put them. Pi puts one on
 the last message of a request, so the message that ends one request is a
 different part, without the point, in the next, and a caching-on run
 stores those messages twice.
+
+A gateway built with a `cachePoints` option hands it each classified body
+and its component after `stripUnsupported`; the option places cache point
+blocks in the body and returns their count, which the record carries, so
+the stored body, the forwarded one, and `call_started`'s `cache_points`
+all hold them. The run and the probe replay pass one under prompt caching
+on.
 
 A gateway built with a `transform` option hands it each classified body, with
 the call's component and scope, after `stripUnsupported` and before the store
