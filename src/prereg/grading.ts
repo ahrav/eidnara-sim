@@ -276,6 +276,33 @@ function labelledSetErrors(
     return errors;
 }
 
+/**
+ * The errors of a labelled set's pass counts at `at`: at least two independent label passes,
+ * and their agreement under each of `keys` as a canonical decimal in [0, 1].
+ */
+function passErrors(v: Obj, at: string, keys: readonly string[]): string[] {
+    const errors: string[] = [];
+    if (!count(v.label_passes) || (v.label_passes as number) < 2) {
+        errors.push(`${at}.label_passes: expected at least two independent passes`);
+    }
+    const agreement = v.label_pass_agreement;
+    if (isObj(agreement)) errors.push(...keysOf(agreement, keys, `${at}.label_pass_agreement`));
+    if (!isObj(agreement) || !keys.every((k) => unitDecimal(agreement[k]))) {
+        errors.push(`${at}.label_pass_agreement: expected canonical decimals in [0, 1]`);
+    }
+    return errors;
+}
+
+/** `prereg/<id>.json` as `validate` accepts it, refused by name when it has errors or names another id. */
+function loadAs<T>(id: string, dir: string | undefined, validate: (value: unknown) => string[]): T {
+    const value: unknown = JSON.parse(readFileSync(gradingRevisionPath(id, dir), "utf8"));
+    const errors = validate(value);
+    if (errors.length === 0 && (value as Obj).id !== id) errors.push(`id: differs from ${id}.json`);
+    if (errors.length > 0) throw new Error(`prereg/${id}.json refused: ${errors.join("; ")}`);
+    // SAFETY: `validate` reported no error, so value has the shape it checks.
+    return value as T;
+}
+
 /** Every way `value` departs from a grading revision; empty when it is one. */
 export function validateGradingRevision(value: unknown): string[] {
     if (!isObj(value)) return ["expected an object"];
@@ -370,25 +397,7 @@ export function validateGradingRevision(value: unknown): string[] {
                 "validation",
             ),
         );
-        if (!count(v.label_passes) || (v.label_passes as number) < 2) {
-            errors.push("validation.label_passes: expected at least two independent passes");
-        }
-        const agreement = v.label_pass_agreement;
-        if (isObj(agreement)) {
-            errors.push(
-                ...keysOf(
-                    agreement,
-                    [spec.classes, "pass_fail"],
-                    "validation.label_pass_agreement",
-                ),
-            );
-        }
-        if (
-            !isObj(agreement) ||
-            ![agreement[spec.classes], agreement.pass_fail].every(unitDecimal)
-        ) {
-            errors.push("validation.label_pass_agreement: expected canonical decimals in [0, 1]");
-        }
+        errors.push(...passErrors(v, "validation", [spec.classes, "pass_fail"]));
         errors.push(...labelledSetErrors(v, "validation", "answers", spec.labels));
     }
     return errors;
@@ -406,12 +415,7 @@ export const gradingRevisionPath = (
 
 /** `prereg/<id>.json`, accepted only when it validates and names `id`. */
 export function loadGradingRevision(id: string, dir?: string): GradingRevision {
-    const value: unknown = JSON.parse(readFileSync(gradingRevisionPath(id, dir), "utf8"));
-    const errors = validateGradingRevision(value);
-    if (errors.length === 0 && (value as Obj).id !== id) errors.push(`id: differs from ${id}.json`);
-    if (errors.length > 0) throw new Error(`prereg/${id}.json refused: ${errors.join("; ")}`);
-    // SAFETY: validateGradingRevision reported no error, so value has the GradingRevision shape.
-    return value as GradingRevision;
+    return loadAs<GradingRevision>(id, dir, validateGradingRevision);
 }
 
 /** The revision graders apply to `probe`: the last one registered for it. */
@@ -592,24 +596,7 @@ export function validateRuleRevision(value: unknown): string[] {
             ),
             ...labelledSetErrors(reuse, "validation.reuse", "items", REUSE_LABELS),
         );
-        if (!count(reuse.label_passes) || (reuse.label_passes as number) < 2) {
-            errors.push("validation.reuse.label_passes: expected at least two independent passes");
-        }
-        const agreement = reuse.label_pass_agreement;
-        if (isObj(agreement)) {
-            errors.push(
-                ...keysOf(
-                    agreement,
-                    ["five_class", "verdict"],
-                    "validation.reuse.label_pass_agreement",
-                ),
-            );
-        }
-        if (!isObj(agreement) || ![agreement.five_class, agreement.verdict].every(unitDecimal)) {
-            errors.push(
-                "validation.reuse.label_pass_agreement: expected canonical decimals in [0, 1]",
-            );
-        }
+        errors.push(...passErrors(reuse, "validation.reuse", ["five_class", "verdict"]));
         const judge = reuse.judge;
         const within = (n: unknown, split: unknown) =>
             count(n) && isObj(split) && count(split.items) && (n as number) <= Number(split.items);
@@ -655,12 +642,7 @@ export function ruleRevisionHash(revision: RuleRevision): string {
 
 /** `prereg/<id>.json`, accepted only when it validates as a rule revision and names `id`. */
 export function loadRuleRevision(id: string, dir?: string): RuleRevision {
-    const value: unknown = JSON.parse(readFileSync(gradingRevisionPath(id, dir), "utf8"));
-    const errors = validateRuleRevision(value);
-    if (errors.length === 0 && (value as Obj).id !== id) errors.push(`id: differs from ${id}.json`);
-    if (errors.length > 0) throw new Error(`prereg/${id}.json refused: ${errors.join("; ")}`);
-    // SAFETY: validateRuleRevision reported no error, so value has the RuleRevision shape.
-    return value as RuleRevision;
+    return loadAs<RuleRevision>(id, dir, validateRuleRevision);
 }
 
 export const POSITIVE_SCHEMA = "sim-positive-grading-revision/v1";
@@ -878,24 +860,7 @@ export function validatePositiveRevision(value: unknown): string[] {
             ),
             ...labelledSetErrors(v, `${at}.validation`, "items", spec.labels),
         );
-        if (!count(v.label_passes) || (v.label_passes as number) < 2) {
-            errors.push(`${at}.validation.label_passes: expected at least two independent passes`);
-        }
-        const agreement = v.label_pass_agreement;
-        if (isObj(agreement)) {
-            errors.push(
-                ...keysOf(
-                    agreement,
-                    ["labels", "verdict"],
-                    `${at}.validation.label_pass_agreement`,
-                ),
-            );
-        }
-        if (!isObj(agreement) || ![agreement.labels, agreement.verdict].every(unitDecimal)) {
-            errors.push(
-                `${at}.validation.label_pass_agreement: expected canonical decimals in [0, 1]`,
-            );
-        }
+        errors.push(...passErrors(v, `${at}.validation`, ["labels", "verdict"]));
     }
     return errors;
 }
@@ -907,10 +872,5 @@ export function positiveRevisionHash(revision: PositiveRevision): string {
 
 /** `prereg/<id>.json`, accepted only when it validates as a positive-probe revision and names `id`. */
 export function loadPositiveRevision(id: string, dir?: string): PositiveRevision {
-    const value: unknown = JSON.parse(readFileSync(gradingRevisionPath(id, dir), "utf8"));
-    const errors = validatePositiveRevision(value);
-    if (errors.length === 0 && (value as Obj).id !== id) errors.push(`id: differs from ${id}.json`);
-    if (errors.length > 0) throw new Error(`prereg/${id}.json refused: ${errors.join("; ")}`);
-    // SAFETY: validatePositiveRevision reported no error, so value has the PositiveRevision shape.
-    return value as PositiveRevision;
+    return loadAs<PositiveRevision>(id, dir, validatePositiveRevision);
 }

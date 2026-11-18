@@ -90,7 +90,7 @@ export function sentences(answer: string): string[] {
         .filter((s) => s.length > 0);
 }
 
-const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+export const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /** Tokens of the expected value's shape: letters for letters, the same count of digits for digits. */
 const shapeOf = (value: string): RegExp =>
     new RegExp(

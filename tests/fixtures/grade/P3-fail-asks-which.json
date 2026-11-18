@@ -1,5 +1,5 @@
 {
-  "provenance": "constructed: a turn that changed no product file and whose reply names the current value; the judge label is scripted for the test",
+  "provenance": "constructed: a turn that changed no product file and whose reply names the current value, after an earlier turn of the arm wrote that value (the `earlier` command log); the judge label is scripted for the test",
   "probe": {
     "id": "P3-d",
     "type": "P3",
@@ -68,6 +68,18 @@
               "error": null
             }
           ]
+        },
+        {
+          "id": "e1",
+          "class": "command-log",
+          "role": "earlier",
+          "commands": [
+            {
+              "command": "edit src/cmd/scan.rs\n[{\"oldText\":\"let page = 64;\",\"newText\":\"let page = IVORY_WALRUS_PAGE_SIZE;\"}]",
+              "exit": 0,
+              "scenario_ms": 0
+            }
+          ]
         }
       ]
     }
@@ -87,6 +99,7 @@
     },
     "inputs": [
       "d1",
+      "e1",
       "p1"
     ]
   }

@@ -60,6 +60,7 @@ import {
     type DiffFile,
     diffFiles,
     diffPaths,
+    escapeRegex,
     heredocAt,
     literalQuotes,
     matchesAll,
@@ -416,9 +417,10 @@ function appliedParts(parts: Reached[], forced: boolean): Segment[] {
         });
     });
 }
-const appliedCommandText = (r: ArtefactReader) =>
-    r
-        .commands()
+const appliedCommandText = (r: ArtefactReader) => appliedText(r.commands());
+/** The text of the commands' applying parts: every executed part but research calls and inspections, with the heredoc bodies they consume. */
+const appliedText = (commands: Command[]) =>
+    commands
         .filter((x) => !researchCall(x))
         .flatMap((x) => appliedParts(reachableParts(x.command, x.exit), false))
         .map((p) => (p.body ? `${p.seg}\n${p.body.replace(/\n$/, "")}` : p.seg))
@@ -575,7 +577,7 @@ function assess(w: Work, c: Check, product?: ProductReading): Assessed {
     const created = targets.filter((f) => f.created);
     const everyCreated = w.files.filter((f) => f.created);
     const quotes = literalQuotes(
-        targets.flatMap((f) => (product ? addedCode(f).code.split("\n") : f.added)),
+        targets.flatMap((f) => (product ? codeOf(f, false).added : f.added)),
     );
     const firstLines = c.first_line_must;
     const must = c.must ?? [];
@@ -625,20 +627,17 @@ const codeOf = (f: DiffFile, product: boolean): DiffFile => ({
 
 /**
  * The governed units of the product reading: the units in the product code of product files.
- * With `tests`, a change whose product code holds none is read over all its code, so a rule
- * about tests reads the tests.
+ * With `tests`, a change whose product code holds none is read over its test and support
+ * files, so a rule about tests reads the tests. A test item inside a product file stays out:
+ * a rule conveyed for that file is about its product code.
  */
 function governedUnits(files: DiffFile[], patterns: string[], tests: boolean): string[] {
     const product = files.filter((f) => isProductPath(f.path)).map((f) => codeOf(f, true));
     const units = unitsOf(product, patterns);
     if (units.length > 0 || !tests) return units;
-    return unitsOf(
-        files.map((f) => codeOf(f, false)),
-        patterns,
-    );
+    const support = files.filter((f) => !isProductPath(f.path)).map((f) => codeOf(f, false));
+    return unitsOf(support, patterns);
 }
-
-const escaped = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * The identities of a rule about the text a message opens with: the ground truth's tokens that a
@@ -647,9 +646,11 @@ const escaped = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
  */
 function openingTags(c: Check, probe: ProbeItem): string[] {
     const tokens = (probe.ground_truth?.present ?? []).flat();
-    return tokens.filter((t) =>
-        (c.must ?? []).some((m) => new RegExp(`["'\`\\]]\\\\?[[(]?${escaped(escaped(t))}`).test(m)),
-    );
+    // The identity opens the text and something follows it there: a pattern that closes the
+    // quote right after the identity asks for a whole literal, such as a log target.
+    const opens = (t: string) =>
+        new RegExp(`["'\`\\]]\\\\?[[(]?${escapeRegex(escapeRegex(t))}(?!["'\`])`);
+    return tokens.filter((t) => (c.must ?? []).some((m) => opens(t).test(m)));
 }
 
 /**
@@ -659,7 +660,10 @@ function openingTags(c: Check, probe: ProbeItem): string[] {
  */
 function addsTagged(files: DiffFile[], tags: string[]): boolean {
     if (tags.length === 0) return false;
-    const opens = new RegExp(`["'\`][[(]?(?:${tags.map(escaped).join("|")})(?![A-Za-z0-9_])`, "g");
+    const opens = new RegExp(
+        `["'\`][[(]?(?:${tags.map(escapeRegex).join("|")})(?![A-Za-z0-9_])`,
+        "g",
+    );
     return files
         .filter((f) => isProductPath(f.path))
         .some((f) => {
@@ -705,7 +709,7 @@ function leaked(w: Work, c: Check, product = false): boolean {
           ? inProduct(code, must)
           : code.some((f) => f.added.some((l) => matchesAny(l, must)));
     const style = c.quote_style_must;
-    const lines = code.flatMap((f) => (product ? addedCode(f).code.split("\n") : f.added));
+    const lines = code.flatMap((f) => (product ? codeOf(f, false).added : f.added));
     const quotes = style ? literalQuotes(lines) : [];
     return carriesRule || quotes.includes(style as "double" | "single");
 }
@@ -1154,11 +1158,22 @@ const gitSubcommand = (words: string[]): number => {
     }
     return i < words.length ? i : -1;
 };
-/** Whether an executed segment runs `git commit` or `git commit-tree`; a `--dry-run` commits nothing. */
+/**
+ * Whether an executed segment runs `git commit` or `git commit-tree`. A `--dry-run` option
+ * commits nothing; the same word as the value of `-m` or `-F` is a message.
+ */
 const makesCommit = (segment: string): boolean => {
     const words = shellWords(segment);
     const at = gitSubcommand(words);
-    return /^commit(?:-tree)?$/.test(words[at] ?? "") && !words.slice(at).includes("--dry-run");
+    if (!/^commit(?:-tree)?$/.test(words[at] ?? "")) return false;
+    for (let j = at + 1; j < words.length; j++) {
+        const w = words[j] as string;
+        if (w === "--") break;
+        if (w === "--dry-run") return false;
+        // A short option cluster that ends in a value option, and the long forms, take the next word.
+        if (/^-[A-Za-z]*[mFt]$/.test(w) || /^--(?:message|file|template)$/.test(w)) j++;
+    }
+    return true;
 };
 const commitRead = (r: Redirected, ctx: Context): string | null => {
     const words = r.args;
@@ -1500,8 +1515,9 @@ const HANDS_BACK =
  * The answer leaves the choice to the user (`choice-left-open`, `prereg/G13.json`): some sentence
  * asks the user to choose, as a question or as an instruction to say which, and no sentence
  * after the first such one picks a task (`COMMITS`). What follows the request, an option list or
- * a note on another matter, leaves it standing. An instruction is the weaker form, so a pick
- * anywhere in the answer, ahead of it too, makes the answer a pick.
+ * a note on another matter, leaves it standing. A question is read as the replaced rule read
+ * it, from the question on; an instruction is the weaker form, so with it a pick anywhere in
+ * the answer, ahead of it too, makes the answer a pick.
  */
 const leavesChoice = (answer: string) => {
     const all = sentences(answer);
@@ -1565,11 +1581,18 @@ function p6(r: ArtefactReader, c: Check, probe: ProbeItem): Outcome {
         // camel-case spelling; a test, a comment, or a note that names the step is no progress.
         const product = files.filter((f) => isProductPath(f.path)).map((f) => codeOf(f, true));
         const read: Work = { ...code, files: product, text: textOf(product) };
-        const spelled = product.map((f) => ({ ...f, added: f.added.map(snakeCased) }));
-        const done =
-            held(read, c) ||
-            held({ ...read, files: spelled }, { ...c, must: (c.must ?? []).map(folded) });
-        const stale = broken(read, c);
+        const spelled: Work = {
+            ...read,
+            files: product.map((f) => ({ ...f, added: f.added.map(snakeCased) })),
+            text: snakeCased(read.text),
+        };
+        const anyCase = {
+            ...c,
+            must: (c.must ?? []).map(folded),
+            must_not: (c.must_not ?? []).map(folded),
+        };
+        const done = held(read, c) || held(spelled, anyCase);
+        const stale = broken(read, c) || broken(spelled, anyCase);
         pass = done && !stale;
         reason = stale ? "resumed a superseded step" : "change does not carry the next step";
     }
@@ -1611,7 +1634,7 @@ function p13(r: ArtefactReader, c: Check, rules: Rules): Outcome {
     const before = new Set(commands.filter((x) => x.scenario_ms < boundary).map((x) => x.command));
     const registered = workFor(r, c, after);
     const keptV1 = held(registered, c) && !broken(registered, c);
-    const rule = ruleAfterFold(r, c, after, boundary);
+    const rule = ruleAfterFold(r, c, registered, boundary);
     const kept = rule.state === "kept";
     const min = Number(rules.p13_reduction_ratio.min);
     const max = Number(rules.p13_reduction_ratio.max);
@@ -1646,7 +1669,7 @@ function p13(r: ArtefactReader, c: Check, rules: Rules): Outcome {
 export const NO_GOVERNED_ACTION = "no governed action after the fold";
 
 /**
- * A session rule over the work after the fold (`session_rule: governed-actions`,
+ * A session rule over the work after the fold (`recorded-commits` and `created-source-files`,
  * `prereg/G13.json`): `kept` when at least one governed action follows it and none breaks it,
  * `broken` when one breaks it, `outside` when no governed action happened.
  *
@@ -1660,37 +1683,31 @@ export const NO_GOVERNED_ACTION = "no governed action after the fold";
 function ruleAfterFold(
     r: ArtefactReader,
     c: Check,
-    after: Command[],
+    registered: Work,
     boundary: number,
 ): { state: "kept" | "broken" | "outside"; from: "repository" | "commands" | "none" } {
-    const w = workFor(r, c, after);
     const commitRule = c.commands_must !== undefined || c.commands_must_not !== undefined;
     const headerRule = c.first_line_must !== undefined;
-    let acted = !commitRule && !headerRule;
-    let from: "repository" | "commands" | "none" = "none";
-    if (commitRule) {
-        const own = after.flatMap(checkedSegments);
-        const recorded = r.recorded();
-        if (recorded) {
-            // No command runs while the fold call is open, so a commit recorded within the
-            // clock's slack of the fold's start was made before it.
-            const written = recorded
-                .filter((x) => x.scenario_ms >= boundary + CLOCK_SLACK_MS)
-                .flatMap(checkedSegments);
-            w.segments = [...own.filter((seg) => !makesCommit(seg)), ...written];
-            acted = acted || written.length > 0;
-            from = "repository";
-        } else {
-            w.segments = own;
-            acted = acted || own.some(makesCommit);
-            from = "commands";
-        }
-    }
-    if (headerRule) {
-        w.files = w.files.filter((f) => isSourcePath(f.path));
-        acted = acted || w.files.some((f) => f.created);
-    }
+    const own = commitRule ? registered.commands.flatMap(checkedSegments) : [];
+    // No command runs while the fold call is open, so a commit git recorded within the
+    // slack of the fold's start was made before it.
+    const written = commitRule
+        ? r
+              .added("recorded")
+              ?.filter((x) => x.scenario_ms >= boundary + CLOCK_SLACK_MS)
+              .flatMap(checkedSegments)
+        : undefined;
+    const segments = written ? [...own.filter((seg) => !makesCommit(seg)), ...written] : own;
+    const files = headerRule
+        ? registered.files.filter((f) => isSourcePath(f.path))
+        : registered.files;
+    const acted =
+        (!commitRule && !headerRule) ||
+        (commitRule && (written ? written.length > 0 : own.some(makesCommit))) ||
+        (headerRule && files.some((f) => f.created));
+    const from = !commitRule ? "none" : written ? "repository" : "commands";
     if (!acted) return { state: "outside", from };
+    const w: Work = { ...registered, files, text: textOf(files), segments };
     return { state: held(w, c) && !broken(w, c) ? "kept" : "broken", from };
 }
 
@@ -2083,17 +2100,30 @@ const ungrouped = (answer: string) => answer.replace(/(?<=\d),(?=\d{3})/g, "");
 
 /**
  * Whether a P3 turn is graded from a judge's label of its reply (`prereg/G14.json`): it changed
- * no product file, its product code holds neither value, and its final reply names the current
- * value. Such a reply can say that the code already uses the value, and the judge reads whether
- * it does. A turn whose reply leaves the current value unnamed applied nothing and fails, and
- * so does a turn of an item whose ground truth lists no current value for the judge to read.
+ * no product file, its product code holds neither value, its final reply names the current
+ * value, and the arm wrote that value in an earlier turn of the project (`wroteBefore`). Such a
+ * reply can say that the code already uses the value, and the judge reads whether it does. A
+ * turn whose reply leaves the current value unnamed applied nothing and fails, as does a turn
+ * of an arm that never wrote the value, so a reply's own word is no evidence of earlier work.
+ * An item whose ground truth lists no current value gives the judge nothing to read and fails
+ * too.
  */
 export function p3Awaits(r: ArtefactReader, c: Check, probe: ProbeItem): boolean {
     if ((probe.ground_truth?.present ?? []).flat().length === 0) return false;
     const w = turnWork(r, c);
     const used = p3Use(w, c);
     if (used.current || used.stale || productChanged(r)) return false;
-    return matchesAll(ungrouped(r.answer()), c.must ?? []);
+    return matchesAll(ungrouped(r.answer()), c.must ?? []) && wroteBefore(r, c);
+}
+
+/**
+ * Whether the `earlier` command log holds a command of the arm, other than a research call or
+ * an inspection, that carries the current value: an edit, a write, or a shell command that
+ * applies it. A snapshot without that log holds no such command.
+ */
+function wroteBefore(r: ArtefactReader, c: Check): boolean {
+    const earlier = r.added("earlier");
+    return earlier !== null && matchesAll(appliedText(earlier), c.must ?? []);
 }
 const P10_PROSE = 200;
 const NO_WORK = "no change and no written answer";

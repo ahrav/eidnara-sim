@@ -43,9 +43,11 @@ export interface CommandLog {
      * probe's source, which grade-run reads from `tools.jsonl`; `recorded`: the commit messages
      * git recorded for the agent in the project's repository up to the end of the probe turn,
      * each as `git commit -m '<subject>'`, which grade-run reads from the workspace
-     * repository's HEAD reflog (`src/grade/commit-log.ts`).
+     * repository's HEAD reflog (`src/grade/commit-log.ts`); `earlier`: the arm's commands in
+     * earlier turns of the probe's project that carry a P3 item's current value, which grade-run
+     * reads from `tools.jsonl`.
      */
-    role: "turn" | "session" | "source" | "recorded";
+    role: "turn" | "session" | "source" | "recorded" | "earlier";
     commands: Command[];
 }
 
@@ -217,7 +219,7 @@ const PAYLOADS: Record<ArtefactClass, (a: Record<string, unknown>, path: string)
                 p,
             ),
         "command-log": (a, p) =>
-            badField({ role: oneOf(["turn", "session", "source", "recorded"]) }, a, p) ??
+            badField({ role: oneOf(["turn", "session", "source", "recorded", "earlier"]) }, a, p) ??
             listOf(COMMAND, `${p}.commands`, a.commands),
         "test-result": (a, p) =>
             badField(
@@ -349,12 +351,12 @@ export class ArtefactReader {
         ).commands;
     }
 
-    /** The `recorded` command log's commits, or null for a snapshot that carries none. */
-    recorded(): Command[] | null {
+    /** The commands of a log grade-run adds (`recorded`, `earlier`), or null for a snapshot that carries none. */
+    added(role: "recorded" | "earlier"): Command[] | null {
         const has = this.snapshot.artefacts.some(
-            (a) => a.class === "command-log" && a.role === "recorded",
+            (a) => a.class === "command-log" && a.role === role,
         );
-        return has ? this.commands("recorded") : null;
+        return has ? this.commands(role) : null;
     }
 
     calls(): CallView[] {

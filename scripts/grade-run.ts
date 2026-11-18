@@ -68,6 +68,7 @@ import {
     type LedgerRun,
     readToolLedger,
     sourceEvents,
+    withEarlierWrites,
     withSourceCommands,
 } from "../src/grade/source-commands";
 import { armBase, requireSeedOrder } from "../src/hosts/arms";
@@ -1392,11 +1393,15 @@ async function grade(dir: string, upstream: Upstream | null, regrade: boolean): 
                     scenario.events,
                     () => ledger(arm),
                 );
+                const tools = join(dir, arm, "tools.jsonl");
+                const withEarlier = withEarlierWrites(withSource, probe, scenario, () =>
+                    existsSync(tools) ? ledger(arm) : null,
+                );
                 const recorded = withRecordedCommits(
-                    withSource,
+                    withEarlier,
                     probe,
                     () => writtenBy(arm, probe.project),
-                    turnEnd(arm, probe.event),
+                    () => turnEnd(arm, probe.event),
                 );
                 const graded = [recorded, ...later];
                 if (JUDGED_ANSWER_TYPES.includes(probe.type)) {

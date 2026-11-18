@@ -2336,14 +2336,52 @@ describe("P3 graded from a judge's label where the turn changed no product code"
         };
         return up as unknown as Upstream & { prompts: string[] };
     };
-    const p3run = (name: string) => {
+    // An earlier session of the project, in which the arm wired the constant into the code.
+    const prelude = [
+        {
+            id: "e-s0",
+            kind: "session_start",
+            scenario_ms: 0,
+            session: "s-0",
+            project: "mini-redis",
+        },
+        {
+            id: "e-wire",
+            kind: "user_turn",
+            scenario_ms: 0,
+            session: "s-0",
+            index: 0,
+            text: "Go on.",
+        },
+        { id: "e-s0-end", kind: "session_end", scenario_ms: 0, session: "s-0" },
+    ];
+    const wired = {
+        turn: "e-wire",
+        command: 'edit src/cmd/scan.rs\n[{"newText":"let page = IVORY_WALRUS_PAGE_SIZE;"}]',
+        exit: 0,
+        scenario_ms: 0,
+    };
+    /** A run of the fixture's turn; `ledger` is the arm's tool ledger, absent when null. */
+    const p3run = (name: string, ledger: Record<string, unknown>[] | null = [wired]) => {
         const f = fixture(name);
         const dir = run({
             probes: [f.probe],
-            unended: { host: ["e-1"] },
+            prelude,
+            order: ["eidnara"],
             facts: [{ id: "f-1", statement }],
         });
-        snapshot(dir, "eidnara", { ...(f.snapshots[0] as Snapshot), item: f.probe.id });
+        // The run's capture holds no `earlier` log; grade-run builds it from the ledger.
+        const captured = structuredClone(f.snapshots[0]) as Snapshot;
+        captured.artefacts = captured.artefacts.filter(
+            (a) => !(a.class === "command-log" && a.role === "earlier"),
+        );
+        snapshot(dir, "eidnara", { ...captured, item: f.probe.id });
+        if (ledger) {
+            writeFileSync(
+                join(dir, "eidnara", "tools.jsonl"),
+                ledger.map((l) => `${JSON.stringify(l)}\n`).join(""),
+            );
+        }
         return dir;
     };
     const grades = (dir: string) => new GradeLog(join(dir, "grades.jsonl")).all();
@@ -2403,6 +2441,23 @@ describe("P3 graded from a judge's label where the turn changed no product code"
             "P3.harm": false,
             "P3.v1": true,
         });
+    });
+
+    test("an arm whose ledger holds no earlier write of the value is sent to no judge and fails", async () => {
+        const read = { ...wired, command: "grep -rn IVORY_WALRUS_PAGE_SIZE src" };
+        const later = { ...wired, turn: "e-1" };
+        for (const ledger of [null, [], [read], [later]]) {
+            const dir = p3run("P3-pass-already-applied", ledger);
+            const unasked = judgeSays("R");
+            await gradeRun(dir, null, false, unasked);
+            expect(unasked.prompts).toHaveLength(0);
+            const [g] = grades(dir);
+            expect([g?.verdict, g?.reason, g?.metrics["P3.label"]]).toEqual([
+                "fail",
+                "relied on neither",
+                undefined,
+            ]);
+        }
     });
 
     test("a reply that is no label leaves the item ungraded as a judge error", async () => {
