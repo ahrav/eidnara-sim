@@ -39,6 +39,8 @@ test("the cached table prices Claude Opus 5.5 through the global profile and no 
         "us.anthropic.claude-opus-5-5",
         "anthropic.claude-opus-5-5",
         "global.anthropic.claude-opus-5-50",
+        "global.anthropic.claude-opus-5-5x",
+        "global.anthropic.claude-opus-5-5-fast",
         "global.anthropic.claude-opus-5",
         "global.anthropic.claude-haiku-5-5",
     ]) {

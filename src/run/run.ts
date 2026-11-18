@@ -2292,6 +2292,24 @@ async function runArms(
         fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
     );
     const requests = new RequestStore(join(o.out, "requests.jsonl"));
+    // A resume counts the requests the log already holds, so a request recorded before the stop
+    // meets the same session-end check as one this invocation sends.
+    if (caching === "on") {
+        const stored = new RequestPartLog(join(o.out, "requests.jsonl"));
+        try {
+            const tallies = new Map<string, CachingTally>();
+            eachJsonl<CallRecord>(callsPath, (c) => {
+                const tally = tallies.get(c.arm) ?? new CachingTally(stored);
+                tallies.set(c.arm, tally);
+                tally.add(c);
+            });
+            for (const [arm, tally] of tallies) {
+                liveCaching.set(arm, tally.observation().components);
+            }
+        } finally {
+            stored.close();
+        }
+    }
     const gateway = new Gateway({
         upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
         records: new RunRecords(callsPath, {

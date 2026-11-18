@@ -160,13 +160,12 @@ export class CacheGaps {
 
     note(call: Served): void {
         if (call.status !== 200 || call.cache_read_tokens + call.cache_write_tokens <= 0) return;
+        // The reference is one answer, both clocks from the same call: the latest on the wall
+        // clock, which keeps its order across a resume.
         const at = answeredAt(call);
         const key = CacheGaps.key(call);
         const prev = this.last.get(key);
-        this.last.set(key, {
-            scenario_ms: Math.max(prev?.scenario_ms ?? 0, at.scenario_ms),
-            wall_ms: Math.max(prev?.wall_ms ?? 0, at.wall_ms),
-        });
+        if (!prev || at.wall_ms >= prev.wall_ms) this.last.set(key, at);
     }
 
     private static key(call: Pick<Timed, "arm" | "session" | "component" | "model">): string {
@@ -223,7 +222,7 @@ export function recordProblems(input: Partial<CallRecord> | Record<string, unkno
     if (
         hour !== undefined &&
         !(
-            Number.isFinite(hour) &&
+            Number.isSafeInteger(hour) &&
             (hour as number) > 0 &&
             (hour as number) <= (value.cache_write_tokens as number)
         )

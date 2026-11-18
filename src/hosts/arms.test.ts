@@ -1736,6 +1736,8 @@ async function piRequest(definition: Record<string, unknown>, tools: boolean): P
     let seen: Untyped;
     const stream = streamSimple(model, context, {
         env: { AWS_ACCESS_KEY_ID: "x", AWS_SECRET_ACCESS_KEY: "y", AWS_REGION: "us-west-2" },
+        // The sandbox passes Pi no retention variable, so Pi resolves `short`.
+        cacheRetention: "short",
         maxRetries: 0,
         onPayload: (payload: Untyped) => {
             seen = JSON.parse(JSON.stringify(payload));

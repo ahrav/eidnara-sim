@@ -144,8 +144,9 @@ also carry these optional sections and fields:
   arm; a registration that names none runs `off`. Under `on` the run makes
   Pi place its Bedrock cache points for the measured model, stops an arm
   with a host caller's request that carries none (at the end of the
-  session that shows it, and again before `EndArm`), records each call's cache
-  gaps, and prices its calls at the `v2` table (`docs/hosts.md`, Prompt
+  session that shows it, and again before `EndArm`), records the cache gap
+  of each call a host under test makes, and prices its calls at the `v2`
+  table (`docs/hosts.md`, Prompt
   caching; `docs/report.md`, Cost). The `v2` table holds the rates of one
   model, so a caching-on run refuses a `--models` entry or a `--side-model`
   other than Claude Opus 5.5 through the global inference profile. The

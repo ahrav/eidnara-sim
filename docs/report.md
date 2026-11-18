@@ -116,7 +116,8 @@ Anthropic's list prices. `v1` holds the list prices of Claude Opus 5 and
 run stays in their dollars: it is 25% above `v2` on input, output, and
 5-minute writes, which leaves every ratio between arms as it is while no
 call reads or writes the cache. A cache read costs 0.05 of the input rate
-in `v2` and 0.1 in `v1`, so a run with cache tokens takes `v2`. `v2`
+in `v2` and 0.1 in `v1`, so a caching-on run takes `v2`; the registered
+condition selects the table, whatever tokens the run records. `v2`
 holds one model's rates: a caching-on run whose agent models or side
 model are another model, or Opus 5.5 under another inference profile, is
 refused before its manifest is written (`pricedByCachedTable`). Either

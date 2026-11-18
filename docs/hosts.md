@@ -339,7 +339,7 @@ reads that definition:
 | Caller | Path to the model | Cache points under `on` |
 |---|---|---|
 | `agent` | Pi's agent loop | system, last user or tool-result message |
-| `native_compaction` | Pi's compaction, through the same client | system, last user message |
+| `native_compaction` | Pi's compaction, through the same client | system, last user message on Pi 0.80.2; none on Pi 0.87, which sends its compaction summary with cache retention `none` |
 | `memory_capture` | the plugin's `streamSimple` call with the model from Pi's registry (`packages/pi-plugin/src/memory-capture-native.ts`) | system, the one user message |
 | `history_summarizer`, `context_researcher`, `memory_classifier` | a child `pi --print --mode json --no-session` (`packages/pi-plugin/src/subagent-runner.ts`), which reads the arm's `models.json` | system, last user message |
 | `user-sim`, `judge` | the harness, straight to the proxy | none; their bodies are the same under both values, and the report prices them at the run's table |
@@ -385,8 +385,10 @@ keeps reading. Each call record of a caching-on run carries `cache_gap`
 call of its session, so an analysis prices a run both as recorded and
 with the lifetime applied on scenario time, where a call after a scenario
 gap above the record's `ttl_ms` pays its cache reads as writes on every
-arm. A session's first call reads only the tools and system prompt an
-earlier session wrote; Pi's system prompt names the workspace, so the
+arm. The provider reports one cache-read count per call, so this view
+reprices all of a call's reads and is an estimate: it leaves the recorded
+cost as it is beside it. A session's first call reads only the tools and
+system prompt an earlier session wrote; Pi's system prompt names the workspace, so the
 analysis finds the earlier call that sent the same tools and system
 prompt among the stored request parts and applies the same rule to the
 time since its answer. A resume after a stop is the opposite case: the
@@ -420,15 +422,16 @@ complete evidence only when the two agree:
   `prompt_caching` condition, and `prompt_caching` under `observed`: per
   component the arm's hosts call from, the stored requests, how many of
   them carry a cache point, and the input, cache-read, and cache-write
-  tokens. Under `on`, every stored request of a caller that goes through
-  the host's model client (`agent`, `native_compaction`, and the Eidnara
-  components) carries a cache point, and one without is a mismatch. The
-  run applies the same rule at every `session_end` to the requests counted
-  as this invocation's calls started (`call_started` names each body's
-  cache points), and a mismatch there fails the event like a boot
-  mismatch, so a host that stops placing cache points stops the run at the
-  session that shows it. A mismatch
-  leaves `EndArm` unwritten, so the run is incomplete and a resume checks the
+  tokens. Under `on`, every stored request of the agent and of the
+  Eidnara components carries a cache point; one without, or one with a
+  part `requests.jsonl` lacks, is a mismatch. Pi's own compaction is
+  recorded and held to nothing, since its cache points depend on the Pi
+  version. The run applies the same rule at every `session_end` to the
+  requests counted as calls started (`call_started` names each body's
+  cache points; a resume first counts the requests the log holds), and a
+  mismatch there fails the event like a boot mismatch, so a host that
+  stops placing cache points stops the run at the session that shows it.
+  A mismatch leaves `EndArm` unwritten, so the run is incomplete and a resume checks the
   same evidence again: a host-only arm with a plugin boot
   or an Eidnara component call; an arm with Eidnara compaction on that
   answered agent calls with no transform pass, whatever its Eidnara

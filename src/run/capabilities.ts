@@ -131,7 +131,7 @@ export function noteRequest(
 /** Builds an arm's `CachingObservation` from its call records; each stored part is read once. */
 export class CachingTally {
     private readonly components: Record<string, CachingCount> = {};
-    private readonly points = new Map<string, number>();
+    private readonly points = new Map<string, number | null>();
 
     constructor(private readonly parts: PartLookup) {}
 
@@ -147,15 +147,22 @@ export class CachingTally {
         count.cache_read_tokens += call.cache_read_tokens;
         count.cache_write_tokens += call.cache_write_tokens;
         if (!call.request) return;
-        const points = call.request.parts.reduce((n, id) => n + this.pointsOf(id), 0);
-        noteRequest(this.components, call.component, points);
+        // A request with a part the log lacks cannot be rebuilt, so it shows no cache point.
+        const points = call.request.parts.map((id) => this.pointsOf(id));
+        const whole = points.every((n) => n !== null);
+        noteRequest(
+            this.components,
+            call.component,
+            whole ? points.reduce<number>((sum, n) => sum + (n ?? 0), 0) : 0,
+        );
     }
 
-    private pointsOf(id: string): number {
+    /** The cache points of a stored part, or null for a part the log lacks. */
+    private pointsOf(id: string): number | null {
         let n = this.points.get(id);
         if (n === undefined) {
             const part = this.parts.get(id);
-            n = part ? cachePointsOf(part) : 0;
+            n = part ? cachePointsOf(part) : null;
             this.points.set(id, n);
         }
         return n;
@@ -166,8 +173,12 @@ export class CachingTally {
     }
 }
 
-/** The components whose calls go through the host's own model client, which places the cache points. */
-const CACHED_CALLERS: readonly string[] = ["agent", "native_compaction", ...EIDNARA_COMPONENTS];
+/**
+ * The components whose every request the host's model client sends with cache points: the agent
+ * loop and the Eidnara plugin's calls. Pi's own compaction is recorded and held to nothing, since
+ * Pi 0.87 sends its compaction summary with cache retention `none` where 0.80.2 places the points.
+ */
+const CACHED_CALLERS: readonly string[] = ["agent", ...EIDNARA_COMPONENTS];
 
 /**
  * What an arm's requests show against the run's prompt-caching condition. Under `on` the host's

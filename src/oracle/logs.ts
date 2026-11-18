@@ -412,6 +412,10 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
                 throw new Error(`call ${c.seq}: ${field} is not a count`);
             }
         }
+        const hour = c.cache_write_1h_tokens;
+        if (hour !== undefined && !(Number.isSafeInteger(hour) && hour > 0)) {
+            throw new Error(`call ${c.seq}: cache_write_1h_tokens is not a count`);
+        }
         if ("response_text" in c && typeof c.response_text !== "string") {
             throw new Error(`call ${c.seq}: response_text is not a string`);
         }

@@ -255,8 +255,8 @@ Both lie in the manifest's execution digest, a registration gives all its
 runs one condition, and the tier report's identity carries the price
 table, so it pools only runs that share one.
 The claim boundary's first exclusion stands under either value: cache
-warmth runs in wall time, and each call record of a caching-on run carries
-the scenario and wall time since the previous served call of its session,
-so an analysis reconstructs it. eval-core's `run_identity` has no provider-cache
+warmth runs in wall time, and each call record of a host under test in a
+caching-on run carries the scenario and wall time since the previous
+served call of its session, so an analysis reconstructs it. eval-core's `run_identity` has no provider-cache
 component, so carrying it there needs `eval-manifest/v10`; no extension is
 made here.

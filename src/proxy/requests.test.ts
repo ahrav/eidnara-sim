@@ -343,9 +343,73 @@ test("a body with cache points is forwarded and stored whole, and a 1-hour write
         cache_write_1h_tokens: 200,
     });
     expect(recordProblems(second as object)).toEqual([]);
-    expect(recordProblems({ ...second, cache_write_1h_tokens: 301 })).toEqual([
-        "cache_write_1h_tokens invalid",
-    ]);
+    for (const cache_write_1h_tokens of [301, 0.5, 0]) {
+        expect(recordProblems({ ...second, cache_write_1h_tokens })).toEqual([
+            "cache_write_1h_tokens invalid",
+        ]);
+    }
+});
+
+test("a streamed answer's metadata gives the 1-hour writes, and the writes when it names no total", async () => {
+    const usages = [
+        {
+            inputTokens: 4,
+            outputTokens: 1,
+            cacheReadInputTokens: 0,
+            cacheWriteInputTokens: 300,
+            cacheDetails: [
+                { ttl: "5m", inputTokens: 100 },
+                { ttl: "1h", inputTokens: 200 },
+            ],
+        },
+        {
+            inputTokens: 4,
+            outputTokens: 1,
+            cacheDetails: [
+                { ttl: "5m", inputTokens: 50 },
+                { ttl: "1h", inputTokens: 70 },
+            ],
+        },
+    ];
+    const upstream: Upstream = {
+        async converse() {
+            const usage = usages.shift();
+            async function* events() {
+                yield { messageStart: { role: "assistant" } };
+                yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "ok" } } };
+                yield { messageStop: { stopReason: "end_turn" } };
+                yield { metadata: { usage } };
+            }
+            return { events: events() };
+        },
+    };
+    const records = new RecordWriter(null);
+    const gateway = new Gateway({
+        upstream,
+        records,
+        injector: new FaultInjector([], new Rng(1), 1_000),
+        rng: new Rng(1),
+        clock: { scenarioMs: () => 0 },
+        scope: () => ({ arm: "a", session: "s", turn: "t" }),
+    });
+    await gateway.start();
+    gateways.push(gateway);
+    for (let i = 0; i < 2; i++) {
+        const response = await fetch(`${gateway.urls[0]}/model/m/converse-stream`, {
+            method: "POST",
+            body: JSON.stringify({ messages: [turn("hi")] }),
+        });
+        await response.arrayBuffer();
+    }
+    await gateway.stop();
+    expect(records.records[0]).toMatchObject({
+        cache_write_tokens: 300,
+        cache_write_1h_tokens: 200,
+    });
+    expect(records.records[1]).toMatchObject({
+        cache_write_tokens: 120,
+        cache_write_1h_tokens: 70,
+    });
 });
 
 const served = (
@@ -408,6 +472,19 @@ test("a call's cache gaps run between answers, so a proxy retry's backoff falls 
     expect(gaps.of(served("host", "s-1", "agent", 300_000, 310_000, null)).session).toEqual({
         scenario_ms: 48_000,
         wall_ms: 48_000,
+    });
+});
+
+test("the gap's reference is one answer, the latest on the wall clock, whatever order the records come in", () => {
+    const gaps = new CacheGaps();
+    // A resumed run's scenario clock can restart behind an answer the log already holds: the
+    // later call on the wall clock carries the earlier scenario time.
+    gaps.note(served("host", "s-1", "agent", 500_000, 10_000));
+    gaps.note(served("host", "s-1", "agent", 480_000, 20_000));
+    gaps.note(served("host", "s-1", "agent", 490_000, 15_000));
+    expect(gaps.of(served("host", "s-1", "agent", 485_000, 21_000)).session).toEqual({
+        scenario_ms: 5_000,
+        wall_ms: 1_000,
     });
 });
 

@@ -953,7 +953,19 @@ test("an arm's caching observation counts requests with cache points and the cac
     expect(cachingMismatches("on", undefined)).toEqual([]);
     const all = new CachingTally(parts);
     all.add({ component: "agent", request: request(["sys+", "u1"]), ...tokens });
+    // Pi 0.87 sends its compaction without cache points, so that caller is held to nothing.
+    all.add({ component: "native_compaction", request: request(["sys", "u1"]), ...tokens });
+    expect(all.observation().components.native_compaction).toMatchObject({
+        requests: 1,
+        with_cache_points: 0,
+    });
     expect(cachingMismatches("on", all.observation())).toEqual([]);
+    // A request naming a part the log lacks cannot be rebuilt, so its system point is no evidence.
+    const partial = new CachingTally(parts);
+    partial.add({ component: "agent", request: request(["sys+", "gone"]), ...tokens });
+    expect(cachingMismatches("on", partial.observation())).toEqual([
+        "1 of 1 agent requests carry no cache point, but the run registers prompt caching on",
+    ]);
 });
 
 test("the capability record names the run's caching condition beside what the arm's requests show", () => {

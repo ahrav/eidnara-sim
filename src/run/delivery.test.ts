@@ -491,6 +491,19 @@ describe("persisted runs under a qualification", () => {
         expect(() =>
             admittedArms({ ...at101, host: "opencode", qualification: ref }, qualified),
         ).toThrow(/qualification Q runs no opencode host/);
+        // The manifest's prompt-caching condition is its registration's: Q and a tier run register off.
+        expect(
+            admittedArms({ ...at101, qualification: ref, prompt_caching: "off" }, qualified).run,
+        ).toEqual(["host", "eidnara", "host-oracle"]);
+        expect(() =>
+            admittedArms({ ...at101, qualification: ref, prompt_caching: "on" }, qualified),
+        ).toThrow(/records prompt caching on, but Q registers off/);
+        expect(() =>
+            admittedArms(
+                { tier: "S", host: "pi", qualification: null, prompt_caching: "on" },
+                tier,
+            ),
+        ).toThrow(/records prompt caching on, but tier S registers off/);
         expect(() =>
             admittedArms({ tier: "S", host: "pi", qualification: ref }, qualified),
         ).toThrow(/qualification Q runs no seed undefined/);

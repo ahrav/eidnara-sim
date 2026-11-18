@@ -56,7 +56,7 @@ export function isPriceTable(table: unknown): table is PriceTable {
  * profile. The in-Region profiles cost 10% more, and every other model has rates of its own.
  */
 export const pricedByCachedTable = (model: string): boolean =>
-    /^global\.anthropic\.claude-opus-5-5(?![0-9])/.test(model);
+    /^global\.anthropic\.claude-opus-5-5(-v\d+(:\d+)?)?$/.test(model);
 
 export const priceTableFor = (caching: PromptCaching): PriceTable =>
     caching === "on" ? CACHED_PRICE_TABLE : PRICE_TABLE;

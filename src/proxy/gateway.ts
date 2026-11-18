@@ -841,21 +841,23 @@ export class Gateway {
             input_tokens: usage.inputTokens ?? 0,
             output_tokens: usage.outputTokens ?? 0,
             cache_read_tokens: usage.cacheReadInputTokens ?? 0,
-            cache_write_tokens: usage.cacheWriteInputTokens ?? 0,
-            ...hourWrites(usage),
+            ...cacheWrites(usage),
         };
     }
 }
 
 /**
- * The tokens a call wrote with the 1-hour lifetime, from the usage's per-lifetime `cacheDetails`,
- * capped at the call's cache writes; no field when there are none, as for every default cache point.
+ * A call's cache writes: the usage's total, or the sum of its per-lifetime `cacheDetails` when
+ * the usage names no total, and the tokens written with the 1-hour lifetime, which lie within
+ * the total; `cache_write_1h_tokens` is absent when there are none, as for every default cache
+ * point.
  */
-function hourWrites(usage: Usage): { cache_write_1h_tokens?: number } {
-    const details = Array.isArray(usage.cacheDetails) ? usage.cacheDetails : [];
-    const hour = details
-        .filter((d) => d?.ttl === "1h" && Number.isFinite(d.inputTokens))
-        .reduce((n, d) => n + (d.inputTokens as number), 0);
-    const written = Math.min(hour, usage.cacheWriteInputTokens ?? 0);
-    return written > 0 ? { cache_write_1h_tokens: written } : {};
+function cacheWrites(usage: Usage): { cache_write_tokens: number; cache_write_1h_tokens?: number } {
+    const details = (Array.isArray(usage.cacheDetails) ? usage.cacheDetails : []).filter((d) =>
+        Number.isSafeInteger(d?.inputTokens),
+    );
+    const sum = (ds: typeof details) => ds.reduce((n, d) => n + (d.inputTokens as number), 0);
+    const total = usage.cacheWriteInputTokens ?? sum(details);
+    const hour = Math.min(total, sum(details.filter((d) => d.ttl === "1h")));
+    return { cache_write_tokens: total, ...(hour > 0 ? { cache_write_1h_tokens: hour } : {}) };
 }
