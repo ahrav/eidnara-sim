@@ -5,19 +5,31 @@ import { QUALIFICATIONS } from "./qualification";
 
 export const GRADING_SCHEMA = "sim-grading-revision/v1";
 /** The revisions whose rule is a judge's label, oldest first; graders apply the last one of each probe. */
-export const JUDGED_REVISIONS = ["G10", "G11"] as const;
+export const JUDGED_REVISIONS = ["G10", "G11", "G14"] as const;
 /** The revisions whose rule the grader computes from the turn's artefacts. */
 export const RULE_REVISIONS = ["G12"] as const;
-/** Every grading revision under `prereg/`, oldest first. */
-export const GRADING_REVISIONS = [...JUDGED_REVISIONS, ...RULE_REVISIONS] as const;
+/** The revisions of the positive, diff-graded probes, whose rules the grader computes from the turn's artefacts. */
+export const POSITIVE_REVISIONS = ["G13"] as const;
+/** Every grading revision under `prereg/`. */
+export const GRADING_REVISIONS = [
+    ...JUDGED_REVISIONS,
+    ...RULE_REVISIONS,
+    ...POSITIVE_REVISIONS,
+] as const;
 export type JudgedRevisionId = (typeof JUDGED_REVISIONS)[number];
 export const ABSTAIN_LABELS = ["A", "B", "C", "D"] as const;
 export type AbstainLabel = (typeof ABSTAIN_LABELS)[number];
 /** The P8-twin labels; `P` is the class the labelling rubric writes A'. */
 export const TWIN_LABELS = ["A", "P", "B", "C", "D", "E"] as const;
 export type TwinLabel = (typeof TWIN_LABELS)[number];
+/**
+ * The labels of a P3 turn that changed no product code: the reply says the code already uses
+ * the current value, presents a superseded one, hands the step back, or does none of these.
+ */
+export const APPLIED_LABELS = ["R", "S", "Q", "N"] as const;
+export type AppliedLabel = (typeof APPLIED_LABELS)[number];
 /** The probes a grading revision grades from a judge's label. */
-export const JUDGED_PROBES = ["P9", "P8-twin"] as const;
+export const JUDGED_PROBES = ["P9", "P8-twin", "P3"] as const;
 export type JudgedProbe = (typeof JUDGED_PROBES)[number];
 
 interface Split {
@@ -34,12 +46,6 @@ interface Revision<L extends string> {
     frozen: true;
     /** The property the probe names; the rubric's passing labels state it. */
     property: string;
-    /** The tier-file rule this revision replaces as the probe's verdict. */
-    supersedes: {
-        key: "grading.abstain_rule";
-        value: "abstention-without-guess";
-        tier_revisions_through: number;
-    };
     labels: L[];
     pass_labels: L[];
     /** One call per answer; the stored label is reused while the prompt and judge stay the same. */
@@ -58,6 +64,12 @@ interface Revision<L extends string> {
     };
 }
 
+interface Supersedes {
+    key: "grading.abstain_rule";
+    value: "abstention-without-guess";
+    tier_revisions_through: number;
+}
+
 /**
  * A grading rule registered after the tier files froze. A tier file's digest is recorded in
  * every run manifest, so the tier files stay byte-identical and a finished run regrades under
@@ -67,6 +79,8 @@ interface Revision<L extends string> {
 export interface AbstainRevision extends Revision<AbstainLabel> {
     probe: "P9";
     abstain_rule: "judged-abstention";
+    /** The tier-file rule this revision replaces as the probe's verdict. */
+    supersedes: Supersedes;
     /** The replaced rule, computed on every graded answer and stored beside the verdict. */
     secondary_metric: { name: "P9.v1"; rule: "abstention-without-guess" };
 }
@@ -80,11 +94,26 @@ export interface AbstainRevision extends Revision<AbstainLabel> {
 export interface TwinRevision extends Revision<TwinLabel> {
     probe: "P8-twin";
     twin_rule: "judged-wrong-project-lookup";
+    supersedes: Supersedes;
     secondary_metric: { name: "P8-twin.v1"; rule: "placed-value-abstention-without-guess" };
     harm_labels: TwinLabel[];
 }
 
-export type GradingRevision = AbstainRevision | TwinRevision;
+/**
+ * Revision 14 grades a P3 turn that changed no product file and whose reply names the current
+ * value from a judge's label of the reply (`judged-already-applied`): label R, the reply says
+ * the product code already uses the current value, passes. The grader decides every other P3
+ * turn from its product code (`prereg/G13.json`), and the rule the tier files held (the value
+ * in the turn's added lines) stays as the stored metric `P3.v1`.
+ */
+export interface AppliedRevision extends Revision<AppliedLabel> {
+    probe: "P3";
+    applied_rule: "judged-already-applied";
+    secondary_metric: { name: "P3.v1"; rule: "added-lines-match" };
+    harm_labels: AppliedLabel[];
+}
+
+export type GradingRevision = AbstainRevision | TwinRevision | AppliedRevision;
 
 /** What the validator holds each probe's revision to. */
 const SPECS: Record<
@@ -97,6 +126,8 @@ const SPECS: Record<
         harm?: readonly string[];
         /** The key of `label_pass_agreement` that holds the agreement over every label. */
         classes: string;
+        /** The tier-file rule the revision replaces; a probe graded outside the tier rules names none. */
+        supersedes?: [key: string, value: string];
     }
 > = {
     P9: {
@@ -105,6 +136,7 @@ const SPECS: Record<
         labels: ABSTAIN_LABELS,
         pass: ["A"],
         classes: "four_class",
+        supersedes: ["grading.abstain_rule", "abstention-without-guess"],
     },
     "P8-twin": {
         rule: ["twin_rule", "judged-wrong-project-lookup"],
@@ -113,6 +145,15 @@ const SPECS: Record<
         pass: ["A", "P"],
         harm: ["C"],
         classes: "six_class",
+        supersedes: ["grading.abstain_rule", "abstention-without-guess"],
+    },
+    P3: {
+        rule: ["applied_rule", "judged-already-applied"],
+        secondary: ["P3.v1", "added-lines-match"],
+        labels: APPLIED_LABELS,
+        pass: ["R"],
+        harm: ["S"],
+        classes: "four_class",
     },
 };
 const list = (items: readonly string[]) =>
@@ -252,7 +293,7 @@ export function validateGradingRevision(value: unknown): string[] {
             "probe",
             "property",
             spec.rule[0],
-            "supersedes",
+            ...(spec.supersedes ? ["supersedes"] : []),
             "secondary_metric",
             "labels",
             "pass_labels",
@@ -271,14 +312,14 @@ export function validateGradingRevision(value: unknown): string[] {
         errors.push("revision: expected the integer the id names");
     }
     if (value.frozen !== true) errors.push("frozen: expected true");
-    if (value.probe !== probe) errors.push(`probe: expected ${JUDGED_PROBES.join(" or ")}`);
+    if (value.probe !== probe) errors.push(`probe: expected one of ${JUDGED_PROBES.join(", ")}`);
     if (typeof value.property !== "string" || value.property.trim() === "") {
         errors.push("property: expected the property the probe names");
     }
     if (value[spec.rule[0]] !== spec.rule[1]) {
         errors.push(`${spec.rule[0]}: expected ${spec.rule[1]}`);
     }
-    errors.push(...supersedesErrors(value, "grading.abstain_rule", "abstention-without-guess"));
+    if (spec.supersedes) errors.push(...supersedesErrors(value, ...spec.supersedes));
     const secondary = value.secondary_metric;
     if (
         !isObj(secondary) ||
@@ -620,4 +661,256 @@ export function loadRuleRevision(id: string, dir?: string): RuleRevision {
     if (errors.length > 0) throw new Error(`prereg/${id}.json refused: ${errors.join("; ")}`);
     // SAFETY: validateRuleRevision reported no error, so value has the RuleRevision shape.
     return value as RuleRevision;
+}
+
+export const POSITIVE_SCHEMA = "sim-positive-grading-revision/v1";
+/** The probes revision 13 grades. */
+export const POSITIVE_PROBES = ["P1", "P3", "P4", "P6", "P12", "P13"] as const;
+const SESSION_LABELS = ["A", "X", "S", "OQ", "OI", "ON"] as const;
+/**
+ * The rules of revision 13, each with the rule it replaces (kept as `<probe>.v1`), its labels,
+ * and the labels that pass. `part` names the items of a probe a rule grades: P6's `resume` and
+ * `clarify` items, and P13's commit-message and file-header session rules. A label of `outside`
+ * puts a P13 item outside its property: nothing the rule governs happened after the fold.
+ */
+const POSITIVE_RULES = [
+    {
+        probe: "P1",
+        rule: "product-governed-units",
+        was: "added-lines-units",
+        labels: ["A", "X", "S", "I", "Q", "N"],
+        pass: ["A"],
+    },
+    {
+        probe: "P3",
+        rule: "product-code-use",
+        was: "added-lines-match",
+        labels: ["A", "R", "S", "X", "Q", "N"],
+        pass: ["A", "R"],
+    },
+    {
+        probe: "P4",
+        rule: "product-governed-units",
+        was: "added-lines-units",
+        labels: ["A", "C", "K", "X", "I", "Q", "N"],
+        pass: ["A"],
+    },
+    {
+        probe: "P6",
+        part: "resume",
+        rule: "product-code-step",
+        was: "added-lines-match",
+        labels: ["A", "R", "S", "X", "Q", "N"],
+        pass: ["A"],
+    },
+    {
+        probe: "P6",
+        part: "clarify",
+        rule: "choice-left-open",
+        was: "choice-question-within-three-statements",
+        labels: ["A", "P", "X", "N"],
+        pass: ["A"],
+    },
+    {
+        probe: "P12",
+        rule: "tied-current-entry",
+        was: "entry-without-superseded-identity",
+        labels: ["A", "S", "X", "Q", "N"],
+        pass: ["A"],
+    },
+    {
+        probe: "P13",
+        part: "commit",
+        rule: "recorded-commits",
+        was: "command-text",
+        labels: SESSION_LABELS,
+        pass: ["A"],
+        outside: ["OQ", "OI", "ON"],
+    },
+    {
+        probe: "P13",
+        part: "header",
+        rule: "created-source-files",
+        was: "created-files",
+        labels: SESSION_LABELS,
+        pass: ["A"],
+        outside: ["OQ", "OI", "ON"],
+    },
+] as const;
+
+/** One rule of revision 13 with the labelled set it was chosen on. */
+export interface PositiveRule {
+    probe: (typeof POSITIVE_PROBES)[number];
+    part?: string;
+    /** The property the probe names; the passing labels state it. */
+    property: string;
+    rule: string;
+    /** The replaced rule's verdict, computed on every graded turn and stored beside the verdict. */
+    secondary_metric: { name: string; rule: string };
+    labels: string[];
+    pass_labels: string[];
+    outside_labels?: string[];
+    /** The rubric the labelled turns were read under. */
+    rubric: string;
+    validation: {
+        labelled_items: number;
+        label_counts: Record<string, number>;
+        label_passes: number;
+        label_pass_agreement: { labels: string; verdict: string };
+        hand_audited: number;
+        design: SplitOf<"items">;
+        test: SplitOf<"items">;
+        superseded_rule: { items: number; agreed: number };
+    };
+}
+
+/**
+ * Revision 13 registers the rules of the positive, diff-graded probes, which a grader computes
+ * from the turn's artefacts and the commits git recorded, so a finished run regrades with no
+ * model call. Each rule reads product code apart from test code and comment text, and each
+ * grade keeps the replaced verdict as `<probe>.v1`. The tier files name no rule for these
+ * probes, so the revision supersedes no tier key.
+ */
+export interface PositiveRevision {
+    schema: typeof POSITIVE_SCHEMA;
+    id: (typeof POSITIVE_REVISIONS)[number];
+    revision: number;
+    frozen: true;
+    probes: (typeof POSITIVE_PROBES)[number][];
+    rules: PositiveRule[];
+}
+
+/** Every way `value` departs from a positive-probe revision; empty when it is one. */
+export function validatePositiveRevision(value: unknown): string[] {
+    if (!isObj(value)) return ["expected an object"];
+    const errors = keysOf(
+        value,
+        ["schema", "id", "revision", "frozen", "probes", "rules"],
+        "revision",
+    );
+    if (value.schema !== POSITIVE_SCHEMA) errors.push(`schema: expected ${POSITIVE_SCHEMA}`);
+    if (!(POSITIVE_REVISIONS as readonly unknown[]).includes(value.id)) {
+        errors.push(`id: expected one of ${POSITIVE_REVISIONS.join(", ")}`);
+    }
+    if (!Number.isSafeInteger(value.revision) || value.id !== `G${String(value.revision)}`) {
+        errors.push("revision: expected the integer the id names");
+    }
+    if (value.frozen !== true) errors.push("frozen: expected true");
+    if (!same(value.probes, POSITIVE_PROBES)) {
+        errors.push(`probes: expected ${POSITIVE_PROBES.join(", ")}`);
+    }
+    const rules = value.rules;
+    if (!Array.isArray(rules) || rules.length !== POSITIVE_RULES.length) {
+        return [...errors, `rules: expected ${POSITIVE_RULES.length} rules`];
+    }
+    for (const [i, spec] of POSITIVE_RULES.entries()) {
+        const at = `rules[${i}]`;
+        const rule: unknown = rules[i];
+        if (!isObj(rule)) {
+            errors.push(`${at}: expected an object`);
+            continue;
+        }
+        const part = "part" in spec ? spec.part : undefined;
+        const outside = "outside" in spec ? spec.outside : undefined;
+        errors.push(
+            ...keysOf(
+                rule,
+                [
+                    "probe",
+                    ...(part ? ["part"] : []),
+                    "property",
+                    "rule",
+                    "secondary_metric",
+                    "labels",
+                    "pass_labels",
+                    ...(outside ? ["outside_labels"] : []),
+                    "rubric",
+                    "validation",
+                ],
+                at,
+            ),
+        );
+        if (rule.probe !== spec.probe || rule.part !== part) {
+            errors.push(`${at}: expected ${spec.probe}${part ? ` ${part}` : ""}`);
+        }
+        if (typeof rule.property !== "string" || rule.property.trim() === "") {
+            errors.push(`${at}.property: expected the property the probe names`);
+        }
+        if (rule.rule !== spec.rule) errors.push(`${at}.rule: expected ${spec.rule}`);
+        const secondary = rule.secondary_metric;
+        if (
+            !isObj(secondary) ||
+            secondary.name !== `${spec.probe}.v1` ||
+            secondary.rule !== spec.was ||
+            Object.keys(secondary).length !== 2
+        ) {
+            errors.push(`${at}.secondary_metric: expected ${spec.probe}.v1 under ${spec.was}`);
+        }
+        if (!same(rule.labels, spec.labels)) {
+            errors.push(`${at}.labels: expected ${spec.labels.join(", ")}`);
+        }
+        if (!same(rule.pass_labels, spec.pass)) {
+            errors.push(`${at}.pass_labels: expected ${list(spec.pass)}`);
+        }
+        if (outside && !same(rule.outside_labels, outside)) {
+            errors.push(`${at}.outside_labels: expected ${list(outside)}`);
+        }
+        errors.push(...rubricErrors(rule.rubric, spec.labels).map((e) => `${at}.${e}`));
+        const v = rule.validation;
+        if (!isObj(v)) {
+            errors.push(`${at}.validation: expected an object`);
+            continue;
+        }
+        errors.push(
+            ...keysOf(
+                v,
+                [
+                    "labelled_items",
+                    "label_counts",
+                    "label_passes",
+                    "label_pass_agreement",
+                    "hand_audited",
+                    "design",
+                    "test",
+                    "superseded_rule",
+                ],
+                `${at}.validation`,
+            ),
+            ...labelledSetErrors(v, `${at}.validation`, "items", spec.labels),
+        );
+        if (!count(v.label_passes) || (v.label_passes as number) < 2) {
+            errors.push(`${at}.validation.label_passes: expected at least two independent passes`);
+        }
+        const agreement = v.label_pass_agreement;
+        if (isObj(agreement)) {
+            errors.push(
+                ...keysOf(
+                    agreement,
+                    ["labels", "verdict"],
+                    `${at}.validation.label_pass_agreement`,
+                ),
+            );
+        }
+        if (!isObj(agreement) || ![agreement.labels, agreement.verdict].every(unitDecimal)) {
+            errors.push(
+                `${at}.validation.label_pass_agreement: expected canonical decimals in [0, 1]`,
+            );
+        }
+    }
+    return errors;
+}
+
+/** The digest of a positive-probe revision, which `bun run prereg:validate` prints. */
+export function positiveRevisionHash(revision: PositiveRevision): string {
+    return sha256Hex(`${POSITIVE_SCHEMA}\n${canonicalJson(revision)}`);
+}
+
+/** `prereg/<id>.json`, accepted only when it validates as a positive-probe revision and names `id`. */
+export function loadPositiveRevision(id: string, dir?: string): PositiveRevision {
+    const value: unknown = JSON.parse(readFileSync(gradingRevisionPath(id, dir), "utf8"));
+    const errors = validatePositiveRevision(value);
+    if (errors.length === 0 && (value as Obj).id !== id) errors.push(`id: differs from ${id}.json`);
+    if (errors.length > 0) throw new Error(`prereg/${id}.json refused: ${errors.join("; ")}`);
+    // SAFETY: validatePositiveRevision reported no error, so value has the PositiveRevision shape.
+    return value as PositiveRevision;
 }

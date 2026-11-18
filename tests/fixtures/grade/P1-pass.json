@@ -251,7 +251,8 @@
   "expect": {
     "verdict": "pass",
     "metrics": {
-      "P1.pass": true
+      "P1.pass": true,
+      "P1.v1": true
     },
     "inputs": [
       "calls-s0003",

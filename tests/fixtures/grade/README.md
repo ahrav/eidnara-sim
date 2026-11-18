@@ -75,3 +75,13 @@ The fixtures other than the P8-twin ones carry checks from before generator `sim
 `applies`, no file scope, no `ground_truth`), so they exercise the graders'
 channel logic on its own. The controls in `src/grade/controls.test.ts` grade
 against the checks and ground truth the current compiler emits.
+
+The P1, P3, P4, P6, P12, and P13 files list the replaced verdict in
+`expect.metrics` (`<type>.v1`; `prereg/G13.json`), and the P13 files also
+`P13.commits_from` and `P13.v1_rule_kept`. `P3-pass-already-applied` and
+`P3-fail-asks-which` are turns that changed no product file and whose
+reply names the current value, the shape the judge of `prereg/G14.json`
+labels; the label is scripted for the test (`judge.label`). The first
+reply says the code already uses the constant and ends with a conditional
+offer (label R), and the second says nothing uses the constant yet and
+asks whether its figure is the agreed one (label Q).

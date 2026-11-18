@@ -1,0 +1,93 @@
+{
+  "provenance": "constructed: a turn that changed no product file and whose reply names the current value; the judge label is scripted for the test",
+  "probe": {
+    "id": "P3-d",
+    "type": "P3",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "Set the scan page size to the agreed figure.",
+    "check": {
+      "must": [
+        "63646|IVORY_WALRUS_PAGE_SIZE"
+      ],
+      "must_not": [
+        "30632"
+      ]
+    },
+    "event": "e-1",
+    "ground_truth": {
+      "absent": [],
+      "basis": "observation",
+      "expect": "apply",
+      "present": [
+        [
+          "63646",
+          "IVORY_WALRUS"
+        ]
+      ],
+      "sources": [],
+      "stale": [
+        "30632"
+      ],
+      "supersedes": []
+    }
+  },
+  "snapshots": [
+    {
+      "id": "s-P3-d",
+      "item": "P3-d",
+      "arm": "eidnara",
+      "session": "s-1",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "d1",
+          "class": "diff",
+          "role": "turn",
+          "patch": ""
+        },
+        {
+          "id": "p1",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "seq": 1,
+              "arm": "eidnara",
+              "session": "s-1",
+              "component": "agent",
+              "turn": "e-1",
+              "scenario_ms": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "response_text": "I have not changed anything. IVORY_WALRUS_PAGE_SIZE is 63646 and nothing uses it yet. Is 63646 the agreed figure, or should the scan keep its own value?",
+              "status": 200,
+              "error": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "judge": {
+    "label": "Q"
+  },
+  "expect": {
+    "verdict": "fail",
+    "reason": "relied on neither",
+    "metrics": {
+      "P3.pass": false,
+      "P3.reliance": "neither",
+      "P3.harm": false,
+      "P3.v1": false,
+      "P3.label": "Q"
+    },
+    "inputs": [
+      "d1",
+      "p1"
+    ]
+  }
+}

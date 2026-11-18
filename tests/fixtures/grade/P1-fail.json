@@ -252,7 +252,8 @@
     "verdict": "fail",
     "reason": "rule not applied",
     "metrics": {
-      "P1.pass": false
+      "P1.pass": false,
+      "P1.v1": false
     },
     "inputs": [
       "calls-s0003",

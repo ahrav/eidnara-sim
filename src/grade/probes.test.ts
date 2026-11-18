@@ -12,8 +12,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { judgmentMetrics, judgmentOf, twinJudgmentOf } from "../../tests/abstain-judgment";
-import type { AbstainLabel, TwinLabel } from "../prereg/grading";
+import {
+    appliedJudgmentOf,
+    judgmentMetrics,
+    judgmentOf,
+    twinJudgmentOf,
+} from "../../tests/abstain-judgment";
+import type { AbstainLabel, AppliedLabel, TwinLabel } from "../prereg/grading";
 import { compileScenario, type ProbeItem } from "../scenario/compile";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { hashEmbedder } from "../scenario/similarity";
@@ -42,7 +47,7 @@ interface Fixture {
     probe: ProbeItem;
     snapshots: Snapshot[];
     /** The label the judge step hands the grader for a judge-graded item, scripted for the test. */
-    judge?: { label: AbstainLabel | TwinLabel };
+    judge?: { label: AbstainLabel | TwinLabel | AppliedLabel };
     expect: {
         verdict: string;
         reason?: string;
@@ -66,8 +71,9 @@ const retagged = (snapshot: Snapshot, session: string): Snapshot => {
 const judgmentFor = (f: Fixture, snapshots = f.snapshots) => {
     const answer = f.judge ? judgedAnswer(f.probe, snapshots) : null;
     if (!f.judge || answer === null) return undefined;
+    if (f.probe.type === "P3") return appliedJudgmentOf(answer, f.judge.label as AppliedLabel);
     return f.probe.type === "P8-twin"
-        ? twinJudgmentOf(answer, f.judge.label)
+        ? twinJudgmentOf(answer, f.judge.label as TwinLabel)
         : judgmentOf(answer, f.judge.label as AbstainLabel);
 };
 const gradeFixture = (f: Fixture, snapshots = f.snapshots, r = rules) =>
@@ -101,7 +107,7 @@ describe("recorded fixtures", () => {
             expect(g.metrics).toEqual({
                 ...f.expect.metrics,
                 ...(judgment
-                    ? judgmentMetrics(judgment, f.probe.type === "P8-twin" ? "P8-twin" : "P9")
+                    ? judgmentMetrics(judgment, f.probe.type as "P9" | "P8-twin" | "P3")
                     : {}),
             });
             expect(f.expect.inputs.length).toBeGreaterThan(0);
@@ -860,7 +866,7 @@ describe("grading harness", () => {
         if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
         const commit = log.commands.find((c) => c.command.startsWith("git commit")) as Command;
         commit.command = `printf 'note\n${commit.command}'`;
-        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(false);
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.v1_rule_kept"]).toBe(false);
     });
 
     test("leading shell assignments do not hide the command word", () => {
@@ -926,7 +932,7 @@ describe("grading harness", () => {
         const commit = log.commands.find((c) => c.command.startsWith("git commit")) as Command;
         commit.command = `sleep 100; ${commit.command}`;
         commit.exit = null;
-        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(false);
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.v1_rule_kept"]).toBe(false);
     });
 
     test("a null artefact entry is refused as malformed evidence", () => {
@@ -1150,7 +1156,7 @@ describe("grading harness", () => {
         if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
         const commit = log.commands.find((c) => c.command.startsWith("git commit")) as Command;
         commit.command = `exit 0; ${commit.command}`;
-        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(false);
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.v1_rule_kept"]).toBe(false);
     });
 
     test("a diff payload must be structurally a unified diff", () => {
@@ -1189,7 +1195,7 @@ describe("grading harness", () => {
         if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
         const commit = log.commands.find((c) => c.command.startsWith("git commit")) as Command;
         commit.command = "echo hg commit";
-        expect(gradeItem(probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(false);
+        expect(gradeItem(probe, [snap], rules)?.metrics["P13.v1_rule_kept"]).toBe(false);
     });
 
     test("a diff header has grammar and a hunk line that begins +++ is content", () => {
@@ -1223,7 +1229,7 @@ describe("grading harness", () => {
         if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
         const commit = log.commands.find((c) => c.command.startsWith("git commit")) as Command;
         commit.command = `X=1 exit 0; ${commit.command}`;
-        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(false);
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.v1_rule_kept"]).toBe(false);
         const p6 = fixture("P6-pass");
         const s6 = structuredClone(p6.snapshots[0]) as Snapshot;
         const l6 = s6.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
@@ -1385,7 +1391,7 @@ describe("grading harness", () => {
         const commit = log.commands.find((c) => c.command.startsWith("git commit")) as Command;
         const original = commit.command;
         commit.command = `exec true; ${original}`;
-        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(false);
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.v1_rule_kept"]).toBe(false);
         commit.command = `exec >/dev/null; ${original}`;
         expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(true);
     });
@@ -2196,7 +2202,7 @@ describe("grading harness", () => {
         const commit = log.commands.find((c) => c.command.startsWith("git commit"));
         if (!commit) throw new Error("fixture lacks the commit");
         commit.command = `echo "${commit.command}"`;
-        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(false);
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.v1_rule_kept"]).toBe(false);
         commit.command = `cd repo && ${commit.command.slice(6, -1)}`;
         expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(true);
     });

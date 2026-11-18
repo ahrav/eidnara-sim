@@ -12,6 +12,8 @@ import { join, posix } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
 import {
     type AbstainLabel,
+    APPLIED_LABELS,
+    type AppliedLabel,
     GRADING_REVISIONS,
     JUDGED_PROBES,
     RULE_PROBES,
@@ -47,7 +49,8 @@ import {
     str,
     text,
 } from "./artefacts";
-import { isProductPath, matchesCode, productCode } from "./product";
+import { CLOCK_SLACK_MS } from "./commit-log";
+import { addedCode, isProductPath, isSourcePath, matchesCode, productCode } from "./product";
 import {
     abstains,
     addedLines,
@@ -458,6 +461,8 @@ interface Work {
     outside: DiffFile[];
     text: string;
     commands: Command[];
+    /** The executed segments the command channels read, when they are other than the commands' own. */
+    segments?: string[];
 }
 
 /** Notes and prose files: a path under `notes/`, or a Markdown, text, or reStructuredText file. */
@@ -497,9 +502,11 @@ function workFor(
     };
 }
 
-const invokes = (patterns: string[]) => (x: Command) =>
-    checkedSegments(x).some((seg) => startsWithAll(seg, patterns.map(anchored)));
-const invokesAny = (patterns: string[]) => (x: Command) => patterns.some((p) => invokes([p])(x));
+/** The executed segments a work's command channels read (`checkedSegments`). */
+const segmentsOf = (w: Work) => w.segments ?? w.commands.flatMap(checkedSegments);
+/** Whether some segment starts with every pattern. */
+const invoked = (segments: string[], patterns: string[]) =>
+    segments.some((seg) => startsWithAll(seg, patterns.map(anchored)));
 
 /**
  * The statements an `applies` pattern finds in the files' added lines: each match, from its first
@@ -562,18 +569,28 @@ interface Assessed {
  * created file (a created target file at least, so a note alone carries no rule), the quote style every string literal of the target files'
  * added lines (at least one), and `commands_must` one executed segment.
  */
-function assess(w: Work, c: Check): Assessed {
+function assess(w: Work, c: Check, product?: ProductReading): Assessed {
     const targets = targetsOf(w.files, c);
     const paths = w.files.map((f) => f.path).join("\n");
     const created = targets.filter((f) => f.created);
     const everyCreated = w.files.filter((f) => f.created);
-    const quotes = literalQuotes(targets.flatMap((f) => f.added));
+    const quotes = literalQuotes(
+        targets.flatMap((f) => (product ? addedCode(f).code.split("\n") : f.added)),
+    );
     const firstLines = c.first_line_must;
     const must = c.must ?? [];
     if (c.applies) {
-        const units = unitsOf(targets, c.applies);
-        if (units.length === 0) return { held: false, reason: "rule not applicable to the change" };
-        if (!units.every((u) => matchesAll(u, must))) {
+        const units = product
+            ? governedUnits(targets, c.applies, product.tests)
+            : unitsOf(targets, c.applies);
+        const tagged = product !== undefined && addsTagged(targets, product.tags);
+        if (units.length === 0 && !tagged) {
+            return { held: false, reason: "rule not applicable to the change" };
+        }
+        const without = units.filter((u) => !matchesAll(u, must));
+        // A unit that holds a literal states its own text; one that holds none takes its text
+        // from a name, and the tagged literal the product code adds is that text.
+        if (without.some((u) => !tagged || /["'`]/.test(u))) {
             return { held: false, reason: "a governed construct breaks the rule" };
         }
     }
@@ -585,20 +602,89 @@ function assess(w: Work, c: Check): Assessed {
                 everyCreated.every((f) => matchesAll(f.added[0] ?? "", firstLines)))) &&
         (c.quote_style_must === undefined ||
             (quotes.length > 0 && quotes.every((q) => q === c.quote_style_must))) &&
-        (c.commands_must === undefined || w.commands.some(invokes(c.commands_must)));
+        (c.commands_must === undefined || invoked(segmentsOf(w), c.commands_must));
     return ok ? { held: true } : { held: false, reason: "rule not applied" };
 }
 const held = (w: Work, c: Check) => assess(w, c).held;
 
+/**
+ * The product reading of a rule's governed constructs (`prereg/G13.json`). `tags` are the
+ * identities a message-opening rule names (`openingTags`), and `tests` says whether test and
+ * support code is read when the product code holds no governed unit.
+ */
+interface ProductReading {
+    tags: string[];
+    tests: boolean;
+}
+
+/** A file whose added lines are its added code: comments blanked over each hunk, and without the lines of Rust test items when `product` holds. */
+const codeOf = (f: DiffFile, product: boolean): DiffFile => ({
+    ...f,
+    added: addedCode(f, product).code.split("\n"),
+});
+
+/**
+ * The governed units of the product reading: the units in the product code of product files.
+ * With `tests`, a change whose product code holds none is read over all its code, so a rule
+ * about tests reads the tests.
+ */
+function governedUnits(files: DiffFile[], patterns: string[], tests: boolean): string[] {
+    const product = files.filter((f) => isProductPath(f.path)).map((f) => codeOf(f, true));
+    const units = unitsOf(product, patterns);
+    if (units.length > 0 || !tests) return units;
+    return unitsOf(
+        files.map((f) => codeOf(f, false)),
+        patterns,
+    );
+}
+
+const escaped = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The identities of a rule about the text a message opens with: the ground truth's tokens that a
+ * `must` pattern asks for right after a quote, with or without an opening bracket
+ * (`"umber_yak: `, `["'`]\[briny_kestrel\]`).
+ */
+function openingTags(c: Check, probe: ProbeItem): string[] {
+    const tokens = (probe.ground_truth?.present ?? []).flat();
+    return tokens.filter((t) =>
+        (c.must ?? []).some((m) => new RegExp(`["'\`\\]]\\\\?[[(]?${escaped(escaped(t))}`).test(m)),
+    );
+}
+
+/**
+ * Whether the product code of the files adds a string literal that opens with one of the tags,
+ * after an optional opening bracket. The quote is a literal's opening delimiter: it stands in
+ * the code mask and the character after it is blanked there.
+ */
+function addsTagged(files: DiffFile[], tags: string[]): boolean {
+    if (tags.length === 0) return false;
+    const opens = new RegExp(`["'\`][[(]?(?:${tags.map(escaped).join("|")})(?![A-Za-z0-9_])`, "g");
+    return files
+        .filter((f) => isProductPath(f.path))
+        .some((f) => {
+            const { code, mask } = productCode(f);
+            for (const m of code.matchAll(opens)) {
+                if (mask[m.index] === code[m.index] && mask[m.index + 1] === " ") return true;
+            }
+            return false;
+        });
+}
+
+/** Whether the product code of the files matches some pattern (`matchesCode`). */
+const inProduct = (files: DiffFile[], patterns: string[]) =>
+    files.some((f) => isProductPath(f.path) && matchesCode(productCode(f), patterns));
+
 /** Some rule the check forbids occurs in `w`, over the read files, their paths, and the commands. */
-function broken(w: Work, c: Check): boolean {
+function broken(w: Work, c: Check, product = false): boolean {
     const paths = w.files.map((f) => f.path).join("\n");
     const created = w.files.filter((f) => f.created);
+    const segments = c.commands_must_not ? segmentsOf(w) : [];
     return (
-        matchesAny(w.text, c.must_not ?? []) ||
+        (product ? inProduct(w.files, c.must_not ?? []) : matchesAny(w.text, c.must_not ?? [])) ||
         matchesAny(paths, c.paths_must_not ?? []) ||
         created.some((f) => matchesAny(f.added[0] ?? "", c.first_line_must_not ?? [])) ||
-        w.commands.some(invokesAny(c.commands_must_not ?? []))
+        (c.commands_must_not ?? []).some((p) => invoked(segments, [p]))
     );
 }
 
@@ -607,15 +693,20 @@ function broken(w: Work, c: Check): boolean {
  * rule's own `must` pattern (in a governed unit when the check names `applies`) or a string literal
  * in its quote style.
  */
-function leaked(w: Work, c: Check): boolean {
+function leaked(w: Work, c: Check, product = false): boolean {
     if (!c.scope) return false;
     const code = w.outside.filter((f) => !isDoc(f.path));
     const must = c.must ?? [];
+    const units = (patterns: string[]) =>
+        product ? governedUnits(code, patterns, false) : unitsOf(code, patterns);
     const carriesRule = c.applies
-        ? unitsOf(code, c.applies).some((u) => matchesAny(u, must))
-        : code.some((f) => f.added.some((l) => matchesAny(l, must)));
+        ? units(c.applies).some((u) => matchesAny(u, must))
+        : product
+          ? inProduct(code, must)
+          : code.some((f) => f.added.some((l) => matchesAny(l, must)));
     const style = c.quote_style_must;
-    const quotes = style ? literalQuotes(code.flatMap((f) => f.added)) : [];
+    const lines = code.flatMap((f) => (product ? addedCode(f).code.split("\n") : f.added));
+    const quotes = style ? literalQuotes(lines) : [];
     return carriesRule || quotes.includes(style as "double" | "single");
 }
 
@@ -1051,16 +1142,27 @@ const substituted = (value: string): string => {
  * `-F`/`--file` source: the part's standard input for `-`, or a file the command wrote. The
  * subject is the message's first non-blank line.
  */
-const commitRead = (r: Redirected, ctx: Context): string | null => {
-    const words = r.args;
-    if (words[0] !== "git") return null;
+/** The index of the subcommand of a `git [global options] <subcommand>` word list, or -1. */
+const gitSubcommand = (words: string[]): number => {
+    if (words[0] !== "git") return -1;
     let i = 1;
     while (i < words.length && (words[i] as string).startsWith("-")) {
         const w = words[i] as string;
         if (GIT_VALUE_GLOBALS.test(w)) i += 2;
         else if (GIT_FLAG_GLOBALS.test(w)) i++;
-        else return null;
+        else return -1;
     }
+    return i < words.length ? i : -1;
+};
+/** Whether an executed segment runs `git commit` or `git commit-tree`; a `--dry-run` commits nothing. */
+const makesCommit = (segment: string): boolean => {
+    const words = shellWords(segment);
+    const at = gitSubcommand(words);
+    return /^commit(?:-tree)?$/.test(words[at] ?? "") && !words.slice(at).includes("--dry-run");
+};
+const commitRead = (r: Redirected, ctx: Context): string | null => {
+    const words = r.args;
+    const i = gitSubcommand(words);
     if (words[i] !== "commit") return null;
     const kept = ["git", "commit"];
     let messages: string[] = [];
@@ -1347,25 +1449,29 @@ function foldsIn(r: ArtefactReader, turns?: [number, number]): CallView[] {
  */
 function p4(r: ArtefactReader, c: Check): Outcome {
     const w = workFor(r, c, c.commands_must || c.commands_must_not ? r.commands() : []);
-    const kept = assess(w, c);
-    const wrong = broken(w, c);
-    const leak = leaked(w, c);
-    const collapsed = (wrong && c.side === "out") || (leak && c.side === "in");
-    const superseded = (wrong && c.side !== "out") || (leak && c.side === "out");
-    const reasons = [
-        kept.held
-            ? ""
-            : kept.reason === "rule not applied"
-              ? "missing the expected rule"
-              : kept.reason,
-        superseded ? "kept the superseded rule" : "",
-        collapsed ? "collapsed a still-valid fact" : "",
-    ].filter(Boolean);
+    const read = (product: boolean) => {
+        const kept = assess(w, c, product ? { tags: [], tests: false } : undefined);
+        const wrong = broken(w, c, product);
+        const leak = leaked(w, c, product);
+        const collapsed = (wrong && c.side === "out") || (leak && c.side === "in");
+        const superseded = (wrong && c.side !== "out") || (leak && c.side === "out");
+        const reasons = [
+            kept.held
+                ? ""
+                : kept.reason === "rule not applied"
+                  ? "missing the expected rule"
+                  : kept.reason,
+            superseded ? "kept the superseded rule" : "",
+            collapsed ? "collapsed a still-valid fact" : "",
+        ].filter(Boolean);
+        return { pass: kept.held && !wrong && !leak, collapsed, reason: reasons.join("; ") };
+    };
+    const now = read(true);
     return binary(
         "P4",
-        kept.held && !wrong && !leak,
-        { "P4.harm": collapsed, "P4.collapsed": collapsed },
-        reasons.join("; "),
+        now.pass,
+        { "P4.harm": now.collapsed, "P4.collapsed": now.collapsed, "P4.v1": read(false).pass },
+        now.reason,
     );
 }
 
@@ -1387,6 +1493,23 @@ const asksToChoose = (answer: string) => {
     const statements = all.slice(last + 1).filter((s) => !s.endsWith("?"));
     return statements.length <= 3 && !all.slice(first + 1).some((s) => COMMITS.test(s));
 };
+/** A sentence that hands the choice back as an instruction: `Tell me which item to start with`. */
+const HANDS_BACK =
+    /^\W*(?:please\s+)?(?:tell me|let me know|say|pick|choose|decide)\b[^.?!\n]*\b(?:which|whether|either|first|order)\b/i;
+/**
+ * The answer leaves the choice to the user (`clarify_rule: choice-left-open`, `prereg/G13.json`):
+ * some sentence asks the user to choose, as a question or as an instruction, and no sentence
+ * after the first such one picks a task (`COMMITS`). What follows the request, an option list or
+ * a note on another matter, leaves it standing.
+ */
+const leavesChoice = (answer: string) => {
+    const all = sentences(answer);
+    const first = all.findIndex((s) => (s.endsWith("?") && CHOICE.test(s)) || HANDS_BACK.test(s));
+    return first >= 0 && !all.slice(first + 1).some((s) => COMMITS.test(s));
+};
+/** `text` with each camel-case word boundary written as an underscore, in lower case. */
+const snakeCased = (text: string) => text.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+const folded = (p: string) => (p.startsWith("(?i)") ? p : `(?i)${p}`);
 
 /**
  * P6 grades the code the turn changed: a resume item passes when that change carries the planned
@@ -1420,11 +1543,13 @@ function p6(r: ArtefactReader, c: Check, probe: ProbeItem): Outcome {
     };
     let reason: string;
     let pass: boolean;
+    let v1: boolean;
     if (c.clarify) {
         const answer = r.answer();
-        const named = matchesAll(answer, c.clarify);
-        const asks = asksToChoose(answer);
         const applied = broken(code, c);
+        v1 = matchesAll(answer, c.clarify) && asksToChoose(answer) && !applied;
+        const named = matchesAll(answer, c.clarify.map(folded));
+        const asks = leavesChoice(answer);
         pass = named && asks && !applied;
         reason = applied
             ? "applied an open task instead of asking"
@@ -1432,8 +1557,16 @@ function p6(r: ArtefactReader, c: Check, probe: ProbeItem): Outcome {
               ? "asked no question choosing between the open tasks"
               : "question does not name every open task";
     } else {
-        const done = held(code, c);
-        const stale = broken(code, c);
+        v1 = held(code, c) && !broken(code, c);
+        // The step is done where product code carries it, under its planned name or that name's
+        // camel-case spelling; a test, a comment, or a note that names the step is no progress.
+        const product = files.filter((f) => isProductPath(f.path)).map((f) => codeOf(f, true));
+        const read: Work = { ...code, files: product, text: textOf(product) };
+        const spelled = product.map((f) => ({ ...f, added: f.added.map(snakeCased) }));
+        const done =
+            held(read, c) ||
+            held({ ...read, files: spelled }, { ...c, must: (c.must ?? []).map(folded) });
+        const stale = broken(read, c);
         pass = done && !stale;
         reason = stale ? "resumed a superseded step" : "change does not carry the next step";
     }
@@ -1444,6 +1577,7 @@ function p6(r: ArtefactReader, c: Check, probe: ProbeItem): Outcome {
             "P6.reread_files": reread.length,
             "P6.ran_tests": commands.some(ranTests),
             "P6.rediscovery_tokens": tokens,
+            "P6.v1": v1,
         },
         reason,
     );
@@ -1472,8 +1606,10 @@ function p13(r: ArtefactReader, c: Check, rules: Rules): Outcome {
     const commands = r.commands("session");
     const after = commands.filter((x) => x.scenario_ms >= boundary);
     const before = new Set(commands.filter((x) => x.scenario_ms < boundary).map((x) => x.command));
-    const w = workFor(r, c, after);
-    const kept = held(w, c) && !broken(w, c);
+    const registered = workFor(r, c, after);
+    const keptV1 = held(registered, c) && !broken(registered, c);
+    const rule = ruleAfterFold(r, c, after, boundary);
+    const kept = rule.state === "kept";
     const min = Number(rules.p13_reduction_ratio.min);
     const max = Number(rules.p13_reduction_ratio.max);
     const ratioOk = folds.every((x) => {
@@ -1486,16 +1622,73 @@ function p13(r: ArtefactReader, c: Check, rules: Rules): Outcome {
     );
     const parts = [kept, ratioOk, !repeated];
     const score = parts.filter(Boolean).length / parts.length;
+    const shared = {
+        "P13.ratio_in_bounds": ratioOk,
+        "P13.repeated_action": repeated,
+        "P13.folds": folds.length,
+        "P13.commits_from": rule.from,
+        "P13.v1": keptV1 && ratioOk && !repeated,
+        "P13.v1_rule_kept": keptV1,
+    };
+    if (rule.state === "outside") {
+        return { verdict: "excluded", reason: NO_GOVERNED_ACTION, metrics: shared };
+    }
     return {
         verdict: score === 1 ? "pass" : "fail",
-        metrics: {
-            "P13.fold_fidelity_score": score,
-            "P13.rule_kept": kept,
-            "P13.ratio_in_bounds": ratioOk,
-            "P13.repeated_action": repeated,
-            "P13.folds": folds.length,
-        },
+        metrics: { "P13.fold_fidelity_score": score, "P13.rule_kept": kept, ...shared },
     };
+}
+
+/** The exclusion reason of a P13 item whose session did nothing its rule governs after the fold. */
+export const NO_GOVERNED_ACTION = "no governed action after the fold";
+
+/**
+ * A session rule over the work after the fold (`session_rule: governed-actions`,
+ * `prereg/G13.json`): `kept` when at least one governed action follows it and none breaks it,
+ * `broken` when one breaks it, `outside` when no governed action happened.
+ *
+ * A commit rule (the check names a command channel) governs the commit messages the agent
+ * wrote in the project's repository. With the `recorded` command log they are the messages git
+ * recorded (`src/grade/commit-log.ts`), whatever form the command had, and the commands' own
+ * `git commit` segments stay out of the command channels; a snapshot without that log reads
+ * the commands as they are. A header rule (`first_line_must`) governs the source files the
+ * probe turn created (`isSourcePath`).
+ */
+function ruleAfterFold(
+    r: ArtefactReader,
+    c: Check,
+    after: Command[],
+    boundary: number,
+): { state: "kept" | "broken" | "outside"; from: "repository" | "commands" | "none" } {
+    const w = workFor(r, c, after);
+    const commitRule = c.commands_must !== undefined || c.commands_must_not !== undefined;
+    const headerRule = c.first_line_must !== undefined;
+    let acted = !commitRule && !headerRule;
+    let from: "repository" | "commands" | "none" = "none";
+    if (commitRule) {
+        const own = after.flatMap(checkedSegments);
+        const recorded = r.recorded();
+        if (recorded) {
+            // No command runs while the fold call is open, so a commit recorded within the
+            // clock's slack of the fold's start was made before it.
+            const written = recorded
+                .filter((x) => x.scenario_ms >= boundary + CLOCK_SLACK_MS)
+                .flatMap(checkedSegments);
+            w.segments = [...own.filter((seg) => !makesCommit(seg)), ...written];
+            acted = acted || written.length > 0;
+            from = "repository";
+        } else {
+            w.segments = own;
+            acted = acted || own.some(makesCommit);
+            from = "commands";
+        }
+    }
+    if (headerRule) {
+        w.files = w.files.filter((f) => isSourcePath(f.path));
+        acted = acted || w.files.some((f) => f.created);
+    }
+    if (!acted) return { state: "outside", from };
+    return { state: held(w, c) && !broken(w, c) ? "kept" : "broken", from };
 }
 
 function p14(r: ArtefactReader, c: Check): Outcome {
@@ -1541,16 +1734,13 @@ function p14(r: ArtefactReader, c: Check): Outcome {
 /** The turn's work as a check reads it; the command log joins when the check names commands. */
 const turnWork = (r: ArtefactReader, c: Check) =>
     workFor(r, c, c.commands_must || c.commands_must_not ? r.commands() : []);
-/** The rule holds on the turn's work and nothing it forbids occurs, with the reason when not. */
-const applied = (r: ArtefactReader, c: Check): Assessed => {
-    const w = turnWork(r, c);
-    const result = assess(w, c);
+/** The rule holds on the work and nothing it forbids occurs, with the reason when not. */
+const applied = (w: Work, c: Check, product?: ProductReading): Assessed => {
+    const result = assess(w, c, product);
     if (!result.held) return result;
-    return broken(w, c) ? { held: false, reason: "broke a rule the check forbids" } : result;
-};
-const appliedOutcome = (type: string) => (r: ArtefactReader, c: Check) => {
-    const result = applied(r, c);
-    return binary(type, result.held, {}, result.reason);
+    return broken(w, c, product !== undefined)
+        ? { held: false, reason: "broke a rule the check forbids" }
+        : result;
 };
 
 /** A compiled scenario event a probe's ground truth names as a source. */
@@ -1665,18 +1855,23 @@ function p12(r: ArtefactReader, c: Check, probe: ProbeItem, sources: SourceEvent
         ? w.files.filter((f) => matchesAny(f.path, c.paths_must ?? []))
         : w.files;
     const paths = named.map((f) => f.path).join("\n");
-    if (!matchesAll(textOf(named), c.must ?? []) || !matchesAll(paths, c.paths_must ?? [])) {
-        return binary("P12", false, {}, "entry omits the error identity");
-    }
-    if (broken(w, c)) return binary("P12", false, {}, "named a superseded identity");
+    const names = matchesAll(textOf(named), c.must ?? []) && matchesAll(paths, c.paths_must ?? []);
+    const superseded = broken(w, c);
     const identity = (probe.ground_truth?.present ?? []).flat();
     const evidence = failureEvidence(probe, sources, identity);
+    const entries = entriesOf(named);
     const tied =
         evidence.length === 0 ||
-        entriesOf(named).some(
-            (e) => matchesAll(e, c.must ?? []) && evidence.some((t) => carries(e, t)),
-        );
-    return binary("P12", tied, {}, "entry does not tie the identity to the failure");
+        entries.some((e) => matchesAll(e, c.must ?? []) && evidence.some((t) => carries(e, t)));
+    const extra = { "P12.v1": names && !superseded && tied };
+    if (!names) return binary("P12", false, extra, "entry omits the error identity");
+    // An entry that names the current identity and ties it to the failure is the entry asked
+    // for; a superseded identity beside it is a cross-reference.
+    if (tied) return binary("P12", true, extra);
+    const reason = superseded
+        ? "named a superseded identity"
+        : "entry does not tie the identity to the failure";
+    return binary("P12", false, extra, reason);
 }
 
 /**
@@ -1865,6 +2060,36 @@ function reusedInProduct(r: ArtefactReader, c: Check): boolean {
 }
 /** Whether the turn changed a product file: one it added to, cut from, renamed, or deleted. */
 const productChanged = (r: ArtefactReader) => diffPaths(r.diff()).some(isProductPath);
+
+/**
+ * Which value a P3 turn's product code uses (`value_rule: product-code-use`,
+ * `prereg/G13.json`): the current one when every `must` pattern matches code a product file
+ * adds, a superseded one when a `must_not` pattern does. A figure in a comment, a test, or a
+ * note is no use. The check's other channels read as they do.
+ */
+function p3Use(w: Work, c: Check): { current: boolean; stale: boolean } {
+    return {
+        current:
+            (c.must ?? []).every((m) => inProduct(w.files, [m])) && held(w, { ...c, must: [] }),
+        stale: broken(w, c, true),
+    };
+}
+
+/** A figure's digit groups joined, so `43,276` reads as `43276`. */
+const ungrouped = (answer: string) => answer.replace(/(?<=\d),(?=\d{3})/g, "");
+
+/**
+ * Whether a P3 turn is graded from a judge's label of its reply (`prereg/G14.json`): it changed
+ * no product file, its product code holds neither value, and its final reply names the current
+ * value. Such a reply can say that the code already uses the value, and the judge reads whether
+ * it does. A turn whose reply leaves the current value unnamed applied nothing and fails.
+ */
+export function p3Awaits(r: ArtefactReader, c: Check): boolean {
+    const w = turnWork(r, c);
+    const used = p3Use(w, c);
+    if (used.current || used.stale || productChanged(r)) return false;
+    return matchesAll(ungrouped(r.answer()), c.must ?? []);
+}
 const P10_PROSE = 200;
 const NO_WORK = "no change and no written answer";
 
@@ -1903,7 +2128,11 @@ function twinV1(
 }
 
 const GRADERS: Record<string, Grader> = {
-    P1: appliedOutcome("P1"),
+    P1: (r, c, _rules, p) => {
+        const w = turnWork(r, c);
+        const result = applied(w, c, { tags: openingTags(c, p), tests: true });
+        return binary("P1", result.held, { "P1.v1": applied(w, c).held }, result.reason);
+    },
     P2: (r, c) => {
         const over = broken(turnWork(r, c), c);
         const v1 = registeredVerdict(r, over);
@@ -1911,12 +2140,42 @@ const GRADERS: Record<string, Grader> = {
         const extra = { "P2.harm": over, "P2.v1": v1 };
         return binary("P2", !over, extra, "applied the rule outside its scope");
     },
-    P3: (r, c) => {
+    P3: (r, c, _rules, p, _sources, judged) => {
         const w = turnWork(r, c);
-        const authoritative = held(w, c);
-        const stale = broken(w, c);
+        const v1 = held(w, c) && !broken(w, c);
+        const used = p3Use(w, c);
+        let label: AppliedLabel | undefined;
+        if (p3Awaits(r, c)) {
+            if (judged === undefined) {
+                throw new GradeRefused(`P3 item ${p.id} is graded from its judgment`);
+            }
+            if (!isAbstainJudgment(judged, APPLIED_LABELS)) {
+                throw new GradeRefused(`P3 item ${p.id}: the judgment is malformed`);
+            }
+            if (judged.answer_digest !== sha256Hex(r.answer())) {
+                throw new GradeRefused(`P3 item ${p.id}: the judgment is of another answer`);
+            }
+            // SAFETY: isAbstainJudgment held the label to APPLIED_LABELS.
+            label = judged.label as AppliedLabel;
+        }
+        const stale = used.stale || label === "S";
+        const authoritative = used.current || label === "R";
         const reliance = stale ? "stale" : authoritative ? "authoritative" : "neither";
-        const extra = { "P3.reliance": reliance, "P3.harm": stale };
+        const extra = {
+            "P3.reliance": reliance,
+            "P3.harm": stale,
+            "P3.v1": v1,
+            ...(judged && label
+                ? {
+                      "P3.label": label,
+                      "P3.judge_model": judged.judge.model,
+                      "P3.judge_prompt_digest": judged.judge.prompt_digest,
+                      "P3.judge_rubric_digest": judged.judge.rubric_digest,
+                      "P3.answer_digest": judged.answer_digest,
+                      "P3.grading_revision": judged.revision,
+                  }
+                : {}),
+        };
         return binary("P3", authoritative && !stale, extra, `relied on ${reliance}`);
     },
     P4: p4,
@@ -2121,6 +2380,8 @@ function evidenceFor(probe: ProbeItem, sources: SourceEvent[]): Evidence[] {
             return checkScripts(sources).length > 0
                 ? [TURN_DIFF, ["command-log", "source"]]
                 : [TURN_DIFF];
+        case "P3":
+            return [TURN_DIFF, CALLS];
         case "P5":
             return [TURN_DIFF, TURN_COMMANDS];
         case "P6":
@@ -2216,8 +2477,12 @@ export function judgedAnswer(
     if (!first) return null;
     graderFor(probe);
     requireEvidence(probe, first, sources);
-    const reader = new ArtefactReader(first, namedBy((probe.check ?? {}) as Check));
-    return reader.responseIncomplete() ? null : reader.answer();
+    const check = (probe.check ?? {}) as Check;
+    const reader = new ArtefactReader(first, namedBy(check));
+    if (reader.responseIncomplete()) return null;
+    // A judge labels the reply of a P3 turn only when its product code decides nothing.
+    if (probe.type === "P3" && !p3Awaits(reader, check)) return null;
+    return reader.answer();
 }
 
 export function gradeItem(
@@ -2309,13 +2574,28 @@ function isGradeRecord(value: unknown): value is GradeRecord {
 type Metrics = Record<string, unknown>;
 const bool = (v: unknown) => typeof v === "boolean";
 const count = (v: unknown) => Number.isInteger(v) && (v as number) >= 0;
+const P3_FIELDS = { "P3.reliance": oneOf(["stale", "authoritative", "neither"]), "P3.harm": bool };
+const P6_FIELDS = {
+    "P6.reread_files": count,
+    "P6.ran_tests": bool,
+    "P6.rediscovery_tokens": count,
+};
+const P13_FIELDS = {
+    "P13.fold_fidelity_score": num,
+    "P13.rule_kept": bool,
+    "P13.ratio_in_bounds": bool,
+    "P13.repeated_action": bool,
+    "P13.folds": (v: unknown) => count(v) && (v as number) >= 1,
+};
 /** The metrics each grader writes, with the shape every value takes. */
 const METRIC_FIELDS: Record<string, Record<string, (v: unknown) => boolean>> = {
     P2: { "P2.harm": bool, "P2.v1": oneOf(EARLIER_VERDICTS) },
     P5: { "P5.v1": oneOf(EARLIER_VERDICTS) },
-    P3: { "P3.reliance": oneOf(["stale", "authoritative", "neither"]), "P3.harm": bool },
-    P4: { "P4.harm": bool, "P4.collapsed": bool },
-    P6: { "P6.reread_files": count, "P6.ran_tests": bool, "P6.rediscovery_tokens": count },
+    P1: { "P1.v1": bool },
+    P3: { ...P3_FIELDS, "P3.v1": bool },
+    P4: { "P4.harm": bool, "P4.collapsed": bool, "P4.v1": bool },
+    P6: { ...P6_FIELDS, "P6.v1": bool },
+    P12: { "P12.v1": bool },
     P8: { "P8.cross_session_pass_rate": bool },
     P9: {
         "P9.cross_session_pass_rate": bool,
@@ -2341,11 +2621,10 @@ const METRIC_FIELDS: Record<string, Record<string, (v: unknown) => boolean>> = {
     P10: { "P10.harm": bool },
     P11: { "P11.harm": bool, "P11.weighted_score": num, "P11.v1": oneOf(EARLIER_VERDICTS) },
     P13: {
-        "P13.fold_fidelity_score": num,
-        "P13.rule_kept": bool,
-        "P13.ratio_in_bounds": bool,
-        "P13.repeated_action": bool,
-        "P13.folds": (v) => count(v) && (v as number) >= 1,
+        ...P13_FIELDS,
+        "P13.commits_from": oneOf(["repository", "commands", "none"]),
+        "P13.v1": bool,
+        "P13.v1_rule_kept": bool,
     },
     P14: { "P14.post_compaction_correction_count": count },
     P7: {
@@ -2366,16 +2645,35 @@ const METRIC_FIELDS: Record<string, Record<string, (v: unknown) => boolean>> = {
     },
 };
 /**
- * The metrics a type's grades carried before a grading revision added to them. A log keeps
- * those grades, so a record of either shape reads back: a P9 grade made under
- * `abstention-without-guess` holds the pass rate alone.
+ * The other metric sets a type's grades carry. A log keeps the grades made before a grading
+ * revision added to them, so a record of either shape reads back: a P9 grade made under
+ * `abstention-without-guess` holds the pass rate alone. A P3 grade made from a judge's label
+ * of the reply carries the label and the judge's identity beside the rest.
  */
-const EARLIER_FIELDS: Record<string, Record<string, (v: unknown) => boolean>> = {
-    P2: { "P2.harm": bool },
-    P5: {},
-    P9: { "P9.cross_session_pass_rate": bool },
-    "P8-twin": { "P8-twin.harm": bool },
-    P11: { "P11.harm": bool, "P11.weighted_score": num },
+const OTHER_FIELDS: Record<string, Record<string, (v: unknown) => boolean>[]> = {
+    P1: [{}],
+    P2: [{ "P2.harm": bool }],
+    P3: [
+        P3_FIELDS,
+        {
+            ...P3_FIELDS,
+            "P3.v1": bool,
+            "P3.label": oneOf([...APPLIED_LABELS]),
+            "P3.judge_model": text,
+            "P3.judge_prompt_digest": digest,
+            "P3.judge_rubric_digest": digest,
+            "P3.answer_digest": digest,
+            "P3.grading_revision": digest,
+        },
+    ],
+    P4: [{ "P4.harm": bool, "P4.collapsed": bool }],
+    P5: [{}],
+    P6: [P6_FIELDS],
+    P9: [{ "P9.cross_session_pass_rate": bool }],
+    "P8-twin": [{ "P8-twin.harm": bool }],
+    P11: [{ "P11.harm": bool, "P11.weighted_score": num }],
+    P12: [{}],
+    P13: [P13_FIELDS],
 };
 /**
  * A graded P2 or P11 record's `<type>.v1` equals its verdict: revision 12 changed which no-work
@@ -2392,7 +2690,10 @@ const METRIC_RULES: Record<string, (m: Metrics, pass: boolean) => boolean> = {
     P2: (m, pass) => !(pass && m["P2.harm"]) && sameAsEarlier(m["P2.v1"], pass),
     P3: (m, pass) =>
         m["P3.harm"] === (m["P3.reliance"] === "stale") &&
-        pass === (m["P3.reliance"] === "authoritative"),
+        pass === (m["P3.reliance"] === "authoritative") &&
+        // A judged turn's product code holds neither value, so the label alone decides it.
+        (m["P3.label"] === undefined ||
+            (pass === (m["P3.label"] === "R") && m["P3.harm"] === (m["P3.label"] === "S"))),
     P4: (m, pass) => m["P4.harm"] === m["P4.collapsed"] && !(pass && m["P4.collapsed"] === true),
     P8: (m, pass) => m["P8.cross_session_pass_rate"] === pass,
     P9: (m, pass) =>
@@ -2438,8 +2739,7 @@ function metricsAgree(g: Record<string, unknown>): boolean {
             Object.entries(fields).every(([k, ok]) => ok(m[k]))
         );
     };
-    const earlier = EARLIER_FIELDS[type];
-    if (!holds(METRIC_FIELDS[type] ?? {}) && !(earlier && holds(earlier))) return false;
+    if (!holds(METRIC_FIELDS[type] ?? {}) && !(OTHER_FIELDS[type] ?? []).some(holds)) return false;
     if (primary.length > 0 && m[`${type}.pass`] !== pass) return false;
     return (METRIC_RULES[type] ?? (() => true))(m, pass);
 }
@@ -2482,12 +2782,14 @@ export const graderDigest = (extra: readonly string[] = []): string =>
         [
             "abstention.ts",
             "artefacts.ts",
+            "commit-log.ts",
             "judge.ts",
             "probes.ts",
             "product.ts",
             "source-commands.ts",
             "text.ts",
             "../../scripts/grade-run.ts",
+            "../git.ts",
             "../hosts/profiles.ts",
             "../proxy/records.ts",
             "../proxy/classify.ts",

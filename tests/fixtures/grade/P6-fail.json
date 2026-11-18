@@ -83,7 +83,8 @@
       "P6.pass": false,
       "P6.reread_files": 1,
       "P6.ran_tests": true,
-      "P6.rediscovery_tokens": 1100
+      "P6.rediscovery_tokens": 1100,
+      "P6.v1": false
     },
     "inputs": [
       "c1",

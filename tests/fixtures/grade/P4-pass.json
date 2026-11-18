@@ -41,7 +41,8 @@
     "metrics": {
       "P4.pass": true,
       "P4.harm": false,
-      "P4.collapsed": false
+      "P4.collapsed": false,
+      "P4.v1": true
     },
     "inputs": [
       "d1"

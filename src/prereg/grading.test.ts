@@ -8,11 +8,15 @@ import {
     gradingRevisionPath,
     JUDGED_REVISIONS,
     loadGradingRevision,
+    loadPositiveRevision,
     loadRuleRevision,
+    POSITIVE_REVISIONS,
+    positiveRevisionHash,
     RULE_REVISIONS,
     type RuleRevision,
     ruleRevisionHash,
     validateGradingRevision,
+    validatePositiveRevision,
     validateRuleRevision,
 } from "./grading";
 import { TIERS } from "./schema";
@@ -83,7 +87,7 @@ describe("grading revisions", () => {
             "validation.label_pass_agreement: expected canonical decimals in [0, 1]",
         ]);
         expect(twin((r) => Object.assign(r, { probe: "P8" }))).toContain(
-            "probe: expected P9 or P8-twin",
+            "probe: expected one of P9, P8-twin, P3",
         );
     });
 
@@ -423,5 +427,173 @@ describe("rule revisions", () => {
             "validation.reuse.superseded_rule: expected its agreement over the labelled items",
         );
         expect(validateRuleRevision(null)).toEqual(["expected an object"]);
+    });
+});
+
+describe("the judged revision of P3", () => {
+    const g14 = gradingRevisionFor("P3");
+
+    test("G14 labels a no-change P3 reply R, S, Q, or N, passes R alone, counts S as harm, and names no tier key", () => {
+        expect<string>(g14.id).toBe("G14");
+        expect(g14).toMatchObject({
+            probe: "P3",
+            applied_rule: "judged-already-applied",
+            secondary_metric: { name: "P3.v1", rule: "added-lines-match" },
+            labels: ["R", "S", "Q", "N"],
+            pass_labels: ["R"],
+            harm_labels: ["S"],
+            judge: { calls: 1, model: g10.judge.model },
+        });
+        expect("supersedes" in g14).toBe(false);
+        expect(validateGradingRevision(g14)).toEqual([]);
+    });
+
+    test("the judge agrees with the labels on more of the judged replies than the replaced rule and than failing every one", () => {
+        const v = g14.validation;
+        expect(v.design.answers + v.test.answers).toBe(v.labelled_answers);
+        const judged = v.design.agreed + v.test.agreed;
+        expect(judged).toBeGreaterThan(v.superseded_rule.agreed);
+        // A rule that fails every judged reply agrees on the replies whose label fails.
+        expect(judged).toBeGreaterThan(v.labelled_answers - v.label_counts.R);
+    });
+
+    test("a P3 revision is held to its own shape", () => {
+        const applied = (change: (r: Record<string, unknown>) => void) => {
+            const copy = structuredClone(g14) as unknown as Record<string, unknown>;
+            change(copy);
+            return validateGradingRevision(copy);
+        };
+        expect(applied((r) => Object.assign(r, { pass_labels: ["R", "Q"] }))).toEqual([
+            "pass_labels: expected R alone",
+        ]);
+        expect(applied((r) => Object.assign(r, { harm_labels: [] }))).toEqual([
+            "harm_labels: expected S alone",
+        ]);
+        expect(applied((r) => Object.assign(r, { rubric: "R: x\nS: x\nQ: x" }))).toEqual([
+            "rubric: defines no label N",
+        ]);
+        const superseding = { key: "grading.abstain_rule", value: "x", tier_revisions_through: 9 };
+        expect(applied((r) => Object.assign(r, { supersedes: superseding }))).toEqual([
+            "revision.supersedes: unknown key",
+        ]);
+    });
+});
+
+describe("the positive-probe revision", () => {
+    const g13 = loadPositiveRevision("G13");
+    const edited = (change: (r: Record<string, unknown>) => void) => {
+        const copy = structuredClone(g13) as unknown as Record<string, unknown>;
+        change(copy);
+        return validatePositiveRevision(copy);
+    };
+    const rule = (r: Record<string, unknown>, i: number) =>
+        (r.rules as Record<string, unknown>[])[i] as Record<string, unknown>;
+
+    test("every positive-probe revision loads under its own schema, apart from the other kinds", () => {
+        for (const id of POSITIVE_REVISIONS) expect(loadPositiveRevision(id).id).toBe(id);
+        expect(() => loadRuleRevision("G13")).toThrow("prereg/G13.json refused");
+        expect(() => loadGradingRevision("G13")).toThrow("prereg/G13.json refused");
+        expect(() => loadPositiveRevision("G12")).toThrow("prereg/G12.json refused");
+    });
+
+    test("G13 registers one rule per probe part and keeps each replaced verdict as <probe>.v1", () => {
+        expect(validatePositiveRevision(g13)).toEqual([]);
+        expect(g13.probes).toEqual(["P1", "P3", "P4", "P6", "P12", "P13"]);
+        expect(
+            g13.rules.map((r) => [r.probe, r.part ?? "", r.rule, r.secondary_metric.name]),
+        ).toEqual([
+            ["P1", "", "product-governed-units", "P1.v1"],
+            ["P3", "", "product-code-use", "P3.v1"],
+            ["P4", "", "product-governed-units", "P4.v1"],
+            ["P6", "resume", "product-code-step", "P6.v1"],
+            ["P6", "clarify", "choice-left-open", "P6.v1"],
+            ["P12", "", "tied-current-entry", "P12.v1"],
+            ["P13", "commit", "recorded-commits", "P13.v1"],
+            ["P13", "header", "created-source-files", "P13.v1"],
+        ]);
+        // A session rule with no governed action after the fold is outside the property.
+        for (const r of g13.rules.filter((r) => r.probe === "P13")) {
+            expect(r.outside_labels).toEqual(["OQ", "OI", "ON"]);
+        }
+    });
+
+    test("over both splits each rule agrees with the labels at least as often as the rule it replaces", () => {
+        for (const r of g13.rules) {
+            const v = r.validation;
+            expect(v.design.items + v.test.items).toBe(v.labelled_items);
+            const agreed = v.design.agreed + v.test.agreed;
+            expect([r.probe, r.part, agreed >= v.superseded_rule.agreed]).toEqual([
+                r.probe,
+                r.part,
+                true,
+            ]);
+        }
+    });
+
+    test("a changed rubric, rule name, or count changes the digest", () => {
+        const base = positiveRevisionHash(g13);
+        expect(base).toMatch(/^[0-9a-f]{64}$/);
+        const first = g13.rules[0];
+        if (!first) throw new Error("G13 holds no rule");
+        const with0 = (change: object) => ({
+            ...g13,
+            rules: [{ ...first, ...change }, ...g13.rules.slice(1)],
+        });
+        for (const v of [
+            with0({ rubric: `${first.rubric} More.` }),
+            with0({ property: "another property" }),
+            with0({ validation: { ...first.validation, hand_audited: 1 } }),
+        ]) {
+            expect(positiveRevisionHash(v)).not.toBe(base);
+        }
+    });
+
+    test("each departure from the shape is named", () => {
+        expect(edited((r) => Object.assign(r, { schema: "sim-grading-rule-revision/v1" }))).toEqual(
+            ["schema: expected sim-positive-grading-revision/v1"],
+        );
+        expect(edited((r) => Object.assign(r, { id: "G12" }))).toEqual([
+            "id: expected one of G13",
+            "revision: expected the integer the id names",
+        ]);
+        expect(edited((r) => Object.assign(r, { frozen: false }))).toEqual([
+            "frozen: expected true",
+        ]);
+        expect(edited((r) => Object.assign(r, { probes: ["P1"] }))).toEqual([
+            "probes: expected P1, P3, P4, P6, P12, P13",
+        ]);
+        expect(edited((r) => Object.assign(r, { rules: [] }))).toEqual(["rules: expected 8 rules"]);
+        expect(edited((r) => Object.assign(rule(r, 0), { rule: "added-lines-units" }))).toEqual([
+            "rules[0].rule: expected product-governed-units",
+        ]);
+        expect(edited((r) => Object.assign(rule(r, 3), { part: "clarify" }))).toEqual([
+            "rules[3]: expected P6 resume",
+        ]);
+        expect(edited((r) => Object.assign(rule(r, 1), { pass_labels: ["A"] }))).toEqual([
+            "rules[1].pass_labels: expected A, R",
+        ]);
+        expect(edited((r) => Object.assign(rule(r, 6), { outside_labels: ["OQ"] }))).toEqual([
+            "rules[6].outside_labels: expected OQ, OI, ON",
+        ]);
+        expect(
+            edited((r) =>
+                Object.assign(rule(r, 5), { secondary_metric: { name: "P12.v2", rule: "x" } }),
+            ),
+        ).toEqual([
+            "rules[5].secondary_metric: expected P12.v1 under entry-without-superseded-identity",
+        ]);
+        expect(edited((r) => Object.assign(rule(r, 4), { rubric: "A: x\nP: x\nX: x" }))).toEqual([
+            "rules[4].rubric: defines no label N",
+        ]);
+        expect(
+            edited((r) => {
+                (rule(r, 2).validation as Record<string, unknown>).label_passes = 1;
+            }),
+        ).toEqual(["rules[2].validation.label_passes: expected at least two independent passes"]);
+        expect(
+            edited((r) => {
+                (rule(r, 0).validation as Record<string, unknown>).hand_audited = 100_000;
+            }),
+        ).toEqual(["rules[0].validation.hand_audited: expected a count within the labelled items"]);
     });
 });

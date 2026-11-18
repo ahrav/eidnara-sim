@@ -4,7 +4,10 @@ import {
     gradingRevisionHash,
     JUDGED_REVISIONS,
     loadGradingRevision,
+    loadPositiveRevision,
     loadRuleRevision,
+    POSITIVE_REVISIONS,
+    positiveRevisionHash,
     RULE_REVISIONS,
     ruleRevisionHash,
 } from "../src/prereg/grading";
@@ -73,6 +76,12 @@ for (const id of RULE_REVISIONS) {
     report(id, () => {
         const revision = loadRuleRevision(id, dir);
         return `${ruleRevisionHash(revision)} over ${revision.probes.join(", ")}`;
+    });
+}
+for (const id of POSITIVE_REVISIONS) {
+    report(id, () => {
+        const revision = loadPositiveRevision(id, dir);
+        return `${positiveRevisionHash(revision)} over ${revision.probes.join(", ")}`;
     });
 }
 process.exit(failed ? 1 : 0);

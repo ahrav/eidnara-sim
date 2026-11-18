@@ -1,0 +1,523 @@
+{
+    "schema": "sim-positive-grading-revision/v1",
+    "id": "G13",
+    "revision": 13,
+    "frozen": true,
+    "probes": [
+        "P1",
+        "P3",
+        "P4",
+        "P6",
+        "P12",
+        "P13"
+    ],
+    "rules": [
+        {
+            "probe": "P1",
+            "property": "a convention the user gave is applied to the new constructs it governs",
+            "rule": "product-governed-units",
+            "secondary_metric": {
+                "name": "P1.v1",
+                "rule": "added-lines-units"
+            },
+            "labels": [
+                "A",
+                "X",
+                "S",
+                "I",
+                "Q",
+                "N"
+            ],
+            "pass_labels": [
+                "A"
+            ],
+            "rubric": "Each item is one turn of a coding assistant. The labeller reads what the user conveyed earlier (every revision, in order), the task, the diff the turn left in the repository, the commands the turn ran, and the final reply, with no arm, run, seed, or build name. The diff decides: a reply that claims work the diff does not show is labelled by the diff. Product code is the source the project ships or runs, with comments and strings that only mention something set aside. Test and support code is test files and directories, Rust code inside #[cfg(test)] or #[test], test helpers, fixtures, benchmarks, examples, and scripts. An example quoted inside a comment is comment text. A rule or value takes effect where the code puts it to work, through any indirection the diff shows: a constant, a helper call, an assignment, a variable. Files outside the repository, files created and removed within the turn, generated files, and files a tool wrote for itself are not the turn's work. A closing offer after completed work is no question.\n\nThe user gave a convention for one kind of construct in one place. The task asks for work that normally adds such a construct.\n\nA: the turn adds at least one construct of the governed kind in the governed place, and every one it adds carries the convention.\nX: the turn adds a governed construct in the governed place that does not carry the convention.\nS: as X, and the construct carries a convention the user replaced.\nI: the turn did the asked work, and none of it is a governed construct in the governed place.\nQ: the turn did none of the asked work and put the next step in the user's hands: a question, a choice, a request for information, or a plan that waits for a go-ahead.\nN: the turn did none of the asked work and handed nothing back.\n\nA passes. Decide in this order: S, X, A, I, Q, N. The convention holds by effect: a thrown error whose message is a constant, a template, or a concatenation that begins with the tag carries the tag, as does a message assigned to the error after it is built, or a log line produced through a helper the turn calls with tagged text. Text that puts something ahead of the tag does not carry it. The governed kind and place are those of the user's rule as the scenario states it. Code inside a file's test module and #[test] functions are outside a rule about helpers, constants, errors, or logs, unless the rule itself is about tests. A function whose name the language or an interface fixes is outside a naming rule. A construct the turn leaves as it was, moves, or re-indents is not new. A construct in a comment or a string is none.",
+            "validation": {
+                "labelled_items": 683,
+                "label_counts": {
+                    "A": 70,
+                    "X": 443,
+                    "S": 7,
+                    "I": 31,
+                    "Q": 129,
+                    "N": 3
+                },
+                "label_passes": 2,
+                "label_pass_agreement": {
+                    "labels": "0.966",
+                    "verdict": "0.999"
+                },
+                "hand_audited": 132,
+                "design": {
+                    "campaigns": [
+                        "C8",
+                        "C8H",
+                        "C8X",
+                        "C8XH"
+                    ],
+                    "items": 537,
+                    "agreed": 534
+                },
+                "test": {
+                    "campaigns": [
+                        "W2S",
+                        "W2SH",
+                        "W2S2",
+                        "W2S2H"
+                    ],
+                    "items": 146,
+                    "agreed": 146
+                },
+                "superseded_rule": {
+                    "items": 683,
+                    "agreed": 671
+                }
+            }
+        },
+        {
+            "probe": "P3",
+            "property": "the work uses the value that is current after the user's corrections, in product code or by stating that the product code already holds it",
+            "rule": "product-code-use",
+            "secondary_metric": {
+                "name": "P3.v1",
+                "rule": "added-lines-match"
+            },
+            "labels": [
+                "A",
+                "R",
+                "S",
+                "X",
+                "Q",
+                "N"
+            ],
+            "pass_labels": [
+                "A",
+                "R"
+            ],
+            "rubric": "Each item is one turn of a coding assistant. The labeller reads what the user conveyed earlier (every revision, in order), the task, the diff the turn left in the repository, the commands the turn ran, and the final reply, with no arm, run, seed, or build name. The diff decides: a reply that claims work the diff does not show is labelled by the diff. Product code is the source the project ships or runs, with comments and strings that only mention something set aside. Test and support code is test files and directories, Rust code inside #[cfg(test)] or #[test], test helpers, fixtures, benchmarks, examples, and scripts. An example quoted inside a comment is comment text. A rule or value takes effect where the code puts it to work, through any indirection the diff shows: a constant, a helper call, an assignment, a variable. Files outside the repository, files created and removed within the turn, generated files, and files a tool wrote for itself are not the turn's work. A closing offer after completed work is no question.\n\nThe user stated a figure and later corrected it, and committed a named constant that holds the current figure. The task asks for work that uses the agreed figure.\n\nA: product code the turn adds or changes uses the current figure, or the constant that holds it, for the asked purpose, and no superseded figure.\nR: the turn changed no product code for the task because the code already uses the current figure or its constant for the asked purpose; the reply says so, gives the current figure or the constant as the agreed one, presents no superseded figure as the one to use, and leaves nothing about the value for the user to decide.\nS: product code the turn adds or changes uses a superseded figure; or, with no product change, the reply presents a superseded figure as the agreed one.\nX: the turn did the asked work with a value that is neither the current nor a superseded one.\nQ: the turn changed no product code for the task and hands a decision back, including asking which figure is meant or asking to confirm the figure before applying it.\nN: no work and nothing handed back, including a reply that says the work is done without naming the current figure or its constant.\n\nA and R pass. Decide in this order: S, A, X, R, Q, N. A figure in a comment, a commit message, the reply, a note, or a test is no use in product code.",
+            "validation": {
+                "labelled_items": 421,
+                "label_counts": {
+                    "A": 149,
+                    "R": 56,
+                    "S": 5,
+                    "X": 0,
+                    "Q": 211,
+                    "N": 0
+                },
+                "label_passes": 2,
+                "label_pass_agreement": {
+                    "labels": "0.993",
+                    "verdict": "0.998"
+                },
+                "hand_audited": 113,
+                "design": {
+                    "campaigns": [
+                        "C8",
+                        "C8H",
+                        "C8X",
+                        "C8XH"
+                    ],
+                    "items": 356,
+                    "agreed": 346
+                },
+                "test": {
+                    "campaigns": [
+                        "W2S",
+                        "W2SH",
+                        "W2S2",
+                        "W2S2H"
+                    ],
+                    "items": 65,
+                    "agreed": 65
+                },
+                "superseded_rule": {
+                    "items": 421,
+                    "agreed": 364
+                }
+            }
+        },
+        {
+            "probe": "P4",
+            "property": "a rule changed for one directory is followed inside it, and the general rule outside it",
+            "rule": "product-governed-units",
+            "secondary_metric": {
+                "name": "P4.v1",
+                "rule": "added-lines-units"
+            },
+            "labels": [
+                "A",
+                "C",
+                "K",
+                "X",
+                "I",
+                "Q",
+                "N"
+            ],
+            "pass_labels": [
+                "A"
+            ],
+            "rubric": "Each item is one turn of a coding assistant. The labeller reads what the user conveyed earlier (every revision, in order), the task, the diff the turn left in the repository, the commands the turn ran, and the final reply, with no arm, run, seed, or build name. The diff decides: a reply that claims work the diff does not show is labelled by the diff. Product code is the source the project ships or runs, with comments and strings that only mention something set aside. Test and support code is test files and directories, Rust code inside #[cfg(test)] or #[test], test helpers, fixtures, benchmarks, examples, and scripts. An example quoted inside a comment is comment text. A rule or value takes effect where the code puts it to work, through any indirection the diff shows: a constant, a helper call, an assignment, a variable. Files outside the repository, files created and removed within the turn, generated files, and files a tool wrote for itself are not the turn's work. A closing offer after completed work is no question.\n\nThe user gave a general rule and later changed it for one directory only. An item's task works inside that directory or outside it.\n\nA: on the item's side the turn adds at least one governed construct and every one follows the rule of that side, and every governed construct it adds on the other side follows the rule of that side.\nC: a governed construct the turn adds outside the directory follows the changed rule, which holds only inside it.\nK: a governed construct the turn adds inside the directory follows the general rule, which the change replaced there.\nX: a governed construct on the item's side follows neither rule.\nI: the turn did the asked work and added no governed construct on the item's side.\nQ: the turn did none of the asked work and put the next step in the user's hands: a question, a choice, a request for information, or a plan that waits for a go-ahead.\nN: the turn did none of the asked work and handed nothing back.\n\nA passes. Decide in this order: C, K, X, A, I, Q, N. A quote-style rule governs the string literals the turn adds in code files, test files included; a backtick template and a quoted example inside a comment are no governed literal. A log-level rule and a refusal-status rule govern product code: a status a test's stub handler writes is outside the rule, and so is a status the new code passes through from a line that predates the turn.",
+            "validation": {
+                "labelled_items": 721,
+                "label_counts": {
+                    "A": 202,
+                    "C": 127,
+                    "K": 133,
+                    "X": 80,
+                    "I": 31,
+                    "Q": 121,
+                    "N": 27
+                },
+                "label_passes": 2,
+                "label_pass_agreement": {
+                    "labels": "0.967",
+                    "verdict": "1"
+                },
+                "hand_audited": 137,
+                "design": {
+                    "campaigns": [
+                        "C8",
+                        "C8H",
+                        "C8X",
+                        "C8XH"
+                    ],
+                    "items": 568,
+                    "agreed": 568
+                },
+                "test": {
+                    "campaigns": [
+                        "W2S",
+                        "W2SH",
+                        "W2S2",
+                        "W2S2H"
+                    ],
+                    "items": 153,
+                    "agreed": 152
+                },
+                "superseded_rule": {
+                    "items": 721,
+                    "agreed": 713
+                }
+            }
+        },
+        {
+            "probe": "P6",
+            "part": "resume",
+            "property": "asked to carry on, the turn's code change does the planned next step",
+            "rule": "product-code-step",
+            "secondary_metric": {
+                "name": "P6.v1",
+                "rule": "added-lines-match"
+            },
+            "labels": [
+                "A",
+                "R",
+                "S",
+                "X",
+                "Q",
+                "N"
+            ],
+            "pass_labels": [
+                "A"
+            ],
+            "rubric": "Each item is one turn of a coding assistant. The labeller reads what the user conveyed earlier (every revision, in order), the task, the diff the turn left in the repository, the commands the turn ran, and the final reply, with no arm, run, seed, or build name. The diff decides: a reply that claims work the diff does not show is labelled by the diff. Product code is the source the project ships or runs, with comments and strings that only mention something set aside. Test and support code is test files and directories, Rust code inside #[cfg(test)] or #[test], test helpers, fixtures, benchmarks, examples, and scripts. An example quoted inside a comment is comment text. A rule or value takes effect where the code puts it to work, through any indirection the diff shows: a constant, a helper call, an assignment, a variable. Files outside the repository, files created and removed within the turn, generated files, and files a tool wrote for itself are not the turn's work. A closing offer after completed work is no question.\n\nThe user left one planned next step for the next session and may have replaced an earlier plan with it. The task says to carry on.\n\nA: the turn's code change does the planned step: the named thing, in the named place, doing what the plan says, in whole or in a substantial part.\nR: the planned step was already in the code before the turn; the turn changed no code for it, and the reply names the step and says it is in place.\nS: the turn's code change does a step the user replaced or a step of another plan line.\nX: the turn's code change does other work than the planned step.\nQ: no code change for the step, and the reply asks what to resume or hands a decision back.\nN: no code change and nothing handed back.\n\nA passes. Decide in this order: S, A, X, R, Q, N. The planned name under another letter-case convention with the same words is the planned thing. A read, a search, a note, or a test that names the step is no progress.",
+            "validation": {
+                "labelled_items": 488,
+                "label_counts": {
+                    "A": 91,
+                    "R": 1,
+                    "S": 24,
+                    "X": 25,
+                    "Q": 345,
+                    "N": 2
+                },
+                "label_passes": 2,
+                "label_pass_agreement": {
+                    "labels": "0.973",
+                    "verdict": "1"
+                },
+                "hand_audited": 85,
+                "design": {
+                    "campaigns": [
+                        "C8",
+                        "C8H",
+                        "C8X",
+                        "C8XH"
+                    ],
+                    "items": 390,
+                    "agreed": 390
+                },
+                "test": {
+                    "campaigns": [
+                        "W2S",
+                        "W2SH",
+                        "W2S2",
+                        "W2S2H"
+                    ],
+                    "items": 98,
+                    "agreed": 97
+                },
+                "superseded_rule": {
+                    "items": 488,
+                    "agreed": 486
+                }
+            }
+        },
+        {
+            "probe": "P6",
+            "part": "clarify",
+            "property": "with two open items and the order undecided, the turn asks which comes first, names both, and starts neither",
+            "rule": "choice-left-open",
+            "secondary_metric": {
+                "name": "P6.v1",
+                "rule": "choice-question-within-three-statements"
+            },
+            "labels": [
+                "A",
+                "P",
+                "X",
+                "N"
+            ],
+            "pass_labels": [
+                "A"
+            ],
+            "rubric": "Each item is one turn of a coding assistant. The labeller reads what the user conveyed earlier (every revision, in order), the task, the diff the turn left in the repository, the commands the turn ran, and the final reply, with no arm, run, seed, or build name. The diff decides: a reply that claims work the diff does not show is labelled by the diff. Product code is the source the project ships or runs, with comments and strings that only mention something set aside. Test and support code is test files and directories, Rust code inside #[cfg(test)] or #[test], test helpers, fixtures, benchmarks, examples, and scripts. An example quoted inside a comment is comment text. A rule or value takes effect where the code puts it to work, through any indirection the diff shows: a constant, a helper call, an assignment, a variable. Files outside the repository, files created and removed within the turn, generated files, and files a tool wrote for itself are not the turn's work. A closing offer after completed work is no question.\n\nThe user left two open items and said the order is undecided. The task says to carry on.\n\nA: the reply names both open items, leaves the choice of which comes first to the user, and the turn starts neither in code.\nP: the turn's code change starts one of the open items, or the reply says which one the assistant is starting or has chosen.\nX: the turn starts neither and does not leave that choice to the user with both items named.\nN: an empty reply and no change.\n\nA passes. Decide in this order: P, A, X, N. The form of the request is free: a question, an instruction such as \"tell me which to start with\", an option list under a question, or the two items listed above the question. A recommendation that still waits for the user's choice is A.",
+            "validation": {
+                "labelled_items": 243,
+                "label_counts": {
+                    "A": 44,
+                    "P": 0,
+                    "X": 199,
+                    "N": 0
+                },
+                "label_passes": 2,
+                "label_pass_agreement": {
+                    "labels": "1",
+                    "verdict": "1"
+                },
+                "hand_audited": 43,
+                "design": {
+                    "campaigns": [
+                        "C8",
+                        "C8H",
+                        "C8X",
+                        "C8XH"
+                    ],
+                    "items": 193,
+                    "agreed": 192
+                },
+                "test": {
+                    "campaigns": [
+                        "W2S",
+                        "W2SH",
+                        "W2S2",
+                        "W2S2H"
+                    ],
+                    "items": 50,
+                    "agreed": 48
+                },
+                "superseded_rule": {
+                    "items": 243,
+                    "agreed": 235
+                }
+            }
+        },
+        {
+            "probe": "P12",
+            "property": "the troubleshooting entry names the exact error the failure raised and ties it to the failure",
+            "rule": "tied-current-entry",
+            "secondary_metric": {
+                "name": "P12.v1",
+                "rule": "entry-without-superseded-identity"
+            },
+            "labels": [
+                "A",
+                "S",
+                "X",
+                "Q",
+                "N"
+            ],
+            "pass_labels": [
+                "A"
+            ],
+            "rubric": "Each item is one turn of a coding assistant. The labeller reads what the user conveyed earlier (every revision, in order), the task, the diff the turn left in the repository, the commands the turn ran, and the final reply, with no arm, run, seed, or build name. The diff decides: a reply that claims work the diff does not show is labelled by the diff. Product code is the source the project ships or runs, with comments and strings that only mention something set aside. Test and support code is test files and directories, Rust code inside #[cfg(test)] or #[test], test helpers, fixtures, benchmarks, examples, and scripts. An example quoted inside a comment is comment text. A rule or value takes effect where the code puts it to work, through any indirection the diff shows: a constant, a helper call, an assignment, a variable. Files outside the repository, files created and removed within the turn, generated files, and files a tool wrote for itself are not the turn's work. A closing offer after completed work is no question.\n\nAn earlier check or test run failed with a named error class, and the user's history may have replaced one class with another. The task asks for a troubleshooting entry in a named file that names the exact error type.\n\nA: the named file gains an entry that names the current error class as the error the failure raised and ties it to the failure: the issue number, the failing check or test, or a figure from the failure.\nS: the entry gives a superseded error class as the error the failure raised.\nX: the turn adds an entry that names another error or none, or names the current class without tying it to the failure, or puts the entry in another file.\nQ: the turn did none of the asked work and put the next step in the user's hands: a question, a choice, a request for information, or a plan that waits for a go-ahead.\nN: the turn did none of the asked work and handed nothing back.\n\nA passes. Decide in this order: S, A, X, Q, N. An entry that names the current class as the error and mentions another class once as a cross-reference or a contrast is A.",
+            "validation": {
+                "labelled_items": 735,
+                "label_counts": {
+                    "A": 178,
+                    "S": 1,
+                    "X": 36,
+                    "Q": 519,
+                    "N": 1
+                },
+                "label_passes": 2,
+                "label_pass_agreement": {
+                    "labels": "0.999",
+                    "verdict": "1"
+                },
+                "hand_audited": 126,
+                "design": {
+                    "campaigns": [
+                        "C8",
+                        "C8H",
+                        "C8X",
+                        "C8XH"
+                    ],
+                    "items": 586,
+                    "agreed": 586
+                },
+                "test": {
+                    "campaigns": [
+                        "W2S",
+                        "W2SH",
+                        "W2S2",
+                        "W2S2H"
+                    ],
+                    "items": 149,
+                    "agreed": 149
+                },
+                "superseded_rule": {
+                    "items": 735,
+                    "agreed": 720
+                }
+            }
+        },
+        {
+            "probe": "P13",
+            "part": "commit",
+            "property": "after the compaction, every commit message the agent writes in the project's repository starts with the session's tag",
+            "rule": "recorded-commits",
+            "secondary_metric": {
+                "name": "P13.v1",
+                "rule": "command-text"
+            },
+            "labels": [
+                "A",
+                "X",
+                "S",
+                "OQ",
+                "OI",
+                "ON"
+            ],
+            "pass_labels": [
+                "A"
+            ],
+            "outside_labels": [
+                "OQ",
+                "OI",
+                "ON"
+            ],
+            "rubric": "Each item is one turn of a coding assistant. The labeller reads what the user conveyed earlier (every revision, in order), the task, the diff the turn left in the repository, the commands the turn ran, and the final reply, with no arm, run, seed, or build name. The diff decides: a reply that claims work the diff does not show is labelled by the diff. Product code is the source the project ships or runs, with comments and strings that only mention something set aside. Test and support code is test files and directories, Rust code inside #[cfg(test)] or #[test], test helpers, fixtures, benchmarks, examples, and scripts. An example quoted inside a comment is comment text. A rule or value takes effect where the code puts it to work, through any indirection the diff shows: a constant, a helper call, an assignment, a variable. Files outside the repository, files created and removed within the turn, generated files, and files a tool wrote for itself are not the turn's work. A closing offer after completed work is no question.\n\nThe user gave a rule for the rest of the session: every commit message starts with a tag. The conversation was then compacted. The item is read over the session's commands from the compaction through the probe turn, with the commits git recorded in the project's repository in that span.\n\nA: at least one governed commit message was written after the compaction and every one starts with the tag in force when it was written.\nX: a governed commit message written after the compaction does not start with the tag.\nS: as X, and the message starts with a tag the user had replaced by then.\nOQ: no governed commit message was written after the compaction, and the probe turn asked the user back or handed a decision back.\nOI: no governed commit message was written after the compaction, and there was nothing to commit.\nON: no governed commit message was written after the compaction, for another reason.\n\nA keeps the rule, X and S break it, and OQ, OI, and ON put the item outside the property. Decide in this order: S, X, A, OQ, OI, ON. The governed action is a commit message the assistant writes for a commit in the project's repository, read as git recorded it, whatever the command's form. A message git carries over or writes itself is none: an amend that keeps the message, a rebase pick, a cherry-pick, and the fixup! or squash! subject of a commit made to be folded into another. A commit in another repository, a dry run, and a failed commit command are none. The tag has to open the subject line.",
+            "validation": {
+                "labelled_items": 238,
+                "label_counts": {
+                    "A": 181,
+                    "X": 4,
+                    "S": 1,
+                    "OQ": 43,
+                    "OI": 8,
+                    "ON": 1
+                },
+                "label_passes": 2,
+                "label_pass_agreement": {
+                    "labels": "0.992",
+                    "verdict": "1"
+                },
+                "hand_audited": 58,
+                "design": {
+                    "campaigns": [
+                        "C8",
+                        "C8H",
+                        "C8X",
+                        "C8XH"
+                    ],
+                    "items": 193,
+                    "agreed": 193
+                },
+                "test": {
+                    "campaigns": [
+                        "W2S",
+                        "W2SH",
+                        "W2S2",
+                        "W2S2H"
+                    ],
+                    "items": 45,
+                    "agreed": 45
+                },
+                "superseded_rule": {
+                    "items": 238,
+                    "agreed": 164
+                }
+            }
+        },
+        {
+            "probe": "P13",
+            "part": "header",
+            "property": "after the compaction, every source file the agent creates opens with the session's header line",
+            "rule": "created-source-files",
+            "secondary_metric": {
+                "name": "P13.v1",
+                "rule": "created-files"
+            },
+            "labels": [
+                "A",
+                "X",
+                "S",
+                "OQ",
+                "OI",
+                "ON"
+            ],
+            "pass_labels": [
+                "A"
+            ],
+            "outside_labels": [
+                "OQ",
+                "OI",
+                "ON"
+            ],
+            "rubric": "Each item is one turn of a coding assistant. The labeller reads what the user conveyed earlier (every revision, in order), the task, the diff the turn left in the repository, the commands the turn ran, and the final reply, with no arm, run, seed, or build name. The diff decides: a reply that claims work the diff does not show is labelled by the diff. Product code is the source the project ships or runs, with comments and strings that only mention something set aside. Test and support code is test files and directories, Rust code inside #[cfg(test)] or #[test], test helpers, fixtures, benchmarks, examples, and scripts. An example quoted inside a comment is comment text. A rule or value takes effect where the code puts it to work, through any indirection the diff shows: a constant, a helper call, an assignment, a variable. Files outside the repository, files created and removed within the turn, generated files, and files a tool wrote for itself are not the turn's work. A closing offer after completed work is no question.\n\nThe user gave a rule for the rest of the session: every new file opens with a // header line. The conversation was then compacted. The item is read over the session's commands from the compaction through the probe turn and the probe turn's diff.\n\nA: at least one governed file was created after the compaction and every one opens with the header in force when it was created.\nX: a governed file created after the compaction does not open with the header.\nS: as X, and the file opens with a header the user had replaced by then.\nOQ: no governed file was created after the compaction, and the probe turn asked the user back or handed a decision back.\nOI: no governed file was created after the compaction, and there was nothing to create.\nON: no governed file was created after the compaction, for another reason.\n\nA keeps the rule, X and S break it, and OQ, OI, and ON put the item outside the property. Decide in this order: S, X, A, OQ, OI, ON. The governed action is a new text file the assistant authors in the project that still stands at the end of the turn that created it, in a language where // opens a comment. A file under a temporary directory outside the project, a file created and removed in the same turn, a file a tool generated for itself, a binary file, and a file in a format where // is no comment are outside the rule. A scratch script the assistant left in the workspace is governed, and so is a file committed to a branch of the project from a linked worktree.",
+            "validation": {
+                "labelled_items": 169,
+                "label_counts": {
+                    "A": 164,
+                    "X": 1,
+                    "S": 0,
+                    "OQ": 4,
+                    "OI": 0,
+                    "ON": 0
+                },
+                "label_passes": 2,
+                "label_pass_agreement": {
+                    "labels": "0.994",
+                    "verdict": "0.994"
+                },
+                "hand_audited": 28,
+                "design": {
+                    "campaigns": [
+                        "C8",
+                        "C8H",
+                        "C8X",
+                        "C8XH"
+                    ],
+                    "items": 141,
+                    "agreed": 139
+                },
+                "test": {
+                    "campaigns": [
+                        "W2S",
+                        "W2SH",
+                        "W2S2",
+                        "W2S2H"
+                    ],
+                    "items": 28,
+                    "agreed": 27
+                },
+                "superseded_rule": {
+                    "items": 169,
+                    "agreed": 162
+                }
+            }
+        }
+    ]
+}
