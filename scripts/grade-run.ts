@@ -562,12 +562,20 @@ export async function judgeAbstentions(o: {
         if (kept && judgmentStands(kept, frame, offline)) judgments.set(item, kept);
         else pending.push({ item, frame });
     }
-    const fresh: { item: Abstention; judgment: AbstainJudgment; calls: number[] }[] = [];
+    /** Rows to append: `called` marks a row whose label one of this pass's calls made. */
+    const fresh: {
+        item: Abstention;
+        judgment: AbstainJudgment;
+        calls: number[];
+        called: boolean;
+    }[] = [];
+    const calledPrompts = new Set<string>();
     /** The label a prompt already has under this judge, for an answer with no row of its own. */
     const labelled = (frame: Frame): Labelled | undefined => prompts.get(frame.prompt_digest);
     const record = (item: Abstention, frame: Frame, from: Labelled) => {
         const judgment = { ...from.judgment, answer_digest: frame.answer_digest };
-        fresh.push({ item, judgment, calls: from.calls });
+        const called = calledPrompts.has(frame.prompt_digest);
+        fresh.push({ item, judgment, calls: from.calls, called });
     };
     const unlabelled = pending.filter(({ item, frame }) => {
         const known = labelled(frame);
@@ -600,7 +608,8 @@ export async function judgeAbstentions(o: {
                     };
                     const calls = records.records.slice(firstCall).map((r) => r.seq);
                     prompts.set(frame.prompt_digest, { judgment, calls });
-                    fresh.push({ item, judgment, calls });
+                    calledPrompts.add(frame.prompt_digest);
+                    fresh.push({ item, judgment, calls, called: true });
                 } catch (caught) {
                     if (!(caught instanceof GradeRefused)) throw caught;
                     judgeErrors++;
@@ -619,16 +628,18 @@ export async function judgeAbstentions(o: {
         if (lost) {
             judgeErrors += gateway.failures.length;
             for (const f of gateway.failures) console.error(`judge-calls.jsonl: ${String(f)}`);
-            for (const { item } of fresh) skip(item.arm, ABSTAIN_JUDGE_FAILED);
+            for (const { item, called } of fresh) if (called) skip(item.arm, ABSTAIN_JUDGE_FAILED);
         }
     }
-    if (lost || fresh.length === 0) return { judgments, judgeErrors };
+    // A row whose label a stored row made stands whatever became of this pass's call records.
+    const appended = lost ? fresh.filter((row) => !row.called) : fresh;
+    if (appended.length === 0) return { judgments, judgeErrors };
     const links = lstatSync(log, { throwIfNoEntry: false })?.nlink ?? 1;
     if (links !== 1) throw new Error(`${log} has ${links} links; refusing to write through it`);
     keepCompleteLines(log);
     appendFileSync(
         log,
-        fresh
+        appended
             .map(({ item, judgment, calls }) =>
                 JSON.stringify({
                     item: item.probe.id,
@@ -641,7 +652,7 @@ export async function judgeAbstentions(o: {
             .map((row) => `${row}\n`)
             .join(""),
     );
-    for (const { item, judgment } of fresh) judgments.set(item, judgment);
+    for (const { item, judgment } of appended) judgments.set(item, judgment);
     return { judgments, judgeErrors };
 }
 

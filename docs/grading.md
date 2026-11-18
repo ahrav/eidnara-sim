@@ -358,7 +358,8 @@ grade already cites its snapshot (and, for P7, its opponent) is skipped as
 `already graded` when the same grader made it: each record carries
 `grader`, a digest of the grader's source files, `scripts/grade-run.ts`,
 the proxy record, classifier, canonical-JSON, retry, call-view, and user-sim
-plan modules they read, and the grading revisions (`src/prereg/grading.ts`
+plan modules they read, the arm profiles the judged text's redaction reads
+(`src/hosts/profiles.ts`), and the grading revisions (`src/prereg/grading.ts`
 and each `prereg/G<n>.json`), and a
 grade from another implementation is made again. The digest covers those
 files alone; a change confined to another module they import leaves it

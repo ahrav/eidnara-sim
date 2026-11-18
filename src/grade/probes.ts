@@ -2340,6 +2340,7 @@ export const graderDigest = (extra: readonly string[] = []): string =>
             "source-commands.ts",
             "text.ts",
             "../../scripts/grade-run.ts",
+            "../hosts/profiles.ts",
             "../proxy/records.ts",
             "../proxy/classify.ts",
             "../prereg/canonical.ts",
