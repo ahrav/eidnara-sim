@@ -1017,7 +1017,7 @@ export function readStatements(kernelPath: string): StatementObservation {
             sessions: [...sessions].sort(),
             unattributed,
             error: null,
-            lifetimes: { ...lifetimes },
+            lifetimes,
             lineages: {
                 count: lineages.length,
                 largest: Math.max(0, ...lineages.map((l) => l.n)),

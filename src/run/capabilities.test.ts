@@ -309,8 +309,8 @@ test("delivery evidence must match the statements the final store holds", () => 
     db.run("insert into decisions values ('mem_f', ?, 1), ('mem_g', ?, 99), ('mem_h', ?, 1)", [
         classed("current_work"),
         classed("lasting"),
-        // A rationale that is JSON and no object names nothing.
-        new TextEncoder().encode(JSON.stringify({ summary: "x", rationale: "7" })),
+        // A class is counted under the name the store holds, whatever an object inherits.
+        classed("constructor"),
     ]);
     // Two statements quote one user message and a third quotes another; stm_e's commit is absent.
     const message = (digit: string) => `memory_capture_statement:${digit.repeat(32)}`;
@@ -322,13 +322,13 @@ test("delivery evidence must match the statements the final store holds", () => 
     const observe = (arm: string, components: Record<string, number>) =>
         observeArm(arm, "pi", root, components);
     // stm_e's commit is absent from the log, so a partial store left it behind. Of the committed
-    // facts, mem_d names no lifetime class and mem_f names one.
+    // facts, mem_d names no lifetime class, and mem_f and mem_h name one each.
     expect(observe("eidnara", {}).statements).toEqual({
         count: 3,
         sessions: ["sim-s-0001"],
         unattributed: 1,
         error: null,
-        lifetimes: { current_work: 1 },
+        lifetimes: { current_work: 1, constructor: 1 },
         lineages: { count: 2, largest: 2, per_message: 3 },
     });
     const delivery = (memory_blocks: number, memory_due = true, due_blocks = memory_blocks) => ({
@@ -1231,6 +1231,13 @@ test("a Pi arm's background requests show the cache-point layout its build decla
     expect(cachingMismatches("on", observe(MESSAGE_ONLY, [[ALONE, 0]]), system)).toEqual([
         "1 of 1 memory_capture requests with cache points of their own carry none after the system prompt, where eval/w3-all and every other build place one on a background call",
         "1 of 1 memory_capture requests with cache points of their own carry one on a message, but eval/w3-all declares the system prompt's cache point alone on a background call",
+    ]);
+    const partly = observe(PAIRED, [
+        [MESSAGE_ONLY, 0],
+        [PAIRED, 0],
+    ]);
+    expect(cachingMismatches("on", partly, both)).toEqual([
+        "1 of 2 history_summarizer requests with cache points of their own carry none after the system prompt, where eval/w2b and every other build place one on a background call",
     ]);
     // Another host, an arm without a daemon, and a count taken as calls start are held to nothing.
     expect(cachingMismatches("on", paired)).toEqual([]);
