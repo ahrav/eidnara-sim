@@ -241,6 +241,30 @@ The budget is $7k to $16k for W2S2's twelve runs and $3k to $8k for
 W2S2H's eight, from the first focused run's $1.09 to $1.30 per event over
 590, 677, 747, 751, and 323 events.
 
+`--qualification W3S` (`prereg/W3S.json`, revision 1) and
+`--qualification W3SH` (`prereg/W3SH.json`, revision 1) retest the
+`eval/w3-all` build against the `eval/w2b` build with
+`prompt_caching: "on"`, tier S on Pi, with W2S2's arms, contrasts, control,
+no-source control, and harm probes. The build contrasts are `eidnara` and
+`eidnara-hybrid` on `eval/w3-all` against `eidnara` on `eval/w2b`. W3S runs
+W2S2's diagnosed seeds 104 and 106 again and adds seed 107; W3SH runs
+W2S2H's held-out seed 613 again and adds seed 614, and reports apart from
+W3S. No campaign ran seeds 107 and 614 before (`docs/scenario.md`). Every
+arm runs at the retest's sim revision under the caching condition and
+grading revisions 10 to 14, `host` and the reference arm included. Each seed
+is four runs launched together: `host`, `eidnara`, and `eidnara-hybrid` on
+the current build and `eidnara` on the reference build through its own
+`config`. The budget is $2k to $5k for W3S's twelve runs and $1.5k to $4k
+for W3SH's eight at the `v2` table, from the uncached $1.17 per event of
+the S rerun over 590, 747, 711, 323, and 1,182 events and the caching
+pilot's recorded cost at 13% to 26% of its uncached cost.
+
+`--qualification W3P` (`prereg/W3P.json`, revision 1) is the retest's
+pilot: PCH's scenario (tier M, held-out seed 605, C8H's control) with the
+retest's three arms, its build contrasts, and `prompt_caching: "on"`. It
+checks capability and caching evidence on both builds over a prefix of the
+scenario before the retest starts.
+
 `--qualification PCH` (`prereg/PCH.json`, revision 1) is the prompt-caching
 pilot: tier M on Pi over C8H's held-out seed 605 with `host` and `eidnara`
 (host first), the contrast `eidnara` vs `host`, C8H's

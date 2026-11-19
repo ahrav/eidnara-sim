@@ -15,6 +15,8 @@ import {
     AUDITED_BUILDS,
     type AuditedBuild,
     armProfile,
+    auditedBuild,
+    capabilitiesOf,
     capabilityGaps,
     DAEMON_VARIANTS,
 } from "../hosts/profiles";
@@ -22,16 +24,17 @@ import type { ConverseBody } from "../proxy/classify";
 import { bodyCachePoints, cachePointsOf, type RequestPart } from "../proxy/requests";
 import {
     armMismatches,
+    backgroundCachePointsOf,
     bootMismatches,
     type CachingCount,
     CachingTally,
     cachingMismatches,
     capabilityRecord,
-    daemonCachePoints,
     logLength,
     noteRequest,
     observeArm,
     openItemsOf,
+    daemonCachePoints as placeFor,
     readDaemonStatus,
     readPluginLog,
     requireAuditedVariants,
@@ -295,6 +298,18 @@ test("delivery evidence must match the statements the final store holds", () => 
             payload("sim-s-0009"),
         ],
     );
+    // Two captured facts name a lifetime class; the second one's commit is absent from the log.
+    const classed = (lifetime: string) =>
+        new TextEncoder().encode(
+            JSON.stringify({
+                summary: "User stated: Ship the parser first.",
+                rationale: JSON.stringify({ session: "sim-s-0001", lifetime }),
+            }),
+        );
+    db.run("insert into decisions values ('mem_f', ?, 1), ('mem_g', ?, 99)", [
+        classed("current_work"),
+        classed("lasting"),
+    ]);
     // Two statements quote one user message and a third quotes another; stm_e's commit is absent.
     const message = (digit: string) => `memory_capture_statement:${digit.repeat(32)}`;
     db.run(
@@ -304,12 +319,14 @@ test("delivery evidence must match the statements the final store holds", () => 
     db.close();
     const observe = (arm: string, components: Record<string, number>) =>
         observeArm(arm, "pi", root, components);
-    // stm_e's commit is absent from the log, so a partial store left it behind.
+    // stm_e's commit is absent from the log, so a partial store left it behind. Of the committed
+    // facts, mem_d names no lifetime class and mem_f names one.
     expect(observe("eidnara", {}).statements).toEqual({
         count: 3,
         sessions: ["sim-s-0001"],
         unattributed: 1,
         error: null,
+        lifetimes: { current_work: 1 },
         lineages: { count: 2, largest: 2, per_message: 3 },
     });
     const delivery = (memory_blocks: number, memory_due = true, due_blocks = memory_blocks) => ({
@@ -751,13 +768,13 @@ test("daemon status readings are totalled from the resource samples", () => {
 });
 
 test("evidence is read against the capabilities of the build the run bound", () => {
-    const w2 = AUDITED_BUILDS[0];
+    const current = AUDITED_BUILDS[0];
     const c8 = AUDITED_BUILDS.find((b) => b.label === "eval/c8") as AuditedBuild;
     const root = captured(armRoot([PI_ON, PASS]));
     daemonLog(root, []);
     const base = observeArm("eidnara", "pi", root, { agent: 2, memory_capture: 1 });
-    expect(armMismatches(base, w2)).toEqual([]);
-    // The c8 daemon reports no refused-approval counter, so the w2 counters contradict it.
+    expect(armMismatches(base, current)).toEqual([]);
+    // The c8 daemon reports no refused-approval counter, so the current counters contradict it.
     expect(armMismatches(base, c8)).toEqual([
         "the source capture counters hold decisions_approval_refused, which eval/c8 does not declare",
     ]);
@@ -766,8 +783,8 @@ test("evidence is read against the capabilities of the build the run bound", () 
     daemonLog(c8Root, []);
     const reference = observeArm("eidnara", "pi", c8Root, { agent: 2, memory_capture: 1 });
     expect(armMismatches(reference, c8)).toEqual([]);
-    expect(armMismatches(reference, w2)).toEqual([
-        `the source capture counters hold no decisions_approval_refused, which ${w2.label} declares with its per-message statement lineage`,
+    expect(armMismatches(reference, current)).toEqual([
+        `the source capture counters hold no decisions_approval_refused, which ${current.label} declares with its per-message statement lineage`,
     ]);
 
     const statements = (per_message: number) => ({
@@ -777,9 +794,9 @@ test("evidence is read against the capabilities of the build the run bound", () 
         error: null,
         lineages: { count: per_message === 0 ? 1 : 9, largest: 64, per_message },
     });
-    expect(armMismatches({ ...base, statements: statements(70) }, w2)).toEqual([]);
-    expect(armMismatches({ ...base, statements: statements(6) }, w2)).toEqual([
-        `64 of 70 user statements sit on a lineage shared across messages, but ${w2.label} declares one lineage per user message`,
+    expect(armMismatches({ ...base, statements: statements(70) }, current)).toEqual([]);
+    expect(armMismatches({ ...base, statements: statements(6) }, current)).toEqual([
+        `64 of 70 user statements sit on a lineage shared across messages, but ${current.label} declares one lineage per user message`,
     ]);
     expect(armMismatches({ ...reference, statements: statements(0) }, c8)).toEqual([]);
     expect(armMismatches({ ...reference, statements: statements(6) }, c8)).toEqual([
@@ -788,6 +805,16 @@ test("evidence is read against the capabilities of the build the run bound", () 
     const split = { ...statements(0), lineages: { count: 2, largest: 40, per_message: 0 } };
     expect(armMismatches({ ...reference, statements: split }, c8)).toEqual([
         "70 user statements sit on 2 lineages, but eval/c8 declares one shared lineage",
+    ]);
+    // A lifetime class in a fact's rationale is the w3 build's; an earlier build writes none.
+    const classed = { ...statements(70), lifetimes: { lasting: 3, current_work: 2 } };
+    const w2b = auditedBuild("eval/w2b") as AuditedBuild;
+    expect(armMismatches({ ...base, statements: classed }, current)).toEqual([]);
+    expect(armMismatches({ ...base, statements: { ...classed, lifetimes: {} } }, current)).toEqual(
+        [],
+    );
+    expect(armMismatches({ ...base, statements: classed }, w2b)).toEqual([
+        "5 captured facts name a lifetime class in their rationale, which eval/w2b does not declare",
     ]);
 
     const delivery = (contested_blocks: number, stale: number) => ({
@@ -803,9 +830,9 @@ test("evidence is read against the capabilities of the build the run bound", () 
             stale_requests: stale > 0 ? [41] : [],
         },
     });
-    expect(armMismatches({ ...base, delivery: delivery(2, 0) }, w2)).toEqual([]);
-    expect(armMismatches({ ...base, delivery: delivery(0, 1) }, w2)).toEqual([
-        `1 of 5 rendered history blocks hold a waiting line before a later summarized segment (first requests 41), but ${w2.label} declares waiting lines in the newest segment alone`,
+    expect(armMismatches({ ...base, delivery: delivery(2, 0) }, current)).toEqual([]);
+    expect(armMismatches({ ...base, delivery: delivery(0, 1) }, current)).toEqual([
+        `1 of 5 rendered history blocks hold a waiting line before a later summarized segment (first requests 41), but ${current.label} declares waiting lines in the newest segment alone`,
     ]);
     // The c8 renderer keeps a settled waiting line across segments, and renders no contest.
     expect(armMismatches({ ...reference, delivery: delivery(0, 1) }, c8)).toEqual([]);
@@ -829,15 +856,15 @@ test("evidence is read against the capabilities of the build the run bound", () 
             blocked: 0,
         },
     });
-    expect(armMismatches({ ...base, daemon_status: status(8, 0) }, w2)).toEqual([]);
-    expect(armMismatches({ ...base, daemon_status: status(0, 0) }, w2)).toEqual([
-        `none of 8 daemon status readings carries the process_memory block, which ${w2.label} declares`,
+    expect(armMismatches({ ...base, daemon_status: status(8, 0) }, current)).toEqual([]);
+    expect(armMismatches({ ...base, daemon_status: status(0, 0) }, current)).toEqual([
+        `none of 8 daemon status readings carries the process_memory block, which ${current.label} declares`,
     ]);
     // A read returns after the sample that started it: an arm too short for one owes no block,
     // and an arm whose every read failed leaves the status unverified.
-    expect(armMismatches({ ...base, daemon_status: status(0, 0, 0) }, w2)).toEqual([]);
-    expect(armMismatches({ ...base, daemon_status: status(0, 0, 0, 5) }, w2)).toEqual([
-        `all 5 daemon status reads failed, so the status ${w2.label} declares is unverified`,
+    expect(armMismatches({ ...base, daemon_status: status(0, 0, 0) }, current)).toEqual([]);
+    expect(armMismatches({ ...base, daemon_status: status(0, 0, 0, 5) }, current)).toEqual([
+        `all 5 daemon status reads failed, so the status ${current.label} declares is unverified`,
     ]);
     expect(armMismatches({ ...reference, daemon_status: status(0, 0) }, c8)).toEqual([]);
     expect(armMismatches({ ...reference, daemon_status: status(8, 0) }, c8)).toEqual([
@@ -846,9 +873,9 @@ test("evidence is read against the capabilities of the build the run bound", () 
     const fused = captured(armRoot([PI_ON, PASS], [FUSED]));
     daemonLog(fused, [READY, ROUTE]);
     const hybrid = observeArm("eidnara-hybrid", "pi", fused, { agent: 1 });
-    expect(armMismatches({ ...hybrid, daemon_status: status(8, 8) }, w2)).toEqual([]);
-    expect(armMismatches({ ...hybrid, daemon_status: status(8, 0) }, w2)).toEqual([
-        `none of 8 daemon status readings carries a search.lifecycle.status progress block, which ${w2.label} declares for the fused route`,
+    expect(armMismatches({ ...hybrid, daemon_status: status(8, 8) }, current)).toEqual([]);
+    expect(armMismatches({ ...hybrid, daemon_status: status(8, 0) }, current)).toEqual([
+        `none of 8 daemon status readings carries a search.lifecycle.status progress block, which ${current.label} declares for the fused route`,
     ]);
 });
 
@@ -927,6 +954,7 @@ test("an arm's caching observation counts requests with cache points and the cac
                 requests: 2,
                 with_cache_points: 2,
                 placed_by_proxy: 0,
+                with_message_points: 2,
                 input_tokens: 12,
                 cache_read_tokens: 300,
                 cache_write_tokens: 30,
@@ -935,6 +963,7 @@ test("an arm's caching observation counts requests with cache points and the cac
                 requests: 1,
                 with_cache_points: 0,
                 placed_by_proxy: 0,
+                with_message_points: 0,
                 input_tokens: 4,
                 cache_read_tokens: 100,
                 cache_write_tokens: 10,
@@ -943,6 +972,7 @@ test("an arm's caching observation counts requests with cache points and the cac
                 requests: 1,
                 with_cache_points: 0,
                 placed_by_proxy: 0,
+                with_message_points: 0,
                 input_tokens: 4,
                 cache_read_tokens: 100,
                 cache_write_tokens: 10,
@@ -1037,6 +1067,7 @@ test("a daemon-run call without cache points gets Pi's two, and every other body
             { role: "user", content: [{ text: "more" }] },
         ],
     });
+    const daemonCachePoints = placeFor("system-and-message");
     const summarizer = body();
     expect(daemonCachePoints(summarizer, "history_summarizer")).toBe(2);
     // One after the system prompt and one at the end of the last user message, as Pi places them.
@@ -1072,6 +1103,112 @@ test("a daemon-run call without cache points gets Pi's two, and every other body
     // A body that carries a cache point already, as OpenCode's closure sends it, is left alone.
     const cached: ConverseBody = { system: [{ text: "s" }, POINT], messages: bare.messages ?? [] };
     expect(daemonCachePoints(cached, "history_summarizer")).toBe(0);
+});
+
+test("on a build whose hook keeps a background call's cache writes to the system prompt, a daemon-run call gets that point alone", () => {
+    const body = (): ConverseBody => ({
+        system: [{ text: "Summarize." }],
+        messages: [{ role: "user", content: [{ text: "<new_messages>" }] }],
+    });
+    const place = placeFor("system");
+    const summarizer = body();
+    expect(place(summarizer, "history_summarizer")).toBe(1);
+    expect(summarizer.system).toEqual([{ text: "Summarize." }, POINT]);
+    expect(summarizer.messages?.[0]?.content).toEqual([{ text: "<new_messages>" }]);
+    expect(place(summarizer, "history_summarizer")).toBe(0);
+    // The capture call runs in the arm's Pi, where the plugin's own code decides.
+    expect(place(body(), "memory_capture")).toBe(0);
+    // A body with no system prompt has no place for the point.
+    const bare: ConverseBody = { messages: [{ role: "user", content: [{ text: "hi" }] }] };
+    expect(place(bare, "history_summarizer")).toBe(0);
+    expect(bare.messages?.[0]?.content).toEqual([{ text: "hi" }]);
+
+    // The layout is the bound build's: every variant names one, and a manifest that names none
+    // reads as Pi's own two points.
+    const w3 = AUDITED_BUILDS[0];
+    const w2b = auditedBuild("eval/w2b") as AuditedBuild;
+    const bound = (b: AuditedBuild) => ({
+        capabilities: Object.fromEntries(
+            Object.entries(b.variants).map(([v, r]) => [v, capabilitiesOf(r)]),
+        ),
+    });
+    expect(backgroundCachePointsOf(bound(w3))).toBe("system");
+    expect(backgroundCachePointsOf(bound(w2b))).toBe("system-and-message");
+    expect(backgroundCachePointsOf(null)).toBe("system-and-message");
+    expect(backgroundCachePointsOf({ capabilities: { "direct-host-fixture": {} } })).toBe(
+        "system-and-message",
+    );
+    for (const odd of [undefined, 7, { capabilities: null }, { capabilities: { v: null } }]) {
+        expect(backgroundCachePointsOf(odd)).toBe("system-and-message");
+    }
+});
+
+test("a Pi arm's background requests show the cache-point layout its build declares", () => {
+    const parts = new Map<string, RequestPart>([
+        ["sys+", { field: "system", value: [{ text: "s" }, POINT] }],
+        ["u1", { field: "messages", value: { role: "user", content: [{ text: "a" }] } }],
+        ["u1+", { field: "messages", value: { role: "user", content: [{ text: "a" }, POINT] } }],
+    ]);
+    const tokens = { input_tokens: 4, cache_read_tokens: 100, cache_write_tokens: 10 };
+    const request = (ids: string[]) => ({ sha256: "x", bytes: 1, parts: ids });
+    const observe = (capture: string[], summarizer: string[], placed = 0) => {
+        const tally = new CachingTally(parts);
+        tally.add({ component: "agent", request: request(["sys+", "u1+"]), ...tokens });
+        tally.add({ component: "memory_capture", request: request(capture), ...tokens });
+        tally.add({
+            component: "history_summarizer",
+            request: request(summarizer),
+            ...tokens,
+            ...(placed > 0 ? { cache_points_placed: placed } : {}),
+        });
+        return tally.observation();
+    };
+    const system = { layout: "system", label: "eval/w3-all" } as const;
+    const both = { layout: "system-and-message", label: "eval/w2b" } as const;
+    const alone = observe(["sys+", "u1"], ["sys+", "u1"]);
+    const paired = observe(["sys+", "u1+"], ["sys+", "u1+"]);
+    expect(alone.components.memory_capture?.with_message_points).toBe(0);
+    expect(paired.components.history_summarizer?.with_message_points).toBe(1);
+    // The agent's last message carries its point on either build.
+    expect(cachingMismatches("on", alone, system)).toEqual([]);
+    expect(cachingMismatches("on", paired, both)).toEqual([]);
+    expect(cachingMismatches("on", paired, system)).toEqual([
+        "1 of 1 history_summarizer requests carry a cache point on a message, but eval/w3-all declares the system prompt's cache point alone on a background call",
+        "1 of 1 memory_capture requests carry a cache point on a message, but eval/w3-all declares the system prompt's cache point alone on a background call",
+    ]);
+    expect(cachingMismatches("on", alone, both)).toEqual([
+        "1 of 1 history_summarizer requests carry a cache point on the system prompt alone, but eval/w2b declares one on the user message of a background call too",
+        "1 of 1 memory_capture requests carry a cache point on the system prompt alone, but eval/w2b declares one on the user message of a background call too",
+    ]);
+    // Points the proxy placed follow the declared layout by construction, so that component is
+    // left out and the capture calls alone are held to it.
+    const placed = observe(["sys+", "u1+"], ["sys+", "u1+"], 2);
+    expect(cachingMismatches("on", placed, system)).toEqual([
+        "1 of 1 memory_capture requests carry a cache point on a message, but eval/w3-all declares the system prompt's cache point alone on a background call",
+    ]);
+    expect(cachingMismatches("on", observe(["sys+", "u1"], ["sys+", "u1"], 1), both)).toEqual([
+        "1 of 1 memory_capture requests carry a cache point on the system prompt alone, but eval/w2b declares one on the user message of a background call too",
+    ]);
+    // Another host, an arm without a daemon, and a count taken as calls start are held to nothing.
+    expect(cachingMismatches("on", paired)).toEqual([]);
+    expect(cachingMismatches("off", paired, system)).toEqual([]);
+    const live: Record<string, CachingCount> = {};
+    noteRequest(live, "memory_capture", 2);
+    expect(cachingMismatches("on", { components: live }, system)).toEqual([]);
+    // The record reads the layout from the arm's variant on the bound build, for a Pi arm.
+    const root = captured(armRoot([PI_ON, PASS]));
+    daemonLog(root, []);
+    const arm = observeArm("eidnara", "pi", root, { agent: 2, memory_capture: 1 });
+    arm.prompt_caching = paired;
+    const w3 = AUDITED_BUILDS[0];
+    const w2b = auditedBuild("eval/w2b") as AuditedBuild;
+    expect(capabilityRecord(arm, null, w2b, "on").mismatches).toEqual([]);
+    expect(capabilityRecord(arm, null, w3, "on").mismatches).toEqual(
+        cachingMismatches("on", paired, { layout: "system", label: w3.label }),
+    );
+    expect(capabilityRecord({ ...arm, host: "opencode" }, null, w3, "on").mismatches).toEqual(
+        armMismatches({ ...arm, host: "opencode" }, w3),
+    );
 });
 
 test("the observation counts the requests whose cache points the proxy placed", () => {

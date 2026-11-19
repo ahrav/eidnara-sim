@@ -95,6 +95,7 @@ import {
 import { writeAtomic } from "./atomic";
 import { sessionViews, withUserTurns } from "./callviews";
 import {
+    backgroundCachePointsOf,
     bootMismatches,
     type CachingCount,
     CachingTally,
@@ -2323,7 +2324,9 @@ async function runArms(
         clock: { scenarioMs: now },
         scope: () => ({ ...scope, origin: origin() }),
         requests,
-        ...(caching === "on" ? { cachePoints: daemonCachePoints } : {}),
+        ...(caching === "on"
+            ? { cachePoints: daemonCachePoints(backgroundCachePointsOf(manifest.eidnara_build)) }
+            : {}),
         downstream: (e) => {
             // The sink runs inside an HTTP/2 event listener; a failed write ends the run through
             // its signal path rather than escaping as an uncaught exception.

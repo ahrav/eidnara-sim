@@ -18,6 +18,7 @@ import {
     AUDITED_BUILDS,
     type AuditedBuild,
     armProfile,
+    type BackgroundCachePoints,
     type DaemonCapabilities,
     type DaemonVariant,
     deliveryOf,
@@ -100,6 +101,12 @@ export interface CachingCount {
     with_cache_points: number;
     /** Of those, the calls whose cache points the proxy placed (`daemonCachePoints`). */
     placed_by_proxy: number;
+    /**
+     * Of the calls with cache points, those carrying one in a message; counted from the stored
+     * bodies at the arm's end, so absent on a count taken as calls start and on observations
+     * recorded before it was read.
+     */
+    with_message_points?: number;
     /** The provider's prompt usage summed over the component's calls. */
     input_tokens: number;
     cache_read_tokens: number;
@@ -151,20 +158,41 @@ const DAEMON_CALLERS: readonly string[] = [
 ];
 
 /**
- * Under prompt caching on, places Pi's two cache points on a daemon-run call whose body carries
- * none, and returns how many: the points the child Pi's own client places for a model it
- * recognises. A body that carries a cache point already (OpenCode's closure places its own) and
- * every other caller's body stay as they are.
+ * Under prompt caching on, places cache points on a daemon-run call whose body carries none, and
+ * returns how many: the points the request of the child Pi carries for a model that Pi
+ * recognises. Pi's client places one after the system prompt and one at the end of the user
+ * message; on a build whose bundled hook removes cache markers from user messages (`layout`
+ * `system`) the request carries the system prompt's alone. A body that carries a cache point
+ * already (OpenCode's closure places its own) and every other caller's body stay as they are.
  */
-export function daemonCachePoints(body: ConverseBody, component: string): number {
-    if (!DAEMON_CALLERS.includes(component) || bodyCachePoints(body) > 0) return 0;
-    return placePiCachePoints(body);
+export const daemonCachePoints =
+    (layout: BackgroundCachePoints) =>
+    (body: ConverseBody, component: string): number => {
+        if (!DAEMON_CALLERS.includes(component) || bodyCachePoints(body) > 0) return 0;
+        return placePiCachePoints(body, layout === "system-and-message");
+    };
+
+/**
+ * The background cache-point layout of the build a manifest bound: every variant of a build names
+ * the same one. A manifest that names none (a host-only run, or a run recorded before the
+ * capability) reads as Pi's own two points.
+ */
+export function backgroundCachePointsOf(build: unknown): BackgroundCachePoints {
+    // A replay reads the manifest from disk, so any shape other than a named `system` reads as Pi's own.
+    const capabilities = (
+        build as {
+            capabilities?: Record<string, { background_cache_points?: unknown } | null> | null;
+        }
+    )?.capabilities;
+    return Object.values(capabilities ?? {}).some((c) => c?.background_cache_points === "system")
+        ? "system"
+        : "system-and-message";
 }
 
 /** Builds an arm's `CachingObservation` from its call records; each stored part is read once. */
 export class CachingTally {
     private readonly components: Record<string, CachingCount> = {};
-    private readonly points = new Map<string, number | null>();
+    private readonly points = new Map<string, { points: number; message: boolean } | null>();
 
     constructor(private readonly parts: PartLookup) {}
 
@@ -191,17 +219,19 @@ export class CachingTally {
         noteRequest(
             this.components,
             call.component,
-            whole ? points.reduce<number>((sum, n) => sum + (n ?? 0), 0) : 0,
+            whole ? points.reduce<number>((sum, n) => sum + (n?.points ?? 0), 0) : 0,
             call.cache_points_placed,
         );
+        count.with_message_points ??= 0;
+        if (whole && points.some((n) => n?.message && n.points > 0)) count.with_message_points++;
     }
 
-    /** The cache points of a stored part, or null for a part the log lacks. */
-    private pointsOf(id: string): number | null {
+    /** A stored part's cache points and whether it is a message, or null for a part the log lacks. */
+    private pointsOf(id: string): { points: number; message: boolean } | null {
         let n = this.points.get(id);
         if (n === undefined) {
             const part = this.parts.get(id);
-            n = part ? cachePointsOf(part) : null;
+            n = part ? { points: cachePointsOf(part), message: part.field === "messages" } : null;
             this.points.set(id, n);
         }
         return n;
@@ -228,15 +258,49 @@ const CACHED_CALLERS: readonly string[] = ["agent", ...EIDNARA_COMPONENTS];
 export function cachingMismatches(
     condition: PromptCaching,
     o: CachingObservation | undefined,
+    background?: { layout: BackgroundCachePoints; label: string },
 ): string[] {
     if (condition !== "on" || !o) return [];
-    return Object.entries(o.components)
+    const uncached = Object.entries(o.components)
         .filter(([component]) => CACHED_CALLERS.includes(component))
         .filter(([, c]) => c.with_cache_points < c.requests)
         .map(
             ([component, c]) =>
                 `${c.requests - c.with_cache_points} of ${c.requests} ${component} requests carry no cache point, but the run registers prompt caching on`,
         );
+    return [...uncached, ...backgroundMismatches(o, background)];
+}
+
+/**
+ * A background call sends one user message. The requests the host sent with their own cache
+ * points show the build's layout: with `system-and-message` each carries one on that message, and
+ * with `system` none does. On a Pi arm those are the capture calls, which run in the arm's Pi; a
+ * component whose points the proxy placed follows the declared layout by construction and is
+ * evidence of nothing, so it is left out. `background` is given for a Pi arm; a count without
+ * `with_message_points` was taken before the bodies were read.
+ */
+function backgroundMismatches(
+    o: CachingObservation,
+    background: { layout: BackgroundCachePoints; label: string } | undefined,
+): string[] {
+    if (!background) return [];
+    const out: string[] = [];
+    for (const component of EIDNARA_COMPONENTS) {
+        const c = o.components[component];
+        if (!c || c.with_message_points === undefined || c.placed_by_proxy > 0) continue;
+        const bare = c.with_cache_points - c.with_message_points;
+        if (background.layout === "system" && c.with_message_points > 0) {
+            out.push(
+                `${c.with_message_points} of ${c.requests} ${component} requests carry a cache point on a message, but ${background.label} declares the system prompt's cache point alone on a background call`,
+            );
+        }
+        if (background.layout === "system-and-message" && bare > 0) {
+            out.push(
+                `${bare} of ${c.requests} ${component} requests carry a cache point on the system prompt alone, but ${background.label} declares one on the user message of a background call too`,
+            );
+        }
+    }
+    return out;
 }
 
 /**
@@ -291,6 +355,12 @@ export type StatementObservation = {
      * read.
      */
     lineages?: { count: number; largest: number; per_message: number };
+    /**
+     * The committed captured facts (`mem_*` decisions) by the `lifetime` class their rationale
+     * names; a fact whose rationale names none is left out. Absent on observations recorded
+     * before it was read.
+     */
+    lifetimes?: Record<string, number>;
 } | null;
 
 /**
@@ -901,13 +971,7 @@ export function readStatements(kernelPath: string): StatementObservation {
         const sessions = new Set<string>();
         let unattributed = 0;
         for (const { p } of rows) {
-            const text = typeof p === "string" ? p : new TextDecoder().decode(p);
-            let session: unknown = null;
-            try {
-                session = JSON.parse(String(JSON.parse(text)?.rationale ?? "null"))?.session;
-            } catch {
-                session = null;
-            }
+            const session = rationaleOf(p)?.session;
             if (typeof session === "string") sessions.add(session);
             else unattributed++;
         }
@@ -919,11 +983,24 @@ export function readStatements(kernelPath: string): StatementObservation {
                  group by o.source_id`,
             )
             .all() as { source: string; n: number }[];
+        const lifetimes: Record<string, number> = {};
+        const facts = db
+            .query(
+                `select decision_payload as p from decisions
+                 where object_id glob 'mem_*'
+                   and created_commit_seq in (select commit_seq from commit_log)`,
+            )
+            .all() as { p: Uint8Array | string }[];
+        for (const { p } of facts) {
+            const lifetime = rationaleOf(p)?.lifetime;
+            if (typeof lifetime === "string") lifetimes[lifetime] = (lifetimes[lifetime] ?? 0) + 1;
+        }
         return {
             count: rows.length,
             sessions: [...sessions].sort(),
             unattributed,
             error: null,
+            lifetimes,
             lineages: {
                 count: lineages.length,
                 largest: Math.max(0, ...lineages.map((l) => l.n)),
@@ -937,6 +1014,16 @@ export function readStatements(kernelPath: string): StatementObservation {
         return { count: 0, sessions: [], unattributed: 0, error };
     } finally {
         db?.close();
+    }
+}
+
+/** The rationale object a decision's JSON payload carries as a JSON string, or null when either fails to parse. */
+function rationaleOf(payload: Uint8Array | string): Record<string, unknown> | null {
+    const text = typeof payload === "string" ? payload : new TextDecoder().decode(payload);
+    try {
+        return JSON.parse(String(JSON.parse(text)?.rationale ?? "null"));
+    } catch {
+        return null;
     }
 }
 
@@ -1235,6 +1322,17 @@ export function armMismatches(
     return out;
 }
 
+/** The background cache-point layout a Pi arm's daemon variant has on `build`; undefined for another host or an arm without a daemon. */
+function backgroundOf(
+    o: ArmObservation,
+    build: AuditedBuild | undefined,
+): { layout: BackgroundCachePoints; label: string } | undefined {
+    const variant = armProfile(o.arm).daemon;
+    const caps = variant === null ? undefined : build?.variants[variant];
+    if (o.host !== "pi" || !caps || !build) return undefined;
+    return { layout: caps.background_cache_points, label: build.label };
+}
+
 /**
  * The arm's `capabilities.json`: its profile, the build the run bound (`eidnaraBuild`, as the
  * manifest records it), the run's prompt-caching condition, what the evidence shows, and every
@@ -1253,7 +1351,7 @@ export function capabilityRecord<B>(
         observed,
         mismatches: [
             ...armMismatches(observed, build),
-            ...cachingMismatches(caching, observed.prompt_caching),
+            ...cachingMismatches(caching, observed.prompt_caching, backgroundOf(observed, build)),
         ],
     };
 }
@@ -1417,6 +1515,12 @@ function buildMismatches(
                 `the source capture counters hold decisions_approval_refused, which ${label} does not declare`,
             );
         }
+    }
+    const classed = Object.values(o.statements?.lifetimes ?? {}).reduce((a, b) => a + b, 0);
+    if (!caps.statement_lifetime && classed > 0) {
+        out.push(
+            `${classed} captured facts name a lifetime class in their rationale, which ${label} does not declare`,
+        );
     }
     const contested = (o.delivery?.contested_blocks ?? 0) + (o.search?.contested ?? 0);
     if (!caps.contested_statements && contested > 0) {

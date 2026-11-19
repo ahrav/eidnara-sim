@@ -33,6 +33,7 @@ import type { ConverseBody } from "../proxy/classify";
 import type { CallRecord } from "../proxy/records";
 import { RequestPartLog, rebuildRequest } from "../proxy/requests";
 import { componentCosts } from "../report/cost";
+import { backgroundCachePointsOf } from "../run/capabilities";
 import { readJsonl } from "../run/journal";
 import { oracleBackground } from "../run/oracle-note";
 import { type Preflight, preflight, preflightDrift } from "../run/preflight";
@@ -1079,6 +1080,7 @@ async function replayInto(
                 contextLimit: source.manifest.context_limit,
                 sideModel: source.manifest.side_model,
                 promptCaching: source.manifest.prompt_caching ?? "off",
+                backgroundCachePoints: backgroundCachePointsOf(source.manifest.eidnara_build),
                 turnDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
                 project: source.project,
                 corpus: join(ROOT, "corpus", "repos", source.project),

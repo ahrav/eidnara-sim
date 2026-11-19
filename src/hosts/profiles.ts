@@ -26,6 +26,9 @@ export type PromptCaching = (typeof PROMPT_CACHING)[number];
 /** How an arm's memory search answers: none, the plugin's legacy snapshot scan, or the daemon's fused route. */
 export type SearchRoute = "none" | "legacy-scan" | "fused";
 
+/** Where a background call's provider cache points sit (`DaemonCapabilities.background_cache_points`). */
+export type BackgroundCachePoints = "system-and-message" | "system";
+
 export type DaemonVariant =
     | "direct-host-fixture"
     | "direct-host-fixture-fused"
@@ -64,6 +67,21 @@ export interface DaemonCapabilities {
     process_memory: boolean;
     /** Whether `search.lifecycle.status` answers with a `progress` block (lag behind the kernel tip, rebuild counts). */
     search_progress: boolean;
+    /**
+     * Whether capture classes each statement of a user message by how long it holds and records
+     * the class as `lifetime` in the fact's rationale. A statement classed `lasting` or
+     * `unsettled`, or carrying no class, is approved for `<project-memory>`; one classed
+     * `current_work` or `status` is stored labeled for explicit search.
+     */
+    statement_lifetime: boolean;
+    /**
+     * The cache points a background call (memory capture, a daemon-run call) carries under
+     * prompt caching on for a model Pi recognises: one after the system prompt and one at the end
+     * of its single user message (`system-and-message`, what Pi's client places), or the system
+     * prompt's alone (`system`), where the capture executor and the bundled model-execution hook
+     * remove cache markers from user messages.
+     */
+    background_cache_points: BackgroundCachePoints;
     /**
      * Whether the daemon honours the user-tier `source_capture.enabled` consent key, retaining
      * message text, tool outputs, and configured documents as Kernel source descriptors.
@@ -124,6 +142,12 @@ const W2_NOTES: VariantRecord["notes"] = {
     process_memory:
         "crates/daemon/src/lib.rs answers the Context module's status request with process_memory (crates/daemon/src/process_memory.rs: RssAnon, RssFile, RssShmem, threads, glibc C-heap bytes, the arena limit, and the C-heap release counts)",
 };
+const W3_NOTES: VariantRecord["notes"] = {
+    statement_lifetime:
+        "crates/daemon/src/memory_capture.rs reads the extractor's `lifetime` of each proposal of a user source (lasting, current_work, status, unsettled), writes it into the fact's rationale, and approves a whole user statement only when its class outlives its task (lasting, unsettled, or no class); a current_work or status statement commits as a labeled memory for explicit search with no statement record",
+    background_cache_points:
+        "packages/pi-plugin/src/memory-capture-native.ts passes withoutConversationCacheMarkers as the capture call's onPayload, and crates/host-runtime/assets/pi-model_execution-extension.mjs applies the same function to a daemon-run call's messages before the provider request, so a background call keeps the cache marker of its system prompt and carries none on its user message; crates/host-runtime/src/model_execution/pi.rs starts every Pi model-execution run in one working directory under the state root, so the system prompt Pi ends with that directory is the same text on every run",
+};
 const W2_FUSED_SEARCH_PROGRESS =
     "crates/daemon/src/search_lifecycle_wire.rs answers search.lifecycle.status with progress {tip, checkpoint, lag_commits, rebuilds, blocked}; crates/daemon/src/projection_gates.rs judge_lifecycle_work admits the lifecycle owner's own catch-up and rebuild of a family past the freshness limit, and the fixture's admission records (crates/daemon/examples/search_admission_records/records.rs) set that limit to READER_LAG_COMMITS = 1024 commits";
 /**
@@ -143,7 +167,10 @@ const MEMORY_INJECTION_SOURCES = [
     "packages/opencode-plugin/src/shared/kernel-client/state.ts",
     "packages/pi-plugin/src/tools/eidnara-search.ts",
 ];
-/** Sources both builds read their shared behaviours from. */
+/** The Pi plugin's capture executor and the hook the daemon's child Pi loads: the two places a background call's payload passes. */
+const CAPTURE_EXECUTOR = "packages/pi-plugin/src/memory-capture-native.ts";
+const EXECUTION_HOOK = "crates/host-runtime/assets/pi-model_execution-extension.mjs";
+/** Sources every build reads its shared behaviours from. */
 const BEHAVIOUR_SOURCES = [
     "crates/daemon/src/memory_capture.rs",
     "crates/daemon/src/memory_capture/native.rs",
@@ -154,6 +181,9 @@ const BEHAVIOUR_SOURCES = [
     "crates/daemon/src/canonical_memory.rs",
     "crates/daemon/src/decay_render.rs",
     "crates/daemon/src/lib.rs",
+    CAPTURE_EXECUTOR,
+    EXECUTION_HOOK,
+    "crates/host-runtime/src/model_execution/pi.rs",
 ];
 /** The plugin files that render an `eidnara_search` result and resolve the contest a statement names. */
 const SEARCH_RENDER = "packages/opencode-plugin/src/tools/eidnara-search/render.ts";
@@ -221,6 +251,40 @@ const SHARED_PROBES = [
         "stripStreamedTags\\(event\\)",
     ),
 ];
+/** A build before the w3 changes: capture approves by quotation alone, and a background call keeps Pi's two cache markers. */
+const BEFORE_W3_PROBES = [
+    probe(
+        "statement_lifetime",
+        "crates/daemon/src/memory_capture.rs",
+        "Lifetime::outlives_its_task",
+        false,
+    ),
+    probe("background_cache_points", CAPTURE_EXECUTOR, "withoutConversationCacheMarkers", false),
+    probe("background_cache_points", EXECUTION_HOOK, "withoutConversationCacheMarkers", false),
+];
+/** The w3 build's readings of the same two behaviours. */
+const W3_PROBES = [
+    probe(
+        "statement_lifetime",
+        "crates/daemon/src/memory_capture.rs",
+        "memory\\.lifetime\\.is_none_or\\(Lifetime::outlives_its_task\\)",
+    ),
+    probe(
+        "statement_lifetime",
+        "crates/daemon/src/memory_capture.rs",
+        'rationale\\.insert\\("lifetime"\\.to_owned\\(\\), json!\\(lifetime\\)\\)',
+    ),
+    probe(
+        "background_cache_points",
+        CAPTURE_EXECUTOR,
+        "onPayload: withoutConversationCacheMarkers",
+    ),
+    probe(
+        "background_cache_points",
+        EXECUTION_HOOK,
+        "next\\.messages = withoutConversationCacheMarkers\\(next\\.messages\\)",
+    ),
+];
 const PROMPT = "crates/daemon/testdata/history_summarizer-system-prompt.txt";
 const OPEN_ITEMS_SECTION = "## Open items: waiting, constraints, decided, lifted";
 /** The c8 build's readings of the behaviours the w2 rework changed. */
@@ -252,6 +316,7 @@ const C8_PROBES = [
     probe("contested_statements", SEARCH_ROWS, "resolveContests", false),
     probe("keyed_open_items", "crates/daemon/src/decay_render.rs", "history_open_items", false),
     probe("process_memory", "crates/daemon/src/lib.rs", "pub mod process_memory", false),
+    ...BEFORE_W3_PROBES,
 ];
 /** The w2 build's readings of the same behaviours. */
 const W2_PROBES = [
@@ -306,6 +371,7 @@ const W2_PROBES = [
         "crates/daemon/src/process_memory.rs",
         "pub const C_HEAP_ARENAS: usize = 4",
     ),
+    ...BEFORE_W3_PROBES,
 ];
 const SHARED_BEHAVIOURS = {
     memory_injection: "switchable",
@@ -314,6 +380,8 @@ const SHARED_BEHAVIOURS = {
     failure_lines_captured: true,
     stream_tags_stripped: true,
     search_progress: false,
+    statement_lifetime: false,
+    background_cache_points: "system-and-message",
 } as const;
 const C8_BEHAVIOURS = {
     ...SHARED_BEHAVIOURS,
@@ -414,11 +482,11 @@ const LEGACY_FIXTURE_PROBES = [
 ];
 
 /**
- * What each daemon variant of the w2 build provides, with the Eidnara source that establishes it.
+ * What each daemon variant of the two w2 builds provides, with the Eidnara source that establishes it.
  * Only the fixture's `--harness-runtime` redirect extension points model calls at the proxy; the
  * production launcher refuses that closure.
  */
-export const DAEMON_VARIANTS: Record<DaemonVariant, VariantRecord> = {
+export const W2_VARIANTS: Record<DaemonVariant, VariantRecord> = {
     "direct-host-fixture": {
         search: "legacy-scan",
         embeddings: "deterministic-fixture",
@@ -523,6 +591,24 @@ export const DAEMON_VARIANTS: Record<DaemonVariant, VariantRecord> = {
 };
 
 /**
+ * What each daemon variant of the current build (`eval/w3-all`) provides: the w2 builds' table
+ * with the lifetime class on captured statements and the system prompt's cache point alone on a
+ * background call.
+ */
+export const DAEMON_VARIANTS = Object.fromEntries(
+    Object.entries(W2_VARIANTS).map(([variant, record]): [string, VariantRecord] => [
+        variant,
+        {
+            ...record,
+            statement_lifetime: true,
+            background_cache_points: "system",
+            probes: [...record.probes.filter((p) => !BEFORE_W3_PROBES.includes(p)), ...W3_PROBES],
+            notes: { ...record.notes, ...W3_NOTES },
+        },
+    ]),
+) as Record<DaemonVariant, VariantRecord>;
+
+/**
  * One Eidnara build the capability tables were read from: the audited commit, the integration
  * branch it heads, and the daemon variants read there. An arm runs on a build only through a
  * variant the build registers.
@@ -563,14 +649,19 @@ const C8_BUILD: AuditedBuild = {
  */
 export const AUDITED_BUILDS: readonly [AuditedBuild, ...AuditedBuild[]] = [
     {
+        commit: "a996cc46602659e6225fd850395e2e988048648e",
+        label: "eval/w3-all",
+        variants: DAEMON_VARIANTS,
+    },
+    {
         commit: "ae1b673b77651ce8a3b95892fe27f90d9287d869",
         label: "eval/w2b",
-        variants: DAEMON_VARIANTS,
+        variants: W2_VARIANTS,
     },
     {
         commit: "7901aae3962825be247cc30f2682b6aec39c7ea8",
         label: "eval/w2",
-        variants: DAEMON_VARIANTS,
+        variants: W2_VARIANTS,
     },
     C8_BUILD,
 ];

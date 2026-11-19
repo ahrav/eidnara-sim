@@ -155,7 +155,8 @@ the variants read there:
 
 | Build | Commit | Variants | Read for |
 |---|---|---|---|
-| `eval/w2b` (`AUDITED_EIDNARA`, the current build) | `ae1b673b7` | all three | the S rerun (W2S2, W2S2H): `main` `1bf1ae612` (which holds the merged heads of Eidnara #1209, #1212, #1213, #1214, and #1215) plus the open heads of #1220 and #1217 |
+| `eval/w3-all` (`AUDITED_EIDNARA`, the current build) | `a996cc466` | all three | the caching-on retest (W3S, W3SH, W3P): `main` `2fbeb6059` (which holds merged #1220) plus the open heads of Eidnara #1223, #1224, #1221, and #1222 |
+| `eval/w2b` | `ae1b673b7` | all three | the S rerun (W2S2, W2S2H) and the retest's reference arm: `main` `1bf1ae612` (which holds the merged heads of Eidnara #1209, #1212, #1213, #1214, and #1215) plus the open heads of #1220 and #1217 |
 | `eval/w2` | `7901aae39` | all three | the first focused S run (W2S, W2SH): `main` `da360026c` (which holds Eidnara #1210, #1211, and #1219) plus the open heads of #1209, #1212, #1213, #1214, #1215, #1217 |
 | `eval/c8` | `8e6265d2c` | `direct_host_fixture` (legacy route) | the c8 reference arm |
 
@@ -169,11 +170,12 @@ those variants' source files match the clone's working tree. The manifest
 records the bound build as `eidnara_build` (`commit`, `label`, and the
 capability values of each variant the arms run), a resume must bind the same
 build, and the arm's evidence is checked against that build's values. One
-sim revision therefore runs the reworked arms on the `eval/w2b` build and a
-reference arm on the `eval/c8` build, each run with its own `SIM_CONFIG`
-(`docs/run-command.md`, campaign `config`). The `eval/w2` entry keeps the
-first focused run's registrations bound to the commit they name; it shares
-the current build's table. The table below is the current build's:
+sim revision therefore runs the retest's arms on the `eval/w3-all` build and
+a reference arm on the `eval/w2b` build, each run with its own `SIM_CONFIG`
+(`docs/run-command.md`, campaign `config`). The `eval/w2b` and `eval/w2`
+entries keep the earlier registrations bound to the commits they name; the
+two share one table (`W2_VARIANTS`). The table below holds for the current
+build and for both w2 builds:
 
 | Variant | Search route | Embeddings | Memory reviewer | Side calls | Memory injection | Source capture |
 |---|---|---|---|---|---|---|
@@ -182,7 +184,7 @@ the current build's table. The table below is the current build's:
 | production `eidnara-host` | fused | `gte-modernbert-base-f32` | yes | straight to Bedrock | switchable | on the consent key |
 
 Every variant also records the behaviours the arms run on, each with its
-own probes. Both builds share four: captured whole user statements delivered
+own probes. Every build shares four: captured whole user statements delivered
 in later sessions' `<project-memory>` (`user_statement_delivery`, accepted
 `stm_*` decisions in the `user-statements` domain), small tool outputs whole
 in the history summarizer's digest (`whole_small_tool_outputs`), error lines
@@ -198,6 +200,14 @@ The c8 build and the two w2 builds differ in six:
 | `contested_statements` | `false` | `true`: a statement an observation contradicts renders as `<statement> (stated <date>; contested <date> by <memory>: "<excerpt>")` in `<project-memory>` and with a `Contested by <memory>: "<excerpt>"` line in an `eidnara_search` result |
 | `process_memory` | `false` | `true`: the Context module's `status` answer carries `process_memory` (anonymous, file, and shared resident bytes, threads, glibc C-heap bytes, the arena limit of 4, and the C-heap release counts) |
 | `search_progress` | not registered (no fused variant) | `true` on the fused variants: `search.lifecycle.status` answers with `progress` (`tip`, `checkpoint`, `lag_commits`, `rebuilds`, `blocked`); `false` on the legacy fixture, which starts no lifecycle owner |
+
+The current build differs from the two w2 builds in two more, on every
+variant:
+
+| Capability | `eval/w2`, `eval/w2b` (and `eval/c8`) | `eval/w3-all` |
+|---|---|---|
+| `statement_lifetime` | `false`: a whole user statement is approved by its quotation alone | `true`: the extractor classes each proposal of a user source as `lasting`, `current_work`, `status`, or `unsettled`, capture writes the class into the fact's rationale as `lifetime`, and a whole user statement is approved, and so served in `<project-memory>`, when its class is `lasting` or `unsettled` or it carries none; a `current_work` or `status` statement is stored labeled for explicit search (Eidnara #1221). #1222, in the same build, reads the sentences of a paragraph written in lowercase as sentences |
+| `background_cache_points` | `system-and-message`: a background call (memory capture, a daemon-run call) carries Pi's two cache points, after the system prompt and at the end of its one user message | `system`: the capture executor (`packages/pi-plugin/src/memory-capture-native.ts`) and the bundled model-execution hook (`crates/host-runtime/assets/pi-model_execution-extension.mjs`) remove cache markers from user messages, so a background call writes a cache entry for its system prompt alone (Eidnara #1224). #1223, in the same build, starts every Pi model-execution run in one working directory, so the system prompt Pi ends with that directory is the same text on every daemon-run call |
 
 The fused fixture's projection is served to readers while it trails the
 kernel tip by at most `FIXTURE_READER_LAG_COMMITS` (1,024) commits, the
@@ -307,6 +317,18 @@ wrote; #1212's and #1213's final heads leave quoted and code text out of a
 widened statement and drop a contest whose observation the same commit
 retires. Every capability value stands.
 
+At `a996cc466` the verdict against `eval/w3-all` is `unchanged`, and
+`ae1b673b7` stays `unchanged` against `eval/w2b`. From `ae1b673b7` to
+`a996cc466` every probe of the w2 table holds except the three that read
+the two capabilities above as absent, and five audited sources change:
+`memory_capture.rs` and `memory_capture/native.rs` under
+`crates/daemon/src/` (the lifetime class of #1221 and the lowercase
+sentence rule of #1222),
+`crates/host-runtime/src/model_execution/pi.rs` (the shared working
+directory of #1223), and the capture executor and the model-execution
+hook, which #1224 changes and which this revision adds to the audited
+sources of every build. The other capability values stand.
+
 ## Prompt caching
 
 A qualification registers `prompt_caching: "on"` or `"off"` for all its
@@ -337,25 +359,32 @@ families and to show it. Every caller that runs in the arm's Pi reads
 that definition. The daemon's own model calls run in a child `pi` from the
 daemon's Pi closure, with a private home and Pi's built-in model list
 (`crates/host-runtime/src/model_execution/pi.rs`), where the arm's
-definition stays out of reach; for those the proxy places the same two
-cache points on a body that carries none (`daemonCachePoints`), which is
-what that Pi's client places for a model it recognises, and the call
-record names how many it placed as `cache_points_placed`:
+definition stays out of reach; for those the proxy places cache points on
+a body that carries none (`daemonCachePoints`): the points that Pi's
+request carries for a model it recognises on the build the run bound
+(`background_cache_points`). Pi's client places the same two as for every
+caller; on a `system` build the bundled hook removes the user message's
+before the request leaves, so the proxy places the system prompt's alone.
+The call record names how many the proxy placed as `cache_points_placed`:
 
 | Caller | Path to the model | Cache points under `on` |
 |---|---|---|
 | `agent` | Pi's agent loop | system, last user or tool-result message |
 | `native_compaction` | Pi's compaction, through the same client | system, last user message on Pi 0.80.2; none on Pi 0.87, which sends its compaction summary with cache retention `none` |
-| `memory_capture` | the plugin's `streamSimple` call with the model from Pi's registry (`packages/pi-plugin/src/memory-capture-native.ts`) | system, the one user message |
-| `history_summarizer`, `context_researcher`, `memory_classifier` | the daemon's model-execution backend: a child `pi --print --mode json --no-session --no-tools` from the daemon's Pi closure, with its own home and a provider extension that sets the proxy's address | system, last user message, placed by the proxy |
+| `memory_capture` | the plugin's `streamSimple` call with the model from Pi's registry (`packages/pi-plugin/src/memory-capture-native.ts`) | system, the one user message; system alone on a `system` build, whose executor removes the message's marker |
+| `history_summarizer`, `context_researcher`, `memory_classifier` | the daemon's model-execution backend: a child `pi --print --mode json --no-session --no-tools` from the daemon's Pi closure, with its own home and a provider extension that sets the proxy's address | system, last user message, placed by the proxy; system alone on a `system` build |
 | `user-sim`, `judge` | the harness, straight to the proxy | none; their bodies are the same under both values, and the report prices them at the run's table |
 
 The host arm and the Eidnara arms therefore run under one policy, set by
 Pi. Each caller has a system prompt of its own, and the agent has the tool
 definitions, so a prefix is shared among the calls of one component and
-with no other. A capture or summarizer call writes its own user message
-to the cache and reads the system prompt an earlier call of the same
-component wrote, in any session of the arm.
+with no other. A capture or summarizer call reads the system prompt an
+earlier call of the same component wrote, in any session of the arm, when
+the two prompts are the same text; on a `system-and-message` build it also
+writes its own user message to the cache, an entry no later call reads.
+Pi ends a system prompt with the working directory, and before Eidnara
+#1223 each daemon-run call had a directory of its own, so on the w2 builds
+a summarizer call reads nothing and writes its whole prompt.
 
 OpenCode 1.18.22 places its own cache points for a model whose id holds
 `anthropic` or `claude`: one after the system prompt and one on each of
@@ -428,9 +457,18 @@ complete evidence only when the two agree:
   `prompt_caching` condition, and `prompt_caching` under `observed`: per
   component the arm's hosts call from, the stored requests, how many of
   them carry a cache point, how many of those the proxy placed, and the
-  input, cache-read, and cache-write tokens. Under `on`, every stored request of the agent and of the
+  input, cache-read, and cache-write tokens, and, counted from the stored
+  bodies at the arm's end, how many carry a cache point in a message
+  (`with_message_points`). Under `on`, every stored request of the agent and of the
   Eidnara components carries a cache point; one without, or one with a
-  part `requests.jsonl` lacks, is a mismatch. Pi's own compaction is
+  part `requests.jsonl` lacks, is a mismatch. On a Pi arm the requests an
+  Eidnara component sent with its own cache points also show the bound
+  build's `background_cache_points`: on a `system-and-message` build each
+  carries one in its user message, and on a `system` build none does; a
+  request of the other kind is a mismatch at the arm's end. Those are the
+  capture calls, which run in the arm's Pi. A component whose points the
+  proxy placed follows the declared layout by construction, so the check
+  leaves it out and the build's source probes stand for it. Pi's own compaction is
   recorded and held to nothing, since its cache points depend on the Pi
   version. The run applies the same rule at every `session_end` to the
   requests counted as calls started (`call_started` names each body's
@@ -569,6 +607,10 @@ complete evidence only when the two agree:
     `decisions_approval_refused`, and on a `shared` build when they hold it.
     The count of statements on the largest lineage and the counter show
     whether a run passed the old ceiling of 64 statements or met a refusal.
+  - `statements.lifetimes` counts the committed captured facts (`mem_*`
+    decisions) by the `lifetime` class their rationale names. A fact with a
+    class is a mismatch on a build without `statement_lifetime`; a build
+    with it may show none, since the extractor may class no proposal.
   - `delivery.contested_blocks` counts agent requests whose
     `<project-memory>` block renders a contested statement, and
     `search.contested` the `eidnara_search` results with a `Contested by`

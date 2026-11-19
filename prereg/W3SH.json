@@ -1,0 +1,99 @@
+{
+    "schema": "sim-qualification/v1",
+    "id": "W3SH",
+    "revision": 1,
+    "frozen": true,
+    "tier": "S",
+    "tier_preregistration_sha256": "2a9773e79ed87853d02a758ae1cadf817871fefd98e3577de2dada71e0858d5e",
+    "corpus": "held-out",
+    "seeds": [
+        613,
+        614
+    ],
+    "hosts": [
+        "pi"
+    ],
+    "arms": {
+        "run": [
+            "host",
+            "eidnara",
+            "eidnara-hybrid"
+        ],
+        "order_by_seed": [
+            [
+                "host",
+                "eidnara-hybrid",
+                "eidnara"
+            ],
+            [
+                "eidnara",
+                "eidnara-hybrid",
+                "host"
+            ]
+        ]
+    },
+    "contrasts": [
+        [
+            "eidnara",
+            "host"
+        ],
+        [
+            "eidnara-hybrid",
+            "eidnara"
+        ],
+        [
+            "eidnara-hybrid",
+            "host"
+        ]
+    ],
+    "controls": [
+        "wrong-project-lookup"
+    ],
+    "no_source_control": "host",
+    "prompt_caching": "on",
+    "builds": {
+        "current": {
+            "label": "eval/w3-all",
+            "commit": "a996cc46602659e6225fd850395e2e988048648e"
+        },
+        "reference": {
+            "label": "eval/w2b",
+            "commit": "ae1b673b77651ce8a3b95892fe27f90d9287d869"
+        },
+        "contrasts": [
+            [
+                "eidnara",
+                "eidnara"
+            ],
+            [
+                "eidnara-hybrid",
+                "eidnara"
+            ]
+        ]
+    },
+    "analysis": {
+        "unit": "run",
+        "reference": {
+            "campaign": "w2-s2",
+            "level": "seed"
+        },
+        "harm_probes": [
+            "P2",
+            "P5",
+            "P9",
+            "P10",
+            "P11",
+            "P8-twin"
+        ],
+        "budget_usd": {
+            "low": 1500,
+            "high": 4000
+        },
+        "cost_per_arm_seed_usd": {
+            "host": 250,
+            "eidnara": 330,
+            "eidnara-hybrid": 330
+        }
+    },
+    "claim": "descriptive"
+}

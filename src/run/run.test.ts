@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
-import { DAEMON_VARIANTS } from "../hosts/profiles";
+import { DAEMON_VARIANTS, W2_VARIANTS } from "../hosts/profiles";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import { preregistrationHash } from "../prereg/validate";
 import { Rng } from "../rng";
@@ -20,6 +20,7 @@ import { GENERATOR_VERSION, type Scenario } from "../scenario/compile";
 import { type FaultEpisode, SEAMS, scheduleFaults } from "../scenario/faults";
 import { corpusInputsSha256, loadPrereg } from "../scenario/inputs";
 import { withUserTurns } from "./callviews";
+import { backgroundCachePointsOf } from "./capabilities";
 import type { Entry } from "./journal";
 import type { Preflight } from "./preflight";
 import {
@@ -1047,6 +1048,13 @@ describe("run inputs", () => {
             process_memory: false,
         });
         expect(bound?.capabilities["direct-host-fixture"]).not.toHaveProperty("probes");
+        // The proxy reads the layout of a daemon-run call's cache points from this record.
+        expect(bound?.capabilities["direct-host-fixture"]?.background_cache_points).toBe("system");
+        expect(backgroundCachePointsOf(bound)).toBe("system");
+        const earlier = [{ commit: head, label: "earlier", variants: W2_VARIANTS }];
+        expect(backgroundCachePointsOf(bindEidnaraBuild(repo, ["host", "eidnara"], earlier))).toBe(
+            "system-and-message",
+        );
         expect(bindEidnaraBuild(repo, ["host"], builds)).toBeNull();
         // A variant on the bound build that lacks what the arm declares refuses the run.
         const gapped = [

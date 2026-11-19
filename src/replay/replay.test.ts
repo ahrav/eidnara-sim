@@ -462,6 +462,36 @@ describe("replayProbe on a fixture run", () => {
         }
     });
 
+    test("a replayed turn takes its background cache-point layout from the build the source run bound", async () => {
+        const layouts = async (over: Record<string, unknown>) => {
+            const f = await sourceRun(over);
+            const seen: string[] = [];
+            const upstream = recordedModel(f.answers);
+            await replay(f, "q-a", "a", {
+                repeats: 1,
+                turn: (spec: Parameters<typeof runTurn>[0]) => {
+                    seen.push(spec.backgroundCachePoints);
+                    return runTurn(spec, {
+                        upstream,
+                        hostFactory: (ctx) => new TranscriptHost(ctx) as unknown as SimHost,
+                    });
+                },
+            });
+            return seen;
+        };
+        const bound = (layout: string) => ({
+            commit: "0".repeat(40),
+            label: "test",
+            capabilities: { "direct-host-fixture": { background_cache_points: layout } },
+        });
+        expect(await layouts({ eidnara_build: bound("system") })).toEqual(["system"]);
+        expect(await layouts({ eidnara_build: bound("system-and-message") })).toEqual([
+            "system-and-message",
+        ]);
+        // A source manifest that names no layout reads as Pi's own two points.
+        expect(await layouts({})).toEqual(["system-and-message"]);
+    });
+
     test("variant b puts the ground truth into the forwarded request and flips the failing item", async () => {
         const f = await sourceRun();
         const { results, out, upstream } = await replay(f, "q-b", "b");
