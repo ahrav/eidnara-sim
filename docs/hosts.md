@@ -155,7 +155,7 @@ the variants read there:
 
 | Build | Commit | Variants | Read for |
 |---|---|---|---|
-| `eval/w3-all` (`AUDITED_EIDNARA`, the current build) | `a996cc466` | all three | the caching-on retest (W3S, W3SH, W3P): `main` `2fbeb6059` (which holds merged #1220) plus the open heads of Eidnara #1223, #1224, #1221, and #1222 |
+| `eval/w3-all` (`AUDITED_EIDNARA`, the current build) | `a996cc466` | all three | the caching-on retest (W3S, W3SH, W3P): `main` `2fbeb6059` (which holds #1220 as merged, three capture commits past the head in `eval/w2b`) plus the open heads of Eidnara #1223, #1224, #1221, and #1222 |
 | `eval/w2b` | `ae1b673b7` | all three | the S rerun (W2S2, W2S2H) and the retest's reference arm: `main` `1bf1ae612` (which holds the merged heads of Eidnara #1209, #1212, #1213, #1214, and #1215) plus the open heads of #1220 and #1217 |
 | `eval/w2` | `7901aae39` | all three | the first focused S run (W2S, W2SH): `main` `da360026c` (which holds Eidnara #1210, #1211, and #1219) plus the open heads of #1209, #1212, #1213, #1214, #1215, #1217 |
 | `eval/c8` | `8e6265d2c` | `direct_host_fixture` (legacy route) | the c8 reference arm |
@@ -322,8 +322,11 @@ At `a996cc466` the verdict against `eval/w3-all` is `unchanged`, and
 `a996cc466` every probe of the w2 table holds except the three that read
 the two capabilities above as absent, and five audited sources change:
 `memory_capture.rs` and `memory_capture/native.rs` under
-`crates/daemon/src/` (the lifetime class of #1221 and the lowercase
-sentence rule of #1222),
+`crates/daemon/src/` (the lifetime class of #1221, the lowercase
+sentence rule of #1222, and the last three commits of #1220, which main
+merged after `eval/w2b` was cut: `c1e1f9d5b`, `e85d444d7`, and `d489a43a8`
+join quotations that overlap, give a quotation that occurs twice one
+decision, and check a joined run against the size limit),
 `crates/host-runtime/src/model_execution/pi.rs` (the shared working
 directory of #1223), and the capture executor and the model-execution
 hook, which #1224 changes and which this revision adds to the audited
