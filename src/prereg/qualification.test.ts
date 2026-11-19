@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { AUDITED_BUILDS, auditedBuild, DAEMON_VARIANTS } from "../hosts/profiles";
+import { auditedBuild, DAEMON_VARIANTS } from "../hosts/profiles";
 import { loadPrereg, loadQualification } from "../scenario/inputs";
 import {
     buildRefusal,
@@ -418,8 +418,8 @@ test("W2S2 and W2S2H rerun the focused run's seeds on the current build and add 
         expect(added).toHaveLength(1);
         expect(added.filter((s) => used.includes(s))).toEqual([]);
         expect(rerun.builds?.current).toEqual({
-            label: AUDITED_BUILDS[0].label,
-            commit: AUDITED_BUILDS[0].commit,
+            label: "eval/w2b",
+            commit: auditedBuild("eval/w2b")?.commit as string,
         });
         expect(rerun.builds?.reference).toEqual(first.builds?.reference);
         expect(rerun.builds?.contrasts).toEqual(first.builds?.contrasts);
@@ -558,4 +558,70 @@ test("PCH runs host and eidnara on C8H's held-out seed 605 with prompt caching o
     // The split and the controls decide a scenario's items, so seed 605 holds C8H's.
     expect([pch.tier, pch.corpus, pch.controls]).toEqual([c8h.tier, c8h.corpus, c8h.controls]);
     expect(pch.no_source_control).toBe("host");
+});
+
+test("W3S and W3SH retest the current build against the w2b build with prompt caching on", () => {
+    const S = loadPrereg("S");
+    const listed = (ids: string[]) => ids.flatMap((id) => loadQualification(id).seeds);
+    const w3s = loadQualification("W3S");
+    const w3sh = loadQualification("W3SH");
+    for (const [retest, earlier] of [
+        [w3s, loadQualification("W2S2")],
+        [w3sh, loadQualification("W2S2H")],
+    ] as const) {
+        expect(validateQualification(retest, S)).toEqual([]);
+        expect(promptCachingOf(retest)).toBe("on");
+        expect(retest.corpus).toBe(earlier.corpus);
+        expect(retest.arms.run).toEqual(earlier.arms.run);
+        expect(retest.contrasts).toEqual(earlier.contrasts);
+        expect(retest.controls).toEqual(earlier.controls);
+        expect(retest.no_source_control).toBe(earlier.no_source_control);
+        expect(retest.analysis?.harm_probes).toEqual(earlier.analysis?.harm_probes);
+        expect(retest.arms.order_by_seed).toHaveLength(retest.seeds.length);
+        // The current build is the treatment, and the build the earlier rerun treated is the reference.
+        expect(retest.builds?.current).toEqual({
+            label: "eval/w3-all",
+            commit: auditedBuild("eval/w3-all")?.commit as string,
+        });
+        expect(retest.builds?.reference).toEqual(earlier.builds?.current);
+        expect(retest.builds?.contrasts).toEqual(earlier.builds?.contrasts);
+        expect(referenceBuildArms(retest)).toEqual(["eidnara"]);
+        const { current, reference } = retest.builds as NonNullable<typeof retest.builds>;
+        expect(buildRefusal(retest, current, ["host", "eidnara", "eidnara-hybrid"])).toBeNull();
+        expect(buildRefusal(retest, reference, ["eidnara"])).toBeNull();
+        expect(buildRefusal(retest, reference, ["eidnara-hybrid"])).not.toBeNull();
+        // A seed the earlier rerun ran keeps its arm order.
+        for (const [i, seed] of retest.seeds.entries()) {
+            const at = earlier.seeds.indexOf(seed);
+            if (at >= 0) {
+                expect(retest.arms.order_by_seed[i]).toEqual(earlier.arms.order_by_seed[at]);
+            }
+        }
+    }
+    expect(w3s.fresh_seeds).toBe(true);
+    expect(w3s.seeds).toEqual([104, 106, 107]);
+    expect(w3sh.seeds).toEqual([613, 614]);
+    // Each registration adds one seed that no earlier registration lists.
+    const earlier = listed(["Q", "H", "C8", "C8H", "C8X", "C8XH", "W2S", "W2SH", "W2S2", "W2S2H"]);
+    const used = [...S.seeds, ...earlier, ...(loadQualification("Q").holdout?.seeds ?? [])];
+    expect(w3s.seeds.filter((s) => !used.includes(s))).toEqual([107]);
+    expect(w3sh.seeds.filter((s) => !used.includes(s))).toEqual([614]);
+});
+
+test("W3P runs the retest's three arms on C8H's held-out seed 605 with prompt caching on", () => {
+    const w3p = loadQualification("W3P");
+    const pch = loadQualification("PCH");
+    const w3s = loadQualification("W3S");
+    expect(validateQualification(w3p, loadPrereg("M"))).toEqual([]);
+    expect(promptCachingOf(w3p)).toBe("on");
+    // The pilot's scenario: PCH's tier, split, seed, and control decide its items.
+    expect([w3p.tier, w3p.corpus, w3p.seeds, w3p.controls]).toEqual([
+        pch.tier,
+        pch.corpus,
+        pch.seeds,
+        pch.controls,
+    ]);
+    expect(w3p.arms.run).toEqual(w3s.arms.run);
+    expect(w3p.builds).toEqual(w3s.builds);
+    expect(w3p.no_source_control).toBe("host");
 });

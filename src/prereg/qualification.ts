@@ -43,6 +43,9 @@ export const QUALIFICATIONS = [
     "W2S2",
     "W2S2H",
     "PCH",
+    "W3S",
+    "W3SH",
+    "W3P",
 ] as const;
 /**
  * Control items a qualification adds to its scenarios. `wrong-project-lookup` asks each P8 lookup

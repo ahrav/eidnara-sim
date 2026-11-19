@@ -566,6 +566,28 @@ differs with the registration:
 |---|---|---|---|---|---|
 | PCH | 605 | `57815a43` | 1983 | 0.3021 | 0.5913 |
 
+Qualifications W3S (`prereg/W3S.json`, revision 1, `f1d08f08`, diagnosed
+split, fresh seeds) and W3SH (`prereg/W3SH.json`, revision 1, `1d7d01b8`,
+held-out split) retest the `eval/w3-all` build with prompt caching on.
+Seeds 104, 106, and 613 are W2S2's and W2S2H's: their events, facts, and
+probes equal the S rerun's, and their hashes differ with the registration.
+Seed 107 is the lowest diagnosed S seed that no registration lists and no
+run used. Seed 614 is the lowest held-out seed that no registration lists,
+no run used, and tier S places: H lists 601 to 609 and 611, W2SH and W2S2H
+list 610 and 613, and 612 refuses as above. The rule read no outcome data,
+and no run of seed 107 or 614 existed when it was applied. W3P
+(`prereg/W3P.json`, revision 1, `c982f5d4`) holds PCH's 1,983 events, facts,
+and probes for seed 605.
+
+| Registration | Seed | `scenario_hash` | Events | Largest BM25 ratio | Largest cosine |
+|---|---|---|---|---|---|
+| W3S | 104 | `af0ff4ca` | 590 | 0.2739 | 0.5181 |
+| W3S | 106 | `1c6d5bae` | 747 | 0.2680 | 0.4964 |
+| W3S | 107 | `04f6d8d9` | 711 | 0.2751 | 0.5014 |
+| W3SH | 613 | `75dc520c` | 323 | 0.3246 | 0.5368 |
+| W3SH | 614 | `465912ca` | 1182 | 0.2982 | 0.5426 |
+| W3P | 605 | `b5b6a534` | 1983 | 0.3021 | 0.5913 |
+
 ## Known limits
 
 - A revised decision (P3) asks its task again in the workspace the agent
