@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { AUDITED_BUILDS, auditedBuild, DAEMON_VARIANTS } from "../hosts/profiles";
+import { auditedBuild, DAEMON_VARIANTS } from "../hosts/profiles";
 import { loadPrereg, loadQualification } from "../scenario/inputs";
 import {
     buildRefusal,
@@ -580,8 +580,8 @@ test("W3S and W3SH retest the current build against the w2b build with prompt ca
         expect(retest.arms.order_by_seed).toHaveLength(retest.seeds.length);
         // The current build is the treatment, and the build the earlier rerun treated is the reference.
         expect(retest.builds?.current).toEqual({
-            label: AUDITED_BUILDS[0].label,
-            commit: AUDITED_BUILDS[0].commit,
+            label: "eval/w3-all",
+            commit: auditedBuild("eval/w3-all")?.commit as string,
         });
         expect(retest.builds?.reference).toEqual(earlier.builds?.current);
         expect(retest.builds?.contrasts).toEqual(earlier.builds?.contrasts);

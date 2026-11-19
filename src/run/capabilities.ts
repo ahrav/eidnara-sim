@@ -103,10 +103,13 @@ export interface CachingCount {
     placed_by_proxy: number;
     /**
      * Of the calls that carry cache points of their own (the proxy placed none), those carrying
-     * one in a message; counted from the stored bodies at the arm's end, so absent on a count
-     * taken as calls start and on observations recorded before it was read.
+     * one in a message, and those carrying one after the system prompt. Both are counted from the
+     * stored bodies at the arm's end, so they are absent on observations recorded before they
+     * were read, and a count that also took calls as they started (a resume's session-end count)
+     * holds them only for the calls the log held. The layout check reads the arm-end tally alone.
      */
     with_message_points?: number;
+    with_system_points?: number;
     /** The provider's prompt usage summed over the component's calls. */
     input_tokens: number;
     cache_read_tokens: number;
@@ -192,7 +195,7 @@ export function backgroundCachePointsOf(build: unknown): BackgroundCachePoints {
 /** Builds an arm's `CachingObservation` from its call records; each stored part is read once. */
 export class CachingTally {
     private readonly components: Record<string, CachingCount> = {};
-    private readonly points = new Map<string, { points: number; message: boolean } | null>();
+    private readonly points = new Map<string, { points: number; field: string } | null>();
 
     constructor(private readonly parts: PartLookup) {}
 
@@ -223,16 +226,19 @@ export class CachingTally {
             call.cache_points_placed,
         );
         count.with_message_points ??= 0;
-        const own = whole && !((call.cache_points_placed ?? 0) > 0);
-        if (own && points.some((n) => n?.message && n.points > 0)) count.with_message_points++;
+        count.with_system_points ??= 0;
+        if (!whole || (call.cache_points_placed ?? 0) > 0) return;
+        const marked = (field: string) => points.some((n) => n?.field === field && n.points > 0);
+        if (marked("messages")) count.with_message_points++;
+        if (marked("system")) count.with_system_points++;
     }
 
-    /** A stored part's cache points and whether it is a message, or null for a part the log lacks. */
-    private pointsOf(id: string): { points: number; message: boolean } | null {
+    /** A stored part's cache points and its field, or null for a part the log lacks. */
+    private pointsOf(id: string): { points: number; field: string } | null {
         let n = this.points.get(id);
         if (n === undefined) {
             const part = this.parts.get(id);
-            n = part ? { points: cachePointsOf(part), message: part.field === "messages" } : null;
+            n = part ? { points: cachePointsOf(part), field: part.field } : null;
             this.points.set(id, n);
         }
         return n;
@@ -273,12 +279,13 @@ export function cachingMismatches(
 }
 
 /**
- * A background call sends one user message. The requests the host sent with their own cache
- * points show the build's layout: with `system-and-message` each carries one on that message, and
- * with `system` none does. On a Pi arm those are the capture calls, which run in the arm's Pi. A
- * request whose points the proxy placed follows the declared layout by construction, so the
- * counts leave each such request out. `background` is given for a Pi arm; a count without
- * `with_message_points` was taken before the bodies were read.
+ * A background call sends a system prompt and one user message. The requests the host sent with
+ * their own cache points show the build's layout: each carries one after the system prompt, and
+ * one on the message with `system-and-message` and none there with `system`. On a Pi arm those
+ * are the capture calls, which run in the arm's Pi. A request whose points the proxy placed
+ * follows the declared layout by construction, so the counts leave each such request out.
+ * `background` is given for a Pi arm and for the arm-end tally, which holds both counts; the
+ * session-end check passes none.
  */
 function backgroundMismatches(
     o: CachingObservation,
@@ -288,9 +295,16 @@ function backgroundMismatches(
     const out: string[] = [];
     for (const component of EIDNARA_COMPONENTS) {
         const c = o.components[component];
-        if (!c || c.with_message_points === undefined) continue;
+        if (!c || c.with_message_points === undefined || c.with_system_points === undefined) {
+            continue;
+        }
         const own = c.with_cache_points - c.placed_by_proxy;
         const bare = own - c.with_message_points;
+        if (own > c.with_system_points) {
+            out.push(
+                `${own - c.with_system_points} of ${own} ${component} requests with cache points of their own carry none after the system prompt, where ${background.label} and every other build place one on a background call`,
+            );
+        }
         if (background.layout === "system" && c.with_message_points > 0) {
             out.push(
                 `${c.with_message_points} of ${own} ${component} requests with cache points of their own carry one on a message, but ${background.label} declares the system prompt's cache point alone on a background call`,
@@ -985,7 +999,8 @@ export function readStatements(kernelPath: string): StatementObservation {
                  group by o.source_id`,
             )
             .all() as { source: string; n: number }[];
-        const lifetimes: Record<string, number> = {};
+        // A class name is a key read from the store, so the tally has no inherited keys.
+        const lifetimes: Record<string, number> = Object.create(null);
         const facts = db
             .query(
                 `select decision_payload as p from decisions
@@ -1002,7 +1017,7 @@ export function readStatements(kernelPath: string): StatementObservation {
             sessions: [...sessions].sort(),
             unattributed,
             error: null,
-            lifetimes,
+            lifetimes: { ...lifetimes },
             lineages: {
                 count: lineages.length,
                 largest: Math.max(0, ...lineages.map((l) => l.n)),
@@ -1023,7 +1038,10 @@ export function readStatements(kernelPath: string): StatementObservation {
 function rationaleOf(payload: Uint8Array | string): Record<string, unknown> | null {
     const text = typeof payload === "string" ? payload : new TextDecoder().decode(payload);
     try {
-        return JSON.parse(String(JSON.parse(text)?.rationale ?? "null"));
+        const rationale = JSON.parse(String(JSON.parse(text)?.rationale ?? "null"));
+        const named =
+            rationale !== null && typeof rationale === "object" && !Array.isArray(rationale);
+        return named ? rationale : null;
     } catch {
         return null;
     }

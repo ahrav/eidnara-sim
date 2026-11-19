@@ -306,9 +306,11 @@ test("delivery evidence must match the statements the final store holds", () => 
                 rationale: JSON.stringify({ session: "sim-s-0001", lifetime }),
             }),
         );
-    db.run("insert into decisions values ('mem_f', ?, 1), ('mem_g', ?, 99)", [
+    db.run("insert into decisions values ('mem_f', ?, 1), ('mem_g', ?, 99), ('mem_h', ?, 1)", [
         classed("current_work"),
         classed("lasting"),
+        // A rationale that is JSON and no object names nothing.
+        new TextEncoder().encode(JSON.stringify({ summary: "x", rationale: "7" })),
     ]);
     // Two statements quote one user message and a third quotes another; stm_e's commit is absent.
     const message = (digit: string) => `memory_capture_statement:${digit.repeat(32)}`;
@@ -955,6 +957,7 @@ test("an arm's caching observation counts requests with cache points and the cac
                 with_cache_points: 2,
                 placed_by_proxy: 0,
                 with_message_points: 2,
+                with_system_points: 1,
                 input_tokens: 12,
                 cache_read_tokens: 300,
                 cache_write_tokens: 30,
@@ -964,6 +967,7 @@ test("an arm's caching observation counts requests with cache points and the cac
                 with_cache_points: 0,
                 placed_by_proxy: 0,
                 with_message_points: 0,
+                with_system_points: 0,
                 input_tokens: 4,
                 cache_read_tokens: 100,
                 cache_write_tokens: 10,
@@ -973,6 +977,7 @@ test("an arm's caching observation counts requests with cache points and the cac
                 with_cache_points: 0,
                 placed_by_proxy: 0,
                 with_message_points: 0,
+                with_system_points: 0,
                 input_tokens: 4,
                 cache_read_tokens: 100,
                 cache_write_tokens: 10,
@@ -1125,7 +1130,7 @@ test("on a build whose hook keeps a background call's cache writes to the system
 
     // The layout is the bound build's: every variant names one, and a manifest that names none
     // reads as Pi's own two points.
-    const w3 = AUDITED_BUILDS[0];
+    const w3 = auditedBuild("eval/w3-all") as AuditedBuild;
     const w2b = auditedBuild("eval/w2b") as AuditedBuild;
     const bound = (b: AuditedBuild) => ({
         capabilities: Object.fromEntries(
@@ -1145,6 +1150,7 @@ test("on a build whose hook keeps a background call's cache writes to the system
 
 test("a Pi arm's background requests show the cache-point layout its build declares", () => {
     const parts = new Map<string, RequestPart>([
+        ["sys", { field: "system", value: [{ text: "s" }] }],
         ["sys+", { field: "system", value: [{ text: "s" }, POINT] }],
         ["u1", { field: "messages", value: { role: "user", content: [{ text: "a" }] } }],
         ["u1+", { field: "messages", value: { role: "user", content: [{ text: "a" }, POINT] } }],
@@ -1195,6 +1201,7 @@ test("a Pi arm's background requests show the cache-point layout its build decla
         with_cache_points: 2,
         placed_by_proxy: 2,
         with_message_points: 0,
+        with_system_points: 0,
     });
     expect(cachingMismatches("on", placed, system)).toEqual([]);
     expect(cachingMismatches("on", observe(PAIRED, [[ALONE, 1]]), both)).toEqual([]);
@@ -1215,18 +1222,29 @@ test("a Pi arm's background requests show the cache-point layout its build decla
     expect(cachingMismatches("on", mixedBoth, both)).toEqual([
         "1 of 2 history_summarizer requests with cache points of their own carry one on the system prompt alone, but eval/w2b declares one on the user message of a background call too",
     ]);
+    // Both layouts place a point after the system prompt, so a request marked elsewhere alone
+    // contradicts either one.
+    const MESSAGE_ONLY = ["sys", "u1+"];
+    expect(cachingMismatches("on", observe(MESSAGE_ONLY, [[PAIRED, 0]]), both)).toEqual([
+        "1 of 1 memory_capture requests with cache points of their own carry none after the system prompt, where eval/w2b and every other build place one on a background call",
+    ]);
+    expect(cachingMismatches("on", observe(MESSAGE_ONLY, [[ALONE, 0]]), system)).toEqual([
+        "1 of 1 memory_capture requests with cache points of their own carry none after the system prompt, where eval/w3-all and every other build place one on a background call",
+        "1 of 1 memory_capture requests with cache points of their own carry one on a message, but eval/w3-all declares the system prompt's cache point alone on a background call",
+    ]);
     // Another host, an arm without a daemon, and a count taken as calls start are held to nothing.
     expect(cachingMismatches("on", paired)).toEqual([]);
     expect(cachingMismatches("off", paired, system)).toEqual([]);
     const live: Record<string, CachingCount> = {};
     noteRequest(live, "memory_capture", 2);
     expect(cachingMismatches("on", { components: live }, system)).toEqual([]);
+    expect(cachingMismatches("on", { components: live }, both)).toEqual([]);
     // The record reads the layout from the arm's variant on the bound build, for a Pi arm.
     const root = captured(armRoot([PI_ON, PASS]));
     daemonLog(root, []);
     const arm = observeArm("eidnara", "pi", root, { agent: 2, memory_capture: 1 });
     arm.prompt_caching = paired;
-    const w3 = AUDITED_BUILDS[0];
+    const w3 = auditedBuild("eval/w3-all") as AuditedBuild;
     const w2b = auditedBuild("eval/w2b") as AuditedBuild;
     expect(capabilityRecord(arm, null, w2b, "on").mismatches).toEqual([]);
     expect(capabilityRecord(arm, null, w3, "on").mismatches).toEqual(

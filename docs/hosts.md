@@ -459,13 +459,15 @@ complete evidence only when the two agree:
   them carry a cache point, how many of those the proxy placed, and the
   input, cache-read, and cache-write tokens, and, counted from the stored
   bodies at the arm's end, how many of the requests with cache points of
-  their own carry one in a message (`with_message_points`). Under `on`, every stored request of the agent and of the
+  their own carry one in a message (`with_message_points`) and one after
+  the system prompt (`with_system_points`). Under `on`, every stored request of the agent and of the
   Eidnara components carries a cache point; one without, or one with a
   part `requests.jsonl` lacks, is a mismatch. On a Pi arm the requests an
   Eidnara component sent with its own cache points also show the bound
-  build's `background_cache_points`: on a `system-and-message` build each
-  carries one in its user message, and on a `system` build none does; a
-  request of the other kind is a mismatch at the arm's end. Those are the
+  build's `background_cache_points`: each carries one after the system
+  prompt, and on a `system-and-message` build one in its user message,
+  where on a `system` build none does; a request of another kind is a
+  mismatch at the arm's end. Those are the
   capture calls, which run in the arm's Pi. A request whose points the
   proxy placed follows the declared layout by construction, so the counts
   leave each such request out and the build's source probes stand for it. Pi's own compaction is
