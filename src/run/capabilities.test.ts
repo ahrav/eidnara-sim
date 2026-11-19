@@ -1123,6 +1123,10 @@ test("a daemon-run call without cache points gets Pi's two, and every other body
     // A body that carries a cache point already, as OpenCode's closure sends it, is left alone.
     const cached: ConverseBody = { system: [{ text: "s" }, POINT], messages: bare.messages ?? [] };
     expect(daemonCachePoints(cached, "history_summarizer")).toBe(0);
+    // A replayed turn spec from before the layout existed names none and gets Pi's two points.
+    const legacy = body();
+    expect(placeFor(undefined as never)(legacy, "history_summarizer")).toBe(2);
+    expect(legacy.messages?.at(-1)?.content).toEqual([{ text: "more" }, POINT]);
 });
 
 test("on a build whose hook keeps a background call's cache writes to the system prompt, a daemon-run call gets that point alone", () => {

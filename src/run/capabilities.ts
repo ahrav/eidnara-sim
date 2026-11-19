@@ -174,7 +174,8 @@ export const daemonCachePoints =
     (layout: BackgroundCachePoints) =>
     (body: ConverseBody, component: string): number => {
         if (!DAEMON_CALLERS.includes(component) || bodyCachePoints(body) > 0) return 0;
-        return placePiCachePoints(body, layout === "system-and-message");
+        // A turn spec persisted before the layout existed names none, and reads as Pi's own two.
+        return placePiCachePoints(body, layout !== "system");
     };
 
 /**
