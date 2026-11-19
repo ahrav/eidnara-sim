@@ -1151,43 +1151,69 @@ test("a Pi arm's background requests show the cache-point layout its build decla
     ]);
     const tokens = { input_tokens: 4, cache_read_tokens: 100, cache_write_tokens: 10 };
     const request = (ids: string[]) => ({ sha256: "x", bytes: 1, parts: ids });
-    const observe = (capture: string[], summarizer: string[], placed = 0) => {
+    const ALONE = ["sys+", "u1"];
+    const PAIRED = ["sys+", "u1+"];
+    /** One agent request, one capture request, and summarizer requests as `[parts, points the proxy placed]`. */
+    const observe = (capture: string[], summarizer: [string[], number][]) => {
         const tally = new CachingTally(parts);
-        tally.add({ component: "agent", request: request(["sys+", "u1+"]), ...tokens });
+        tally.add({ component: "agent", request: request(PAIRED), ...tokens });
         tally.add({ component: "memory_capture", request: request(capture), ...tokens });
-        tally.add({
-            component: "history_summarizer",
-            request: request(summarizer),
-            ...tokens,
-            ...(placed > 0 ? { cache_points_placed: placed } : {}),
-        });
+        for (const [ids, placed] of summarizer) {
+            tally.add({
+                component: "history_summarizer",
+                request: request(ids),
+                ...tokens,
+                ...(placed > 0 ? { cache_points_placed: placed } : {}),
+            });
+        }
         return tally.observation();
     };
     const system = { layout: "system", label: "eval/w3-all" } as const;
     const both = { layout: "system-and-message", label: "eval/w2b" } as const;
-    const alone = observe(["sys+", "u1"], ["sys+", "u1"]);
-    const paired = observe(["sys+", "u1+"], ["sys+", "u1+"]);
+    const alone = observe(ALONE, [[ALONE, 0]]);
+    const paired = observe(PAIRED, [[PAIRED, 0]]);
     expect(alone.components.memory_capture?.with_message_points).toBe(0);
     expect(paired.components.history_summarizer?.with_message_points).toBe(1);
     // The agent's last message carries its point on either build.
     expect(cachingMismatches("on", alone, system)).toEqual([]);
     expect(cachingMismatches("on", paired, both)).toEqual([]);
     expect(cachingMismatches("on", paired, system)).toEqual([
-        "1 of 1 history_summarizer requests carry a cache point on a message, but eval/w3-all declares the system prompt's cache point alone on a background call",
-        "1 of 1 memory_capture requests carry a cache point on a message, but eval/w3-all declares the system prompt's cache point alone on a background call",
+        "1 of 1 history_summarizer requests with cache points of their own carry one on a message, but eval/w3-all declares the system prompt's cache point alone on a background call",
+        "1 of 1 memory_capture requests with cache points of their own carry one on a message, but eval/w3-all declares the system prompt's cache point alone on a background call",
     ]);
     expect(cachingMismatches("on", alone, both)).toEqual([
-        "1 of 1 history_summarizer requests carry a cache point on the system prompt alone, but eval/w2b declares one on the user message of a background call too",
-        "1 of 1 memory_capture requests carry a cache point on the system prompt alone, but eval/w2b declares one on the user message of a background call too",
+        "1 of 1 history_summarizer requests with cache points of their own carry one on the system prompt alone, but eval/w2b declares one on the user message of a background call too",
+        "1 of 1 memory_capture requests with cache points of their own carry one on the system prompt alone, but eval/w2b declares one on the user message of a background call too",
     ]);
-    // Points the proxy placed follow the declared layout by construction, so that component is
-    // left out and the capture calls alone are held to it.
-    const placed = observe(["sys+", "u1+"], ["sys+", "u1+"], 2);
-    expect(cachingMismatches("on", placed, system)).toEqual([
-        "1 of 1 memory_capture requests carry a cache point on a message, but eval/w3-all declares the system prompt's cache point alone on a background call",
+    // Points the proxy placed follow the declared layout by construction, so each such request
+    // stays outside the counts: a daemon-run component the proxy served whole shows nothing.
+    const placed = observe(ALONE, [
+        [PAIRED, 2],
+        [PAIRED, 2],
     ]);
-    expect(cachingMismatches("on", observe(["sys+", "u1"], ["sys+", "u1"], 1), both)).toEqual([
-        "1 of 1 memory_capture requests carry a cache point on the system prompt alone, but eval/w2b declares one on the user message of a background call too",
+    expect(placed.components.history_summarizer).toMatchObject({
+        with_cache_points: 2,
+        placed_by_proxy: 2,
+        with_message_points: 0,
+    });
+    expect(cachingMismatches("on", placed, system)).toEqual([]);
+    expect(cachingMismatches("on", observe(PAIRED, [[ALONE, 1]]), both)).toEqual([]);
+    // A request that arrived with its own points beside proxy-served ones is still held to the layout.
+    const mixed = observe(ALONE, [
+        [ALONE, 1],
+        [PAIRED, 0],
+        [ALONE, 0],
+    ]);
+    expect(cachingMismatches("on", mixed, system)).toEqual([
+        "1 of 2 history_summarizer requests with cache points of their own carry one on a message, but eval/w3-all declares the system prompt's cache point alone on a background call",
+    ]);
+    const mixedBoth = observe(PAIRED, [
+        [PAIRED, 2],
+        [ALONE, 0],
+        [PAIRED, 0],
+    ]);
+    expect(cachingMismatches("on", mixedBoth, both)).toEqual([
+        "1 of 2 history_summarizer requests with cache points of their own carry one on the system prompt alone, but eval/w2b declares one on the user message of a background call too",
     ]);
     // Another host, an arm without a daemon, and a count taken as calls start are held to nothing.
     expect(cachingMismatches("on", paired)).toEqual([]);

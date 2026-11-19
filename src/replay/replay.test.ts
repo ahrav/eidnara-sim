@@ -462,34 +462,77 @@ describe("replayProbe on a fixture run", () => {
         }
     });
 
-    test("a replayed turn takes its background cache-point layout from the build the source run bound", async () => {
-        const layouts = async (over: Record<string, unknown>) => {
+    test("a replayed turn places a daemon-run call's cache points by the layout of the build the source run bound", async () => {
+        /** A host whose turn runs one summarizer call through the proxy before its agent request. */
+        class SummarizingHost extends TranscriptHost {
+            override async prompt(text: string): Promise<PromptResult> {
+                const r = await fetch(`${this.ctx.proxyHttp1}/model/${MODEL}/converse`, {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({
+                        system: [{ text: "Summarize." }],
+                        messages: [
+                            { role: "user", content: [{ text: "<new_messages>\n[1] U: hi" }] },
+                        ],
+                    }),
+                });
+                await r.text();
+                return super.prompt(text);
+            }
+        }
+        const POINT = { cachePoint: { type: "default" } };
+        const summarizer = async (over: Record<string, unknown>) => {
             const f = await sourceRun(over);
-            const seen: string[] = [];
+            // The arm's capability record names the condition the manifest registers.
+            const record = join(f.run, ARM, "capabilities.json");
+            writeFileSync(
+                record,
+                JSON.stringify({
+                    ...JSON.parse(readFileSync(record, "utf8")),
+                    prompt_caching: over.prompt_caching ?? "off",
+                }),
+            );
+            const layouts: string[] = [];
             const upstream = recordedModel(f.answers);
             await replay(f, "q-a", "a", {
                 repeats: 1,
                 turn: (spec: Parameters<typeof runTurn>[0]) => {
-                    seen.push(spec.backgroundCachePoints);
+                    layouts.push(spec.backgroundCachePoints);
                     return runTurn(spec, {
                         upstream,
-                        hostFactory: (ctx) => new TranscriptHost(ctx) as unknown as SimHost,
+                        hostFactory: (ctx) => new SummarizingHost(ctx) as unknown as SimHost,
                     });
                 },
             });
-            return seen;
+            const sent = upstream.bodies.filter((b) => b.system?.[0]?.text === "Summarize.");
+            expect(sent).toHaveLength(1);
+            return { layouts, system: sent[0]?.system, message: sent[0]?.messages?.[0]?.content };
         };
         const bound = (layout: string) => ({
             commit: "0".repeat(40),
             label: "test",
             capabilities: { "direct-host-fixture": { background_cache_points: layout } },
         });
-        expect(await layouts({ eidnara_build: bound("system") })).toEqual(["system"]);
-        expect(await layouts({ eidnara_build: bound("system-and-message") })).toEqual([
-            "system-and-message",
-        ]);
+        const text = { text: "<new_messages>\n[1] U: hi" };
+        const on = { prompt_caching: "on" };
+        expect(await summarizer({ ...on, eidnara_build: bound("system") })).toEqual({
+            layouts: ["system"],
+            system: [{ text: "Summarize." }, POINT],
+            message: [text],
+        });
+        expect(await summarizer({ ...on, eidnara_build: bound("system-and-message") })).toEqual({
+            layouts: ["system-and-message"],
+            system: [{ text: "Summarize." }, POINT],
+            message: [text, POINT],
+        });
         // A source manifest that names no layout reads as Pi's own two points.
-        expect(await layouts({})).toEqual(["system-and-message"]);
+        expect((await summarizer(on)).message).toEqual([text, POINT]);
+        // A caching-off source run's daemon-run call goes out as the host sent it.
+        expect(await summarizer({ eidnara_build: bound("system") })).toEqual({
+            layouts: ["system"],
+            system: [{ text: "Summarize." }],
+            message: [text],
+        });
     });
 
     test("variant b puts the ground truth into the forwarded request and flips the failing item", async () => {

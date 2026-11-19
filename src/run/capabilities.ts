@@ -102,9 +102,9 @@ export interface CachingCount {
     /** Of those, the calls whose cache points the proxy placed (`daemonCachePoints`). */
     placed_by_proxy: number;
     /**
-     * Of the calls with cache points, those carrying one in a message; counted from the stored
-     * bodies at the arm's end, so absent on a count taken as calls start and on observations
-     * recorded before it was read.
+     * Of the calls that carry cache points of their own (the proxy placed none), those carrying
+     * one in a message; counted from the stored bodies at the arm's end, so absent on a count
+     * taken as calls start and on observations recorded before it was read.
      */
     with_message_points?: number;
     /** The provider's prompt usage summed over the component's calls. */
@@ -223,7 +223,8 @@ export class CachingTally {
             call.cache_points_placed,
         );
         count.with_message_points ??= 0;
-        if (whole && points.some((n) => n?.message && n.points > 0)) count.with_message_points++;
+        const own = whole && !((call.cache_points_placed ?? 0) > 0);
+        if (own && points.some((n) => n?.message && n.points > 0)) count.with_message_points++;
     }
 
     /** A stored part's cache points and whether it is a message, or null for a part the log lacks. */
@@ -274,9 +275,9 @@ export function cachingMismatches(
 /**
  * A background call sends one user message. The requests the host sent with their own cache
  * points show the build's layout: with `system-and-message` each carries one on that message, and
- * with `system` none does. On a Pi arm those are the capture calls, which run in the arm's Pi; a
- * component whose points the proxy placed follows the declared layout by construction and is
- * evidence of nothing, so it is left out. `background` is given for a Pi arm; a count without
+ * with `system` none does. On a Pi arm those are the capture calls, which run in the arm's Pi. A
+ * request whose points the proxy placed follows the declared layout by construction, so the
+ * counts leave each such request out. `background` is given for a Pi arm; a count without
  * `with_message_points` was taken before the bodies were read.
  */
 function backgroundMismatches(
@@ -287,16 +288,17 @@ function backgroundMismatches(
     const out: string[] = [];
     for (const component of EIDNARA_COMPONENTS) {
         const c = o.components[component];
-        if (!c || c.with_message_points === undefined || c.placed_by_proxy > 0) continue;
-        const bare = c.with_cache_points - c.with_message_points;
+        if (!c || c.with_message_points === undefined) continue;
+        const own = c.with_cache_points - c.placed_by_proxy;
+        const bare = own - c.with_message_points;
         if (background.layout === "system" && c.with_message_points > 0) {
             out.push(
-                `${c.with_message_points} of ${c.requests} ${component} requests carry a cache point on a message, but ${background.label} declares the system prompt's cache point alone on a background call`,
+                `${c.with_message_points} of ${own} ${component} requests with cache points of their own carry one on a message, but ${background.label} declares the system prompt's cache point alone on a background call`,
             );
         }
         if (background.layout === "system-and-message" && bare > 0) {
             out.push(
-                `${bare} of ${c.requests} ${component} requests carry a cache point on the system prompt alone, but ${background.label} declares one on the user message of a background call too`,
+                `${bare} of ${own} ${component} requests with cache points of their own carry one on the system prompt alone, but ${background.label} declares one on the user message of a background call too`,
             );
         }
     }
