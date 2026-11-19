@@ -465,9 +465,10 @@ complete evidence only when the two agree:
   part `requests.jsonl` lacks, is a mismatch. On a Pi arm the requests an
   Eidnara component sent with its own cache points also show the bound
   build's `background_cache_points`: each carries one after the system
-  prompt, and on a `system-and-message` build one in its user message,
-  where on a `system` build none does; a request of another kind is a
-  mismatch at the arm's end. Those are the
+  prompt and none outside the system prompt and the messages
+  (`with_other_points`), and on a `system-and-message` build one in its
+  user message, where on a `system` build none does; a request of another
+  kind is a mismatch at the arm's end. Those are the
   capture calls, which run in the arm's Pi. A request whose points the
   proxy placed follows the declared layout by construction, so the counts
   leave each such request out and the build's source probes stand for it. Pi's own compaction is
@@ -612,7 +613,9 @@ complete evidence only when the two agree:
   - `statements.lifetimes` counts the committed captured facts (`mem_*`
     decisions) by the `lifetime` class their rationale names. A fact with a
     class is a mismatch on a build without `statement_lifetime`; a build
-    with it may show none, since the extractor may class no proposal.
+    with it may show none, since the extractor may class no proposal, and
+    a class outside `lasting`, `current_work`, `status`, and `unsettled`
+    is a mismatch there.
   - `delivery.contested_blocks` counts agent requests whose
     `<project-memory>` block renders a contested statement, and
     `search.contested` the `eidnara_search` results with a `Contested by`

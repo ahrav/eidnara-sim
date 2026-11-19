@@ -331,6 +331,13 @@ test("delivery evidence must match the statements the final store holds", () => 
         lifetimes: { current_work: 1, constructor: 1 },
         lineages: { count: 2, largest: 2, per_message: 3 },
     });
+    // The class outside the build's four is a mismatch of its own; the delivery cases below run without it.
+    expect(armMismatches(observe("eidnara", {}))).toEqual([
+        "1 captured facts name a lifetime class outside lasting, current_work, status, unsettled: constructor",
+    ]);
+    const store = new Database(join(root, "..", "final-store", "kernel.sqlite"));
+    store.run("delete from decisions where object_id = 'mem_h'");
+    store.close();
     const delivery = (memory_blocks: number, memory_due = true, due_blocks = memory_blocks) => ({
         requests: 3,
         unreadable: 0,
@@ -818,6 +825,11 @@ test("evidence is read against the capabilities of the build the run bound", () 
     expect(armMismatches({ ...base, statements: classed }, w2b)).toEqual([
         "5 captured facts name a lifetime class in their rationale, which eval/w2b does not declare",
     ]);
+    // The build's classes are four names; any other name in a rationale is a defect of the store.
+    const odd = { ...classed, lifetimes: { lasting: 3, currnt_work: 2, constructor: 1 } };
+    expect(armMismatches({ ...base, statements: odd }, current)).toEqual([
+        "3 captured facts name a lifetime class outside lasting, current_work, status, unsettled: currnt_work, constructor",
+    ]);
 
     const delivery = (contested_blocks: number, stale: number) => ({
         requests: 3,
@@ -958,6 +970,7 @@ test("an arm's caching observation counts requests with cache points and the cac
                 placed_by_proxy: 0,
                 with_message_points: 2,
                 with_system_points: 1,
+                with_other_points: 0,
                 input_tokens: 12,
                 cache_read_tokens: 300,
                 cache_write_tokens: 30,
@@ -968,6 +981,7 @@ test("an arm's caching observation counts requests with cache points and the cac
                 placed_by_proxy: 0,
                 with_message_points: 0,
                 with_system_points: 0,
+                with_other_points: 0,
                 input_tokens: 4,
                 cache_read_tokens: 100,
                 cache_write_tokens: 10,
@@ -978,6 +992,7 @@ test("an arm's caching observation counts requests with cache points and the cac
                 placed_by_proxy: 0,
                 with_message_points: 0,
                 with_system_points: 0,
+                with_other_points: 0,
                 input_tokens: 4,
                 cache_read_tokens: 100,
                 cache_write_tokens: 10,
@@ -1154,6 +1169,7 @@ test("a Pi arm's background requests show the cache-point layout its build decla
         ["sys+", { field: "system", value: [{ text: "s" }, POINT] }],
         ["u1", { field: "messages", value: { role: "user", content: [{ text: "a" }] } }],
         ["u1+", { field: "messages", value: { role: "user", content: [{ text: "a" }, POINT] } }],
+        ["tools+", { field: "toolConfig", value: { tools: [{ toolSpec: { name: "t" } }, POINT] } }],
     ]);
     const tokens = { input_tokens: 4, cache_read_tokens: 100, cache_write_tokens: 10 };
     const request = (ids: string[]) => ({ sha256: "x", bytes: 1, parts: ids });
@@ -1232,6 +1248,13 @@ test("a Pi arm's background requests show the cache-point layout its build decla
         "1 of 1 memory_capture requests with cache points of their own carry none after the system prompt, where eval/w3-all and every other build place one on a background call",
         "1 of 1 memory_capture requests with cache points of their own carry one on a message, but eval/w3-all declares the system prompt's cache point alone on a background call",
     ]);
+    // A point in the tool list belongs to neither layout, whatever the other parts carry.
+    expect(cachingMismatches("on", observe([...ALONE, "tools+"], [[ALONE, 0]]), system)).toEqual([
+        "1 of 1 memory_capture requests with cache points of their own carry one outside the system prompt and the messages, where eval/w3-all and every other build place none on a background call",
+    ]);
+    expect(
+        cachingMismatches("on", observe([...PAIRED, "tools+"], [[PAIRED, 0]]), both),
+    ).toHaveLength(1);
     const partly = observe(PAIRED, [
         [MESSAGE_ONLY, 0],
         [PAIRED, 0],

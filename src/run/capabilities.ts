@@ -110,6 +110,8 @@ export interface CachingCount {
      */
     with_message_points?: number;
     with_system_points?: number;
+    /** Of the same calls, those carrying a cache point in any other part, such as the tool list. */
+    with_other_points?: number;
     /** The provider's prompt usage summed over the component's calls. */
     input_tokens: number;
     cache_read_tokens: number;
@@ -227,10 +229,12 @@ export class CachingTally {
         );
         count.with_message_points ??= 0;
         count.with_system_points ??= 0;
+        count.with_other_points ??= 0;
         if (!whole || (call.cache_points_placed ?? 0) > 0) return;
-        const marked = (field: string) => points.some((n) => n?.field === field && n.points > 0);
-        if (marked("messages")) count.with_message_points++;
-        if (marked("system")) count.with_system_points++;
+        const fields = new Set(points.filter((n) => n && n.points > 0).map((n) => n?.field));
+        if (fields.delete("messages")) count.with_message_points++;
+        if (fields.delete("system")) count.with_system_points++;
+        if (fields.size > 0) count.with_other_points++;
     }
 
     /** A stored part's cache points and its field, or null for a part the log lacks. */
@@ -300,6 +304,11 @@ function backgroundMismatches(
         }
         const own = c.with_cache_points - c.placed_by_proxy;
         const bare = own - c.with_message_points;
+        if ((c.with_other_points ?? 0) > 0) {
+            out.push(
+                `${c.with_other_points} of ${own} ${component} requests with cache points of their own carry one outside the system prompt and the messages, where ${background.label} and every other build place none on a background call`,
+            );
+        }
         if (own > c.with_system_points) {
             out.push(
                 `${own - c.with_system_points} of ${own} ${component} requests with cache points of their own carry none after the system prompt, where ${background.label} and every other build place one on a background call`,
@@ -1034,6 +1043,9 @@ export function readStatements(kernelPath: string): StatementObservation {
     }
 }
 
+/** The lifetime classes capture writes into a fact's rationale on a build with `statement_lifetime`. */
+const LIFETIME_CLASSES: readonly string[] = ["lasting", "current_work", "status", "unsettled"];
+
 /** The rationale object a decision's JSON payload carries as a JSON string, or null when either fails to parse. */
 function rationaleOf(payload: Uint8Array | string): Record<string, unknown> | null {
     const text = typeof payload === "string" ? payload : new TextDecoder().decode(payload);
@@ -1536,10 +1548,17 @@ function buildMismatches(
             );
         }
     }
-    const classed = Object.values(o.statements?.lifetimes ?? {}).reduce((a, b) => a + b, 0);
+    const lifetimes = Object.entries(o.statements?.lifetimes ?? {});
+    const classed = lifetimes.reduce((sum, [, n]) => sum + n, 0);
     if (!caps.statement_lifetime && classed > 0) {
         out.push(
             `${classed} captured facts name a lifetime class in their rationale, which ${label} does not declare`,
+        );
+    }
+    const unknown = lifetimes.filter(([name]) => !LIFETIME_CLASSES.includes(name));
+    if (caps.statement_lifetime && unknown.length > 0) {
+        out.push(
+            `${unknown.reduce((sum, [, n]) => sum + n, 0)} captured facts name a lifetime class outside ${LIFETIME_CLASSES.join(", ")}: ${unknown.map(([name]) => name).join(", ")}`,
         );
     }
     const contested = (o.delivery?.contested_blocks ?? 0) + (o.search?.contested ?? 0);
