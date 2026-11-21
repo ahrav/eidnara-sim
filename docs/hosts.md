@@ -588,11 +588,11 @@ complete evidence only when the two agree:
   commit the log holds), and of them the records an invalidation retired
   (`retired`): a retired record approves nothing, as when a later statement
   ends work in progress on a build with `current_work_delivery`, so its
-  statement owes no block. The final store shows which records are retired
-  and the sim reads no retirement time from it, so a record retired during
-  the run is left out for the whole run, the sessions before its retirement
-  included; the probes' needed-statement evidence (`docs/evidence.md`) reads
-  the block of those sessions directly. `statements.sessions` lists the
+  statement owes no block. The capability check reads no retirement time
+  from the final store, so a record retired during the run is left out for
+  the whole run, the sessions before its retirement included; the evidence
+  path (`docs/evidence.md`) reads the block of each probe turn directly.
+  `statements.sessions` lists the
   capture sessions the rationales of the live records name; Pi
   names an Eidnara session `sim-<session>`, and a name without that prefix
   stands for every session that made a `memory_capture` call, as does a
