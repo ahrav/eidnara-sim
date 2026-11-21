@@ -16,7 +16,11 @@ const entry = (kind: string, event: string, scenario_ms: number, more: object = 
     ...more,
 });
 const marker = (event: string, scenario_ms: number) =>
-    entry("ItemState", event, scenario_ms, { state: "undelivered", cause: "harness-exit" });
+    entry("ItemState", event, scenario_ms, {
+        state: "undelivered",
+        cause: "harness-exit",
+        wall_ms: scenario_ms,
+    });
 const armOf = (arm: string, journal: ArmLogs["journal"], calls: HeldCall[] = []): ArmLogs => ({
     arm,
     calls,
@@ -36,17 +40,18 @@ const runWith = (...arms: ArmLogs[]): RunLogs => ({
     kinds: new Map(),
     arms,
 });
-/** An agent call of turn `e-1` that starts at `scenario_ms` and runs `ms`. */
-const agent = (seq: number, scenario_ms: number, ms: number) =>
+/** A call of turn `e-1` that starts at `scenario_ms`, the fixture's wall time too, and runs `ms`. */
+const call = (seq: number, scenario_ms: number, ms: number, component = "agent") =>
     ({
         arm: "host",
         seq,
         turn: "e-1",
-        component: "agent",
+        component,
         scenario_ms,
-        started_wall_ms: 0,
-        wall_ms: ms,
+        started_wall_ms: scenario_ms,
+        wall_ms: scenario_ms + ms,
     }) as unknown as HeldCall;
+const agent = (seq: number, scenario_ms: number, ms: number) => call(seq, scenario_ms, ms);
 const f4 = (run: RunLogs, read = measuredActivations) =>
     read(run)
         .filter((a) => a.oracle === "F4")
@@ -69,6 +74,15 @@ test("a redelivered turn begins at its marker, so the harness's stop before it i
         ["host", "e-1", "turn deadline after 15 model calls, 910 s silent"],
     ]);
     expect(f4(busy)).toEqual([]);
+    // A user-sim attempt the gateway recorded before the stop belongs to the stopped delivery.
+    const attempted = runWith(
+        armOf(
+            "host",
+            [...turn, entry("EndTurn", "e-1", 1_810_000, deadline)],
+            [call(99, 1_000, 4_000, "user-sim"), ...calls],
+        ),
+    );
+    expect(f4(attempted)).toEqual([]);
 });
 
 test("quiet after the marker is the host's, and the turn keeps that F4", () => {
@@ -112,12 +126,13 @@ test("a marker moves its own arm's turn alone, and a run with no marker reads as
     expect(measuredActivations(own)).toEqual(runOracles(own));
     expect(f4(own)).toEqual([["host", "e-1", quiet(1_000)]]);
     // The other arm redelivered the same event; another turn of this arm carries a marker.
+    const overflow = { outcome: "prompt is too long" };
     const mixed = runWith(
         armOf("host", [
             ...plain,
             entry("BeginTurn", "e-2", 1_000_000),
             marker("e-2", 1_000_000),
-            entry("EndTurn", "e-2", 1_000_100),
+            entry("EndTurn", "e-2", 1_000_100, overflow),
         ]),
         armOf("eidnara", [
             entry("BeginTurn", "e-1", 0),
@@ -126,7 +141,9 @@ test("a marker moves its own arm's turn alone, and a run with no marker reads as
         ]),
     );
     expect(f4(mixed)).toEqual([["host", "e-1", quiet(1_000)]]);
-    // Every other oracle reads the run as recorded.
-    const rest = (as: ReturnType<typeof runOracles>) => as.filter((a) => a.oracle !== "F4");
-    expect(rest(measuredActivations(mixed))).toEqual(rest(runOracles(mixed)));
+    // Every other oracle reads the run as recorded: the redelivered turn's overflow is an F1.
+    const rest = (as: ReturnType<typeof runOracles>) =>
+        as.filter((a) => a.oracle !== "F4").map((a) => [a.oracle, a.arm, a.at]);
+    expect(rest(measuredActivations(mixed))).toEqual([["F1", "host", "e-2"]]);
+    expect(rest(runOracles(mixed))).toEqual([["F1", "host", "e-2"]]);
 });

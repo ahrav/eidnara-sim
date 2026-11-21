@@ -84,11 +84,15 @@ function harness(root: string, policy: RetryPolicy = QUICK, turnsAwaitJobs = fal
     });
     /** The text the host received, by turn. */
     const sent = new Map<string, string>();
-    /** What held the clock while the driver restored the arm. */
+    /** What held the clock, and the markers journaled, while the driver restored the arm. */
     const heldAtResume: string[] = [];
+    const markedAtResume: Entry[] = [];
     const driver: ArmDriver = {
         reset: async () => undefined,
-        resume: async () => void heldAtResume.push(...(scheduler.clock?.busyIds() ?? [])),
+        resume: async () => {
+            heldAtResume.push(...(scheduler.clock?.busyIds() ?? []));
+            markedAtResume.push(...journal.entries.filter((e) => e.state === "undelivered"));
+        },
         fault: async () => ({}),
         event: async (e) => {
             if (e.kind !== "user_turn") return {};
@@ -108,7 +112,7 @@ function harness(root: string, policy: RetryPolicy = QUICK, turnsAwaitJobs = fal
         turnsAwaitJobs,
         undelivered: (event) => awaitsDelivery(pairing.records, "a", event, false),
     });
-    return { journal, pairing, retries, sent, heldAtResume, scheduler };
+    return { journal, pairing, retries, sent, heldAtResume, markedAtResume, scheduler };
 }
 
 const dir = () => mkdtempSync(join(tmpdir(), "sim-delivery-"));
@@ -145,8 +149,10 @@ function expectReplayed(
     expect(events.map((e) => [e.event, e.outcome])).toEqual(EVENTS.map((e) => [e.id, "ok"]));
     expect(interruptions(entries).a?.interrupted_turns).toBe(0);
     expect(entries.at(-1)?.kind).toBe("EndRun");
-    // The open turn held the clock while the driver restored the arm, as the journal reads it.
+    // The open turn held the clock while the driver restored the arm, as the journal reads it,
+    // and its marker stands after the restore, where the delivery started again.
     expect(h.heldAtResume).toEqual([`turn:${ASKED.id}`]);
+    expect(h.markedAtResume).toEqual([]);
 }
 
 describe("a user-sim model call that never answers", () => {
@@ -178,7 +184,7 @@ describe("a user-sim model call that never answers", () => {
         const first = harness(root);
         const started = performance.now();
         await expect(first.scheduler.run()).rejects.toBeInstanceOf(TransportFailure);
-        // Three attempts and two backoffs inside the 600 ms budget, plus one slack each.
+        // At most three attempts and two backoffs inside the 600 ms budget, plus one slack each.
         expect(performance.now() - started).toBeLessThan(5_000);
         // Every attempt the budget admitted stayed pending and was ended and reported.
         expect(bodies.length).toBeGreaterThanOrEqual(1);

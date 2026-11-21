@@ -1495,9 +1495,9 @@ export class Scheduler {
      * delivery (`undelivered`), ahead of the turn's user record and the host prompt. The turn
      * stays open under its one `BeginTurn` and holds the clock while the driver restores the
      * arm. `step` journals `ItemState` `undelivered` with the stop's cause where a turn begins
-     * and delivers the turn with the message the user-sim decides from the recorded state. A turn with a fault keyed to it takes the interruption: the fault
-     * fired before the turn began, and the resumed process starts the turn's calls with that
-     * fault already spent.
+     * and delivers the turn with the message the user-sim decides from the recorded state. A
+     * turn with a fault keyed to it takes the interruption: the fault fired before the turn
+     * began, and the resumed process starts the turn's calls with that fault already spent.
      */
     private replays(event: unknown): boolean {
         const turn = this.o.events.find((x) => x.id === event);
@@ -1911,7 +1911,7 @@ export class Scheduler {
         // A turn the resume left open for delivery gives its hold back for the waits below,
         // which a quiet busy set ends, and takes it again where a turn begins.
         const reopened = this.reopened?.event === e.id ? this.reopened : null;
-        if (reopened) this.clock?.end(`turn:${e.id}`);
+        if (reopened) (this.clock as Clock).end(`turn:${e.id}`);
         await this.awaitDue(e);
         // A job that registered after the wait leaves the clock busy short of the schedule, so
         // the wait runs again before the clock may jump.
