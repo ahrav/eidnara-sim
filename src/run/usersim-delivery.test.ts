@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixtureEvents } from "../../tests/run-fixture";
@@ -14,7 +14,7 @@ import {
     UserSim,
 } from "../usersim/usersim";
 import { interruptions } from "./interruptions";
-import { type Entry, Journal } from "./journal";
+import { type Entry, flushDir, flushFile, Journal } from "./journal";
 import type { RetryPolicy } from "./retry";
 import { awaitsDelivery, userSimCall } from "./run";
 import { type ArmDriver, Scheduler, scenarioId, TransportFailure } from "./scheduler";
@@ -352,6 +352,20 @@ describe("a run stopped inside the user-sim's delivery", () => {
         expect(delivered).not.toContain(ASKED.id);
         expect(of(second.entries, "Event")).toMatchObject([{ outcome: "failed(interrupted)" }]);
     });
+});
+
+test("the tape and the pairing log exist from their construction and flush while empty", () => {
+    // The run flushes its directory once both logs are constructed and both logs before each
+    // host prompt; a first turn of scripted text reaches those flushes with the tape still empty.
+    const root = dir();
+    new Pairing(join(root, "pairing.jsonl"), () => "a");
+    new Tape(join(root, "tape.jsonl"));
+    expect(existsSync(join(root, "pairing.jsonl"))).toBe(true);
+    expect(existsSync(join(root, "tape.jsonl"))).toBe(true);
+    flushDir(root);
+    flushFile(join(root, "tape.jsonl"));
+    flushFile(join(root, "pairing.jsonl"));
+    expect(() => flushFile(join(root, "absent.jsonl"))).toThrow("ENOENT");
 });
 
 describe("the pairing log decides which open turn awaits delivery", () => {
