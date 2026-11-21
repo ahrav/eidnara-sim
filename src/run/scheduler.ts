@@ -123,7 +123,9 @@ export type FatalCause =
  * The causes a resume recovers from. Each leaves the measurement intact up to the stop: the
  * in-flight turn, job, or fault is journaled `failed(interrupted)` with the cause, which the
  * missingness policy excludes from recall and counts in dependability, and the arm continues at
- * its next event with a fresh host session. A host teardown fails in the harness's own process
+ * its next event with a fresh host session. A turn stopped inside the user-sim's delivery is
+ * the exception: it stopped ahead of the host prompt, so the resume delivers it
+ * (`Scheduler.replays`). A host teardown fails in the harness's own process
  * control after the host was told to stop; the resume reaps the recorded tree, and an event
  * without an open turn (a `session_end`) is delivered again with no host session open. A host
  * abort fails in the host process after the harness already ended the turn at its deadline or
@@ -306,6 +308,12 @@ export interface SchedulerOptions {
      * `UserTurn` with `recovered: true` ahead of the turn's `failed(interrupted)` state.
      */
     recoverTurn?: (event: string) => Record<string, unknown> | undefined;
+    /**
+     * Whether the running arm's open turn `event` stopped inside the user-sim's delivery, ahead
+     * of the turn's user record and the host prompt. A resume keeps such a turn open and
+     * delivers it (`Scheduler.replays`).
+     */
+    undelivered?: (event: string) => boolean;
 }
 
 const PROXY_LAYER = "proxy-sink";
@@ -723,6 +731,7 @@ export class Scheduler {
      * order, each timestamped no earlier than its schedule, a turn's `Event` preceded by its
      * `EndTurn` or interruption marker; one `BeginTurn` per turn, for the turn next due, and one
      * `EndTurn` after it; an interruption marker closing an open turn or an unobserved fault;
+     * an `undelivered` marker naming an open turn that has no user record yet;
      * `EndJob` only for an open registration; `FaultFired` once per configured fault, at its
      * trigger's place in the event sequence; `FaultObserved` after its `FaultFired`; a missed
      * sleep or a fault-tagged jump only for a laptop sleep at its place; and a daemon exit
@@ -1206,6 +1215,13 @@ export class Scheduler {
                         marked.add(f.id);
                         return;
                     }
+                    if (e.state === "undelivered" && e.event !== undefined) {
+                        // A resume's marker for an open turn the user-sim had yet to deliver.
+                        if (!begun.has(e.event) || ended.has(e.event) || users.has(e.event)) {
+                            throw fail(`undelivered ${e.event} names no turn awaiting delivery`, e);
+                        }
+                        return;
+                    }
                     if (e.state === "failed(interrupted)" && e.event !== undefined) {
                         if (!begun.has(e.event) || ended.has(e.event)) {
                             throw fail(`interruption of ${e.event} closes no open turn`, e);
@@ -1416,6 +1432,10 @@ export class Scheduler {
         for (const e of kinds("BeginTurn").filter(
             (x) => !ended.has(x.event) && !done.has(x.event),
         )) {
+            if (!marked.has(e.event) && !journaled.has(e.event) && this.replays(e.event)) {
+                this.log({ kind: "ItemState", event: e.event, state: "undelivered", cause });
+                continue;
+            }
             const user = journaled.has(e.event)
                 ? undefined
                 : this.o.recoverTurn?.(e.event as string);
@@ -1459,6 +1479,21 @@ export class Scheduler {
             this.session = null;
         }
         return answered;
+    }
+
+    /**
+     * Whether a resume delivers the open turn `event`: the stop came inside the user-sim's
+     * delivery (`undelivered`), ahead of the turn's user record and the host prompt. The turn
+     * stays open under its one `BeginTurn`, the resume journals `ItemState` `undelivered` with
+     * the stop's cause, and `step` delivers the turn with the message the user-sim decides from
+     * the recorded state. A turn with a fault keyed to it takes the interruption: the fault
+     * fired before the turn began, and the resumed process starts the turn's calls with that
+     * fault already spent.
+     */
+    private replays(event: unknown): boolean {
+        const turn = this.o.events.find((x) => x.id === event);
+        if (turn?.kind !== "user_turn" || this.keyedTo(turn)) return false;
+        return this.o.undelivered?.(turn.id) === true;
     }
 
     /**
@@ -1969,7 +2004,11 @@ export class Scheduler {
             // preparation runs; the turn opens only after it, with no yield in between.
             await this.settleKills();
             const turn = `turn:${e.id}`;
-            this.log({ kind: "BeginTurn", event: e.id, probe: e.probe ?? null });
+            // A turn a resume left open for delivery keeps the `BeginTurn` it has.
+            const begun = this.o.journal.entries.some(
+                (x) => x.arm === this.arm && x.kind === "BeginTurn" && x.event === e.id,
+            );
+            if (!begun) this.log({ kind: "BeginTurn", event: e.id, probe: e.probe ?? null });
             clock.begin(turn);
             try {
                 outcome = await deliver();

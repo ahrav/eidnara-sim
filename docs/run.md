@@ -265,7 +265,7 @@ A fatal `ItemState` stops the run and carries one `cause`:
 | Cause | Written when | On resume |
 |---|---|---|
 | `job-deadline` | a job held the clock past `job_deadline_ms` (a host stall, a suspended machine, a hung call), by its own timer or, as `DeadlineOverrun`, during a probe turn's wait on its background jobs (an event record) | recovered |
-| `harness-transport` | a user turn's delivery failed with `TransportFailure`: a user-sim call whose bounded retries all failed in transport | recovered |
+| `harness-transport` | a user turn's delivery failed with `TransportFailure`: a user-sim call whose bounded retries all failed in transport or stayed pending past their bound | recovered; the turn is delivered (Undelivered turns, below) |
 | `host-teardown` | an event's delivery failed with exactly `host tree <pid> survived SIGKILL`: the host's process tree outlived the kill that stopped it (a session close), and the record carries the tree's `host_pid` | recovered |
 | `host-abort` | a user turn's delivery failed with exactly a drain error of `src/hosts/arms.ts`: `Pi turn still running <n> ms after abort (<reason>)`, `Pi turn still running <n> ms after the user's abort`, or `OpenCode turn still running 30 s after abort`. The harness had already ended the turn at its deadline or the user's abort, and the host process kept it running | recovered |
 | `host-launch` | a `session_start`'s delivery failed with exactly `Pi RPC process exited with code 1 signal null` and an empty stderr. `PiSimHost.openSession` starts Pi through a gate shell that runs `read _ <&3`; when Bun's extra stdio pipe fails (`connect ENOENT` in `node:child_process`, oven-sh/bun#30443), the gate's newline is lost, `read` meets end of file, and the shell exits 1 before the sandbox launcher runs. Pi never started, so no turn was open and the workspace is as the previous event left it; the resume delivers the `session_start` again | recovered when the record is within `GATE_EXIT_MS` (150 ms) of the arm's last entry other than a `RegisterJob` or `EndJob` (the sampler journals those from its own timer, so one can land mid-launch; every other entry precedes the delivery), which spans the driver's pre-spawn work and the gate shell's whole lifetime; a launch that ran the sandbox launcher (sudo, unshare, bind mounts, node) takes over 250 ms before any host exit, so a later record is refused. A slow pre-spawn phase can leave a gate failure refused, and so can a job the step waited on just before the delivery, such as the arm's first `session_start`, which follows the arm-ready CPU hold with no clock jump between; the bound errs toward refusal. Both timestamps are the harness's `Date.now()`, so a backward step of the host clock during the launch is the residual way a longer launch could pass the bound |
@@ -304,7 +304,8 @@ failed(interrupted)`): it journals `Recovered` for each such record, then the
 usual recovery entries, each interruption marker carrying the cause (a stop
 with no fatal record, such as a kill or a reboot, is `harness-exit`), and the
 arm continues at its next event with the host session restarted through the
-driver's `resume`. A `session_end` a recoverable stop cut, such as one whose
+driver's `resume`. A turn the user-sim had yet to deliver was never in flight
+at the host, and the resume delivers it (Undelivered turns, below). A `session_end` a recoverable stop cut, such as one whose
 host close failed in teardown or one after which a daemon exit was found, has
 no turn to mark: the resume reaps the recorded tree, journals the
 `session_end`'s `Event` as `failed(interrupted)` with the cause, records its
@@ -342,6 +343,50 @@ entry outside a resume's recovery, one that names no pending fatal record of
 its arm, and one that misreports the record's cause or item,
 any other arm entry of a resumed process before the recovery, and an
 `EndArm` with a fatal record unrecovered.
+
+### Undelivered turns
+
+A user turn's delivery has two parts: the user-sim decides the message (for a
+`pushback`, `redirect`, `abandon`, or `clarify` label through one model call
+to the gateway), appends the turn's record to `pairing.jsonl`, and
+then the host is prompted. An open turn whose pairing record is still to come
+therefore stopped inside the first part, ahead of the decision and the
+prompt. A resume keeps such a turn open under its one `BeginTurn`, journals
+`ItemState` with `state: "undelivered"` and the stop's cause (`harness-exit`
+for a kill, the fatal record's cause otherwise), and delivers the turn: the
+user-sim reads the same recorded state (the session's last agent reply from
+`calls.jsonl`, the pairing chain, the tape) to decide the message, and the
+turn ends with one `UserTurn`, one `EndTurn`, and one `Event`. Such a turn counts as measured, and
+`interrupted_turns` leaves it out. Two kinds of open turn take the
+interruption above instead: a turn inside a P14 window, whose pushback
+decision reads the preceding turn's work from the stopped process's memory,
+and a turn with a fault keyed to it, whose fault fired before the turn began.
+The replay refuses an `undelivered` marker that names a turn with no
+`BeginTurn`, an ended turn, or a turn that already has its `UserTurn`.
+
+The model call is bounded twice. `proxyUserSim` gives each attempt an
+`AbortSignal.timeout`, and `withRetry` ends an attempt still pending
+`slackMs` (1 s) past that timeout as `AttemptOverdue` and sends it again:
+three attempts share the turn deadline, so a delivery completes or stops the
+run as `harness-transport` within `turn_deadline_ms` plus one slack. Each
+failed attempt is appended to `downstream.jsonl` as `user_sim_retry` with the
+arm, session, turn, attempt number, and error.
+
+The second bound exists because Bun's `fetch` can stay pending for good. Bun
+1.3.14 closes the descriptor number of a child's extra stdio pipe twice: once
+when the pipe's `net.Socket` ends and again when the GC finalizes the child
+(oven-sh/bun#47561, the defect behind `host-launch`). The Pi launch gate is
+such a pipe. `fetch` runs on an HTTP client thread that Bun creates at the
+process's first `fetch`, and the thread's loop takes the lowest free
+descriptor numbers for its epoll descriptor, timer, and wakeup eventfd. When
+that first `fetch` followed a host launch, the eventfd could take the freed
+gate number, and the later second close removed it: every `fetch` after that
+stayed queued for a sleeping thread, ahead of any socket or request, and its
+abort travels through the same queue. The run now calls
+`warmHttpClient` before the first host launch, so the loop's descriptors are
+held before any gate pipe exists and a gate number names another descriptor.
+The same second close can still land on a call's own socket; that attempt
+ends at its timeout or bound and the next one delivers.
 
 A request, model call, or hold that settles after its arm stopped, or between
 arms, releases nothing: the run registers each through `Scheduler.jobHold`,

@@ -84,6 +84,7 @@ import {
     clarifyContexts,
     factMatcher,
     identityStatements,
+    type Llm,
     normaliser,
     Pairing,
     proxyUserSim,
@@ -110,6 +111,7 @@ import {
     readPluginLog,
     requireAuditedVariants,
 } from "./capabilities";
+import { warmHttpClient } from "./httpclient";
 import {
     type Entry,
     eachJsonl,
@@ -125,7 +127,7 @@ import { contains, realExisting } from "./paths";
 import { type Preflight, piCli, preflight, preflightDrift } from "./preflight";
 import { isPriceTable, type PriceTable, pricedByCachedTable, priceTableFor } from "./price";
 import { running } from "./procs";
-import { gatewayRetry, transientUserSim, withRetry } from "./retry";
+import { gatewayRetry, type RetryPolicy, transientUserSim, withRetry } from "./retry";
 import { ResourceSampler } from "./sampler";
 import {
     type ArmDriver,
@@ -1931,6 +1933,32 @@ export class SessionCalls {
     }
 }
 
+/**
+ * The user-sim's model call through the gateway. A call that fails in transport, or stays
+ * pending past its attempt's bound, is sent again within `policy`, the turn deadline the single
+ * call had; `onRetry` hears each failed attempt. The reply is used only once an attempt
+ * succeeds, so the tape key, the pairing record, and the scripted text a retried turn delivers
+ * are its first attempt's.
+ */
+export function userSimCall(o: {
+    gatewayUrl: string;
+    model: string;
+    maxTokens: number;
+    policy: RetryPolicy;
+    onRetry?: (attempt: number, error: string) => void;
+}): Llm {
+    return (prompt) =>
+        withRetry(
+            "user-sim call",
+            o.policy,
+            transientUserSim,
+            (attemptMs) => proxyUserSim(o.gatewayUrl, o.model, o.maxTokens, attemptMs)(prompt),
+            undefined,
+            undefined,
+            o.onRetry,
+        );
+}
+
 async function runArms(
     o: RunOptions,
     cleanup: Array<() => Promise<void> | void>,
@@ -2257,6 +2285,22 @@ async function runArms(
                   }
                 : undefined;
         },
+        // The user-sim appends a turn's pairing record ahead of the host prompt, so an open
+        // turn whose record is still to come stopped inside the user-sim's delivery, and the
+        // resume delivers it. A turn inside a P14 window decides its pushback from the
+        // preceding turn's work, held in the stopped process's memory, so that turn takes the
+        // interruption a resume applies.
+        undelivered: (event: string): boolean => {
+            const arm: string | null = scheduler.currentArm;
+            const turn = scriptedById.get(event);
+            return (
+                turn !== undefined &&
+                rulesInForce(turn) === null &&
+                !pairing.records.some(
+                    (x) => x.kind === "turn" && x.arm === arm && x.event === event,
+                )
+            );
+        },
         stopped: () => stop.reason,
         // A fresh arm's daemon is up once its reset returns; a resumed arm's replacement daemon
         // starts in the driver's resume, whose wrapper runs the hold.
@@ -2293,6 +2337,16 @@ async function runArms(
         join(o.out, "downstream.jsonl"),
         fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
     );
+    // The sink runs inside an HTTP/2 event listener or a retry's callback; a failed write ends
+    // the run through its signal path rather than escaping as an uncaught exception.
+    const downstream = (e: Record<string, unknown>) => {
+        try {
+            writeSync(downstreamFd, `${JSON.stringify(e)}\n`);
+        } catch (caught) {
+            console.error(`downstream.jsonl: ${(caught as Error).message}`);
+            process.kill(process.pid, "SIGTERM");
+        }
+    };
     const requests = new RequestStore(join(o.out, "requests.jsonl"));
     // A resume counts the requests the log already holds, so a request recorded before the stop
     // meets the same session-end check as one this invocation sends.
@@ -2327,16 +2381,7 @@ async function runArms(
         ...(caching === "on"
             ? { cachePoints: daemonCachePoints(backgroundCachePointsOf(manifest.eidnara_build)) }
             : {}),
-        downstream: (e) => {
-            // The sink runs inside an HTTP/2 event listener; a failed write ends the run through
-            // its signal path rather than escaping as an uncaught exception.
-            try {
-                writeSync(downstreamFd, `${JSON.stringify(e)}\n`);
-            } catch (caught) {
-                console.error(`downstream.jsonl: ${(caught as Error).message}`);
-                process.kill(process.pid, "SIGTERM");
-            }
-        },
+        downstream,
         arrival: () => {
             if (scope.arm === "" || scheduler.runningArm() !== scope.arm) return;
             return scheduler.jobHold(`request-${jobSeq++}`);
@@ -2355,6 +2400,8 @@ async function runArms(
         firstArrival,
     });
     await gateway.start();
+    // The first `fetch` of the process runs here, ahead of every host launch.
+    await warmHttpClient();
     const handlersFailed = () => {
         const [first] = gateway.failures;
         if (!first) return;
@@ -2397,23 +2444,22 @@ async function runArms(
         plan: behaviourPlan(scripted, prereg, seed, pinned),
         tape,
         pairing,
-        // A user-sim call that fails in transport is sent again, within the turn deadline the
-        // single call had; the reply is used only once an attempt succeeds, so the tape key,
-        // the pairing record, and the scripted text a retried turn delivers are its first
-        // attempt's.
-        llm: (prompt) =>
-            withRetry(
-                "user-sim call",
-                gatewayRetry(prereg.liveness_bounds.turn_deadline_ms),
-                transientUserSim,
-                (attemptMs) =>
-                    proxyUserSim(
-                        gateway.urls[0] as string,
-                        manifest.user_sim_model ?? prereg.user_sim.model,
-                        prereg.user_sim.max_tokens,
-                        attemptMs,
-                    )(prompt),
-            ),
+        llm: userSimCall({
+            gatewayUrl: gateway.urls[0] as string,
+            model: manifest.user_sim_model ?? prereg.user_sim.model,
+            maxTokens: prereg.user_sim.max_tokens,
+            policy: gatewayRetry(prereg.liveness_bounds.turn_deadline_ms),
+            onRetry: (attempt, error) =>
+                downstream({
+                    kind: "user_sim_retry",
+                    wall_ms: Date.now(),
+                    arm: scope.arm,
+                    session: scope.session,
+                    turn: scope.turn,
+                    attempt,
+                    error,
+                }),
+        }),
         normalise: normaliser(prereg.divergence_policy.normalisation),
         keys: [
             ...scenario.facts.flatMap((f) => [f.id, f.template]),

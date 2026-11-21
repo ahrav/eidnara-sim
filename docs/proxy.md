@@ -163,7 +163,10 @@ the gateway process, `gateway`, which names that process so a resumed
 run's connection numbers stay distinct, and the arm, session, and turn in
 scope when the stream opened or the connection event fired. A
 host turn that ends with a socket error while its call record shows a
-complete upstream stream reads its connection's events there.
+complete upstream stream reads its connection's events there. The run also
+appends one `user_sim_retry` record per failed attempt of a user-sim model
+call, with the arm, session, and turn in scope, the attempt number, and the
+error (`docs/run.md`, Undelivered turns).
 
 ## Fault injection
 

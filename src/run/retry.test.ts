@@ -136,3 +136,55 @@ test("a backoff that would end past the budget stops before sleeping", async () 
     await expect(failure).rejects.toThrow("after 1 attempt(s)");
     expect(slept).toBe(0);
 });
+
+test("an attempt whose call stays pending is ended at its bound and the next attempt's value is returned", async () => {
+    const seen: [number, string][] = [];
+    let calls = 0;
+    const started = performance.now();
+    const got = await withRetry(
+        "user-sim call",
+        { attempts: 3, totalMs: 150, backoffMs: [1], slackMs: 10 },
+        () => false,
+        // The first call ignores its timeout, as a `fetch` that never settles does.
+        () => (++calls === 1 ? new Promise<string>(() => undefined) : Promise.resolve("reply")),
+        undefined,
+        undefined,
+        (attempt, error) => seen.push([attempt, error]),
+    );
+    expect(got).toBe("reply");
+    expect(calls).toBe(2);
+    expect(seen).toEqual([[1, "user-sim call stayed pending past 60 ms"]]);
+    expect(performance.now() - started).toBeGreaterThanOrEqual(55);
+});
+
+test("attempts that all stay pending end in a TransportFailure inside the budget and its slack", async () => {
+    const started = performance.now();
+    const failure = withRetry(
+        "user-sim call",
+        { attempts: 3, totalMs: 150, backoffMs: [1], slackMs: 10 },
+        transientUserSim,
+        () => new Promise<string>(() => undefined),
+    );
+    await expect(failure).rejects.toBeInstanceOf(TransportFailure);
+    await expect(failure).rejects.toThrow(/failed after 3 attempt\(s\): .*stayed pending past/);
+    expect(performance.now() - started).toBeLessThan(1_000);
+});
+
+test("a pending attempt's late rejection after its bound stays handled", async () => {
+    let late: (e: Error) => void = () => undefined;
+    let calls = 0;
+    const got = await withRetry(
+        "judge call",
+        { attempts: 2, totalMs: 40, backoffMs: [1], slackMs: 5 },
+        () => false,
+        () =>
+            ++calls === 1
+                ? new Promise<string>((_, reject) => {
+                      late = reject;
+                  })
+                : Promise.resolve("verdict"),
+    );
+    late(new Error("aborted long after"));
+    await Bun.sleep(5);
+    expect(got).toBe("verdict");
+});
