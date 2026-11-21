@@ -163,9 +163,20 @@ describe("delivery check", () => {
         const waiting = "## 1-4 · Plan\nWaiting on user (deploy.order): which step goes first?";
         const decided = "## 5-8 · Answer\n- Decided (deploy.order): step two goes first.";
         const archive = "## 9-12 · Later work\nI added the changelog entry.";
+        // Live work in progress renders in its own element after the categories.
+        const work =
+            '<CURRENT_WORK note="Work the user left open in earlier sessions.">\nmem_c: User stated: Next, add the retry test.\n</CURRENT_WORK>';
         const calls = [
             call("s-2", "e-1", `${memory(contested)}\nTask.`),
             call("s-2", "e-2", `${memory("User stated: The limit is 300.")}\nTask.`),
+            call("s-2", "e-2", `${memory(`User stated: The limit is 300.\n${work}`)}\nTask.`),
+            // The element counts inside the block alone, and by its whole name.
+            call("s-2", "e-2", `${memory(contested)}\n${work}\nTask.`),
+            call(
+                "s-2",
+                "e-2",
+                `${memory("<CURRENT_WORK_LOG>\nmem_d: a row\n</CURRENT_WORK_LOG>")}\nTask.`,
+            ),
             // The waiting line's segment is the block's newest summarized one.
             call("s-2", "e-3", `${history("session-history", [waiting, archive])}\nTask.`),
             // A later segment holds a status line, so the waiting line before it is stale.
@@ -186,13 +197,14 @@ describe("delivery check", () => {
             call("s-2", "e-4", `${waiting}\n${decided}`),
         ];
         const seen = observeDelivery(calls, parts(), [], order);
-        expect(seen.contested_blocks).toBe(1);
-        expect(seen.memory_blocks).toBe(2);
+        expect(seen.contested_blocks).toBe(2);
+        expect(seen.memory_blocks).toBe(5);
+        expect(seen.work_blocks).toBe(1);
         expect(seen.open_items).toEqual({
             blocks: 6,
             waiting_blocks: 4,
             stale_waiting_blocks: 1,
-            stale_requests: [calls[3]?.seq as number],
+            stale_requests: [calls[6]?.seq as number],
         });
     });
 

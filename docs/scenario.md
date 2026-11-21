@@ -588,6 +588,27 @@ and probes for seed 605.
 | W3SH | 614 | `465912ca` | 1182 | 0.2982 | 0.5426 |
 | W3P | 605 | `b5b6a534` | 1983 | 0.3021 | 0.5913 |
 
+Qualifications W4S (`prereg/W4S.json`, revision 1, `a1d70476`, diagnosed
+split, fresh seeds) and W4SH (`prereg/W4SH.json`, revision 1, `f376dbfe`,
+held-out split) retest the `eval/w4` build with prompt caching on. Seeds
+104, 107, and 614 are W3S's and W3SH's: their events, facts, and probes
+equal that retest's, and their hashes differ with the registration. Seed
+108 is the lowest diagnosed S seed that no registration lists and no run
+used. Seed 615 is the lowest held-out seed that no registration lists, no
+run used, and tier S places. The rule read no outcome data, and no run of
+seed 108 or 615 existed when it was applied. W4P (`prereg/W4P.json`,
+revision 1, `fe96e65a`) holds W3P's 1,983 events, facts, and probes for
+seed 605.
+
+| Registration | Seed | `scenario_hash` | Events | Largest BM25 ratio | Largest cosine |
+|---|---|---|---|---|---|
+| W4S | 104 | `a47d9ffa` | 590 | 0.2739 | 0.5181 |
+| W4S | 107 | `323a6df7` | 711 | 0.2751 | 0.5014 |
+| W4S | 108 | `888b3cad` | 587 | 0.2763 | 0.5304 |
+| W4SH | 614 | `7c6ced8d` | 1182 | 0.2982 | 0.5426 |
+| W4SH | 615 | `be440cd2` | 414 | 0.3007 | 0.5548 |
+| W4P | 605 | `b4e8c56e` | 1983 | 0.3021 | 0.5913 |
+
 ## Known limits
 
 - A revised decision (P3) asks its task again in the workspace the agent

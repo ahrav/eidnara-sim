@@ -70,10 +70,19 @@ export interface DaemonCapabilities {
     /**
      * Whether capture classes each statement of a user message by how long it holds and records
      * the class as `lifetime` in the fact's rationale. A statement classed `lasting` or
-     * `unsettled`, or carrying no class, is approved for `<project-memory>`; one classed
-     * `current_work` or `status` is stored labeled for explicit search.
+     * `unsettled`, or carrying no class, is approved for `<project-memory>`; one classed `status`
+     * is stored labeled for explicit search, and so is one classed `current_work` on a build
+     * without `current_work_delivery`.
      */
     statement_lifetime: boolean;
+    /**
+     * Whether a whole user statement classed `current_work` is approved and served to later
+     * sessions in the `<CURRENT_WORK>` element that closes `<project-memory>`, until a later whole
+     * statement of the user ends it: the row is then rewritten labeled with an `ended_by` record.
+     * Such a build also names the class `request`, an instruction its own turn answers, which is
+     * stored labeled for explicit search.
+     */
+    current_work_delivery: boolean;
     /**
      * The cache points a background call (memory capture, a daemon-run call) carries under
      * prompt caching on for a model Pi recognises: one after the system prompt and one at the end
@@ -147,6 +156,12 @@ const W3_NOTES: VariantRecord["notes"] = {
         "crates/daemon/src/memory_capture.rs reads the extractor's `lifetime` of each proposal of a user source (lasting, current_work, status, unsettled), writes it into the fact's rationale, and approves a whole user statement only when its class outlives its task (lasting, unsettled, or no class); a current_work or status statement commits as a labeled memory for explicit search with no statement record",
     background_cache_points:
         "packages/pi-plugin/src/memory-capture-native.ts passes withoutConversationCacheMarkers as the capture call's onPayload, and crates/host-runtime/assets/pi-model_execution-extension.mjs applies the same function to a daemon-run call's messages before the provider request, so a background call keeps the cache marker of its system prompt and carries none on its user message; crates/host-runtime/src/model_execution/pi.rs starts every Pi model-execution run in one working directory under the state root, so the system prompt Pi ends with that directory is the same text on every run",
+};
+const W4_NOTES: VariantRecord["notes"] = {
+    statement_lifetime:
+        "crates/daemon/src/memory_capture.rs reads the extractor's `lifetime` of each proposal of a user source (lasting, current_work, request, status, unsettled), writes it into the fact's rationale, and approves a whole user statement whose class is eligible (lasting, unsettled, current_work, or no class); a request or status statement commits as a labeled memory for explicit search with no statement record",
+    current_work_delivery:
+        'crates/daemon/src/canonical_memory.rs gives a served capture memory whose rationale names lifetime current_work the category CURRENT_WORK, newest first by the commit that first recorded it, and crates/daemon/src/m0_compose.rs trim_block_to_budget admits those rows after the lasting rows within a quarter of memory.injection_budget_tokens; crates/daemon/src/memory_render.rs renders them last in `<CURRENT_WORK note="...">`; a later whole user statement that names such a row under replaces or also_replaces ends it: crates/daemon/src/memory_capture.rs rewrite_statement supersedes it with a labeled row whose rationale holds ended_by {memory, session}; packages/opencode-plugin/src/tools/eidnara-search/render.ts shows `lifetime=current_work state=live|ended` on a search result',
 };
 const W2_FUSED_SEARCH_PROGRESS =
     "crates/daemon/src/search_lifecycle_wire.rs answers search.lifecycle.status with progress {tip, checkpoint, lag_commits, rebuilds, blocked}; crates/daemon/src/projection_gates.rs judge_lifecycle_work admits the lifecycle owner's own catch-up and rebuild of a family past the freshness limit, and the fixture's admission records (crates/daemon/examples/search_admission_records/records.rs) set that limit to READER_LAG_COMMITS = 1024 commits";
@@ -285,6 +300,41 @@ const W3_PROBES = [
         "next\\.messages = withoutConversationCacheMarkers\\(next\\.messages\\)",
     ),
 ];
+/** A build before the w4 change: `<project-memory>` has no element for work in progress, and no row records an end. */
+const BEFORE_W4_PROBES = [
+    probe("current_work_delivery", "crates/daemon/src/memory_capture.rs", "fn is_eligible", false),
+    probe("current_work_delivery", "crates/daemon/src/memory_capture.rs", "ended_by", false),
+];
+const MEMORY_RENDER = "crates/daemon/src/memory_render.rs";
+/** The w4 build's readings of the same behaviour. */
+const W4_PROBES = [
+    probe(
+        "current_work_delivery",
+        "crates/daemon/src/memory_capture.rs",
+        "Self::Lasting \\| Self::Unsettled \\| Self::CurrentWork => true",
+    ),
+    probe(
+        "current_work_delivery",
+        "crates/daemon/src/memory_capture.rs",
+        "Self::Request \\| Self::Status => false",
+    ),
+    probe(
+        "current_work_delivery",
+        "crates/daemon/src/memory_capture.rs",
+        'rationale\\.insert\\("ended_by"\\.to_owned\\(\\), json!\\(end\\)\\)',
+    ),
+    probe(
+        "current_work_delivery",
+        MEMORY_RENDER,
+        'const CURRENT_WORK_SECTION: &str = "CURRENT_WORK"',
+    ),
+    probe(
+        "current_work_delivery",
+        "crates/daemon/src/canonical_memory.rs",
+        "CURRENT_WORK_SECTION\\.to_owned\\(\\)",
+    ),
+    probe("current_work_delivery", "crates/daemon/src/m0_compose.rs", "fn trim_block_to_budget"),
+];
 const PROMPT = "crates/daemon/testdata/history_summarizer-system-prompt.txt";
 const OPEN_ITEMS_SECTION = "## Open items: waiting, constraints, decided, lifted";
 /** The c8 build's readings of the behaviours the w2 rework changed. */
@@ -317,6 +367,7 @@ const C8_PROBES = [
     probe("keyed_open_items", "crates/daemon/src/decay_render.rs", "history_open_items", false),
     probe("process_memory", "crates/daemon/src/lib.rs", "pub mod process_memory", false),
     ...BEFORE_W3_PROBES,
+    ...BEFORE_W4_PROBES,
 ];
 /** The w2 build's readings of the same behaviours. */
 const W2_PROBES = [
@@ -372,6 +423,7 @@ const W2_PROBES = [
         "pub const C_HEAP_ARENAS: usize = 4",
     ),
     ...BEFORE_W3_PROBES,
+    ...BEFORE_W4_PROBES,
 ];
 const SHARED_BEHAVIOURS = {
     memory_injection: "switchable",
@@ -381,6 +433,7 @@ const SHARED_BEHAVIOURS = {
     stream_tags_stripped: true,
     search_progress: false,
     statement_lifetime: false,
+    current_work_delivery: false,
     background_cache_points: "system-and-message",
 } as const;
 const C8_BEHAVIOURS = {
@@ -591,11 +644,11 @@ export const W2_VARIANTS: Record<DaemonVariant, VariantRecord> = {
 };
 
 /**
- * What each daemon variant of the current build (`eval/w3-all`) provides: the w2 builds' table
- * with the lifetime class on captured statements and the system prompt's cache point alone on a
+ * What each daemon variant of the `eval/w3-all` build provides: the w2 builds' table with the
+ * lifetime class on captured statements and the system prompt's cache point alone on a
  * background call.
  */
-export const DAEMON_VARIANTS = Object.fromEntries(
+export const W3_VARIANTS = Object.fromEntries(
     Object.entries(W2_VARIANTS).map(([variant, record]): [string, VariantRecord] => [
         variant,
         {
@@ -604,6 +657,23 @@ export const DAEMON_VARIANTS = Object.fromEntries(
             background_cache_points: "system",
             probes: [...record.probes.filter((p) => !BEFORE_W3_PROBES.includes(p)), ...W3_PROBES],
             notes: { ...record.notes, ...W3_NOTES },
+        },
+    ]),
+) as Record<DaemonVariant, VariantRecord>;
+
+/**
+ * What each daemon variant of the current build (`eval/w4`) provides: the w3 build's table with
+ * work in progress approved and served in its own element of `<project-memory>`.
+ */
+export const DAEMON_VARIANTS = Object.fromEntries(
+    Object.entries(W3_VARIANTS).map(([variant, record]): [string, VariantRecord] => [
+        variant,
+        {
+            ...record,
+            current_work_delivery: true,
+            sources: [...record.sources, MEMORY_RENDER],
+            probes: [...record.probes.filter((p) => !BEFORE_W4_PROBES.includes(p)), ...W4_PROBES],
+            notes: { ...record.notes, ...W4_NOTES },
         },
     ]),
 ) as Record<DaemonVariant, VariantRecord>;
@@ -649,9 +719,14 @@ const C8_BUILD: AuditedBuild = {
  */
 export const AUDITED_BUILDS: readonly [AuditedBuild, ...AuditedBuild[]] = [
     {
+        commit: "6aabc77e16cb2765a4a59ccd5898688b787e8b69",
+        label: "eval/w4",
+        variants: DAEMON_VARIANTS,
+    },
+    {
         commit: "a996cc46602659e6225fd850395e2e988048648e",
         label: "eval/w3-all",
-        variants: DAEMON_VARIANTS,
+        variants: W3_VARIANTS,
     },
     {
         commit: "ae1b673b77651ce8a3b95892fe27f90d9287d869",

@@ -364,14 +364,21 @@ export interface DaemonStatusObservation {
 
 /**
  * The committed user statements (`stm_*` decisions whose commit the log holds) in
- * `final-store/kernel.sqlite`, with the sessions their capture rationale names and the count of
- * those whose payload names none; null when the store is absent, and an `error` when its
- * decisions cannot be read.
+ * `final-store/kernel.sqlite`. `sessions` and `unattributed` describe the live ones, which the
+ * Kernel still serves as approved: the sessions their capture rationale names and the count of
+ * those whose payload names none. A record retired during the run is left out for the whole
+ * run, the sessions before its retirement included. Null when the store is absent, and an
+ * `error` when its decisions cannot be read.
  */
 export type StatementObservation = {
     count: number;
     sessions: string[];
     unattributed: number;
+    /**
+     * Of `count`, the statement records an invalidation retired, such as the record of work in
+     * progress a later statement ended; absent on observations recorded before it was read.
+     */
+    retired?: number;
     /** Why the store's decisions could not be read, or null. */
     error: string | null;
     /**
@@ -387,6 +394,12 @@ export type StatementObservation = {
      * before it was read.
      */
     lifetimes?: Record<string, number>;
+    /**
+     * Of the facts classed `current_work`, those whose rationale holds an `ended_by` record: work
+     * in progress a later statement of the user ended. Absent on observations recorded before it
+     * was read.
+     */
+    ended_work?: number;
 } | null;
 
 /**
@@ -470,6 +483,8 @@ export interface DeliveryObservation {
     uncovered_sessions?: string[];
     /** Agent requests whose `<project-memory>` block renders a contested statement; absent on observations recorded before it was read. */
     contested_blocks?: number;
+    /** Agent requests whose `<project-memory>` block holds a `<CURRENT_WORK>` element; absent on observations recorded before it was read. */
+    work_blocks?: number;
     /** The keyed open items in the requests' rendered history; absent on observations recorded before it was read. */
     open_items?: OpenItemObservation;
 }
@@ -529,6 +544,9 @@ export function openItemsOf(text: string): { blocks: number; waiting: number; st
 /** A contested statement as `<project-memory>` renders it (Eidnara `canonical_memory.rs` `contested_line`). */
 const CONTESTED_LINE = / \(stated [^;()]+; contested [^()]+? by [^\s:]+: "/;
 
+/** The opening tag of the element `<project-memory>` renders live work in progress in (Eidnara `memory_render.rs` `push_category_open`). */
+const WORK_ELEMENT = /<CURRENT_WORK(?=[\s>])/;
+
 /** The text blocks of the body's user messages, where a prompt prefix lands. */
 const userTexts = (body: ConverseBody) =>
     (body.messages ?? [])
@@ -576,10 +594,12 @@ export function observeDelivery(
         covered_sessions: 0,
         uncovered_sessions: [],
         contested_blocks: 0,
+        work_blocks: 0,
         open_items: { blocks: 0, waiting_blocks: 0, stale_waiting_blocks: 0, stale_requests: [] },
     };
     const openItems = out.open_items as OpenItemObservation;
     let contestedBlocks = 0;
+    let workBlocks = 0;
     const delivered = new Set<string>();
     const index = (event: string | null) => eventIndex.get(event ?? "") ?? -1;
     const backgrounds = [...new Set(notes.map((n) => n.background))];
@@ -618,6 +638,7 @@ export function observeDelivery(
             memoryBlocks++;
             agent.block = true;
             if (memory.some((b) => CONTESTED_LINE.test(b.body))) contestedBlocks++;
+            if (memory.some((b) => WORK_ELEMENT.test(b.body))) workBlocks++;
         }
         const items = openItemsOf(given);
         openItems.blocks += items.blocks;
@@ -660,6 +681,7 @@ export function observeDelivery(
     out.notes.missing = notes.filter((n) => n.owed && !delivered.has(n.event)).map((n) => n.event);
     out.memory_blocks = memoryBlocks;
     out.contested_blocks = contestedBlocks;
+    out.work_blocks = workBlocks;
     out.sessions = new Set(agentCalls.map((c) => c.session)).size;
     const owed = owingRequests(agentCalls, lastCapture, lastCall, statementSessions, projectOf);
     out.memory_due = owed.length > 0;
@@ -980,7 +1002,8 @@ export function readDescriptors(
 
 /**
  * The accepted user statements of a final Kernel store: `stm_*` decisions, each naming its capture
- * session in the rationale of its JSON payload. Null when the store is absent or unreadable.
+ * session in the rationale of its JSON payload, with the live ones told apart from those an
+ * invalidation retired. Null when the store is absent or unreadable.
  */
 export function readStatements(kernelPath: string): StatementObservation {
     if (!lstatSync(kernelPath, { throwIfNoEntry: false })?.isFile()) return null;
@@ -989,14 +1012,23 @@ export function readStatements(kernelPath: string): StatementObservation {
         db = new Database(kernelPath, { readonly: true });
         const rows = db
             .query(
-                `select decision_payload as p from decisions
+                `select decision_payload as p,
+                        object_id in (select object_id from object_registry
+                                      where invalidated_commit_seq is not null) as retired
+                 from decisions
                  where object_id glob 'stm_*'
                    and created_commit_seq in (select commit_seq from commit_log)`,
             )
-            .all() as { p: Uint8Array | string }[];
+            .all() as { p: Uint8Array | string; retired: number }[];
         const sessions = new Set<string>();
         let unattributed = 0;
-        for (const { p } of rows) {
+        let retired = 0;
+        // A retired record approves nothing, so no later session owes its statement's block.
+        for (const { p, retired: gone } of rows) {
+            if (gone) {
+                retired++;
+                continue;
+            }
             const session = rationaleOf(p)?.session;
             if (typeof session === "string") sessions.add(session);
             else unattributed++;
@@ -1018,16 +1050,23 @@ export function readStatements(kernelPath: string): StatementObservation {
                    and created_commit_seq in (select commit_seq from commit_log)`,
             )
             .all() as { p: Uint8Array | string }[];
+        let endedWork = 0;
         for (const { p } of facts) {
-            const lifetime = rationaleOf(p)?.lifetime;
+            const rationale = rationaleOf(p);
+            const lifetime = rationale?.lifetime;
             if (typeof lifetime === "string") lifetimes[lifetime] = (lifetimes[lifetime] ?? 0) + 1;
+            const end = rationale?.ended_by;
+            const record = end !== null && typeof end === "object" && !Array.isArray(end);
+            if (lifetime === "current_work" && record) endedWork++;
         }
         return {
             count: rows.length,
             sessions: [...sessions].sort(),
             unattributed,
+            retired,
             error: null,
             lifetimes,
+            ended_work: endedWork,
             lineages: {
                 count: lineages.length,
                 largest: Math.max(0, ...lineages.map((l) => l.n)),
@@ -1044,8 +1083,13 @@ export function readStatements(kernelPath: string): StatementObservation {
     }
 }
 
-/** The lifetime classes capture writes into a fact's rationale on a build with `statement_lifetime`. */
+/**
+ * The lifetime classes capture writes into a fact's rationale on a build with
+ * `statement_lifetime`; a build with `current_work_delivery` also names `request`.
+ */
 const LIFETIME_CLASSES: readonly string[] = ["lasting", "current_work", "status", "unsettled"];
+const lifetimeClasses = (caps: DaemonCapabilities): readonly string[] =>
+    caps.current_work_delivery ? [...LIFETIME_CLASSES, "request"] : LIFETIME_CLASSES;
 
 /** The rationale object a decision's JSON payload carries as a JSON string, or null when either fails to parse. */
 function rationaleOf(payload: Uint8Array | string): Record<string, unknown> | null {
@@ -1411,7 +1455,7 @@ function memoryMismatches(profile: ArmProfile, o: ArmObservation): string[] {
         out.push(`the final store's user statements cannot be read: ${o.statements.error}`);
     }
     const mode = deliveryOf(profile);
-    const statements = o.statements?.count ?? 0;
+    const statements = (o.statements?.count ?? 0) - (o.statements?.retired ?? 0);
     if (d.memory_due && mode === "automatic" && (d.due_blocks ?? d.memory_blocks) === 0) {
         out.push(
             `the final store holds ${statements} user statements captured before later sessions' agent requests, but none of those requests carried a <project-memory> block`,
@@ -1502,11 +1546,12 @@ export function fusedAnswerShare(search: ArmObservation["search"]): number | nul
 }
 
 /**
- * Evidence that contradicts what the bound build's variant declares for the w2 behaviours: the
- * lineage of each statement record and the `decisions_approval_refused` counter, contested
- * statements in the block and in search results, waiting lines outside a history block's newest
- * summarized segment, the `process_memory` block in the daemon's status, and the lifecycle
- * progress block on the fused route.
+ * Evidence that contradicts what the bound build's variant declares for the behaviours that
+ * differ by build: the lineage of each statement record and the `decisions_approval_refused`
+ * counter, the lifetime classes of captured facts, the `<CURRENT_WORK>` element and ended work,
+ * contested statements in the block and in search results, waiting lines outside a history
+ * block's newest summarized segment, the `process_memory` block in the daemon's status, and the
+ * lifecycle progress block on the fused route.
  */
 function buildMismatches(
     profile: ArmProfile,
@@ -1556,10 +1601,18 @@ function buildMismatches(
             `${classed} captured facts name a lifetime class in their rationale, which ${label} does not declare`,
         );
     }
-    const unknown = lifetimes.filter(([name]) => !LIFETIME_CLASSES.includes(name));
+    const classes = lifetimeClasses(caps);
+    const unknown = lifetimes.filter(([name]) => !classes.includes(name));
     if (caps.statement_lifetime && unknown.length > 0) {
         out.push(
-            `${unknown.reduce((sum, [, n]) => sum + n, 0)} captured facts name a lifetime class outside ${LIFETIME_CLASSES.join(", ")}: ${unknown.map(([name]) => name).join(", ")}`,
+            `${unknown.reduce((sum, [, n]) => sum + n, 0)} captured facts name a lifetime class outside ${classes.join(", ")}: ${unknown.map(([name]) => name).join(", ")}`,
+        );
+    }
+    const workBlocks = o.delivery?.work_blocks ?? 0;
+    const endedWork = o.statements?.ended_work ?? 0;
+    if (!caps.current_work_delivery && workBlocks + endedWork > 0) {
+        out.push(
+            `${workBlocks} agent requests carry a <CURRENT_WORK> element in <project-memory> and ${endedWork} captured facts record the statement that ended them, which ${label} does not declare`,
         );
     }
     const contested = (o.delivery?.contested_blocks ?? 0) + (o.search?.contested ?? 0);

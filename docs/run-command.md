@@ -265,6 +265,24 @@ retest's three arms, its build contrasts, and `prompt_caching: "on"`. It
 checks capability and caching evidence on both builds over a prefix of the
 scenario before the retest starts.
 
+`--qualification W4S` (`prereg/W4S.json`, revision 1) and
+`--qualification W4SH` (`prereg/W4SH.json`, revision 1) retest the
+`eval/w4` build against the `eval/w2b` build with `prompt_caching: "on"`,
+tier S on Pi, with W3S's arms, contrasts, control, no-source control, harm
+probes, and build contrasts (`eidnara` and `eidnara-hybrid` on `eval/w4`
+against `eidnara` on `eval/w2b`). W4S runs W3S's diagnosed seeds 104 and
+107 again and adds seed 108; W4SH runs W3SH's held-out seed 614 again and
+adds seed 615, and reports apart from W4S. No campaign ran seeds 108 and
+615 before (`docs/scenario.md`). Every arm runs at the retest's sim
+revision under the caching condition and grading revisions 10 to 14, `host`
+and the reference arm included, and each seed is four runs launched
+together as for W3S. The budget is $2k to $5k for W4S's twelve runs and
+$1.5k to $4k for W4SH's eight at the `v2` table, from the recorded $0.20 per
+event of the W3 retest over 590, 711, 587, 1,182, and 414 events.
+
+`--qualification W4P` (`prereg/W4P.json`, revision 1) is that retest's
+pilot: W3P's scenario and arms with W4S's build contrasts.
+
 `--qualification PCH` (`prereg/PCH.json`, revision 1) is the prompt-caching
 pilot: tier M on Pi over C8H's held-out seed 605 with `host` and `eidnara`
 (host first), the contrast `eidnara` vs `host`, C8H's

@@ -4,6 +4,7 @@ import { loadPrereg, loadQualification } from "../scenario/inputs";
 import {
     buildRefusal,
     promptCachingOf,
+    QUALIFICATIONS,
     qualificationHash,
     qualificationSeed,
     RANKING_GATE_ITEMS,
@@ -624,4 +625,76 @@ test("W3P runs the retest's three arms on C8H's held-out seed 605 with prompt ca
     expect(w3p.arms.run).toEqual(w3s.arms.run);
     expect(w3p.builds).toEqual(w3s.builds);
     expect(w3p.no_source_control).toBe("host");
+});
+
+test("W4S and W4SH retest the current build against the w2b build on two of W3's seeds and one fresh seed each", () => {
+    const S = loadPrereg("S");
+    const listed = (ids: readonly string[]) => ids.flatMap((id) => loadQualification(id).seeds);
+    const w4s = loadQualification("W4S");
+    const w4sh = loadQualification("W4SH");
+    for (const [retest, earlier] of [
+        [w4s, loadQualification("W3S")],
+        [w4sh, loadQualification("W3SH")],
+    ] as const) {
+        expect(validateQualification(retest, S)).toEqual([]);
+        expect(promptCachingOf(retest)).toBe("on");
+        expect(retest.corpus).toBe(earlier.corpus);
+        expect(retest.arms.run).toEqual(earlier.arms.run);
+        expect(retest.contrasts).toEqual(earlier.contrasts);
+        expect(retest.controls).toEqual(earlier.controls);
+        expect(retest.no_source_control).toBe(earlier.no_source_control);
+        expect(retest.analysis?.harm_probes).toEqual(earlier.analysis?.harm_probes);
+        // The earlier campaign its contrasts are also read against is the W3 retest.
+        expect(retest.analysis?.reference).toEqual({ campaign: "w2-s3", level: "seed" });
+        expect(retest.arms.order_by_seed).toHaveLength(retest.seeds.length);
+        // The current build is the treatment, and the reference stays the build W3 referred to.
+        expect(retest.builds?.current).toEqual({
+            label: "eval/w4",
+            commit: auditedBuild("eval/w4")?.commit as string,
+        });
+        expect(retest.builds?.reference).toEqual(earlier.builds?.reference);
+        expect(retest.builds?.contrasts).toEqual(earlier.builds?.contrasts);
+        expect(referenceBuildArms(retest)).toEqual(["eidnara"]);
+        const { current, reference } = retest.builds as NonNullable<typeof retest.builds>;
+        expect(buildRefusal(retest, current, ["host", "eidnara", "eidnara-hybrid"])).toBeNull();
+        expect(buildRefusal(retest, reference, ["eidnara"])).toBeNull();
+        expect(buildRefusal(retest, reference, ["eidnara-hybrid"])).not.toBeNull();
+        // A seed W3 ran keeps its arm order, and the orders of a registration differ by seed.
+        for (const [i, seed] of retest.seeds.entries()) {
+            const at = earlier.seeds.indexOf(seed);
+            if (at >= 0) {
+                expect(retest.arms.order_by_seed[i]).toEqual(earlier.arms.order_by_seed[at]);
+            }
+        }
+        expect(new Set(retest.arms.order_by_seed.map((o) => o.join())).size).toBe(
+            retest.seeds.length,
+        );
+    }
+    expect(w4s.fresh_seeds).toBe(true);
+    expect(w4s.seeds).toEqual([104, 107, 108]);
+    expect(w4sh.seeds).toEqual([614, 615]);
+    // Each registration adds one seed that no registration before W4S lists.
+    const earlier = listed(QUALIFICATIONS.slice(0, QUALIFICATIONS.indexOf("W4S")));
+    const used = [...S.seeds, ...earlier, ...(loadQualification("Q").holdout?.seeds ?? [])];
+    expect(w4s.seeds.filter((s) => !used.includes(s))).toEqual([108]);
+    expect(w4sh.seeds.filter((s) => !used.includes(s))).toEqual([615]);
+});
+
+test("W4P runs the retest's three arms on C8H's held-out seed 605 with prompt caching on", () => {
+    const w4p = loadQualification("W4P");
+    const w3p = loadQualification("W3P");
+    const w4s = loadQualification("W4S");
+    expect(validateQualification(w4p, loadPrereg("M"))).toEqual([]);
+    expect(promptCachingOf(w4p)).toBe("on");
+    // The pilot's scenario: W3P's tier, split, seed, and control decide its items.
+    expect([w4p.tier, w4p.corpus, w4p.seeds, w4p.controls]).toEqual([
+        w3p.tier,
+        w3p.corpus,
+        w3p.seeds,
+        w3p.controls,
+    ]);
+    expect(w4p.arms).toEqual(w3p.arms);
+    expect(w4p.contrasts).toEqual(w3p.contrasts);
+    expect(w4p.builds).toEqual(w4s.builds);
+    expect(w4p.no_source_control).toBe("host");
 });

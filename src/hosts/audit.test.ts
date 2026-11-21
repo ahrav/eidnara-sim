@@ -59,6 +59,7 @@ const VARIANT: VariantRecord = {
     process_memory: false,
     search_progress: false,
     statement_lifetime: false,
+    current_work_delivery: false,
     background_cache_points: "system-and-message",
     evidence: "test",
     sources: ["fixture.rs", "config.rs"],
