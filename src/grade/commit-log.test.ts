@@ -534,6 +534,42 @@ describe("the recorded command log of a snapshot", () => {
         expect(resumed?.(1_200)).toBe(200);
     });
 
+    test("a turn a resume delivers runs from its undelivered marker to its EndTurn", () => {
+        // Turn X began at wall 1,000 and stopped inside the user-sim's delivery, with a fatal
+        // record at wall 2,000 or with none. The run resumed at wall 200,000 with offset -196 s,
+        // journaled the marker, and the turn's prompt ran until its EndTurn at wall 206,000.
+        // Under the first offset a stamp of 7,000 is wall 7,000, which lies in no turn; under
+        // the second it is wall 203,000, inside the delivered turn.
+        const delivered = (fatal: object[]) => [
+            offset(1_000, 0, 0),
+            { kind: "BeginTurn", event: "e-x", arm: "host", wall_ms: 1_000, scenario_ms: 0 },
+            ...fatal,
+            offset(200_000, -196, 4_000),
+            {
+                kind: "ItemState",
+                state: "undelivered",
+                event: "e-x",
+                arm: "host",
+                wall_ms: 200_100,
+                scenario_ms: 4_000,
+            },
+            { kind: "EndTurn", event: "e-x", arm: "host", wall_ms: 206_000, scenario_ms: 9_900 },
+        ];
+        const stop = {
+            kind: "ItemState",
+            state: "failed",
+            fatal: true,
+            event: "e-x",
+            arm: "host",
+            wall_ms: 2_000,
+            scenario_ms: 1_000,
+        };
+        for (const fatal of [[], [stop]]) {
+            const resumed = armClock(delivered(fatal) as Parameters<typeof armClock>[0], "host");
+            expect(resumed?.(7_000)).toBe(6_900);
+        }
+    });
+
     test("a stamp whose second began before the arm's first entry is read at that entry", () => {
         // The arm's first entry is at wall 1,500; a commit at wall 1,700 is recorded as second 1,000.
         const late = [offset(1_500, 0, 0), ...turn("e-first", 1_600, 5_000, 0)];

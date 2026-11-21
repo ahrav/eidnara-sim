@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import {
     appendFileSync,
+    closeSync,
     existsSync,
+    fdatasyncSync,
     constants as fsConstants,
     lstatSync,
     mkdirSync,
@@ -87,6 +89,7 @@ import {
     type Llm,
     normaliser,
     Pairing,
+    type PairingRecord,
     proxyUserSim,
     sessionRules,
     Tape,
@@ -111,6 +114,7 @@ import {
     readPluginLog,
     requireAuditedVariants,
 } from "./capabilities";
+import { MAX_TIMER_MS } from "./deadline";
 import { warmHttpClient } from "./httpclient";
 import {
     type Entry,
@@ -982,8 +986,8 @@ const SESSION_START_ONLY = new Set([
 ]);
 const COUNTS = ["count", "calls", "sessions"];
 const DURATIONS = ["duration_ms", "delay_ms", "timeout_ms"];
-/** The largest delay a JavaScript timer honors; longer values fire at once. */
-export const MAX_TIMER_MS = 2_147_483_647;
+
+export { MAX_TIMER_MS };
 
 /** A run's own wall budget, refused unless a positive integer a timer can hold. */
 function requireWallBudget(ms: number | undefined): number | undefined {
@@ -1933,6 +1937,16 @@ export class SessionCalls {
     }
 }
 
+/** Flushes the data of the file at `path` to disk. */
+function syncFile(path: string): void {
+    const fd = openSync(path, fsConstants.O_RDONLY);
+    try {
+        fdatasyncSync(fd);
+    } finally {
+        closeSync(fd);
+    }
+}
+
 /**
  * The user-sim's model call through the gateway. A call that fails in transport, or stays
  * pending past its attempt's bound, is sent again within `policy`, the turn deadline the single
@@ -1953,10 +1967,25 @@ export function userSimCall(o: {
             o.policy,
             transientUserSim,
             (attemptMs) => proxyUserSim(o.gatewayUrl, o.model, o.maxTokens, attemptMs)(prompt),
-            undefined,
-            undefined,
-            o.onRetry,
+            { onRetry: o.onRetry },
         );
+}
+
+/**
+ * Whether `arm`'s open turn `event` stopped inside the user-sim's delivery. The user-sim appends
+ * a turn's pairing record, and the run syncs it to disk, ahead of the host prompt, so an open
+ * turn whose record is still to come stopped ahead of the prompt and a resume delivers it. A
+ * turn inside a P14 window (`inWindow`) decides its pushback from the preceding turn's work,
+ * held in the stopped process's memory, so that turn takes the interruption a resume applies.
+ */
+export function awaitsDelivery(
+    records: readonly PairingRecord[],
+    arm: string | null,
+    event: string,
+    inWindow: boolean,
+): boolean {
+    const paired = records.some((r) => r.kind === "turn" && r.arm === arm && r.event === event);
+    return !inWindow && !paired;
 }
 
 async function runArms(
@@ -2285,19 +2314,15 @@ async function runArms(
                   }
                 : undefined;
         },
-        // The user-sim appends a turn's pairing record ahead of the host prompt, so an open
-        // turn whose record is still to come stopped inside the user-sim's delivery, and the
-        // resume delivers it. A turn inside a P14 window decides its pushback from the
-        // preceding turn's work, held in the stopped process's memory, so that turn takes the
-        // interruption a resume applies.
         undelivered: (event: string): boolean => {
-            const arm: string | null = scheduler.currentArm;
             const turn = scriptedById.get(event);
             return (
                 turn !== undefined &&
-                rulesInForce(turn) === null &&
-                !pairing.records.some(
-                    (x) => x.kind === "turn" && x.arm === arm && x.event === event,
+                awaitsDelivery(
+                    pairing.records,
+                    scheduler.currentArm,
+                    event,
+                    rulesInForce(turn) !== null,
                 )
             );
         },
@@ -2399,9 +2424,9 @@ async function runArms(
         requestDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
         firstArrival,
     });
-    await gateway.start();
     // The first `fetch` of the process runs here, ahead of every host launch.
     await warmHttpClient();
+    await gateway.start();
     const handlersFailed = () => {
         const [first] = gateway.failures;
         if (!first) return;
@@ -2763,6 +2788,9 @@ async function runArms(
                         // host prompt share it.
                         const opened = Date.now();
                         const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
+                        // The turn's pairing record is on disk before the host is prompted, so
+                        // a resume after any stop reads from it which turns the host was sent.
+                        syncFile(join(o.out, "pairing.jsonl"));
                         guard();
                         const user = {
                             session: e.session,

@@ -23,7 +23,6 @@ export async function warmHttpClient(deadlineMs = 10_000): Promise<void> {
     });
     try {
         const call = fetch(server.url, { keepalive: false }).then((r) => r.status);
-        call.catch(() => undefined);
         const status = await withDeadline(call, deadlineMs);
         if (status !== 204) {
             throw new HarnessFailure(

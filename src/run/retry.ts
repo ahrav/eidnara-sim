@@ -1,3 +1,4 @@
+import { withDeadline } from "./deadline";
 import { HarnessFailure, TransportFailure } from "./journal";
 
 /**
@@ -22,26 +23,7 @@ export const ATTEMPT_SLACK_MS = 1_000;
  * (`docs/run.md`, Undelivered turns), so the call's own timeout is one bound and this timer is
  * the other.
  */
-export class AttemptOverdue extends Error {
-    override name = "TimeoutError";
-}
-
-/** The longest delay a timer takes; a longer one fires at once. */
-const MAX_TIMER_MS = 2 ** 31 - 1;
-
-/** Settles as `call` does, or rejects with `AttemptOverdue` once `ms` pass with it pending. */
-function bounded<T>(what: string, ms: number, call: Promise<T>): Promise<T> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const overdue = new Promise<never>((_, reject) => {
-        timer = setTimeout(
-            () => reject(new AttemptOverdue(`${what} stayed pending past ${ms} ms`)),
-            Math.min(ms, MAX_TIMER_MS),
-        );
-    });
-    // The pending call keeps a handler, so its late rejection stays a handled one.
-    call.catch(() => undefined);
-    return Promise.race([call, overdue]).finally(() => clearTimeout(timer));
-}
+class AttemptOverdue extends Error {}
 
 export const gatewayRetry = (totalMs: number): RetryPolicy => ({
     attempts: 3,
@@ -51,21 +33,27 @@ export const gatewayRetry = (totalMs: number): RetryPolicy => ({
 
 export type Transient = (caught: unknown) => boolean;
 
+/** `sleep` and `now` replace the backoff wait and the budget's clock; `onRetry` hears each failed attempt's number and error before its backoff or the final `TransportFailure`. */
+export interface RetrySeams {
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+    onRetry?: (attempt: number, error: string) => void;
+}
+
 /**
  * `call` enforces the `attemptMs` it receives as its own timeout. An attempt still pending
  * `policy.slackMs` past that is ended here and retried as a transient failure, so the whole
- * call settles within `totalMs` plus one slack whatever `call` does. `onRetry` hears each failed
- * attempt's number and error before its backoff or the final `TransportFailure`.
+ * call settles within `totalMs` plus one slack whatever `call` does.
  */
 export async function withRetry<T>(
     what: string,
     policy: RetryPolicy,
     transient: Transient,
     call: (attemptMs: number) => Promise<T>,
-    sleep: (ms: number) => Promise<void> = Bun.sleep,
-    now: () => number = performance.now.bind(performance),
-    onRetry?: (attempt: number, error: string) => void,
+    seams: RetrySeams = {},
 ): Promise<T> {
+    const sleep = seams.sleep ?? Bun.sleep;
+    const now = seams.now ?? performance.now.bind(performance);
     const started = now();
     const share = Math.max(1, Math.floor(policy.totalMs / policy.attempts));
     const slackMs = policy.slackMs ?? ATTEMPT_SLACK_MS;
@@ -77,12 +65,20 @@ export async function withRetry<T>(
         // A backoff that woke past the budget starts no further attempt.
         if (attempt > 1 && left <= 0) throw exhausted(attempt - 1);
         const attemptMs = Math.max(1, attempt === policy.attempts ? left : Math.min(share, left));
+        const boundMs = attemptMs + slackMs;
         try {
-            return await bounded(what, attemptMs + slackMs, call(attemptMs));
+            const settled = await withDeadline(
+                call(attemptMs).then((value) => ({ value })),
+                boundMs,
+            );
+            if (settled === null) {
+                throw new AttemptOverdue(`${what} stayed pending past ${boundMs} ms`);
+            }
+            return settled.value;
         } catch (caught) {
             if (!(caught instanceof AttemptOverdue) && !transient(caught)) throw caught;
             errors.push(caught instanceof Error ? caught.message : String(caught));
-            onRetry?.(attempt, errors.at(-1) as string);
+            seams.onRetry?.(attempt, errors.at(-1) as string);
             const pause = policy.backoffMs[Math.min(attempt - 1, policy.backoffMs.length - 1)] ?? 0;
             const remaining = policy.totalMs - (now() - started) - pause;
             if (attempt >= policy.attempts || remaining <= 0) throw exhausted(attempt);

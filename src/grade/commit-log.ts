@@ -267,6 +267,7 @@ const JUMP_MS = 1_000;
 interface ClockEntry {
     kind?: unknown;
     event?: unknown;
+    state?: unknown;
     arm: string | null;
     wall_ms: number;
     scenario_ms: number;
@@ -314,11 +315,14 @@ export function armClock(
         .sort((a, b) => a.wall - b.wall);
     if (spans.length === 0) return null;
     // A turn runs from its `BeginTurn` to its `EndTurn`; a turn a kill cut ends at the next
-    // entry that names its event (the recovery's `ItemState` or `Event`).
+    // entry that names its event (the recovery's `ItemState` or `Event`). A turn a resume
+    // delivers runs from the resume's `undelivered` marker: the host's prompt follows it.
     const begins = new Map<unknown, number>();
     const turns: [from: number, to: number][] = [];
     for (const e of mine) {
-        if (e.kind === "BeginTurn") begins.set(e.event, e.wall_ms);
+        const starts =
+            e.kind === "BeginTurn" || (e.kind === "ItemState" && e.state === "undelivered");
+        if (starts) begins.set(e.event, e.wall_ms);
         else if (begins.has(e.event) && /^(?:EndTurn|ItemState|Event)$/.test(String(e.kind))) {
             turns.push([begins.get(e.event) as number, e.wall_ms]);
             begins.delete(e.event);

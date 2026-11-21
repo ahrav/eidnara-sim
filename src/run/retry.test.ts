@@ -28,8 +28,7 @@ test("a transient failure is retried with the same request, and the success is r
             if (++calls < 3) throw new HarnessFailure("user-sim call timed out after 300000 ms");
             return "reply";
         },
-        time.sleep,
-        time.now,
+        { sleep: time.sleep, now: time.now },
     );
     expect(got).toBe("reply");
     expect(deadlines).toEqual([300_000, 300_000, 900_000 - 2_000 - 8_000]);
@@ -49,8 +48,7 @@ test("the attempts and backoffs together stay inside the total budget", async ()
             time.spend(ms);
             throw new Error("The socket connection was closed unexpectedly");
         },
-        time.sleep,
-        time.now,
+        { sleep: time.sleep, now: time.now },
     );
     await expect(failure).rejects.toBeInstanceOf(TransportFailure);
     await expect(failure).rejects.toThrow(/failed after 3 attempt\(s\)/);
@@ -71,8 +69,7 @@ test("an error outside transport is rethrown at once, unwrapped", async () => {
                 calls++;
                 throw refusal;
             },
-            time.sleep,
-            time.now,
+            { sleep: time.sleep, now: time.now },
         ),
     ).rejects.toBe(refusal);
     expect(calls).toBe(1);
@@ -107,11 +104,13 @@ test("a backoff that wakes past the budget starts no further attempt", async () 
             calls++;
             throw new Error("reset");
         },
-        async () => {
-            // The sleep overshoots the whole budget.
-            t += 5_000;
+        {
+            sleep: async () => {
+                // The sleep overshoots the whole budget.
+                t += 5_000;
+            },
+            now: () => t,
         },
-        () => t,
     );
     await expect(failure).rejects.toThrow("judge call failed after 1 attempt(s): reset");
     expect(calls).toBe(1);
@@ -128,14 +127,20 @@ test("a backoff that would end past the budget stops before sleeping", async () 
             t += 100;
             throw new Error("reset");
         },
-        async () => {
-            slept++;
+        {
+            sleep: async () => {
+                slept++;
+            },
+            now: () => t,
         },
-        () => t,
     );
     await expect(failure).rejects.toThrow("after 1 attempt(s)");
     expect(slept).toBe(0);
 });
+
+// The three tests below hold the budget's clock at zero, so the attempt count follows from the
+// policy alone and the real timer does one thing: end the pending attempt.
+const frozen = { now: () => 0 };
 
 test("an attempt whose call stays pending is ended at its bound and the next attempt's value is returned", async () => {
     const seen: [number, string][] = [];
@@ -147,9 +152,7 @@ test("an attempt whose call stays pending is ended at its bound and the next att
         () => false,
         // The first call ignores its timeout, as a `fetch` that never settles does.
         () => (++calls === 1 ? new Promise<string>(() => undefined) : Promise.resolve("reply")),
-        undefined,
-        undefined,
-        (attempt, error) => seen.push([attempt, error]),
+        { ...frozen, onRetry: (attempt, error) => seen.push([attempt, error]) },
     );
     expect(got).toBe("reply");
     expect(calls).toBe(2);
@@ -157,17 +160,24 @@ test("an attempt whose call stays pending is ended at its bound and the next att
     expect(performance.now() - started).toBeGreaterThanOrEqual(55);
 });
 
-test("attempts that all stay pending end in a TransportFailure inside the budget and its slack", async () => {
-    const started = performance.now();
+test("attempts that all stay pending end in a TransportFailure naming each one", async () => {
+    const attempts: number[] = [];
     const failure = withRetry(
         "user-sim call",
-        { attempts: 3, totalMs: 150, backoffMs: [1], slackMs: 10 },
+        { attempts: 3, totalMs: 60, backoffMs: [1], slackMs: 5 },
         transientUserSim,
-        () => new Promise<string>(() => undefined),
+        (ms) => {
+            attempts.push(ms);
+            return new Promise<string>(() => undefined);
+        },
+        frozen,
     );
     await expect(failure).rejects.toBeInstanceOf(TransportFailure);
-    await expect(failure).rejects.toThrow(/failed after 3 attempt\(s\): .*stayed pending past/);
-    expect(performance.now() - started).toBeLessThan(1_000);
+    await expect(failure).rejects.toThrow(
+        "user-sim call failed after 3 attempt(s): user-sim call stayed pending past 25 ms; " +
+            "user-sim call stayed pending past 25 ms; user-sim call stayed pending past 65 ms",
+    );
+    expect(attempts).toEqual([20, 20, 60]);
 });
 
 test("a pending attempt's late rejection after its bound stays handled", async () => {
@@ -183,6 +193,7 @@ test("a pending attempt's late rejection after its bound stays handled", async (
                       late = reject;
                   })
                 : Promise.resolve("verdict"),
+        frozen,
     );
     late(new Error("aborted long after"));
     await Bun.sleep(5);

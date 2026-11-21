@@ -5,11 +5,18 @@ import { join } from "node:path";
 import { fixtureEvents } from "../../tests/run-fixture";
 import { SEAMS } from "../scenario/faults";
 import type { Plan } from "../usersim/plan";
-import { normaliser, Pairing, type ScriptTurn, Tape, UserSim } from "../usersim/usersim";
+import {
+    normaliser,
+    Pairing,
+    type PairingRecord,
+    type ScriptTurn,
+    Tape,
+    UserSim,
+} from "../usersim/usersim";
 import { interruptions } from "./interruptions";
 import { type Entry, Journal } from "./journal";
 import type { RetryPolicy } from "./retry";
-import { userSimCall } from "./run";
+import { awaitsDelivery, userSimCall } from "./run";
 import { type ArmDriver, Scheduler, scenarioId, TransportFailure } from "./scheduler";
 
 const EVENTS = fixtureEvents(3);
@@ -28,7 +35,8 @@ const PLAN: Plan = {
     interruptMs: new Map(),
 };
 const REPLY = "Why did you pick that approach?";
-const QUICK: RetryPolicy = { attempts: 3, totalMs: 300, backoffMs: [1], slackMs: 20 };
+/** A 200 ms share per attempt; the last attempt starts with about 170 ms of the budget left. */
+const QUICK: RetryPolicy = { attempts: 3, totalMs: 600, backoffMs: [1], slackMs: 10 };
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -76,9 +84,11 @@ function harness(root: string, policy: RetryPolicy = QUICK) {
     });
     /** The text the host received, by turn. */
     const sent = new Map<string, string>();
+    /** What held the clock while the driver restored the arm. */
+    const heldAtResume: string[] = [];
     const driver: ArmDriver = {
         reset: async () => undefined,
-        resume: async () => undefined,
+        resume: async () => void heldAtResume.push(...(scheduler.clock?.busyIds() ?? [])),
         fault: async () => ({}),
         event: async (e) => {
             if (e.kind !== "user_turn") return {};
@@ -88,17 +98,16 @@ function harness(root: string, policy: RetryPolicy = QUICK) {
             return { user: { session: e.session, label: d.label, delivered: d.delivered } };
         },
     };
-    const scheduler = new Scheduler({
+    const scheduler: Scheduler = new Scheduler({
         events: EVENTS,
         faults: [],
         journal,
         settleMs: 0,
         order: ["a"],
         drivers: { a: driver },
-        undelivered: (event) =>
-            !pairing.records.some((r) => r.kind === "turn" && r.arm === "a" && r.event === event),
+        undelivered: (event) => awaitsDelivery(pairing.records, "a", event, false),
     });
-    return { journal, pairing, retries, sent, scheduler };
+    return { journal, pairing, retries, sent, heldAtResume, scheduler };
 }
 
 const dir = () => mkdtempSync(join(tmpdir(), "sim-delivery-"));
@@ -135,6 +144,8 @@ function expectReplayed(
     expect(events.map((e) => [e.event, e.outcome])).toEqual(EVENTS.map((e) => [e.id, "ok"]));
     expect(interruptions(entries).a?.interrupted_turns).toBe(0);
     expect(entries.at(-1)?.kind).toBe("EndRun");
+    // The open turn held the clock while the driver restored the arm, as the journal reads it.
+    expect(h.heldAtResume).toEqual([`turn:${ASKED.id}`]);
 }
 
 describe("a user-sim model call that never answers", () => {
@@ -143,11 +154,11 @@ describe("a user-sim model call that never answers", () => {
         const bodies = gateway((n) => n === 1);
         const h = harness(dir());
         await h.scheduler.run();
-        // The first attempt stayed pending past its 100 ms share and 20 ms slack; the second
+        // The first attempt stayed pending past its 200 ms share and 10 ms slack; the second
         // carried the same request and its reply is the one delivered.
         expect(h.retries).toHaveLength(1);
         expect(h.retries[0]?.[0]).toBe(1);
-        expect(h.retries[0]?.[1]).toMatch(/^user-sim call stayed pending past 120 ms$/);
+        expect(h.retries[0]?.[1]).toBe("user-sim call stayed pending past 210 ms");
         expect(bodies).toHaveLength(2);
         expect(bodies[1]).toBe(bodies[0] as string);
         expect(h.sent).toEqual(control.sent);
@@ -166,8 +177,8 @@ describe("a user-sim model call that never answers", () => {
         const first = harness(root);
         const started = performance.now();
         await expect(first.scheduler.run()).rejects.toBeInstanceOf(TransportFailure);
-        // Three attempts and two backoffs inside the 300 ms budget, plus one slack each.
-        expect(performance.now() - started).toBeLessThan(2_000);
+        // Three attempts and two backoffs inside the 600 ms budget, plus one slack each.
+        expect(performance.now() - started).toBeLessThan(5_000);
         expect(bodies).toHaveLength(3);
         expect(first.retries.map(([n]) => n)).toEqual([1, 2, 3]);
         expect(of(first.journal.entries, "ItemState")).toMatchObject([
@@ -199,7 +210,7 @@ describe("a run stopped inside the user-sim's delivery", () => {
     async function killedInDelivery(root: string) {
         const bodies = gateway(() => true);
         // One attempt long enough to outlast the test: the harness sits in the call.
-        const h = harness(root, { attempts: 1, totalMs: 5_000, backoffMs: [0], slackMs: 20 });
+        const h = harness(root, { attempts: 1, totalMs: 5_000, backoffMs: [0], slackMs: 10 });
         h.scheduler.run().catch(() => undefined);
         while (bodies.length === 0) await Bun.sleep(5);
         expect(of(h.journal.entries, "BeginTurn")).toHaveLength(1);
@@ -323,6 +334,64 @@ describe("a run stopped inside the user-sim's delivery", () => {
     });
 });
 
+describe("the pairing log decides which open turn awaits delivery", () => {
+    const record = (arm: string, event: string) =>
+        ({ kind: "turn", arm, event }) as unknown as PairingRecord;
+
+    test("a turn with its own arm's record was sent, and another arm's record leaves it awaiting", () => {
+        expect(awaitsDelivery([], "a", "e-1", false)).toBe(true);
+        expect(awaitsDelivery([record("a", "e-1")], "a", "e-1", false)).toBe(false);
+        expect(awaitsDelivery([record("b", "e-1")], "a", "e-1", false)).toBe(true);
+        expect(awaitsDelivery([record("a", "e-2")], "a", "e-1", false)).toBe(true);
+        const diverged = { kind: "divergedAt", arm: "a", event: "e-1" } as unknown as PairingRecord;
+        expect(awaitsDelivery([diverged], "a", "e-1", false)).toBe(true);
+    });
+
+    test("a turn inside a P14 window takes the interruption whatever the log holds", () => {
+        expect(awaitsDelivery([], "a", "e-1", true)).toBe(false);
+    });
+});
+
+test("a turn an earlier resume marked interrupted stays interrupted", async () => {
+    const root = dir();
+    const journal = new Journal(join(root, "journal.jsonl"));
+    const stamp = { arm: "a", scenario_ms: 0 };
+    const scenario = scenarioId(EVENTS, []);
+    const [start, turn] = EVENTS as [(typeof EVENTS)[0], (typeof EVENTS)[0]];
+    journal.append({ kind: "StartRun", arm: null, scenario_ms: 0, order: ["a"], scenario });
+    journal.append({ kind: "StartArm", ...stamp });
+    journal.append({ kind: "Event", ...stamp, event: start.id, outcome: "ok" });
+    journal.append({ kind: "BeginTurn", ...stamp, event: turn.id, probe: null });
+    // The resume that wrote the marker stopped before the turn's Event.
+    journal.append({ kind: "ResumeRun", arm: null, scenario_ms: 0, order: ["a"], scenario });
+    const cut = { state: "failed(interrupted)", cause: "harness-exit" };
+    journal.append({ kind: "ItemState", ...stamp, event: turn.id, ...cut });
+    const delivered: string[] = [];
+    await new Scheduler({
+        events: EVENTS,
+        faults: [],
+        journal,
+        settleMs: 0,
+        order: ["a"],
+        drivers: {
+            a: {
+                reset: async () => undefined,
+                fault: async () => ({}),
+                event: async (e) => {
+                    delivered.push(e.id);
+                    return {};
+                },
+            },
+        },
+        undelivered: () => true,
+    }).run();
+    expect(delivered).not.toContain(turn.id);
+    expect(of(journal.entries, "ItemState", turn.id)).toHaveLength(1);
+    expect(of(journal.entries, "Event", turn.id)).toMatchObject([
+        { outcome: "failed(interrupted)" },
+    ]);
+});
+
 test("a journal whose undelivered marker names a turn with a user record is refused", async () => {
     const root = dir();
     const journal = new Journal(join(root, "journal.jsonl"));
@@ -348,4 +417,40 @@ test("a journal whose undelivered marker names a turn with a user record is refu
     await expect(scheduler.run()).rejects.toThrow(
         `undelivered ${turn.id} names no turn awaiting delivery`,
     );
+});
+
+test("a journal whose undelivered marker names a turn yet to begin, or an ended one, is refused", async () => {
+    const [start, turn] = EVENTS as [(typeof EVENTS)[0], (typeof EVENTS)[0]];
+    const stamp = { arm: "a", scenario_ms: 0 };
+    const refused = async (before: Record<string, unknown>[]) => {
+        const journal = new Journal(join(dir(), "journal.jsonl"));
+        const scenario = scenarioId(EVENTS, []);
+        journal.append({ kind: "StartRun", arm: null, scenario_ms: 0, order: ["a"], scenario });
+        journal.append({ kind: "StartArm", ...stamp });
+        journal.append({ kind: "Event", ...stamp, event: start.id, outcome: "ok" });
+        for (const e of before) journal.append({ ...stamp, event: turn.id, ...e } as never);
+        journal.append({ kind: "ItemState", ...stamp, event: turn.id, state: "undelivered" });
+        const scheduler = new Scheduler({
+            events: EVENTS,
+            faults: [],
+            journal,
+            settleMs: 0,
+            order: ["a"],
+            drivers: {
+                a: {
+                    reset: async () => undefined,
+                    fault: async () => ({}),
+                    event: async () => ({}),
+                },
+            },
+        });
+        await expect(scheduler.run()).rejects.toThrow(
+            `undelivered ${turn.id} names no turn awaiting delivery`,
+        );
+    };
+    await refused([]);
+    await refused([
+        { kind: "BeginTurn", probe: null },
+        { kind: "EndTurn", outcome: "ok", prompt_ms: null },
+    ]);
 });

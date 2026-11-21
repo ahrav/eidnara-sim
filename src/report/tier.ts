@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { GradeLog, type GradeRecord } from "../grade/probes";
 import { armBase } from "../hosts/arms";
 import { loadRun } from "../oracle/logs";
-import { oracleReport, runOracles } from "../oracle/oracles";
+import { oracleReport } from "../oracle/oracles";
 import { recoveries } from "../oracle/recovery";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
@@ -28,6 +28,7 @@ import {
     runKey,
     tierInput,
 } from "./observe";
+import { measuredActivations } from "./redelivery";
 import type { TierReport } from "./render";
 import { soak, soakByMonth } from "./soak";
 import { propertyWitness } from "./witness";
@@ -366,9 +367,9 @@ export function tierReport(
         grades: runs.flatMap((g) => g.grades),
         verdict: evaluateTier(prereg, input),
         oracles:
-            oracleReport(runs.map((g) => ({ tier: g.run.tier, activations: runOracles(g.run) })))[
-                prereg.tier
-            ] ?? {},
+            oracleReport(
+                runs.map((g) => ({ tier: g.run.tier, activations: measuredActivations(g.run) })),
+            )[prereg.tier] ?? {},
         recoveries: runs
             .filter((g) => !excludedFromFaultMetrics(g.witnesses ?? []))
             .flatMap((g) => recoveries(g.run).map((r) => ({ ...r, run: g.run.dir }))),

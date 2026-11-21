@@ -1434,6 +1434,9 @@ export class Scheduler {
         )) {
             if (!marked.has(e.event) && !journaled.has(e.event) && this.replays(e.event)) {
                 this.log({ kind: "ItemState", event: e.event, state: "undelivered", cause });
+                // The journal holds the turn open, so the turn holds the clock from here on, as
+                // every reader of the journal's clock takes an open turn to.
+                this.clock?.begin(`turn:${e.event}`);
                 continue;
             }
             const user = journaled.has(e.event)
@@ -1899,6 +1902,10 @@ export class Scheduler {
     }
 
     private async step(driver: ArmDriver, e: ScenarioEvent): Promise<void> {
+        // A turn the resume left open for delivery gives its hold back for the waits below,
+        // which a quiet busy set ends, and takes it again where a turn begins.
+        const reopened = `turn:${e.id}`;
+        if (this.clock?.busyIds().includes(reopened)) this.clock.end(reopened);
         await this.awaitDue(e);
         // A job that registered after the wait leaves the clock busy short of the schedule, so
         // the wait runs again before the clock may jump.
