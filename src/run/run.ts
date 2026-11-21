@@ -1,9 +1,7 @@
 import { createHash } from "node:crypto";
 import {
     appendFileSync,
-    closeSync,
     existsSync,
-    fdatasyncSync,
     constants as fsConstants,
     lstatSync,
     mkdirSync,
@@ -120,6 +118,7 @@ import {
     type Entry,
     eachJsonl,
     eachLine,
+    flushFile,
     Journal,
     releaseLease,
     requireAppendable,
@@ -986,8 +985,6 @@ const SESSION_START_ONLY = new Set([
 ]);
 const COUNTS = ["count", "calls", "sessions"];
 const DURATIONS = ["duration_ms", "delay_ms", "timeout_ms"];
-
-export { MAX_TIMER_MS };
 
 /** A run's own wall budget, refused unless a positive integer a timer can hold. */
 function requireWallBudget(ms: number | undefined): number | undefined {
@@ -1937,16 +1934,6 @@ export class SessionCalls {
     }
 }
 
-/** Flushes the data of the file at `path` to disk. */
-function syncFile(path: string): void {
-    const fd = openSync(path, fsConstants.O_RDONLY);
-    try {
-        fdatasyncSync(fd);
-    } finally {
-        closeSync(fd);
-    }
-}
-
 /**
  * The user-sim's model call through the gateway. A call that fails in transport, or stays
  * pending past its attempt's bound, is sent again within `policy`, the turn deadline the single
@@ -2790,7 +2777,7 @@ async function runArms(
                         const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
                         // The turn's pairing record is on disk before the host is prompted, so
                         // a resume after any stop reads from it which turns the host was sent.
-                        syncFile(join(o.out, "pairing.jsonl"));
+                        flushFile(join(o.out, "pairing.jsonl"));
                         guard();
                         const user = {
                             session: e.session,

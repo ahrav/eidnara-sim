@@ -1,31 +1,37 @@
-import type { RunLogs } from "../oracle/logs";
+import type { ArmLogs, RunLogs } from "../oracle/logs";
 import { type Activation, runOracles } from "../oracle/oracles";
 
-/** F4's evidence when its one quiet window is the turn's start: `BeginTurn` to the first agent call. */
-const TURN_START = /^turn began, then \d+ s with no tool run, call, or turn end$/;
+/**
+ * `arm` with each redelivered turn's `BeginTurn` stamped at the turn's last `undelivered`
+ * marker, or `arm` itself when its journal holds no marker.
+ */
+function fromRedelivery(arm: ArmLogs): ArmLogs {
+    const at = new Map<unknown, number>();
+    for (const e of arm.journal) {
+        if (e.kind === "ItemState" && e.state === "undelivered") at.set(e.event, e.scenario_ms);
+    }
+    if (at.size === 0) return arm;
+    const journal = arm.journal.map((e) =>
+        e.kind === "BeginTurn" && at.has(e.event)
+            ? { ...e, scenario_ms: at.get(e.event) as number }
+            : e,
+    );
+    return { ...arm, journal };
+}
 
 /**
  * The run's oracle activations as the reports count them. A turn that carries an `undelivered`
  * marker stopped inside the user-sim's delivery and a later process delivered it (`docs/run.md`,
- * Undelivered turns), so the quiet F4 reads from that turn's `BeginTurn` to its first agent call
- * spans the harness's stop and restart, and an F4 whose one window is that start is left out.
- * An F4 at such a turn that also names a window after a completed call stays, as does every
- * other activation.
+ * Undelivered turns): its `BeginTurn` precedes the harness's stop and restart, and its marker
+ * stands where the delivery started again. F4 measures a turn's quiet from its `BeginTurn`, so
+ * F4 is read from a view of the run in which such a turn begins at its marker; every other
+ * oracle is read from the run as recorded.
  */
 export function measuredActivations(run: RunLogs): Activation[] {
-    const redelivered = new Set(
-        run.arms.flatMap((a) =>
-            a.journal
-                .filter(
-                    (e) => e.arm === a.arm && e.kind === "ItemState" && e.state === "undelivered",
-                )
-                .map((e) => `${a.arm}/${String(e.event)}`),
-        ),
-    );
-    return runOracles(run).filter(
-        (a) =>
-            a.oracle !== "F4" ||
-            !redelivered.has(`${a.arm}/${a.at}`) ||
-            !TURN_START.test(a.evidence),
-    );
+    const view = { ...run, arms: run.arms.map(fromRedelivery) };
+    if (view.arms.every((a, i) => a === run.arms[i])) return runOracles(run);
+    return [
+        ...runOracles(run).filter((a) => a.oracle !== "F4"),
+        ...runOracles(view).filter((a) => a.oracle === "F4"),
+    ];
 }

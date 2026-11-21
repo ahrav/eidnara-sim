@@ -367,6 +367,11 @@ export class Scheduler {
      * the cause of the interrupted turn that stranded it (`strandedCause`).
      */
     private stranded: { event: string; cause: string } | null = null;
+    /**
+     * The open turn a resume left for `step` to deliver (`replays`), with the cause of the stop
+     * that cut its delivery; the turn holds the clock under `turn:<event>` meanwhile.
+     */
+    private reopened: { event: string; cause: string } | null = null;
     /** The running arm's handle; the public job, observe, and exit calls route through it. */
     private current: ArmHandle | null = null;
     /** Counts every job start and end, so a job that begins and ends between two polls still resets the quiet window. */
@@ -706,6 +711,7 @@ export class Scheduler {
                 this.outage = null;
                 this.session = null;
                 this.stranded = null;
+                this.reopened = null;
                 this.arm = null;
                 this.clock = null;
                 if (!ended) {
@@ -1433,9 +1439,9 @@ export class Scheduler {
             (x) => !ended.has(x.event) && !done.has(x.event),
         )) {
             if (!marked.has(e.event) && !journaled.has(e.event) && this.replays(e.event)) {
-                this.log({ kind: "ItemState", event: e.event, state: "undelivered", cause });
                 // The journal holds the turn open, so the turn holds the clock from here on, as
                 // every reader of the journal's clock takes an open turn to.
+                this.reopened = { event: e.event as string, cause };
                 this.clock?.begin(`turn:${e.event}`);
                 continue;
             }
@@ -1487,9 +1493,9 @@ export class Scheduler {
     /**
      * Whether a resume delivers the open turn `event`: the stop came inside the user-sim's
      * delivery (`undelivered`), ahead of the turn's user record and the host prompt. The turn
-     * stays open under its one `BeginTurn`, the resume journals `ItemState` `undelivered` with
-     * the stop's cause, and `step` delivers the turn with the message the user-sim decides from
-     * the recorded state. A turn with a fault keyed to it takes the interruption: the fault
+     * stays open under its one `BeginTurn` and holds the clock while the driver restores the
+     * arm. `step` journals `ItemState` `undelivered` with the stop's cause where a turn begins
+     * and delivers the turn with the message the user-sim decides from the recorded state. A turn with a fault keyed to it takes the interruption: the fault
      * fired before the turn began, and the resumed process starts the turn's calls with that
      * fault already spent.
      */
@@ -1904,8 +1910,8 @@ export class Scheduler {
     private async step(driver: ArmDriver, e: ScenarioEvent): Promise<void> {
         // A turn the resume left open for delivery gives its hold back for the waits below,
         // which a quiet busy set ends, and takes it again where a turn begins.
-        const reopened = `turn:${e.id}`;
-        if (this.clock?.busyIds().includes(reopened)) this.clock.end(reopened);
+        const reopened = this.reopened?.event === e.id ? this.reopened : null;
+        if (reopened) this.clock?.end(`turn:${e.id}`);
         await this.awaitDue(e);
         // A job that registered after the wait leaves the clock busy short of the schedule, so
         // the wait runs again before the clock may jump.
@@ -2011,11 +2017,15 @@ export class Scheduler {
             // preparation runs; the turn opens only after it, with no yield in between.
             await this.settleKills();
             const turn = `turn:${e.id}`;
-            // A turn a resume left open for delivery keeps the `BeginTurn` it has.
-            const begun = this.o.journal.entries.some(
-                (x) => x.arm === this.arm && x.kind === "BeginTurn" && x.event === e.id,
-            );
-            if (!begun) this.log({ kind: "BeginTurn", event: e.id, probe: e.probe ?? null });
+            // A turn a resume left open for delivery keeps the `BeginTurn` it has; its marker
+            // stands where the delivery starts again.
+            if (reopened) {
+                const { cause } = reopened;
+                this.log({ kind: "ItemState", event: e.id, state: "undelivered", cause });
+                this.reopened = null;
+            } else {
+                this.log({ kind: "BeginTurn", event: e.id, probe: e.probe ?? null });
+            }
             clock.begin(turn);
             try {
                 outcome = await deliver();

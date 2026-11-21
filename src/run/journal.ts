@@ -354,7 +354,7 @@ class PinnedDir {
 }
 
 /** Flushes a file's contents to its device. */
-function flushFile(path: string): void {
+export function flushFile(path: string): void {
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
         fsyncSync(fd);

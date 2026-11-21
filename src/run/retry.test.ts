@@ -199,3 +199,14 @@ test("a pending attempt's late rejection after its bound stays handled", async (
     await Bun.sleep(5);
     expect(got).toBe("verdict");
 });
+
+test("a call that settles with null inside its bound returns null", async () => {
+    const got = await withRetry(
+        "judge call",
+        { attempts: 2, totalMs: 40, backoffMs: [1], slackMs: 5 },
+        () => false,
+        () => Promise.resolve(null),
+        frozen,
+    );
+    expect(got).toBeNull();
+});

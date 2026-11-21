@@ -536,15 +536,17 @@ describe("the recorded command log of a snapshot", () => {
 
     test("a turn a resume delivers runs from its undelivered marker to its EndTurn", () => {
         // Turn X began at wall 1,000 and stopped inside the user-sim's delivery, with a fatal
-        // record at wall 2,000 or with none. The run resumed at wall 200,000 with offset -196 s,
-        // journaled the marker, and the turn's prompt ran until its EndTurn at wall 206,000.
-        // Under the first offset a stamp of 7,000 is wall 7,000, which lies in no turn; under
-        // the second it is wall 203,000, inside the delivered turn.
+        // record at wall 2,000 or with none. The run resumed at wall 200,000 with offset -199 s,
+        // journaled the marker at wall 200,100, and the turn's prompt ran until its EndTurn at
+        // wall 206,000. Stamp 5,000 is wall 5,000 under the first offset, in no turn, and wall
+        // 204,000 under the second, inside the delivered turn. Stamp 2,000 is wall 2,000, inside
+        // the span before the stop, and wall 201,000, inside the delivered turn; the marker
+        // takes the earlier span's place, so the stamp reads the same with the fatal record.
         const delivered = (fatal: object[]) => [
             offset(1_000, 0, 0),
             { kind: "BeginTurn", event: "e-x", arm: "host", wall_ms: 1_000, scenario_ms: 0 },
             ...fatal,
-            offset(200_000, -196, 4_000),
+            offset(200_000, -199, 4_000),
             {
                 kind: "ItemState",
                 state: "undelivered",
@@ -566,7 +568,8 @@ describe("the recorded command log of a snapshot", () => {
         };
         for (const fatal of [[], [stop]]) {
             const resumed = armClock(delivered(fatal) as Parameters<typeof armClock>[0], "host");
-            expect(resumed?.(7_000)).toBe(6_900);
+            expect(resumed?.(5_000)).toBe(7_900);
+            expect(resumed?.(2_000)).toBe(4_900);
         }
     });
 

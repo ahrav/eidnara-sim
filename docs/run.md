@@ -351,25 +351,29 @@ A user turn's delivery has two parts: the user-sim decides the message (for a
 to the gateway), appends the turn's record to `pairing.jsonl`, and
 then the host is prompted. An open turn whose pairing record is still to come
 therefore stopped inside the first part, ahead of the decision and the
-prompt. A resume keeps such a turn open under its one `BeginTurn`, journals
-`ItemState` with `state: "undelivered"` and the stop's cause (`harness-exit`
-for a kill, the fatal record's cause otherwise), and delivers the turn: the
-user-sim reads the same recorded state (the session's last agent reply from
-`calls.jsonl`, the pairing chain, the tape) to decide the message, and the
-turn ends with one `UserTurn`, one `EndTurn`, and one `Event`. The open turn
-holds the clock from the marker on, as the journal reads an open turn, so
-scenario time runs while the driver restores the arm. Such a turn counts as
-measured, and `interrupted_turns` leaves it out. Its `BeginTurn` precedes the
-stop, so two readers place the turn by the marker: the commit clock starts
-the turn's window at the marker (`src/grade/commit-log.ts`), and the reports
-leave out an F4 whose one quiet window is the turn's start, since that window
-spans the harness's stop and restart (`src/report/redelivery.ts`); an F4 that
-also names a window after a completed call stays. The run syncs
+prompt. A resume keeps such a turn open under its one `BeginTurn`, and the
+turn holds the clock while the driver restores the arm, as the journal reads
+an open turn. Where a turn begins, the step journals `ItemState` with `state:
+"undelivered"` and the stop's cause (`harness-exit` for a kill, the fatal
+record's cause otherwise) in place of a second `BeginTurn`, and delivers the
+turn: the user-sim reads the same recorded state (the session's last agent
+reply from `calls.jsonl`, the pairing chain, the tape) to decide the message,
+and the turn ends with one `UserTurn`, one `EndTurn`, and one `Event`. Such a
+turn counts as measured, and `interrupted_turns` leaves it out. The marker
+stands where the delivery started again, so two readers start the turn there:
+the commit clock opens the turn's window at the marker
+(`src/grade/commit-log.ts`), and the reports read F4 from a view of the run in
+which the turn's `BeginTurn` carries its last marker's time
+(`src/report/redelivery.ts`), so the harness's stop and restart count as no
+quiet and the host's quiet after the marker counts in full. The run flushes
 `pairing.jsonl` to disk after each delivery and before the host prompt, so
 the pairing log decides which turns the host was sent after a power loss too.
-Two kinds of open turn take the interruption above instead: a turn inside a P14 window, whose pushback
-decision reads the preceding turn's work from the stopped process's memory,
-and a turn with a fault keyed to it, whose fault fired before the turn began.
+Three kinds of open turn take the interruption above instead: a turn whose
+pairing record exists, since the host may hold its text (a stop between the
+record and the prompt reads the same way); a turn inside a P14 window, whose
+pushback decision reads the preceding turn's work from the stopped process's
+memory; and a turn with a fault keyed to it, whose fault fired before the turn
+began.
 The replay refuses an `undelivered` marker that names a turn with no
 `BeginTurn`, an ended turn, or a turn that already has its `UserTurn`.
 
