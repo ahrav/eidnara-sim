@@ -118,6 +118,7 @@ import {
     type Entry,
     eachJsonl,
     eachLine,
+    flushDir,
     flushFile,
     Journal,
     releaseLease,
@@ -2443,6 +2444,9 @@ async function runArms(
     // a full run of the seed does.
     const pinned = pinnedTurns(allEvents, scenario.faults);
     const tape = new Tape(join(o.out, "tape.jsonl"), manifest.tapes);
+    // The pairing log and the tape exist by name on disk from here, ahead of every host prompt:
+    // a resume reads the pairing log to tell which turns the host was sent.
+    flushDir(o.out);
     // Both loaders have read the sources; the bytes they read must be the ones the manifest
     // attests.
     if (!sameJson(tapeDigests(manifest.tapes), manifest.tape_sha256)) {

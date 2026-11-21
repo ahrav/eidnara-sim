@@ -369,7 +369,7 @@ quiet and the host's quiet after the marker counts in full. The run flushes
 `tape.jsonl` and then `pairing.jsonl` to disk after each delivery and before
 the host prompt, so the pairing log decides which turns the host was sent
 after a power loss too, and the tape is flushed ahead of the pairing record
-that names its row.
+that names its row; the run directory is flushed once both logs exist.
 Three kinds of open turn take the interruption above instead: a turn whose
 pairing record exists, since the host may hold its text (a stop between the
 record and the prompt reads the same way); a turn inside a P14 window, whose
