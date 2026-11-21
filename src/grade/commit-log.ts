@@ -267,6 +267,7 @@ const JUMP_MS = 1_000;
 interface ClockEntry {
     kind?: unknown;
     event?: unknown;
+    state?: unknown;
     arm: string | null;
     wall_ms: number;
     scenario_ms: number;
@@ -314,19 +315,23 @@ export function armClock(
         .sort((a, b) => a.wall - b.wall);
     if (spans.length === 0) return null;
     // A turn runs from its `BeginTurn` to its `EndTurn`; a turn a kill cut ends at the next
-    // entry that names its event (the recovery's `ItemState` or `Event`).
+    // entry that names its event (the recovery's `ItemState` or `Event`). A turn a resume
+    // delivers runs from its `undelivered` marker alone, where the host's prompt follows: the
+    // marker starts the turn again and takes the place of any span the turn had before the stop.
     const begins = new Map<unknown, number>();
-    const turns: [from: number, to: number][] = [];
+    let turns: { event: unknown; from: number; to: number }[] = [];
     for (const e of mine) {
-        if (e.kind === "BeginTurn") begins.set(e.event, e.wall_ms);
+        const redelivered = e.kind === "ItemState" && e.state === "undelivered";
+        if (redelivered) turns = turns.filter((t) => t.event !== e.event);
+        if (e.kind === "BeginTurn" || redelivered) begins.set(e.event, e.wall_ms);
         else if (begins.has(e.event) && /^(?:EndTurn|ItemState|Event)$/.test(String(e.kind))) {
-            turns.push([begins.get(e.event) as number, e.wall_ms]);
+            turns.push({ event: e.event, from: begins.get(e.event) as number, to: e.wall_ms });
             begins.delete(e.event);
         }
     }
     // Git records the whole second a commit began in, so a wall time can read up to a second early.
     const inTurn = (wall: number) =>
-        turns.some(([from, to]) => wall + SECOND_MS > from && wall <= to);
+        turns.some(({ from, to }) => wall + SECOND_MS > from && wall <= to);
     const scenarioAt = (wall: number): number | null => {
         // The last entry at or before the wall time, by binary search over the ascending list.
         let lo = 0;

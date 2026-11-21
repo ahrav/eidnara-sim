@@ -353,8 +353,18 @@ class PinnedDir {
     }
 }
 
+/** Flushes the directory `dir`, and with it the names of the files created in it, to its device. */
+export function flushDir(dir: string): void {
+    const pinned = new PinnedDir(dir);
+    try {
+        pinned.sync();
+    } finally {
+        pinned.close();
+    }
+}
+
 /** Flushes a file's contents to its device. */
-function flushFile(path: string): void {
+export function flushFile(path: string): void {
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
         fsyncSync(fd);

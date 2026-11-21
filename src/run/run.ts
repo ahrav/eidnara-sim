@@ -84,8 +84,10 @@ import {
     clarifyContexts,
     factMatcher,
     identityStatements,
+    type Llm,
     normaliser,
     Pairing,
+    type PairingRecord,
     proxyUserSim,
     sessionRules,
     Tape,
@@ -110,10 +112,14 @@ import {
     readPluginLog,
     requireAuditedVariants,
 } from "./capabilities";
+import { MAX_TIMER_MS } from "./deadline";
+import { warmHttpClient } from "./httpclient";
 import {
     type Entry,
     eachJsonl,
     eachLine,
+    flushDir,
+    flushFile,
     Journal,
     releaseLease,
     requireAppendable,
@@ -125,7 +131,7 @@ import { contains, realExisting } from "./paths";
 import { type Preflight, piCli, preflight, preflightDrift } from "./preflight";
 import { isPriceTable, type PriceTable, pricedByCachedTable, priceTableFor } from "./price";
 import { running } from "./procs";
-import { gatewayRetry, transientUserSim, withRetry } from "./retry";
+import { gatewayRetry, type RetryPolicy, transientUserSim, withRetry } from "./retry";
 import { ResourceSampler } from "./sampler";
 import {
     type ArmDriver,
@@ -980,8 +986,6 @@ const SESSION_START_ONLY = new Set([
 ]);
 const COUNTS = ["count", "calls", "sessions"];
 const DURATIONS = ["duration_ms", "delay_ms", "timeout_ms"];
-/** The largest delay a JavaScript timer honors; longer values fire at once. */
-export const MAX_TIMER_MS = 2_147_483_647;
 
 /** A run's own wall budget, refused unless a positive integer a timer can hold. */
 function requireWallBudget(ms: number | undefined): number | undefined {
@@ -1931,6 +1935,47 @@ export class SessionCalls {
     }
 }
 
+/**
+ * The user-sim's model call through the gateway. A call that fails in transport, or stays
+ * pending past its attempt's bound, is sent again within `policy`, the turn deadline the single
+ * call had; `onRetry` hears each failed attempt. The reply is used only once an attempt
+ * succeeds, so the tape key, the pairing record, and the scripted text a retried turn delivers
+ * are its first attempt's.
+ */
+export function userSimCall(o: {
+    gatewayUrl: string;
+    model: string;
+    maxTokens: number;
+    policy: RetryPolicy;
+    onRetry?: (attempt: number, error: string) => void;
+}): Llm {
+    return (prompt) =>
+        withRetry(
+            "user-sim call",
+            o.policy,
+            transientUserSim,
+            (attemptMs) => proxyUserSim(o.gatewayUrl, o.model, o.maxTokens, attemptMs)(prompt),
+            { onRetry: o.onRetry },
+        );
+}
+
+/**
+ * Whether `arm`'s open turn `event` stopped inside the user-sim's delivery. The user-sim appends
+ * a turn's pairing record, and the run syncs it to disk, ahead of the host prompt, so an open
+ * turn whose record is still to come stopped ahead of the prompt and a resume delivers it. A
+ * turn inside a P14 window (`inWindow`) decides its pushback from the preceding turn's work,
+ * held in the stopped process's memory, so that turn takes the interruption a resume applies.
+ */
+export function awaitsDelivery(
+    records: readonly PairingRecord[],
+    arm: string | null,
+    event: string,
+    inWindow: boolean,
+): boolean {
+    const paired = records.some((r) => r.kind === "turn" && r.arm === arm && r.event === event);
+    return !inWindow && !paired;
+}
+
 async function runArms(
     o: RunOptions,
     cleanup: Array<() => Promise<void> | void>,
@@ -2257,6 +2302,18 @@ async function runArms(
                   }
                 : undefined;
         },
+        undelivered: (event: string): boolean => {
+            const turn = scriptedById.get(event);
+            return (
+                turn !== undefined &&
+                awaitsDelivery(
+                    pairing.records,
+                    scheduler.currentArm,
+                    event,
+                    rulesInForce(turn) !== null,
+                )
+            );
+        },
         stopped: () => stop.reason,
         // A fresh arm's daemon is up once its reset returns; a resumed arm's replacement daemon
         // starts in the driver's resume, whose wrapper runs the hold.
@@ -2293,6 +2350,16 @@ async function runArms(
         join(o.out, "downstream.jsonl"),
         fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
     );
+    // The sink runs inside an HTTP/2 event listener or a retry's callback; a failed write ends
+    // the run through its signal path rather than escaping as an uncaught exception.
+    const downstream = (e: Record<string, unknown>) => {
+        try {
+            writeSync(downstreamFd, `${JSON.stringify(e)}\n`);
+        } catch (caught) {
+            console.error(`downstream.jsonl: ${(caught as Error).message}`);
+            process.kill(process.pid, "SIGTERM");
+        }
+    };
     const requests = new RequestStore(join(o.out, "requests.jsonl"));
     // A resume counts the requests the log already holds, so a request recorded before the stop
     // meets the same session-end check as one this invocation sends.
@@ -2327,16 +2394,7 @@ async function runArms(
         ...(caching === "on"
             ? { cachePoints: daemonCachePoints(backgroundCachePointsOf(manifest.eidnara_build)) }
             : {}),
-        downstream: (e) => {
-            // The sink runs inside an HTTP/2 event listener; a failed write ends the run through
-            // its signal path rather than escaping as an uncaught exception.
-            try {
-                writeSync(downstreamFd, `${JSON.stringify(e)}\n`);
-            } catch (caught) {
-                console.error(`downstream.jsonl: ${(caught as Error).message}`);
-                process.kill(process.pid, "SIGTERM");
-            }
-        },
+        downstream,
         arrival: () => {
             if (scope.arm === "" || scheduler.runningArm() !== scope.arm) return;
             return scheduler.jobHold(`request-${jobSeq++}`);
@@ -2354,6 +2412,8 @@ async function runArms(
         requestDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
         firstArrival,
     });
+    // The first `fetch` of the process runs here, ahead of every host launch.
+    await warmHttpClient();
     await gateway.start();
     const handlersFailed = () => {
         const [first] = gateway.failures;
@@ -2384,6 +2444,9 @@ async function runArms(
     // a full run of the seed does.
     const pinned = pinnedTurns(allEvents, scenario.faults);
     const tape = new Tape(join(o.out, "tape.jsonl"), manifest.tapes);
+    // The pairing log and the tape exist by name on disk from here, ahead of every host prompt:
+    // a resume reads the pairing log to tell which turns the host was sent.
+    flushDir(o.out);
     // Both loaders have read the sources; the bytes they read must be the ones the manifest
     // attests.
     if (!sameJson(tapeDigests(manifest.tapes), manifest.tape_sha256)) {
@@ -2397,23 +2460,22 @@ async function runArms(
         plan: behaviourPlan(scripted, prereg, seed, pinned),
         tape,
         pairing,
-        // A user-sim call that fails in transport is sent again, within the turn deadline the
-        // single call had; the reply is used only once an attempt succeeds, so the tape key,
-        // the pairing record, and the scripted text a retried turn delivers are its first
-        // attempt's.
-        llm: (prompt) =>
-            withRetry(
-                "user-sim call",
-                gatewayRetry(prereg.liveness_bounds.turn_deadline_ms),
-                transientUserSim,
-                (attemptMs) =>
-                    proxyUserSim(
-                        gateway.urls[0] as string,
-                        manifest.user_sim_model ?? prereg.user_sim.model,
-                        prereg.user_sim.max_tokens,
-                        attemptMs,
-                    )(prompt),
-            ),
+        llm: userSimCall({
+            gatewayUrl: gateway.urls[0] as string,
+            model: manifest.user_sim_model ?? prereg.user_sim.model,
+            maxTokens: prereg.user_sim.max_tokens,
+            policy: gatewayRetry(prereg.liveness_bounds.turn_deadline_ms),
+            onRetry: (attempt, error) =>
+                downstream({
+                    kind: "user_sim_retry",
+                    wall_ms: Date.now(),
+                    arm: scope.arm,
+                    session: scope.session,
+                    turn: scope.turn,
+                    attempt,
+                    error,
+                }),
+        }),
         normalise: normaliser(prereg.divergence_policy.normalisation),
         keys: [
             ...scenario.facts.flatMap((f) => [f.id, f.template]),
@@ -2717,6 +2779,11 @@ async function runArms(
                         // host prompt share it.
                         const opened = Date.now();
                         const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
+                        // The turn's pairing record is on disk before the host is prompted, so
+                        // a resume after any stop reads from it which turns the host was sent;
+                        // the tape row that record names is on disk ahead of it.
+                        flushFile(join(o.out, "tape.jsonl"));
+                        flushFile(join(o.out, "pairing.jsonl"));
                         guard();
                         const user = {
                             session: e.session,

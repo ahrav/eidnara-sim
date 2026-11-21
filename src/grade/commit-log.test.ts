@@ -534,6 +534,45 @@ describe("the recorded command log of a snapshot", () => {
         expect(resumed?.(1_200)).toBe(200);
     });
 
+    test("a turn a resume delivers runs from its undelivered marker to its EndTurn", () => {
+        // Turn X began at wall 1,000 and stopped inside the user-sim's delivery, with a fatal
+        // record at wall 2,000 or with none. The run resumed at wall 200,000 with offset -199 s,
+        // journaled the marker at wall 200,100, and the turn's prompt ran until its EndTurn at
+        // wall 206,000. Stamp 5,000 is wall 5,000 under the first offset, in no turn, and wall
+        // 204,000 under the second, inside the delivered turn. Stamp 2,000 is wall 2,000, inside
+        // the span before the stop, and wall 201,000, inside the delivered turn; the marker
+        // takes the earlier span's place, so the stamp reads the same with the fatal record.
+        const delivered = (fatal: object[]) => [
+            offset(1_000, 0, 0),
+            { kind: "BeginTurn", event: "e-x", arm: "host", wall_ms: 1_000, scenario_ms: 0 },
+            ...fatal,
+            offset(200_000, -199, 4_000),
+            {
+                kind: "ItemState",
+                state: "undelivered",
+                event: "e-x",
+                arm: "host",
+                wall_ms: 200_100,
+                scenario_ms: 4_000,
+            },
+            { kind: "EndTurn", event: "e-x", arm: "host", wall_ms: 206_000, scenario_ms: 9_900 },
+        ];
+        const stop = {
+            kind: "ItemState",
+            state: "failed",
+            fatal: true,
+            event: "e-x",
+            arm: "host",
+            wall_ms: 2_000,
+            scenario_ms: 1_000,
+        };
+        for (const fatal of [[], [stop]]) {
+            const resumed = armClock(delivered(fatal) as Parameters<typeof armClock>[0], "host");
+            expect(resumed?.(5_000)).toBe(7_900);
+            expect(resumed?.(2_000)).toBe(4_900);
+        }
+    });
+
     test("a stamp whose second began before the arm's first entry is read at that entry", () => {
         // The arm's first entry is at wall 1,500; a commit at wall 1,700 is recorded as second 1,000.
         const late = [offset(1_500, 0, 0), ...turn("e-first", 1_600, 5_000, 0)];

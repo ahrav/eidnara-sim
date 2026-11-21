@@ -1,7 +1,6 @@
 import type { GradeRecord } from "../grade/probes";
 import { armBase } from "../hosts/arms";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
-import { runOracles } from "../oracle/oracles";
 import type { Preregistration } from "../prereg/schema";
 import type { WitnessReport } from "../proxy/inject";
 import { referenceArm } from "../run/run";
@@ -11,6 +10,7 @@ import { pairByItem } from "../stats/gate";
 import { type PairingRecord, pairingFailures } from "../usersim/usersim";
 import { costPanel } from "./cost";
 import { intrusiveness, notesOf, percentile, turnLatencies } from "./intrusive";
+import { measuredActivations } from "./redelivery";
 import { soak } from "./soak";
 
 export interface GradedRun {
@@ -224,7 +224,7 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: t
     },
     hangs: {
         value: ({ run }, arm) =>
-            runOracles({ ...run, arms: [arm] }).filter((a) => a.oracle === "F4").length,
+            measuredActivations({ ...run, arms: [arm] }).filter((a) => a.oracle === "F4").length,
         delta: false,
     },
     turn_latency_p50_delta_ms: { value: latency(0.5), delta: true },

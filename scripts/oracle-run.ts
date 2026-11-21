@@ -1,10 +1,11 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { loadRun } from "../src/oracle/logs";
-import { ledger, oracleReport, runOracles } from "../src/oracle/oracles";
+import { ledger, oracleReport } from "../src/oracle/oracles";
 import { recoveries } from "../src/oracle/recovery";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
+import { measuredActivations } from "../src/report/redelivery";
 import { writeAtomic } from "../src/run/atomic";
 import { releaseLease, takeLease } from "../src/run/journal";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -50,7 +51,7 @@ function oracleOne(dir: string) {
     const ledgers = Object.fromEntries(run.arms.map((a) => [a.arm, ledger(a)]));
     const result = {
         prereg_sha256,
-        activations: runOracles(run),
+        activations: measuredActivations(run),
         ledgers,
         recoveries: recoveries(run),
     };
