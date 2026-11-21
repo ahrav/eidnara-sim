@@ -342,14 +342,6 @@ describe("delivery check", () => {
             covered_sessions: 1,
             uncovered_sessions: [],
         });
-        // A store whose statement records are all retired names no capture session, so a later
-        // session without a block owes none.
-        const unowed = call("s-2", "e-3", "Which port?");
-        expect(observeDelivery([first, captured, unowed], parts(), [], order, [])).toMatchObject({
-            memory_blocks: 0,
-            memory_due: false,
-            due_sessions: 0,
-        });
         // Coverage counts sessions: one owing request with a block covers its session, and a
         // session whose owing requests all lack one stays uncovered.
         const bare = call("s-2", "e-3", "Which port again?");

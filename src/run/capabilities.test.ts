@@ -313,7 +313,7 @@ test("delivery evidence must match the statements the final store holds", () => 
         classed("constructor"),
     ]);
     // The row that supersedes ended work records the statement that ended it; mem_j's commit is
-    // absent, the ends of mem_k and mem_m are no record, and mem_l is another class.
+    // absent, the ends of mem_k, mem_m, and mem_n are no record, and mem_l is another class.
     const ended = (lifetime: string, ended_by: unknown) =>
         new TextEncoder().encode(
             JSON.stringify({
@@ -323,13 +323,14 @@ test("delivery evidence must match the statements the final store holds", () => 
         );
     const end = { memory: "mem_f", session: "sim-s-0002" };
     db.run(
-        "insert into decisions values ('mem_i', ?, 1), ('mem_j', ?, 99), ('mem_k', ?, 1), ('mem_l', ?, 1), ('mem_m', ?, 1)",
+        "insert into decisions values ('mem_i', ?, 1), ('mem_j', ?, 99), ('mem_k', ?, 1), ('mem_l', ?, 1), ('mem_m', ?, 1), ('mem_n', ?, 1)",
         [
             ended("current_work", end),
             ended("current_work", end),
             ended("current_work", "mem_f"),
             ended("request", end),
             ended("current_work", null),
+            ended("current_work", [end]),
         ],
     );
     // Two statements quote one user message and a third quotes another; stm_e's commit is absent.
@@ -339,15 +340,17 @@ test("delivery evidence must match the statements the final store holds", () => 
         [message("a"), message("a"), message("b"), message("c")],
     );
     // A later commit retired stm_r, the record of work in progress a statement ended, so its
-    // session is no capture session of a live statement; stm_s names an invalidation the log
-    // lacks, so it stays live.
-    db.run("insert into decisions values ('stm_r', ?, 1), ('stm_s', ?, 1)", [
+    // session is no capture session of a live statement. The Kernel serves by the invalidation
+    // alone, so stm_s, whose invalidating commit the log lacks, is retired too, and so is stm_t,
+    // whose payload names no session.
+    db.run("insert into decisions values ('stm_r', ?, 1), ('stm_s', ?, 1), ('stm_t', ?, 1)", [
         payload("sim-s-0007"),
         payload("sim-s-0003"),
+        new TextEncoder().encode("not json"),
     ]);
     db.run(
-        "insert into object_registry values ('stm_r', 'decision', 'user', 1, 7, ?), ('stm_s', 'decision', 'user', 1, 99, ?)",
-        [message("d"), message("e")],
+        "insert into object_registry values ('stm_r', 'decision', 'user', 1, 7, ?), ('stm_s', 'decision', 'user', 1, 99, ?), ('stm_t', 'decision', 'user', 1, 7, ?)",
+        [message("d"), message("e"), message("f")],
     );
     db.close();
     const observe = (arm: string, components: Record<string, number>) =>
@@ -355,14 +358,14 @@ test("delivery evidence must match the statements the final store holds", () => 
     // stm_e's commit is absent from the log, so a partial store left it behind. Of the committed
     // facts, mem_d names no lifetime class, and the others name one each; mem_i alone is ended work.
     expect(observe("eidnara", {}).statements).toEqual({
-        count: 5,
-        sessions: ["sim-s-0001", "sim-s-0003"],
+        count: 6,
+        sessions: ["sim-s-0001"],
         unattributed: 1,
-        retired: 1,
+        retired: 3,
         error: null,
-        lifetimes: { current_work: 4, constructor: 1, request: 1 },
+        lifetimes: { current_work: 5, constructor: 1, request: 1 },
         ended_work: 1,
-        lineages: { count: 4, largest: 2, per_message: 5 },
+        lineages: { count: 5, largest: 2, per_message: 6 },
     });
     // The class outside the build's five is a mismatch of its own; the delivery cases below run without it.
     expect(armMismatches(observe("eidnara", {}))).toEqual([
@@ -384,7 +387,7 @@ test("delivery evidence must match the statements the final store holds", () => 
     const auto = observe("eidnara", { agent: 3, memory_capture: 1 });
     auto.delivery = delivery(0);
     expect(armMismatches(auto)).toEqual([
-        "the final store holds 4 user statements captured before later sessions' agent requests, but none of those requests carried a <project-memory> block",
+        "the final store holds 3 user statements captured before later sessions' agent requests, but none of those requests carried a <project-memory> block",
     ]);
     auto.delivery = delivery(1);
     expect(armMismatches(auto)).toEqual([]);
@@ -419,7 +422,7 @@ test("delivery evidence must match the statements the final store holds", () => 
     const explicit = observe("eidnara-search", { agent: 3, memory_capture: 1 });
     explicit.delivery = delivery(0);
     expect(armMismatches(explicit)).toEqual([
-        "the final store holds 4 user statements captured before later sessions' agent requests, but the agent never called eidnara_search on an arm that declares explicit search",
+        "the final store holds 3 user statements captured before later sessions' agent requests, but the agent never called eidnara_search on an arm that declares explicit search",
     ]);
     const broken = captured(armRoot([PI_ON, PASS]));
     const unreadable = observeArm("eidnara", "pi", broken, { agent: 3, memory_capture: 1 });

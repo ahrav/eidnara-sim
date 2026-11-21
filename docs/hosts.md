@@ -585,11 +585,15 @@ complete evidence only when the two agree:
   messages carry a `<project-memory>` block (`memory_blocks`), the sessions
   with an agent request, `memory_due`, and `due_blocks`. `statements` counts
   the committed user statements in the final store (`stm_*` decisions whose
-  commit the log holds), and of them the records a committed invalidation
-  retired (`retired`): a retired record approves nothing, as when a later
-  statement ends work in progress on a build with `current_work_delivery`,
-  so its statement owes no block. `statements.sessions` lists the capture
-  sessions the rationales of the live records name; Pi
+  commit the log holds), and of them the records an invalidation retired
+  (`retired`): a retired record approves nothing, as when a later statement
+  ends work in progress on a build with `current_work_delivery`, so its
+  statement owes no block. The final store shows which records are retired
+  and the sim reads no retirement time from it, so a record retired during
+  the run is left out for the whole run, the sessions before its retirement
+  included; the probes' needed-statement evidence (`docs/evidence.md`) reads
+  the block of those sessions directly. `statements.sessions` lists the
+  capture sessions the rationales of the live records name; Pi
   names an Eidnara session `sim-<session>`, and a name without that prefix
   stands for every session that made a `memory_capture` call, as does a
   statement whose payload names no session. A request owes a statement's

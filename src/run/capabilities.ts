@@ -366,17 +366,17 @@ export interface DaemonStatusObservation {
  * The committed user statements (`stm_*` decisions whose commit the log holds) in
  * `final-store/kernel.sqlite`. `sessions` and `unattributed` describe the live ones, which the
  * Kernel still serves as approved: the sessions their capture rationale names and the count of
- * those whose payload names none. Null when the store is absent, and an `error` when its
- * decisions cannot be read.
+ * those whose payload names none. A record retired during the run is left out for the whole
+ * run, the sessions before its retirement included. Null when the store is absent, and an
+ * `error` when its decisions cannot be read.
  */
 export type StatementObservation = {
     count: number;
     sessions: string[];
     unattributed: number;
     /**
-     * Of `count`, the statement records a committed invalidation retired, such as the record of
-     * work in progress a later statement ended; absent on observations recorded before it was
-     * read.
+     * Of `count`, the statement records an invalidation retired, such as the record of work in
+     * progress a later statement ended; absent on observations recorded before it was read.
      */
     retired?: number;
     /** Why the store's decisions could not be read, or null. */
@@ -1002,8 +1002,8 @@ export function readDescriptors(
 
 /**
  * The accepted user statements of a final Kernel store: `stm_*` decisions, each naming its capture
- * session in the rationale of its JSON payload, with the live ones told apart from those a
- * committed invalidation retired. Null when the store is absent or unreadable.
+ * session in the rationale of its JSON payload, with the live ones told apart from those an
+ * invalidation retired. Null when the store is absent or unreadable.
  */
 export function readStatements(kernelPath: string): StatementObservation {
     if (!lstatSync(kernelPath, { throwIfNoEntry: false })?.isFile()) return null;
@@ -1014,7 +1014,7 @@ export function readStatements(kernelPath: string): StatementObservation {
             .query(
                 `select decision_payload as p,
                         object_id in (select object_id from object_registry
-                                      where invalidated_commit_seq in (select commit_seq from commit_log)) as retired
+                                      where invalidated_commit_seq is not null) as retired
                  from decisions
                  where object_id glob 'stm_*'
                    and created_commit_seq in (select commit_seq from commit_log)`,
