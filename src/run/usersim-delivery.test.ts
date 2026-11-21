@@ -84,14 +84,21 @@ function harness(root: string, policy: RetryPolicy = QUICK, turnsAwaitJobs = fal
     });
     /** The text the host received, by turn. */
     const sent = new Map<string, string>();
-    /** What held the clock, and the markers journaled, while the driver restored the arm. */
+    /**
+     * What held the clock while the driver restored the arm, and the markers journaled by then
+     * and by the asked turn's preparation, the last driver call ahead of a turn's start.
+     */
     const heldAtResume: string[] = [];
     const markedAtResume: Entry[] = [];
+    const marked = () => journal.entries.filter((e) => e.state === "undelivered");
     const driver: ArmDriver = {
         reset: async () => undefined,
         resume: async () => {
             heldAtResume.push(...(scheduler.clock?.busyIds() ?? []));
-            markedAtResume.push(...journal.entries.filter((e) => e.state === "undelivered"));
+            markedAtResume.push(...marked());
+        },
+        prepare: async (e) => {
+            if (e.id === ASKED.id) markedAtResume.push(...marked());
         },
         fault: async () => ({}),
         event: async (e) => {
@@ -150,7 +157,8 @@ function expectReplayed(
     expect(interruptions(entries).a?.interrupted_turns).toBe(0);
     expect(entries.at(-1)?.kind).toBe("EndRun");
     // The open turn held the clock while the driver restored the arm, as the journal reads it,
-    // and its marker stands after the restore, where the delivery started again.
+    // and its marker stands after the restore and the step's waits, where the delivery started
+    // again.
     expect(h.heldAtResume).toEqual([`turn:${ASKED.id}`]);
     expect(h.markedAtResume).toEqual([]);
 }

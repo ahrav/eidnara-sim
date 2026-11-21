@@ -3,8 +3,10 @@ import { type Activation, runOracles } from "../oracle/oracles";
 
 /**
  * `arm` as F4 reads a redelivered turn: the turn's `BeginTurn` stamped at its last `undelivered`
- * marker, and the turn's calls from before that marker left out (a user-sim attempt the gateway
- * recorded before the stop). `arm` itself when its journal holds no marker.
+ * marker, and the turn's calls from that marker on. A call from before it (a user-sim attempt
+ * the gateway recorded before the stop) is told by wall time: the resumed clock restarts at the
+ * arm's last entry, so such a call can carry a later scenario time than the marker.
+ * `arm` itself when its journal holds no marker.
  */
 function fromRedelivery(arm: ArmLogs): ArmLogs {
     const at = new Map<unknown, { scenario_ms: number; wall_ms: number }>();

@@ -83,6 +83,41 @@ test("a redelivered turn begins at its marker, so the harness's stop before it i
         ),
     );
     expect(f4(attempted)).toEqual([]);
+    // A refusal of that attempt is an F1 of the run as recorded, whatever the F4 view leaves out.
+    const refused = {
+        ...call(99, 1_000, 4_000, "user-sim"),
+        status: 400,
+        error: "prompt is too long",
+    };
+    const overflowed = runWith(
+        armOf(
+            "host",
+            [...turn, entry("EndTurn", "e-1", 1_810_000, deadline)],
+            [refused as HeldCall, ...calls],
+        ),
+    );
+    expect(measuredActivations(overflowed).map((a) => [a.oracle, a.at, a.component])).toEqual([
+        ["F1", "e-1", "user-sim"],
+    ]);
+});
+
+test("a call belongs to the stopped delivery by its wall time, whatever scenario time it carries", () => {
+    // The stopped process's clock ran under the open turn, so its last attempt is stamped at
+    // scenario 500 s; the resumed clock restarted at the arm's last entry, and the marker
+    // stands at scenario 10 s. The attempt's wall time, 1 s, precedes the marker's, 10 s.
+    const stopped = { ...call(99, 1_000, 4_000, "user-sim"), scenario_ms: 500_000 };
+    const hung = runWith(
+        armOf(
+            "host",
+            [
+                entry("BeginTurn", "e-1", 0),
+                marker("e-1", 10_000),
+                entry("EndTurn", "e-1", 1_000_400, { outcome: "turn deadline 900000 ms" }),
+            ],
+            [stopped as HeldCall, agent(1, 1_000_000, 400)],
+        ),
+    );
+    expect(f4(hung)).toEqual([["host", "e-1", "turn deadline after 1 model calls, 990 s silent"]]);
 });
 
 test("quiet after the marker is the host's, and the turn keeps that F4", () => {
