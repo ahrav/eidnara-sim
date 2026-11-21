@@ -2776,7 +2776,9 @@ async function runArms(
                         const opened = Date.now();
                         const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
                         // The turn's pairing record is on disk before the host is prompted, so
-                        // a resume after any stop reads from it which turns the host was sent.
+                        // a resume after any stop reads from it which turns the host was sent;
+                        // the tape row that record names is on disk ahead of it.
+                        flushFile(join(o.out, "tape.jsonl"));
                         flushFile(join(o.out, "pairing.jsonl"));
                         guard();
                         const user = {

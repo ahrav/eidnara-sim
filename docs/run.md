@@ -363,11 +363,12 @@ turn counts as measured, and `interrupted_turns` leaves it out. The marker
 stands where the delivery started again, so two readers start the turn there:
 the commit clock opens the turn's window at the marker
 (`src/grade/commit-log.ts`), and the reports read F4 from a view of the run in
-which the turn's `BeginTurn` carries its last marker's time
-(`src/report/redelivery.ts`), so the harness's stop and restart count as no
+which the turn's `BeginTurn` carries its last marker's time and the turn's
+calls start at that marker (`src/report/redelivery.ts`), so the harness's stop and restart count as no
 quiet and the host's quiet after the marker counts in full. The run flushes
-`pairing.jsonl` to disk after each delivery and before the host prompt, so
-the pairing log decides which turns the host was sent after a power loss too.
+`tape.jsonl` and then `pairing.jsonl` to disk after each delivery and before
+the host prompt, so the pairing log decides which turns the host was sent
+after a power loss too, and each pairing record's tape row is on disk with it.
 Three kinds of open turn take the interruption above instead: a turn whose
 pairing record exists, since the host may hold its text (a stop between the
 record and the prompt reads the same way); a turn inside a P14 window, whose
