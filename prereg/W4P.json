@@ -1,0 +1,69 @@
+{
+    "schema": "sim-qualification/v1",
+    "id": "W4P",
+    "revision": 1,
+    "frozen": true,
+    "tier": "M",
+    "tier_preregistration_sha256": "d1b8c9694586ff9fe2c3b55b0f98fa2e564da270d2f19d3c9d8eb8181398cd06",
+    "corpus": "held-out",
+    "seeds": [
+        605
+    ],
+    "hosts": [
+        "pi"
+    ],
+    "arms": {
+        "run": [
+            "host",
+            "eidnara",
+            "eidnara-hybrid"
+        ],
+        "order_by_seed": [
+            [
+                "host",
+                "eidnara",
+                "eidnara-hybrid"
+            ]
+        ]
+    },
+    "contrasts": [
+        [
+            "eidnara",
+            "host"
+        ],
+        [
+            "eidnara-hybrid",
+            "eidnara"
+        ],
+        [
+            "eidnara-hybrid",
+            "host"
+        ]
+    ],
+    "controls": [
+        "wrong-project-lookup"
+    ],
+    "no_source_control": "host",
+    "prompt_caching": "on",
+    "builds": {
+        "current": {
+            "label": "eval/w4",
+            "commit": "6aabc77e16cb2765a4a59ccd5898688b787e8b69"
+        },
+        "reference": {
+            "label": "eval/w2b",
+            "commit": "ae1b673b77651ce8a3b95892fe27f90d9287d869"
+        },
+        "contrasts": [
+            [
+                "eidnara",
+                "eidnara"
+            ],
+            [
+                "eidnara-hybrid",
+                "eidnara"
+            ]
+        ]
+    },
+    "claim": "descriptive"
+}

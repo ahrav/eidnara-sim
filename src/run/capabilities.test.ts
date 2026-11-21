@@ -312,28 +312,61 @@ test("delivery evidence must match the statements the final store holds", () => 
         // A class is counted under the name the store holds, whatever an object inherits.
         classed("constructor"),
     ]);
+    // The row that supersedes ended work records the statement that ended it; mem_j's commit is
+    // absent, the ends of mem_k and mem_m are no record, and mem_l is another class.
+    const ended = (lifetime: string, ended_by: unknown) =>
+        new TextEncoder().encode(
+            JSON.stringify({
+                summary: "User stated: Next, move the retry budget.",
+                rationale: JSON.stringify({ session: "sim-s-0001", lifetime, ended_by }),
+            }),
+        );
+    const end = { memory: "mem_f", session: "sim-s-0002" };
+    db.run(
+        "insert into decisions values ('mem_i', ?, 1), ('mem_j', ?, 99), ('mem_k', ?, 1), ('mem_l', ?, 1), ('mem_m', ?, 1)",
+        [
+            ended("current_work", end),
+            ended("current_work", end),
+            ended("current_work", "mem_f"),
+            ended("request", end),
+            ended("current_work", null),
+        ],
+    );
     // Two statements quote one user message and a third quotes another; stm_e's commit is absent.
     const message = (digit: string) => `memory_capture_statement:${digit.repeat(32)}`;
     db.run(
         "insert into object_registry values ('stm_a', 'decision', 'user', 1, null, ?), ('stm_b', 'decision', 'user', 1, null, ?), ('stm_c', 'decision', 'user', 7, null, ?), ('stm_e', 'decision', 'user', 99, null, ?)",
         [message("a"), message("a"), message("b"), message("c")],
     );
+    // A later commit retired stm_r, the record of work in progress a statement ended, so its
+    // session is no capture session of a live statement; stm_s names an invalidation the log
+    // lacks, so it stays live.
+    db.run("insert into decisions values ('stm_r', ?, 1), ('stm_s', ?, 1)", [
+        payload("sim-s-0007"),
+        payload("sim-s-0003"),
+    ]);
+    db.run(
+        "insert into object_registry values ('stm_r', 'decision', 'user', 1, 7, ?), ('stm_s', 'decision', 'user', 1, 99, ?)",
+        [message("d"), message("e")],
+    );
     db.close();
     const observe = (arm: string, components: Record<string, number>) =>
         observeArm(arm, "pi", root, components);
     // stm_e's commit is absent from the log, so a partial store left it behind. Of the committed
-    // facts, mem_d names no lifetime class, and mem_f and mem_h name one each.
+    // facts, mem_d names no lifetime class, and the others name one each; mem_i alone is ended work.
     expect(observe("eidnara", {}).statements).toEqual({
-        count: 3,
-        sessions: ["sim-s-0001"],
+        count: 5,
+        sessions: ["sim-s-0001", "sim-s-0003"],
         unattributed: 1,
+        retired: 1,
         error: null,
-        lifetimes: { current_work: 1, constructor: 1 },
-        lineages: { count: 2, largest: 2, per_message: 3 },
+        lifetimes: { current_work: 4, constructor: 1, request: 1 },
+        ended_work: 1,
+        lineages: { count: 4, largest: 2, per_message: 5 },
     });
-    // The class outside the build's four is a mismatch of its own; the delivery cases below run without it.
+    // The class outside the build's five is a mismatch of its own; the delivery cases below run without it.
     expect(armMismatches(observe("eidnara", {}))).toEqual([
-        "1 captured facts name a lifetime class outside lasting, current_work, status, unsettled: constructor",
+        "1 captured facts name a lifetime class outside lasting, current_work, status, unsettled, request: constructor",
     ]);
     const store = new Database(join(root, "..", "final-store", "kernel.sqlite"));
     store.run("delete from decisions where object_id = 'mem_h'");
@@ -351,7 +384,7 @@ test("delivery evidence must match the statements the final store holds", () => 
     const auto = observe("eidnara", { agent: 3, memory_capture: 1 });
     auto.delivery = delivery(0);
     expect(armMismatches(auto)).toEqual([
-        "the final store holds 3 user statements captured before later sessions' agent requests, but none of those requests carried a <project-memory> block",
+        "the final store holds 4 user statements captured before later sessions' agent requests, but none of those requests carried a <project-memory> block",
     ]);
     auto.delivery = delivery(1);
     expect(armMismatches(auto)).toEqual([]);
@@ -386,7 +419,7 @@ test("delivery evidence must match the statements the final store holds", () => 
     const explicit = observe("eidnara-search", { agent: 3, memory_capture: 1 });
     explicit.delivery = delivery(0);
     expect(armMismatches(explicit)).toEqual([
-        "the final store holds 3 user statements captured before later sessions' agent requests, but the agent never called eidnara_search on an arm that declares explicit search",
+        "the final store holds 4 user statements captured before later sessions' agent requests, but the agent never called eidnara_search on an arm that declares explicit search",
     ]);
     const broken = captured(armRoot([PI_ON, PASS]));
     const unreadable = observeArm("eidnara", "pi", broken, { agent: 3, memory_capture: 1 });
@@ -825,18 +858,29 @@ test("evidence is read against the capabilities of the build the run bound", () 
     expect(armMismatches({ ...base, statements: classed }, w2b)).toEqual([
         "5 captured facts name a lifetime class in their rationale, which eval/w2b does not declare",
     ]);
-    // The build's classes are four names; any other name in a rationale is a defect of the store.
+    // The build's classes are five names; any other name in a rationale is a defect of the store.
     const odd = { ...classed, lifetimes: { lasting: 3, currnt_work: 2, constructor: 1 } };
     expect(armMismatches({ ...base, statements: odd }, current)).toEqual([
-        "3 captured facts name a lifetime class outside lasting, current_work, status, unsettled: currnt_work, constructor",
+        "3 captured facts name a lifetime class outside lasting, current_work, status, unsettled, request: currnt_work, constructor",
     ]);
+    // `request` and the record of ended work are the w4 build's; the w3 build names four classes
+    // and stores work in progress labeled.
+    const w3 = auditedBuild("eval/w3-all") as AuditedBuild;
+    const work = { ...classed, lifetimes: { lasting: 3, request: 2 }, ended_work: 1 };
+    expect(armMismatches({ ...base, statements: work }, current)).toEqual([]);
+    expect(armMismatches({ ...base, statements: work }, w3)).toEqual([
+        "2 captured facts name a lifetime class outside lasting, current_work, status, unsettled: request",
+        "0 agent requests carry a <CURRENT_WORK> element in <project-memory> and 1 captured facts record the statement that ended them, which eval/w3-all does not declare",
+    ]);
+    expect(armMismatches({ ...base, statements: classed }, w3)).toEqual([]);
 
-    const delivery = (contested_blocks: number, stale: number) => ({
+    const delivery = (contested_blocks: number, stale: number, work_blocks = 0) => ({
         requests: 3,
         unreadable: 0,
         injected_blocks: 1,
         notes: { expected: 0, delivered: 0, missing: [], misplaced: [] },
         contested_blocks,
+        work_blocks,
         open_items: {
             blocks: 5,
             waiting_blocks: 2,
@@ -845,6 +889,13 @@ test("evidence is read against the capabilities of the build the run bound", () 
         },
     });
     expect(armMismatches({ ...base, delivery: delivery(2, 0) }, current)).toEqual([]);
+    // The element of work in progress is the w4 build's; every earlier build renders none.
+    expect(armMismatches({ ...base, delivery: delivery(0, 0, 2) }, current)).toEqual([]);
+    for (const earlier of [w3, w2b]) {
+        expect(armMismatches({ ...base, delivery: delivery(0, 0, 2) }, earlier)).toEqual([
+            `2 agent requests carry a <CURRENT_WORK> element in <project-memory> and 0 captured facts record the statement that ended them, which ${earlier.label} does not declare`,
+        ]);
+    }
     expect(armMismatches({ ...base, delivery: delivery(0, 1) }, current)).toEqual([
         `1 of 5 rendered history blocks hold a waiting line before a later summarized segment (first requests 41), but ${current.label} declares waiting lines in the newest segment alone`,
     ]);

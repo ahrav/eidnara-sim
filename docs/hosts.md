@@ -155,8 +155,9 @@ the variants read there:
 
 | Build | Commit | Variants | Read for |
 |---|---|---|---|
-| `eval/w3-all` (`AUDITED_EIDNARA`, the current build) | `a996cc466` | all three | the caching-on retest (W3S, W3SH, W3P): `main` `2fbeb6059` (which holds #1220 as merged, three capture commits past the head in `eval/w2b`) plus the open heads of Eidnara #1223, #1224, #1221, and #1222 |
-| `eval/w2b` | `ae1b673b7` | all three | the S rerun (W2S2, W2S2H) and the retest's reference arm: `main` `1bf1ae612` (which holds the merged heads of Eidnara #1209, #1212, #1213, #1214, and #1215) plus the open heads of #1220 and #1217 |
+| `eval/w4` (`AUDITED_EIDNARA`, the current build) | `6aabc77e1` | all three | the correctness retest (W4S, W4SH, W4P): `main` `228f9fb74` (which holds the merged Eidnara #1221 to #1224) plus the open heads of #1230, #1227, #1228, and #1229 |
+| `eval/w3-all` | `a996cc466` | all three | the caching-on retest (W3S, W3SH, W3P): `main` `2fbeb6059` (which holds #1220 as merged, three capture commits past the head in `eval/w2b`) plus the open heads of Eidnara #1223, #1224, #1221, and #1222 |
+| `eval/w2b` | `ae1b673b7` | all three | the S rerun (W2S2, W2S2H) and the reference arm of both retests: `main` `1bf1ae612` (which holds the merged heads of Eidnara #1209, #1212, #1213, #1214, and #1215) plus the open heads of #1220 and #1217 |
 | `eval/w2` | `7901aae39` | all three | the first focused S run (W2S, W2SH): `main` `da360026c` (which holds Eidnara #1210, #1211, and #1219) plus the open heads of #1209, #1212, #1213, #1214, #1215, #1217 |
 | `eval/c8` | `8e6265d2c` | `direct_host_fixture` (legacy route) | the c8 reference arm |
 
@@ -170,12 +171,13 @@ those variants' source files match the clone's working tree. The manifest
 records the bound build as `eidnara_build` (`commit`, `label`, and the
 capability values of each variant the arms run), a resume must bind the same
 build, and the arm's evidence is checked against that build's values. One
-sim revision therefore runs the retest's arms on the `eval/w3-all` build and
+sim revision therefore runs the retest's arms on the `eval/w4` build and
 a reference arm on the `eval/w2b` build, each run with its own `SIM_CONFIG`
-(`docs/run-command.md`, campaign `config`). The `eval/w2b` and `eval/w2`
-entries keep the earlier registrations bound to the commits they name; the
-two share one table (`W2_VARIANTS`). The table below holds for the current
-build and for both w2 builds:
+(`docs/run-command.md`, campaign `config`). The `eval/w3-all`, `eval/w2b`,
+and `eval/w2` entries keep the earlier registrations bound to the commits
+they name; `eval/w3-all` has its own table (`W3_VARIANTS`) and the two w2
+builds share one (`W2_VARIANTS`). The table below holds for the current
+build, the w3 build, and both w2 builds:
 
 | Variant | Search route | Embeddings | Memory reviewer | Side calls | Memory injection | Source capture |
 |---|---|---|---|---|---|---|
@@ -201,13 +203,25 @@ The c8 build and the two w2 builds differ in six:
 | `process_memory` | `false` | `true`: the Context module's `status` answer carries `process_memory` (anonymous, file, and shared resident bytes, threads, glibc C-heap bytes, the arena limit of 4, and the C-heap release counts) |
 | `search_progress` | not registered (no fused variant) | `true` on the fused variants: `search.lifecycle.status` answers with `progress` (`tip`, `checkpoint`, `lag_commits`, `rebuilds`, `blocked`); `false` on the legacy fixture, which starts no lifecycle owner |
 
-The current build differs from the two w2 builds in two more, on every
-variant:
+The w3 build differs from the two w2 builds in two more, on every variant,
+and the current build keeps both values:
 
 | Capability | `eval/w2`, `eval/w2b` (and `eval/c8`) | `eval/w3-all` |
 |---|---|---|
 | `statement_lifetime` | `false`: a whole user statement is approved by its quotation alone | `true`: the extractor classes each proposal of a user source as `lasting`, `current_work`, `status`, or `unsettled`, capture writes the class into the fact's rationale as `lifetime`, and a whole user statement is approved, and so served in `<project-memory>`, when its class is `lasting` or `unsettled` or it carries none; a `current_work` or `status` statement is stored labeled for explicit search (Eidnara #1221). #1222, in the same build, reads the sentences of a paragraph written in lowercase as sentences |
 | `background_cache_points` | `system-and-message`: a background call (memory capture, a daemon-run call) carries Pi's two cache points, after the system prompt and at the end of its one user message | `system`: the capture executor (`packages/pi-plugin/src/memory-capture-native.ts`) and the bundled model-execution hook (`crates/host-runtime/assets/pi-model_execution-extension.mjs`) remove cache markers from user messages, so a background call writes a cache entry for its system prompt alone (Eidnara #1224). #1223, in the same build, starts every Pi model-execution run in one working directory, so the system prompt Pi ends with that directory is the same text on every daemon-run call |
+
+The current build differs from the w3 build in one more, on every variant:
+
+| Capability | `eval/w3-all` (and every earlier build) | `eval/w4` |
+|---|---|---|
+| `current_work_delivery` | `false`: `<project-memory>` has no `<CURRENT_WORK>` element and no row holds an `ended_by` record; on `eval/w3-all` a `current_work` statement is stored labeled | `true`: a whole user statement classed `current_work` is approved, and a live one is served to later sessions in the element `<CURRENT_WORK note="...">` that closes `<project-memory>`, newest first, within a quarter of `memory.injection_budget_tokens` after the lasting rows; a later whole statement of the user that names it under `replaces` or `also_replaces` ends it, and the row that supersedes it is labeled and records `ended_by` (the ending memory and its session) in its rationale; the extractor's classes gain `request`, an instruction its own turn answers, stored labeled for explicit search; an `eidnara_search` result of such a row shows `lifetime=current_work state=live` or `state=ended` (Eidnara #1230) |
+
+#1227, #1228, and #1229, in the same build, change no capability value:
+capture sends a source the provider keeps refusing in a request of its own;
+`model_execution` reports removal residue at shutdown only when its
+registry still holds it; and a memory call made after another transport
+closed the shared daemon connection dials a new one.
 
 The fused fixture's projection is served to readers while it trails the
 kernel tip by at most `FIXTURE_READER_LAG_COMMITS` (1,024) commits, the
@@ -331,6 +345,21 @@ decision, and check a joined run against the size limit),
 directory of #1223), and the capture executor and the model-execution
 hook, which #1224 changes and which this revision adds to the audited
 sources of every build. The other capability values stand.
+
+At `6aabc77e1` the verdict against `eval/w4` is `unchanged`, `a996cc466`
+stays `unchanged` against `eval/w3-all`, and `ae1b673b7` against
+`eval/w2b`. From `a996cc466` to `6aabc77e1` every probe of the w3 table
+holds except the two that read `current_work_delivery` as absent, and nine
+audited sources change: `canonical_memory.rs`, `m0_compose.rs`,
+`memory_capture.rs`, and `lib.rs` under `crates/daemon/src/` (the
+current-work rows, their element, their budget, and their end, all #1230),
+`memory_capture/native.rs` (#1230, and the stepped capture requests of
+#1227), `kernel-memory-search.ts` and `render.ts` under
+`packages/opencode-plugin/src/tools/eidnara-search/` (the class and state
+of a search result), and the capture executor and the model-execution hook
+(the merged forms of #1224). The w4 table adds
+`crates/daemon/src/memory_render.rs`, which renders the element, to its
+audited sources. The other capability values stand.
 
 ## Prompt caching
 
@@ -554,9 +583,13 @@ complete evidence only when the two agree:
   system block or prefixed twice is misplaced.
 - `delivery` also counts the agent requests whose system blocks or user
   messages carry a `<project-memory>` block (`memory_blocks`), the sessions
-  with an agent request, `memory_due`, and `due_blocks`. `statements` lists
+  with an agent request, `memory_due`, and `due_blocks`. `statements` counts
   the committed user statements in the final store (`stm_*` decisions whose
-  commit the log holds) and the capture sessions their rationale names; Pi
+  commit the log holds), and of them the records a committed invalidation
+  retired (`retired`): a retired record approves nothing, as when a later
+  statement ends work in progress on a build with `current_work_delivery`,
+  so its statement owes no block. `statements.sessions` lists the capture
+  sessions the rationales of the live records name; Pi
   names an Eidnara session `sim-<session>`, and a name without that prefix
   stands for every session that made a `memory_capture` call, as does a
   statement whose payload names no session. A request owes a statement's
@@ -618,7 +651,15 @@ complete evidence only when the two agree:
     class is a mismatch on a build without `statement_lifetime`; a build
     with it may show none, since the extractor may class no proposal, and
     a class outside `lasting`, `current_work`, `status`, and `unsettled`
-    is a mismatch there.
+    is a mismatch there. A build with `current_work_delivery` names
+    `request` as well.
+  - `delivery.work_blocks` counts agent requests whose `<project-memory>`
+    block holds a `<CURRENT_WORK>` element, and `statements.ended_work` the
+    committed facts classed `current_work` whose rationale holds an
+    `ended_by` record. Either above zero is a mismatch on a build without
+    `current_work_delivery`; a build with it may show none, since the
+    element needs a live statement of work in progress from an earlier
+    session and an end needs a later statement that names it.
   - `delivery.contested_blocks` counts agent requests whose
     `<project-memory>` block renders a contested statement, and
     `search.contested` the `eidnara_search` results with a `Contested by`

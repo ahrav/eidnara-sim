@@ -13,6 +13,7 @@ import {
     isArmName,
     runsEidnara,
     W2_VARIANTS,
+    W3_VARIANTS,
 } from "./profiles";
 
 test("every pre-registered arm has a profile its daemon variant satisfies", () => {
@@ -112,18 +113,23 @@ test("source capture is consented on every arm the c8 comparison contrasts with 
     }
 });
 
-test("the registered builds are the w3 build, the two w2 builds, and the c8 reference with the legacy fixture", () => {
+test("the registered builds are the w4 build, the w3 build, the two w2 builds, and the c8 reference with the legacy fixture", () => {
     expect(AUDITED_BUILDS.map((b) => b.label)).toEqual([
+        "eval/w4",
         "eval/w3-all",
         "eval/w2b",
         "eval/w2",
         "eval/c8",
     ]);
-    expect(new Set(AUDITED_BUILDS.map((b) => b.commit)).size).toBe(4);
+    expect(new Set(AUDITED_BUILDS.map((b) => b.commit)).size).toBe(5);
     for (const b of AUDITED_BUILDS) expect(b.commit).toMatch(/^[0-9a-f]{40}$/);
-    const [w3, w2, first, c8] = AUDITED_BUILDS;
-    expect(AUDITED_EIDNARA).toBe(w3.commit);
-    expect(w3.variants).toBe(DAEMON_VARIANTS);
+    const [w4, w3, w2, first, c8] = AUDITED_BUILDS;
+    if (!w3) throw new Error("the w3 build is registered");
+    expect(AUDITED_EIDNARA).toBe(w4.commit);
+    expect(w4.variants).toBe(DAEMON_VARIANTS);
+    expect(w3.variants).toBe(W3_VARIANTS);
+    expect(auditedBuild("eval/w4")).toBe(w4);
+    expect(auditedBuild(w4.commit)).toBe(w4);
     // The two w2 builds stay registered under their own labels with one table.
     expect(w2?.variants).toBe(W2_VARIANTS);
     expect(first?.variants).toBe(W2_VARIANTS);
@@ -134,8 +140,9 @@ test("the registered builds are the w3 build, the two w2 builds, and the c8 refe
     expect(auditedBuild(w3.commit)).toBe(w3);
     expect(auditedBuild("eval/c7")).toBeUndefined();
     expect(Object.keys(c8?.variants ?? {})).toEqual(["direct-host-fixture"]);
-    // The retest's arms: the three arms on the w3 build, the reference arm on the w2b build.
+    // The retests' arms: the three arms on the w4 and w3 builds, the reference arm on the w2b build.
     for (const arm of ["host", "eidnara", "eidnara-hybrid"]) {
+        expect(capabilityGaps(arm, w4)).toEqual([]);
         expect(capabilityGaps(arm, w3)).toEqual([]);
         expect(capabilityGaps(arm, w2)).toEqual([]);
     }
@@ -154,13 +161,14 @@ test("the registered builds are the w3 build, the two w2 builds, and the c8 refe
         ];
     };
     expect(rework(w3)).toEqual(["per-message", true, true, false, true, false]);
+    expect(rework(w4)).toEqual(rework(w3));
     expect(rework(w2 as typeof w3)).toEqual(rework(w3));
     expect(rework(c8 as typeof w3)).toEqual(["shared", false, false, true, false, false]);
     expect(w3.variants["direct-host-fixture-fused"]?.search_progress).toBe(true);
     // The w3 build differs from the w2 builds in two capabilities, on every variant, and in
     // nothing else; its probes replace the earlier builds' readings of those two.
     for (const [variant, record] of Object.entries(W2_VARIANTS)) {
-        const current = DAEMON_VARIANTS[variant as keyof typeof DAEMON_VARIANTS];
+        const current = W3_VARIANTS[variant as keyof typeof W3_VARIANTS];
         expect(capabilitiesOf(current)).toEqual({
             ...capabilitiesOf(record),
             statement_lifetime: true,
@@ -180,9 +188,32 @@ test("the registered builds are the w3 build, the two w2 builds, and the c8 refe
         expect(own(current)).toEqual([true, true, true, true]);
         expect(current.sources).toEqual(record.sources);
     }
+    // The w4 build differs from the w3 build in one capability, on every variant, and in nothing
+    // else; its probes replace the earlier builds' two readings, and the renderer joins its sources.
+    for (const [variant, record] of Object.entries(W3_VARIANTS)) {
+        const current = DAEMON_VARIANTS[variant as keyof typeof DAEMON_VARIANTS];
+        expect(capabilitiesOf(current)).toEqual({
+            ...capabilitiesOf(record),
+            current_work_delivery: true,
+        });
+        expect(record.current_work_delivery).toBe(false);
+        const own = (r: typeof record) =>
+            r.probes.filter((p) => p.capability === "current_work_delivery").map((p) => p.present);
+        expect(own(record)).toEqual([false, false]);
+        expect(own(current)).toEqual([true, true, true, true, true, true]);
+        expect(own(W2_VARIANTS[variant as keyof typeof W2_VARIANTS])).toEqual([false, false]);
+        expect(current.sources).toEqual([...record.sources, "crates/daemon/src/memory_render.rs"]);
+        expect(current.probes.length).toBe(record.probes.length + 4);
+    }
     const legacy = c8?.variants["direct-host-fixture"];
-    expect([legacy?.statement_lifetime, legacy?.background_cache_points]).toEqual([
-        false,
-        "system-and-message",
-    ]);
+    expect([
+        legacy?.statement_lifetime,
+        legacy?.background_cache_points,
+        legacy?.current_work_delivery,
+    ]).toEqual([false, "system-and-message", false]);
+    expect(
+        legacy?.probes
+            .filter((p) => p.capability === "current_work_delivery")
+            .map((p) => p.present),
+    ).toEqual([false, false]);
 });
