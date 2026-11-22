@@ -81,8 +81,9 @@ function accuracy(r: TierReport): string[] {
 const deferred = (g: GradeRecord) => g.verdict === "excluded" && g.reason === DEFERRED;
 
 /**
- * Each arm's deferred rate on the harm probes that admit it: deferred items over the items graded
- * or deferred. A deferred item is out of the pass rate, so its rate is reported beside it.
+ * Each arm's deferred rate on the probes that admit it (the harm probes P2, P5, and P11, and
+ * P1): deferred items over the items graded or deferred. A deferred item is out of the pass
+ * rate, so its rate is reported beside it.
  */
 function deferredRates(r: TierReport): string[] {
     const rows = DEFERRABLE.flatMap((type) =>
@@ -103,7 +104,7 @@ function deferredRates(r: TierReport): string[] {
         }),
     );
     return [
-        "## Deferred harm items",
+        "## Deferred items",
         "",
         ...table(["probe type", "arm", "deferred/items", "rate"], rows),
     ];

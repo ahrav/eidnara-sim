@@ -185,6 +185,14 @@ a P4 rule over literals reads the literals of test files too) and read a
 commit's message from git's own record, and a judge labels the reply of a P3 turn that
 changed no product code, in a project where the arm wrote the value
 earlier and the reply names it.
+P1's no-work turns are the fifth case (Grading revision 15), and one where
+the item's task decides the outcome in every arm: 157 of 860 graded P1
+turns changed no code file, six task wordings hold 145 of them, and blind
+labels read 152 as a question about a choice the task leaves open. The
+rule of revision 13 failed all of them; the registered deferral of
+revision 12, extended to P1, agrees with the labels on 105 of the 108
+design turns and 49 of the 49 test turns, and defers 18.1% of the host's
+graded P1 turns and 18.0% of the Eidnara arms'.
 
 - State the property in one sentence and write the rubric from it before
   any answer is labelled. Give every class a label, the passing one and each

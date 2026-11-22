@@ -430,6 +430,36 @@ describe("grading harness", () => {
         ).toThrow(/not a grade record/);
         // A deferred record from before the revision holds no metric.
         log.append({ ...deferred, version: 2, metrics: {} });
+        // A deferred P1 record keeps the tier rule's verdict as its one metric.
+        const asked = grade("P1-deferred-recorded-host");
+        expect([asked.verdict, asked.reason, asked.metrics]).toEqual([
+            "excluded",
+            "deferred",
+            { "P1.v1": false },
+        ]);
+        log.append(asked);
+        const unshaped: GradeRecord["metrics"][] = [
+            {},
+            { "P1.v1": "fail" },
+            { "P1.v1": false, "P1.pass": false },
+        ];
+        for (const metrics of unshaped) {
+            expect(() => log.append({ ...asked, version: 2, metrics })).toThrow(
+                /not a grade record/,
+            );
+        }
+        // A P12 record carries the reply reading where the snapshot holds a reply, as a boolean.
+        const named = grade("P12-fail-named-in-reply");
+        expect(named.metrics["P12.reply_names_identity"]).toBe(true);
+        log.append(named);
+        log.append(grade("P12-fail"));
+        expect(() =>
+            log.append({
+                ...named,
+                version: 2,
+                metrics: { ...named.metrics, "P12.reply_names_identity": "yes" },
+            }),
+        ).toThrow(/not a grade record/);
         // A P13 record with no governed action after the fold carries the fold's companions
         // and the replaced verdict, and those alone.
         const p13 = grade("P13-pass");

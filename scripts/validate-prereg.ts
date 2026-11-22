@@ -1,8 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+    DEFERRAL_REVISIONS,
+    deferralRevisionHash,
     gradingRevisionHash,
     JUDGED_REVISIONS,
+    loadDeferralRevision,
     loadGradingRevision,
     loadPositiveRevision,
     loadRuleRevision,
@@ -76,6 +79,12 @@ for (const id of RULE_REVISIONS) {
     report(id, () => {
         const revision = loadRuleRevision(id, dir);
         return `${ruleRevisionHash(revision)} over ${revision.probes.join(", ")}`;
+    });
+}
+for (const id of DEFERRAL_REVISIONS) {
+    report(id, () => {
+        const revision = loadDeferralRevision(id, dir);
+        return `${deferralRevisionHash(revision)} over ${revision.probes.join(", ")}`;
     });
 }
 for (const id of POSITIVE_REVISIONS) {

@@ -182,16 +182,53 @@ describe("P1: the rule holds on every construct it governs, in its scope", () =>
         expect(outcome(p1, alternative)).toEqual(["pass"]);
     });
 
-    test("a no-op, an unrelated edit, the wrong scope, or a note is no application", () => {
+    test("an unrelated edit, the wrong scope, or a no-op with an empty reply is no application", () => {
         const none = ["fail", "rule not applicable to the change"];
-        expect(outcome(p1, NOOP)).toEqual(none);
+        expect(outcome(p1, { ...NOOP, answer: "" })).toEqual(none);
         const unrelated = { files: [{ path: "src/cmd/get.rs", lines: ["fn helper() {}"] }] };
         expect(outcome(p1, unrelated)).toEqual(none);
         expect(outcome(p1, { files: [constant("src/lib.rs", `${token}_MAX_KEYS`)] })).toEqual(none);
         const note = {
             files: [{ path: "notes/limits.md", lines: [`pub const ${token}_MAX: usize`] }],
         };
-        expect(outcome(p1, note)).toEqual(none);
+        expect(outcome(p1, { ...note, answer: "  \n" })).toEqual(none);
+    });
+
+    test("a turn that changed no code file and replied is deferred, never a pass or a fail", () => {
+        const asks =
+            "The task gives no figure for the cap and the code holds none. What should it be?";
+        const note = {
+            files: [{ path: "notes/limits.md", lines: [`pub const ${token}_MAX: usize`] }],
+        };
+        // The reply's wording is free: the rule reads that the turn did no work and replied.
+        for (const t of [{ answer: asks }, NOOP, { ...note, answer: asks }]) {
+            const g = grade(p1, t);
+            expect([g.verdict, g.reason, g.metrics]).toEqual([
+                "excluded",
+                "deferred",
+                { "P1.v1": false },
+            ]);
+        }
+        // A code change is graded on its constructs whatever the reply asks.
+        const unprefixed = { files: [constant("src/cmd/mget.rs", "MAX_KEYS")], answer: asks };
+        expect(outcome(p1, unprefixed)).toEqual(["fail", "a governed construct breaks the rule"]);
+        const prefixed = {
+            files: [constant("src/cmd/mget.rs", `${token}_MAX_KEYS`)],
+            answer: asks,
+        };
+        expect(outcome(p1, prefixed)).toEqual(["pass"]);
+        // A code change outside the rule's scope is work, so it stays a fail beside a question.
+        const elsewhere = { files: [constant("src/lib.rs", "MAX_KEYS")], answer: asks };
+        expect(outcome(p1, elsewhere)).toEqual(["fail", "rule not applicable to the change"]);
+        // A turn whose reply the snapshot holds in part keeps the verdict its diff gives.
+        const cut = snapshotOf(p1, { answer: asks });
+        const calls = cut.artefacts.find((a) => a.class === "proxy-call") as { calls: CallView[] };
+        (calls.calls.at(-1) as CallView).response_text_truncated = true;
+        const g = gradeItem(p1, [cut], rules) as GradeRecord;
+        expect([g.verdict, g.reason]).toEqual(["fail", "rule not applicable to the change"]);
+        const bare = snapshotOf(p1, { answer: asks });
+        bare.artefacts = bare.artefacts.filter((a) => a.class !== "proxy-call");
+        expect((gradeItem(p1, [bare], rules) as GradeRecord).verdict).toBe("fail");
     });
 
     test("one governed constant without the prefix breaks the rule beside a prefixed one", () => {
@@ -1542,6 +1579,38 @@ describe("P12: the identity, tied to the failure, in the named file, after the c
     const readme = (lines: string[]) => ({
         path: "README.md",
         lines: ["## Troubleshooting", "", ...lines],
+    });
+
+    test("the reply's naming of the identity is recorded beside the verdict and decides nothing", () => {
+        const ran = [`python3 ${script}`];
+        const knows = `The check raised ${idOf(tool)} for issue #${issue}; I have not written the entry.`;
+        const unwritten = grade(tool, { source: ran, answer: knows });
+        expect([unwritten.verdict, unwritten.reason, unwritten.metrics]).toEqual([
+            "fail",
+            "entry omits the error identity",
+            { "P12.pass": false, "P12.v1": false, "P12.reply_names_identity": true },
+        ]);
+        const unaware = grade(tool, { source: ran, answer: "I found no record of that failure." });
+        expect(unaware.metrics).toEqual({
+            "P12.pass": false,
+            "P12.v1": false,
+            "P12.reply_names_identity": false,
+        });
+        // A written entry passes whether the reply names the identity or leaves it out.
+        const entry = readme([`Issue #${issue}: CI fails with \`${idOf(tool)}\`.`]);
+        for (const [answer, names] of [
+            [knows, true],
+            ["Added the entry.", false],
+        ] as const) {
+            const g = grade(tool, { files: [entry], source: ran, answer });
+            expect([g.verdict, g.metrics["P12.reply_names_identity"]]).toEqual(["pass", names]);
+        }
+        // A turn whose reply the snapshot holds in part keeps its verdict and carries no reading.
+        const cut = snapshotOf(tool, { files: [entry], source: ran, answer: knows });
+        const calls = cut.artefacts.find((a) => a.class === "proxy-call") as { calls: CallView[] };
+        (calls.calls.at(-1) as CallView).response_text_truncated = true;
+        const g = gradeItem(tool, [cut], rules, 1, sourcesOf(tool)) as GradeRecord;
+        expect([g.verdict, g.metrics]).toEqual(["pass", { "P12.pass": true, "P12.v1": true }]);
     });
 
     test("an entry naming the identity and the issue, check, or figure passes", () => {
