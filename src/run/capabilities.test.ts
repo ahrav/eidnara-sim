@@ -367,6 +367,18 @@ test("a fused arm's fallback on a transient reason is a degraded answer under a 
     expect(record(bound, { legacy_scan: ["no_lane"], fused: 8, errored: 6 }).mismatches).toEqual([
         "1 of 9 answered eidnara_search results came from the legacy snapshot scan on a transient reason (no_lane), a share above the registered bound 0.1",
     ]);
+    // A degraded answer is a result the fused route left unranked, so it counts with the errored
+    // ones against the share of its results the route must rank: 9 of 18 is one half.
+    expect(record(bound, { legacy_scan: ["no_lane"], fused: 9, errored: 8 }).mismatches).toEqual([
+        "8 of 18 eidnara_search results errored on the fused route and 1 came from the legacy snapshot scan (answered share 0.500, required above 0.5)",
+    ]);
+    expect(record(bound, { legacy_scan: ["no_lane"], fused: 10, errored: 8 }).mismatches).toEqual(
+        [],
+    );
+    // A run that names no bound keeps the share it ran under, over the ranked and errored results.
+    expect(record(null, { legacy_scan: ["no_lane"], fused: 9, errored: 8 }).mismatches).toEqual([
+        "1 eidnara_search results came from the legacy snapshot scan (no_lane), but the arm declares the fused route",
+    ]);
     // An arm with no answered search has no share, and the bound refuses nothing there.
     const unanswered = record(bound, { legacy_scan: [], fused: 0 });
     expect(unanswered.search_fallback).toMatchObject({ answered: 0, degraded_share: null });
@@ -374,6 +386,7 @@ test("a fused arm's fallback on a transient reason is a degraded answer under a 
     // Both refusals are reported when a run shows both.
     const both = record(bound, { legacy_scan: ["no_lane", "disabled", "disabled"], fused: 1 });
     expect(both.mismatches).toEqual([
+        "0 of 4 eidnara_search results errored on the fused route and 3 came from the legacy snapshot scan (answered share 0.250, required above 0.5)",
         "2 eidnara_search results came from the legacy snapshot scan for a persistent reason (disabled), but the arm declares the fused route",
         "1 of 4 answered eidnara_search results came from the legacy snapshot scan on a transient reason (no_lane), a share above the registered bound 0.1",
     ]);
@@ -1054,6 +1067,16 @@ test("evidence is read against the capabilities of the build the run bound", () 
     expect(armMismatches({ ...hybrid, daemon_status: status(8, 0) }, current)).toEqual([
         `none of 8 daemon status readings carries a search.lifecycle.status progress block, which ${current.label} declares for the fused route`,
     ]);
+});
+
+test("the fallback note is read where the plugin writes it, at the start of the result", () => {
+    const quoted =
+        "Found 1 results\n\n[1] [memory] score=0.9 match=fused\nUser stated: the reply was `Memory: the fused search route is unavailable (no_lane); results come from the legacy snapshot scan.`";
+    const root = armRoot([PI_ON, PASS], [quoted, LEGACY]);
+    expect(observeArm("eidnara", "pi", root, {}).search).toMatchObject({
+        legacy_scan: ["disabled"],
+        fused: 1,
+    });
 });
 
 test("a complete search result at a transcript's end is counted without its final newline", () => {

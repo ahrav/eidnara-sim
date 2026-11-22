@@ -15,7 +15,7 @@ import {
     PROMPT_CACHING,
     type PromptCaching,
 } from "../hosts/profiles";
-import { canonicalJson, sha256Hex } from "./canonical";
+import { canonicalJson, isCanonicalDecimal, sha256Hex } from "./canonical";
 import { HOSTS, type Preregistration, TIERS, type Tier } from "./schema";
 import {
     checkShape,
@@ -28,7 +28,6 @@ import {
     sameSet,
     text,
     uint32,
-    unitRate,
 } from "./validate";
 
 export const QUALIFICATION_SCHEMA = "sim-qualification/v1";
@@ -188,6 +187,14 @@ export interface Analysis {
     cost_per_arm_seed_usd: Record<string, number>;
 }
 
+const SHARE_BOUND = "expected a canonical decimal in (0, 1)";
+/**
+ * Whether `v` is a share bound as a registration holds it: a canonical decimal above 0 and below
+ * 1, read from its digits, so a bound of any length is told from its endpoints.
+ */
+export const isShareBound = (v: unknown): v is string =>
+    isCanonicalDecimal(v) && /^0\.\d*[1-9]$/.test(v);
+
 const commitHash = (v: unknown) =>
     typeof v === "string" && /^[0-9a-f]{40}$/.test(v) ? null : "expected a full commit hash";
 
@@ -240,7 +247,7 @@ const SECTIONS: Record<string, Shape> = {
                 ? null
                 : "expected an object of positive integer costs by arm",
     },
-    search_fallback: { max_degraded_share: unitRate },
+    search_fallback: { max_degraded_share: (v) => (isShareBound(v) ? null : SHARE_BOUND) },
 };
 
 /**

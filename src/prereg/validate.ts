@@ -55,7 +55,7 @@ const intRange =
         Number.isSafeInteger(v) && (v as number) >= low && (v as number) <= high
             ? null
             : `expected ${low} to ${high}`;
-export const unitRate: Check = (v) =>
+const unitRate: Check = (v) =>
     isCanonicalDecimal(v) && Number(v) > 0 && Number(v) < 1
         ? null
         : "expected a canonical decimal in (0, 1)";

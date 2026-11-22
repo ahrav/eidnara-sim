@@ -456,7 +456,7 @@ describe("evidence stages on a memory arm", () => {
 
     test("a search whose results miss the literal fails retrieval and records its route", () => {
         const legacy =
-            "the fused search route is unavailable (query route disabled); results come from the legacy snapshot scan\n1. unrelated";
+            "Memory: the fused search route is unavailable (query route disabled); results come from the legacy snapshot scan.\n\n1. unrelated";
         const p = evidence(
             build({ calls: [SOURCE_READ, CAPTURED, searchTurn(legacy)], objects: [STORED] }),
         );
@@ -1420,7 +1420,10 @@ test("evidence-run reads a run directory and writes only under --out", () => {
         join(dir, "eidnara", "capabilities.json"),
         JSON.stringify({
             profile: { plugin: true, search: "fused" },
-            observed: { search: { legacy_scan: ["no_lane"], fused: 42, errored: 0 } },
+            observed: {
+                arm: "eidnara",
+                search: { legacy_scan: ["no_lane"], fused: 42, errored: 0 },
+            },
             search_fallback: { max_degraded_share: "0.1" },
         }),
     );
@@ -1461,29 +1464,35 @@ test("evidence-run reads a run directory and writes only under --out", () => {
 });
 
 test("the report counts a fused arm's degraded search answers from its capability record", () => {
-    const record = (legacy: unknown, bound?: string) => ({
-        observed: { search: { legacy_scan: legacy, fused: 42, errored: 2, contested: 0 } },
+    const record = (legacy: unknown, bound?: unknown, arm = "eidnara-hybrid") => ({
+        observed: { arm, search: { legacy_scan: legacy, fused: 42, errored: 2, contested: 0 } },
         ...(bound === undefined ? {} : { search_fallback: { max_degraded_share: bound } }),
     });
     const fused = { plugin: true, search: "fused" };
-    expect(fusedSearch(fused, record(["no_lane"], "0.1"))).toEqual({
+    const read = (r: Parameters<typeof fusedSearch>[2], profile = fused) =>
+        fusedSearch("eidnara-hybrid", profile, r);
+    expect(read(record(["no_lane"], "0.1"))).toEqual({
         results: { legacy_scan: ["no_lane"], fused: 42, errored: 2 },
         bound: { max_degraded_share: "0.1" },
     });
     // A record from before the bound holds the observation alone, and a record of a run whose
     // registration names no bound holds a null one.
-    expect(fusedSearch(fused, record(["no_lane"]))?.bound).toBeNull();
-    const unbound = { ...record(["no_lane"]), search_fallback: { max_degraded_share: null } };
-    expect(fusedSearch(fused, unbound)?.bound).toBeNull();
-    // Another route, an absent record, and a malformed observation give no row.
-    expect(fusedSearch({ plugin: true, search: "legacy-scan" }, record([]))).toBeNull();
-    expect(fusedSearch(fused, null)).toBeNull();
-    expect(fusedSearch(fused, { observed: { search: null } })).toBeNull();
-    expect(fusedSearch(fused, record([1]))).toBeNull();
-    expect(fusedSearch(fused, record("no_lane"))).toBeNull();
+    expect(read(record(["no_lane"]))?.bound).toBeNull();
+    expect(read(record(["no_lane"], null))?.bound).toBeNull();
+    // Another route, an absent record, another arm's record, and a malformed observation or
+    // bound give no row.
+    expect(read(record([]), { plugin: true, search: "legacy-scan" })).toBeNull();
+    expect(read(null)).toBeNull();
+    expect(read(record(["no_lane"], "0.1", "eidnara"))).toBeNull();
+    expect(read({ observed: { arm: "eidnara-hybrid", search: null } })).toBeNull();
+    expect(read(record([1]))).toBeNull();
+    expect(read(record("no_lane"))).toBeNull();
+    for (const bound of ["garbage", "0", "1", "0.10", 0.1]) {
+        expect(read(record(["no_lane"], bound))).toBeNull();
+    }
     for (const fusedCount of [-1, 1.5, Number.POSITIVE_INFINITY, "42"]) {
-        const odd = { observed: { search: { legacy_scan: [], fused: fusedCount, errored: 0 } } };
-        expect(fusedSearch(fused, odd)).toBeNull();
+        const search = { legacy_scan: [], fused: fusedCount, errored: 0 };
+        expect(read({ observed: { arm: "eidnara-hybrid", search } })).toBeNull();
     }
 
     const run = (name: string, search: ArmData["search"]) => {

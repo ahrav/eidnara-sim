@@ -556,8 +556,11 @@ test("a registration names the bound on a fused arm's degraded search answers", 
         return validateQualification(q, S);
     };
     expect(bounded({ max_degraded_share: "0.1" })).toEqual([]);
-    // The share is a canonical decimal inside (0, 1), so it hashes the same on every runtime.
-    for (const value of [0.1, "0", "1", "0.10", "1.5", "-0.1", null]) {
+    // The share is a canonical decimal inside (0, 1), read from its digits: a bound a double
+    // rounds to an endpoint is told from the endpoint.
+    expect(bounded({ max_degraded_share: "0.99999999999999999" })).toEqual([]);
+    expect(bounded({ max_degraded_share: "0.00000000000000000000001" })).toEqual([]);
+    for (const value of [0.1, "0", "1", "0.0", "0.10", "1.5", "-0.1", ".1", null]) {
         expect(bounded({ max_degraded_share: value })).toEqual([
             "search_fallback.max_degraded_share: expected a canonical decimal in (0, 1)",
         ]);

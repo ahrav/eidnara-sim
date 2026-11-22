@@ -482,8 +482,8 @@ complete evidence only when the two agree:
   stop inside one) gets the same boot check, and the run writes
   `<arm>/capabilities.json`: the profile, the observed boots, the number of
   `served_from=transform` passes, the routes Pi's transcripts show each
-  `eidnara_search` result came from (the legacy scan when the result carries
-  the plugin's fallback note, an error when it reports one, and the fused
+  `eidnara_search` result came from (the legacy scan when the result opens
+  with the plugin's fallback note, an error when it reports one, and the fused
   route for every other success; `null` on OpenCode, whose transcripts this
   check does not read), the arm's proxy calls by component, the run's
   `prompt_caching` condition, and `prompt_caching` under `observed`: per
@@ -663,14 +663,17 @@ complete evidence only when the two agree:
   mismatch when a route line appears.
 - A fused-route arm must also show a served projection: of its
   `eidnara_search` results the fused route handled (answered or errored), the
-  answered share must exceed `MIN_FUSED_ANSWER_SHARE` (0.5). The arm declares
+  answered share must exceed `MIN_FUSED_ANSWER_SHARE` (0.5). Under a
+  registered fallback bound the legacy-scan answers count with the errored
+  results, since the fused route ranked neither. The arm declares
   the fused route as its search path, and an errored search carries no
   ranking from any route, so the fused route is the arm's search path while
   it answers more of the arm's searches than it refuses; at one half or
   below, the arm's usual search has no answer. The bound follows from the
   arm's declaration and is not fitted to any run. The mismatch names the
-  errored count and the share; the share itself stays in
-  `capabilities.json` (`search.fused`, `search.errored`) for the analysis,
+  errored count, the legacy-scan count when there is one, and the share;
+  the share itself stays in `capabilities.json` (`search.fused`,
+  `search.errored`, `search.legacy_scan`) for the analysis,
   which judges registered expectations on it.
 - The checks below read the capabilities of the arm's variant on the bound
   build (`eidnara_build` in `capabilities.json`):

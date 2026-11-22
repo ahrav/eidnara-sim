@@ -13,6 +13,7 @@ import { basename, join, relative, sep } from "node:path";
 import { GradeRefused } from "../grade/artefacts";
 import { GradeLog, type GradeRecord } from "../grade/probes";
 import { armBase, CONTROL_LABEL, requireOrder } from "../hosts/arms";
+import { isShareBound } from "../prereg/qualification";
 import { ARMS, TIERS, type Tier } from "../prereg/schema";
 import type { ConverseBody } from "../proxy/classify";
 import { recordProblems } from "../proxy/records";
@@ -145,20 +146,31 @@ export interface FusedSearch {
 /** The capability record fields the evidence path reads. */
 export interface CapabilityView {
     profile?: ArmProfileView;
-    observed?: { search?: { legacy_scan?: unknown; fused?: unknown; errored?: unknown } | null };
+    observed?: {
+        arm?: unknown;
+        search?: { legacy_scan?: unknown; fused?: unknown; errored?: unknown } | null;
+    };
     search_fallback?: { max_degraded_share?: unknown };
 }
 
-/** A fused arm's search results and registered bound as its capability record holds them. */
+/**
+ * The search results and registered bound of the fused arm `arm` as its capability record holds
+ * them; null for a record of another arm, an arm on another route, or counts and a bound of
+ * another shape than the run writes.
+ */
 export function fusedSearch(
+    arm: string,
     profile: ArmProfileView | null,
     record: CapabilityView | null,
 ): FusedSearch | null {
     const s = record?.observed?.search;
     const reasons = s?.legacy_scan;
     const count = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
+    const bound = record?.search_fallback?.max_degraded_share ?? null;
     if (
         profile?.search !== "fused" ||
+        record?.observed?.arm !== arm ||
+        (bound !== null && !isShareBound(bound)) ||
         !Array.isArray(reasons) ||
         !reasons.every((r) => typeof r === "string") ||
         !count(s?.fused) ||
@@ -166,10 +178,9 @@ export function fusedSearch(
     ) {
         return null;
     }
-    const bound = record?.search_fallback?.max_degraded_share;
     return {
         results: { legacy_scan: reasons, fused: s.fused, errored: s.errored },
-        bound: typeof bound === "string" ? { max_degraded_share: bound } : null,
+        bound: bound === null ? null : { max_degraded_share: bound },
     };
 }
 
@@ -646,7 +657,7 @@ export function loadRun(dir: string): RunData {
         arms.set(arm, {
             arm,
             profile,
-            search: fusedSearch(profile, capabilities),
+            search: fusedSearch(arm, profile, capabilities),
             tools,
             transcripts:
                 manifest.host === "pi"

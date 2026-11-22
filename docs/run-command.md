@@ -154,7 +154,8 @@ also carry these optional sections and fields:
   Every registration through W2S2H names none, so its hash, its requests,
   and its prices are what they were.
 - `search_fallback` (`max_degraded_share`): the bound on a fused-route
-  arm's degraded search answers, a canonical decimal in (0, 1). A legacy-scan
+  arm's degraded search answers, a canonical decimal in (0, 1), read from
+  its digits. A legacy-scan
   answer whose fallback note names a transient reason (`snapshot_changed`,
   `no_lane`) counts as a degraded answer in the arm's `capabilities.json`;
   the arm is refused when the degraded share of its answered searches

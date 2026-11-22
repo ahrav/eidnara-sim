@@ -11,7 +11,7 @@ import {
     readSync,
 } from "node:fs";
 import { join } from "node:path";
-import { bodyText, injectedBlocks } from "../evidence/stages";
+import { bodyText, injectedBlocks, searchRoute } from "../evidence/stages";
 import { payloadManifest, processMemoryBlock, progressBlock } from "../hosts/arms";
 import {
     type ArmProfile,
@@ -891,9 +891,6 @@ export function readPluginLog(
     return { boots, transform_passes, narrowing_passes, unsized_passes };
 }
 
-const FALLBACK =
-    /the fused search route is unavailable \(([^)]*)\); results come from the legacy snapshot scan/;
-
 /**
  * The `eidnara_search` results in Pi's session transcripts under `root/rel`, by answering route.
  * The agent can write below `root`, so every component of `rel` must be a real directory, and the
@@ -944,12 +941,12 @@ export function readPiSearches(root: string, rel: string): NonNullable<ArmObserv
                 const text = (Array.isArray(m.content) ? m.content : [])
                     .map((c: { text?: unknown }) => (typeof c?.text === "string" ? c.text : ""))
                     .join("\n");
-                // The plugin prepends the fallback note to every legacy-scan answer and to no
-                // answer the fused route ranked; a refusal is an error result.
+                // The plugin opens every legacy-scan answer with the fallback note and no answer
+                // the fused route ranked; a refusal is an error result.
                 if (/^Contested by /m.test(text)) search.contested++;
-                const fallback = FALLBACK.exec(text);
-                if (fallback) search.legacy_scan.push(fallback[1] as string);
-                else if (m.isError === true || text.startsWith("Error")) search.errored++;
+                const { route, fallback } = searchRoute(text, m.isError === true);
+                if (fallback !== undefined) search.legacy_scan.push(fallback);
+                else if (route === "errored") search.errored++;
                 else search.fused++;
             });
         }
@@ -1384,7 +1381,7 @@ export function armMismatches(
         }
     }
     out.push(...captureMismatches(profile, o), ...memoryMismatches(profile, o));
-    out.push(...routeMismatches(profile, o));
+    out.push(...routeMismatches(profile, o, fallback));
     if (caps) out.push(...buildMismatches(profile, o, caps, build.label));
     if (o.search) {
         if (profile.search === "fused" && fallback) {
@@ -1584,7 +1581,11 @@ function memoryMismatches(profile: ArmProfile, o: ArmObservation): string[] {
  * Every daemon start of a fused-route arm logs the fixture's production search route over the
  * embedding model the arm requires; a daemon of any other arm logs none.
  */
-function routeMismatches(profile: ArmProfile, o: ArmObservation): string[] {
+function routeMismatches(
+    profile: ArmProfile,
+    o: ArmObservation,
+    fallback: SearchFallbackBound | null,
+): string[] {
     const r = o.daemon_routes;
     if (!r || profile.daemon === null) return [];
     if (profile.search !== "fused") {
@@ -1612,11 +1613,16 @@ function routeMismatches(profile: ArmProfile, o: ArmObservation): string[] {
             `the production search route ran embedding model ${other.join(", ")}, but the arm requires ${wanted}`,
         );
     }
-    const share = fusedAnswerShare(o.search);
+    // Under a registered bound a degraded answer stands, so it counts with the errored results
+    // among those the fused route left unranked; a run that names no bound refuses every
+    // legacy-scan answer by itself.
+    const legacy = fallback ? (o.search?.legacy_scan.length ?? 0) : 0;
+    const share = fusedAnswerShare(o.search, legacy);
     if (o.search && share !== null && share <= MIN_FUSED_ANSWER_SHARE) {
-        const total = o.search.fused + o.search.errored;
+        const total = o.search.fused + o.search.errored + legacy;
+        const scanned = legacy > 0 ? ` and ${legacy} came from the legacy snapshot scan` : "";
         out.push(
-            `${o.search.errored} of ${total} eidnara_search results errored on the fused route (answered share ${share.toFixed(3)}, required above ${MIN_FUSED_ANSWER_SHARE})`,
+            `${o.search.errored} of ${total} eidnara_search results errored on the fused route${scanned} (answered share ${share.toFixed(3)}, required above ${MIN_FUSED_ANSWER_SHARE})`,
         );
     }
     return out;
@@ -1631,10 +1637,13 @@ function routeMismatches(profile: ArmProfile, o: ArmObservation): string[] {
  */
 export const MIN_FUSED_ANSWER_SHARE = 0.5;
 
-/** The share of fused-route searches (answered plus errored) the route answered; null with none. */
-export function fusedAnswerShare(search: ArmObservation["search"]): number | null {
+/**
+ * The share of fused-route searches the route answered, over the answered and errored ones and
+ * `unranked` further results the route left to the legacy scan; null with none.
+ */
+export function fusedAnswerShare(search: ArmObservation["search"], unranked = 0): number | null {
     if (!search) return null;
-    const total = search.fused + search.errored;
+    const total = search.fused + search.errored + unranked;
     return total === 0 ? null : search.fused / total;
 }
 
