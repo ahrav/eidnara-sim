@@ -26,6 +26,7 @@ import { EIDNARA_MARKER, sessionHealth } from "./health";
 import {
     type ArmData,
     type EvidenceScenario,
+    fusedSearch,
     loadRun,
     type RunData,
     readPiAnswers,
@@ -192,6 +193,7 @@ function build(spec: Spec): RunData {
                     objects: spec.objects === undefined ? [] : spec.objects,
                     descriptors: spec.descriptors === undefined ? [] : spec.descriptors,
                     answers: spec.answers ?? null,
+                    search: null,
                     captures: [
                         {
                             session: "s-1",
@@ -454,7 +456,7 @@ describe("evidence stages on a memory arm", () => {
 
     test("a search whose results miss the literal fails retrieval and records its route", () => {
         const legacy =
-            "the fused search route is unavailable (query route disabled); results come from the legacy snapshot scan\n1. unrelated";
+            "Memory: the fused search route is unavailable (query route disabled); results come from the legacy snapshot scan.\n\n1. unrelated";
         const p = evidence(
             build({ calls: [SOURCE_READ, CAPTURED, searchTurn(legacy)], objects: [STORED] }),
         );
@@ -1411,6 +1413,35 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     loaded.callLog?.close();
     if (loaded.parts instanceof RequestPartLog) loaded.parts.close();
     expect(loadRun(dir).arms.get("eidnara")?.objects?.length).toBe(2);
+    // A fused arm's search answers and registered bound come from its capability record, and
+    // the profile the manifest pins decides whether the arm declares the fused route.
+    expect(loadRun(dir).arms.get("eidnara")?.search).toBeNull();
+    writeFileSync(
+        join(dir, "eidnara", "capabilities.json"),
+        JSON.stringify({
+            profile: { plugin: true, search: "fused" },
+            observed: {
+                arm: "eidnara",
+                search: { legacy_scan: ["no_lane"], fused: 42, errored: 0 },
+            },
+            search_fallback: { max_degraded_share: null },
+        }),
+    );
+    expect(loadRun(dir).arms.get("eidnara")?.search).toBeNull();
+    writeFileSync(
+        manifestPath,
+        manifest.replace('{"plugin":true}', '{"plugin":true,"search":"fused"}'),
+    );
+    // The run is a tier run, whose registration names no bound.
+    expect(loadRun(dir).arms.get("eidnara")?.search).toEqual({
+        results: { legacy_scan: ["no_lane"], fused: 42, errored: 0 },
+        bound: null,
+    });
+    expect(evidenceRun([dir], join(root, "fused"), null)).toContain(
+        "| run | eidnara | 43 | 42 | 1 (no_lane) | 2.3% | none: every fallback refuses | none | 0 |",
+    );
+    writeFileSync(manifestPath, manifest);
+    rmSync(join(dir, "eidnara", "capabilities.json"));
     const k = new Database(join(dir, "eidnara", "final-store", "kernel.sqlite"));
     k.run("insert into decisions values ('decision:8', 'x', 'project:KEY_A')");
     k.close();
@@ -1431,6 +1462,94 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     expect(loadRun(dir).arms.get("eidnara")?.objects).toBeNull();
     writeFileSync(join(dir, "grades.jsonl"), `${JSON.stringify({ ...graded, version: 2 })}\n`);
     expect(() => loadRun(dir)).toThrow(/version 2/);
+});
+
+test("the report counts a fused arm's degraded search answers from its capability record", () => {
+    const record = (legacy: unknown, bound?: unknown, arm = "eidnara-hybrid") => ({
+        observed: { arm, search: { legacy_scan: legacy, fused: 42, errored: 2, contested: 0 } },
+        ...(bound === undefined ? {} : { search_fallback: { max_degraded_share: bound } }),
+    });
+    const fused = { plugin: true, search: "fused" };
+    const tenth = { max_degraded_share: "0.1" };
+    const read = (
+        r: Parameters<typeof fusedSearch>[2],
+        registered: typeof tenth | null = null,
+        profile = fused,
+    ) => fusedSearch("eidnara-hybrid", profile, r, registered);
+    expect(read(record(["no_lane"], "0.1"), tenth)).toEqual({
+        results: { legacy_scan: ["no_lane"], fused: 42, errored: 2 },
+        bound: tenth,
+    });
+    // A record from before the bound holds the observation alone, and a record of a run whose
+    // registration names no bound holds a null one.
+    expect(read(record(["no_lane"]))?.bound).toBeNull();
+    expect(read(record(["no_lane"], null))?.bound).toBeNull();
+    // The bound is the one the run's registration names: a record that holds another gives no row.
+    expect(read(record(["no_lane"], "0.9"), tenth)).toBeNull();
+    expect(read(record(["no_lane"], "0.1"))).toBeNull();
+    expect(read(record(["no_lane"]), tenth)).toBeNull();
+    expect(read(record(["no_lane"], 0.1), tenth)).toBeNull();
+    // Another route, an absent record, another arm's record, and a malformed observation give
+    // no row.
+    expect(read(record([]), null, { plugin: true, search: "legacy-scan" })).toBeNull();
+    expect(read(null)).toBeNull();
+    expect(read(record(["no_lane"], "0.1", "eidnara"), tenth)).toBeNull();
+    expect(read({ observed: { arm: "eidnara-hybrid", search: null } })).toBeNull();
+    expect(read(record([1]))).toBeNull();
+    expect(read(record("no_lane"))).toBeNull();
+    for (const odd of [-1, 1.5, Number.POSITIVE_INFINITY, "42"]) {
+        for (const search of [
+            { legacy_scan: [], fused: odd, errored: 0 },
+            { legacy_scan: [], fused: 42, errored: odd },
+        ]) {
+            expect(read({ observed: { arm: "eidnara-hybrid", search } })).toBeNull();
+        }
+    }
+    // A request body carries the daemon's block tag ahead of the tool output; a transcript holds
+    // the output alone. The note is read in both forms, and nowhere past the start.
+    const note =
+        "Memory: the fused search route is unavailable (disabled); results come from the legacy snapshot scan.";
+    expect(searchRoute(`${note}\n\n1. x`, false)).toEqual({
+        route: "legacy-scan",
+        fallback: "disabled",
+    });
+    expect(searchRoute(`\u00a74\u00a7 ${note}\n\n1. x`, false)).toEqual({
+        route: "legacy-scan",
+        fallback: "disabled",
+    });
+    expect(searchRoute(`Found 1 results\n${note}`, false)).toEqual({ route: "fused" });
+    expect(searchRoute(`\u00a74\u00a7 Found 1 results\n${note}`, false)).toEqual({
+        route: "fused",
+    });
+
+    const run = (name: string, search: ArmData["search"]) => {
+        const r = build({ arm: "eidnara-hybrid" });
+        (r.arms.get("eidnara-hybrid") as ArmData).search = search;
+        return { name, run: r, probes: [], sessions: [] };
+    };
+    const rows = (report: string) => {
+        const lines = report.split("\n");
+        const at = lines.indexOf("### Search route answers");
+        return lines.slice(at + 6, lines.indexOf("### Context health", at) - 1);
+    };
+    const results = (legacy_scan: string[], fused = 42) => ({ legacy_scan, fused, errored: 2 });
+    expect(
+        rows(
+            renderEvidence([
+                run("A", { results: results(["no_lane"]), bound: { max_degraded_share: "0.1" } }),
+                run("B", { results: results(["disabled", "snapshot_changed"]), bound: null }),
+                run("C", { results: results([]), bound: null }),
+                run("D", null),
+                run("E", { results: results([], 0), bound: null }),
+            ]),
+        ),
+    ).toEqual([
+        "| A | eidnara-hybrid | 43 | 42 | 1 (no_lane) | 2.3% | 0.1 | none | 2 |",
+        "| B | eidnara-hybrid | 44 | 42 | 1 (snapshot_changed) | 2.3% | none: every fallback refuses | disabled | 2 |",
+        "| C | eidnara-hybrid | 42 | 42 | 0 | 0.0% | none: every fallback refuses | none | 2 |",
+        "| E | eidnara-hybrid | 0 | 0 | 0 |  | none: every fallback refuses | none | 2 |",
+    ]);
+    expect(rows(renderEvidence([run("D", null)]))).toEqual(["| none |  |  |  |  |  |  |  |  |"]);
 });
 
 test("a descriptor whose creation or retirement commit the log lacks leaves the descriptors unread", () => {

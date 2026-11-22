@@ -482,8 +482,8 @@ complete evidence only when the two agree:
   stop inside one) gets the same boot check, and the run writes
   `<arm>/capabilities.json`: the profile, the observed boots, the number of
   `served_from=transform` passes, the routes Pi's transcripts show each
-  `eidnara_search` result came from (the legacy scan when the result carries
-  the plugin's fallback note, an error when it reports one, and the fused
+  `eidnara_search` result came from (the legacy scan when the result opens
+  with the plugin's fallback note, an error when it reports one, and the fused
   route for every other success; `null` on OpenCode, whose transcripts this
   check does not read), the arm's proxy calls by component, the run's
   `prompt_caching` condition, and `prompt_caching` under `observed`: per
@@ -519,7 +519,41 @@ complete evidence only when the two agree:
   Eidnara compaction off whose pass logged fewer output messages than input
   (`in=` and `out=`), logged no counts, or that made a `history_summarizer`
   call; or a search result from a
-  route other than the declared one.
+  route other than the declared one, read for a fused-route arm as the
+  next item states.
+- A fused-route arm's legacy-scan answers are read by the reason the
+  plugin's fallback note names. The product's contract (Eidnara
+  `docs/properties/fusion-routes/query-route/catalog.md`) ends one call as
+  `lane_unavailable` with reason `snapshot_changed` when a kernel commit
+  lands between two revalidation slices, and with reason `no_lane` when
+  every lane the query declares fails for that call; the plugin then
+  answers that call from the legacy snapshot scan and names the reason
+  (`route-search.ts`, `execute.ts`). Those two reasons are transient
+  (`TRANSIENT_FALLBACK_REASONS`), and a legacy-scan answer that names one
+  is a degraded answer of the declared route. `no_lane` reports only that
+  every declared lane failed, so a lane that fails on every call reports
+  it as well; the
+  share bound is the check that tells a route failing call after call from
+  one that lost a single call. Every other reason reports a
+  state that outlasts the call, such as `disabled` (the route holds no
+  limit set), a search admission code (`no_manifest`, `lane_not_ready`,
+  `no_family`, `family_refused`), or an unreadable projection
+  (`projection_read`), and is persistent. The record's `search_fallback`
+  holds the counts of a fused arm whose transcripts the check reads (a Pi
+  arm): `answered` (fused plus legacy-scan results), `degraded` with its
+  `degraded_reasons`, `degraded_share` (`degraded` over `answered`, `null`
+  with no answer; errored results carry no answer and stay out),
+  `persistent` with its `persistent_reasons`, and `max_degraded_share`,
+  the bound the run's qualification registers (`search_fallback`,
+  `docs/run-command.md`) or `null`. Under a registered bound the arm is a
+  mismatch when an answer names a persistent reason or when
+  `degraded_share` exceeds the bound.
+  A run whose registration names no bound keeps the rule it ran under:
+  every legacy-scan answer on a fused arm is a mismatch. `observed.search`
+  keeps one `legacy_scan` reason per fallback result either way. The
+  mismatches a run recorded are its verdict; the counts are derived from
+  `observed.search` with the transient reasons of the commit that reads
+  them.
 - `capabilities.json` also holds `source_capture`: the Kernel source
   descriptors (`srcdesc:*` observations) in `<arm>/final-store/kernel.sqlite`
   by class (`messages`, `raw_tool_spans`, `repository_documents`), how many
@@ -629,14 +663,17 @@ complete evidence only when the two agree:
   mismatch when a route line appears.
 - A fused-route arm must also show a served projection: of its
   `eidnara_search` results the fused route handled (answered or errored), the
-  answered share must exceed `MIN_FUSED_ANSWER_SHARE` (0.5). The arm declares
+  answered share must exceed `MIN_FUSED_ANSWER_SHARE` (0.5). Under a
+  registered fallback bound the legacy-scan answers count with the errored
+  results, since the fused route ranked neither. The arm declares
   the fused route as its search path, and an errored search carries no
   ranking from any route, so the fused route is the arm's search path while
   it answers more of the arm's searches than it refuses; at one half or
   below, the arm's usual search has no answer. The bound follows from the
   arm's declaration and is not fitted to any run. The mismatch names the
-  errored count and the share; the share itself stays in
-  `capabilities.json` (`search.fused`, `search.errored`) for the analysis,
+  errored count, the legacy-scan count when there is one, and the share;
+  the share itself stays in `capabilities.json` (`search.fused`,
+  `search.errored`, `search.legacy_scan`) for the analysis,
   which judges registered expectations on it.
 - The checks below read the capabilities of the arm's variant on the bound
   build (`eidnara_build` in `capabilities.json`):

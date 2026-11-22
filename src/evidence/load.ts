@@ -23,9 +23,10 @@ import {
     rebuildRequest,
 } from "../proxy/requests";
 import { CallLog, type HeldCall } from "../run/calllog";
+import type { ArmObservation, SearchFallbackBound } from "../run/capabilities";
 import { type Entry, eachLine, readJournal, readJsonl } from "../run/journal";
 import { scenarioHash } from "../scenario/compile";
-import { admittedArms, loadPrereg } from "../scenario/inputs";
+import { admittedArms, loadPrereg, loadQualification } from "../scenario/inputs";
 
 /** The scenario fields the evidence path reads. */
 export interface EvidenceScenario {
@@ -127,6 +128,61 @@ export interface ArmData {
     /** Null when the Kernel store is absent or unreadable. */
     descriptors: SourceDescriptor[] | null;
     answers: Map<string, string[]> | null;
+    /**
+     * A fused-route arm's `eidnara_search` results by route and the bound its run registered for
+     * degraded answers, from the arm's capability record; null for an arm on another route or a
+     * record without a search observation (a host whose transcripts the capability check leaves
+     * unread).
+     */
+    search: FusedSearch | null;
+}
+
+export interface FusedSearch {
+    results: NonNullable<ArmObservation["search"]>;
+    bound: SearchFallbackBound | null;
+}
+
+/** The capability record fields the evidence path reads. */
+export interface CapabilityView {
+    profile?: ArmProfileView;
+    observed?: {
+        arm?: unknown;
+        search?: { legacy_scan?: unknown; fused?: unknown; errored?: unknown } | null;
+    };
+    search_fallback?: { max_degraded_share?: unknown };
+}
+
+/**
+ * The search results of the fused arm `arm` as its capability record holds them, with the bound
+ * `registered`, the one the run's registration names (null for none); null for a record of
+ * another arm, an arm on another route, counts of another shape than the run writes, or a
+ * record whose bound differs from the registered one.
+ */
+export function fusedSearch(
+    arm: string,
+    profile: ArmProfileView | null,
+    record: CapabilityView | null,
+    registered: SearchFallbackBound | null,
+): FusedSearch | null {
+    const s = record?.observed?.search;
+    const reasons = s?.legacy_scan;
+    const count = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
+    const bound = record?.search_fallback?.max_degraded_share ?? null;
+    if (
+        profile?.search !== "fused" ||
+        record?.observed?.arm !== arm ||
+        bound !== (registered?.max_degraded_share ?? null) ||
+        !Array.isArray(reasons) ||
+        !reasons.every((r) => typeof r === "string") ||
+        !count(s?.fused) ||
+        !count(s.errored)
+    ) {
+        return null;
+    }
+    return {
+        results: { legacy_scan: reasons, fused: s.fused, errored: s.errored },
+        bound: registered,
+    };
 }
 
 export interface RunData {
@@ -563,12 +619,16 @@ export function loadRun(dir: string): RunData {
     // A qualification run is admitted as the runner admits it: its registration, seed, and order.
     // An A/A control label needs a pair the run's registration lists for its seed.
     let pairs: string[][] | null = null;
+    // The bound on degraded search answers the run's registration names; a tier run names none.
+    let fallback: SearchFallbackBound | null = null;
     if (manifest.qualification) {
         try {
             pairs = admittedArms(
                 { ...manifest, tier: manifest.tier as Tier, order },
                 scenario as { manifest?: Record<string, unknown> },
             ).pairs;
+            // `admittedArms` held the registration on disk to the digest the manifest pins.
+            fallback = loadQualification(manifest.qualification.id).search_fallback ?? null;
         } catch (caught) {
             throw new Error(`${dir}: ${(caught as Error).message}`);
         }
@@ -597,12 +657,12 @@ export function loadRun(dir: string): RunData {
         const pluginLog = lstatSync(logPath, { throwIfNoEntry: false })?.isFile()
             ? readFileSync(logPath, "utf8").split("\n")
             : null;
-        const capabilities = readJsonFile<{ profile?: ArmProfileView }>(
-            join(root, "capabilities.json"),
-        );
+        const capabilities = readJsonFile<CapabilityView>(join(root, "capabilities.json"));
+        const profile = manifest.arms?.[arm]?.profile ?? capabilities?.profile ?? null;
         arms.set(arm, {
             arm,
-            profile: manifest.arms?.[arm]?.profile ?? capabilities?.profile ?? null,
+            profile,
+            search: fusedSearch(arm, profile, capabilities, fallback),
             tools,
             transcripts:
                 manifest.host === "pi"
