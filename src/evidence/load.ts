@@ -13,7 +13,6 @@ import { basename, join, relative, sep } from "node:path";
 import { GradeRefused } from "../grade/artefacts";
 import { GradeLog, type GradeRecord } from "../grade/probes";
 import { armBase, CONTROL_LABEL, requireOrder } from "../hosts/arms";
-import { isShareBound } from "../prereg/qualification";
 import { ARMS, TIERS, type Tier } from "../prereg/schema";
 import type { ConverseBody } from "../proxy/classify";
 import { recordProblems } from "../proxy/records";
@@ -27,7 +26,7 @@ import { CallLog, type HeldCall } from "../run/calllog";
 import type { ArmObservation, SearchFallbackBound } from "../run/capabilities";
 import { type Entry, eachLine, readJournal, readJsonl } from "../run/journal";
 import { scenarioHash } from "../scenario/compile";
-import { admittedArms, loadPrereg } from "../scenario/inputs";
+import { admittedArms, loadPrereg, loadQualification } from "../scenario/inputs";
 
 /** The scenario fields the evidence path reads. */
 export interface EvidenceScenario {
@@ -154,14 +153,16 @@ export interface CapabilityView {
 }
 
 /**
- * The search results and registered bound of the fused arm `arm` as its capability record holds
- * them; null for a record of another arm, an arm on another route, or counts and a bound of
- * another shape than the run writes.
+ * The search results of the fused arm `arm` as its capability record holds them, with the bound
+ * `registered`, the one the run's registration names (null for none); null for a record of
+ * another arm, an arm on another route, counts of another shape than the run writes, or a
+ * record whose bound differs from the registered one.
  */
 export function fusedSearch(
     arm: string,
     profile: ArmProfileView | null,
     record: CapabilityView | null,
+    registered: SearchFallbackBound | null,
 ): FusedSearch | null {
     const s = record?.observed?.search;
     const reasons = s?.legacy_scan;
@@ -170,7 +171,7 @@ export function fusedSearch(
     if (
         profile?.search !== "fused" ||
         record?.observed?.arm !== arm ||
-        (bound !== null && !isShareBound(bound)) ||
+        bound !== (registered?.max_degraded_share ?? null) ||
         !Array.isArray(reasons) ||
         !reasons.every((r) => typeof r === "string") ||
         !count(s?.fused) ||
@@ -180,7 +181,7 @@ export function fusedSearch(
     }
     return {
         results: { legacy_scan: reasons, fused: s.fused, errored: s.errored },
-        bound: bound === null ? null : { max_degraded_share: bound },
+        bound: registered,
     };
 }
 
@@ -618,12 +619,16 @@ export function loadRun(dir: string): RunData {
     // A qualification run is admitted as the runner admits it: its registration, seed, and order.
     // An A/A control label needs a pair the run's registration lists for its seed.
     let pairs: string[][] | null = null;
+    // The bound on degraded search answers the run's registration names; a tier run names none.
+    let fallback: SearchFallbackBound | null = null;
     if (manifest.qualification) {
         try {
             pairs = admittedArms(
                 { ...manifest, tier: manifest.tier as Tier, order },
                 scenario as { manifest?: Record<string, unknown> },
             ).pairs;
+            // `admittedArms` held the registration on disk to the digest the manifest pins.
+            fallback = loadQualification(manifest.qualification.id).search_fallback ?? null;
         } catch (caught) {
             throw new Error(`${dir}: ${(caught as Error).message}`);
         }
@@ -657,7 +662,7 @@ export function loadRun(dir: string): RunData {
         arms.set(arm, {
             arm,
             profile,
-            search: fusedSearch(arm, profile, capabilities),
+            search: fusedSearch(arm, profile, capabilities, fallback),
             tools,
             transcripts:
                 manifest.host === "pi"

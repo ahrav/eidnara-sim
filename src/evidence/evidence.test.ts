@@ -1424,7 +1424,7 @@ test("evidence-run reads a run directory and writes only under --out", () => {
                 arm: "eidnara",
                 search: { legacy_scan: ["no_lane"], fused: 42, errored: 0 },
             },
-            search_fallback: { max_degraded_share: "0.1" },
+            search_fallback: { max_degraded_share: null },
         }),
     );
     expect(loadRun(dir).arms.get("eidnara")?.search).toBeNull();
@@ -1432,12 +1432,13 @@ test("evidence-run reads a run directory and writes only under --out", () => {
         manifestPath,
         manifest.replace('{"plugin":true}', '{"plugin":true,"search":"fused"}'),
     );
+    // The run is a tier run, whose registration names no bound.
     expect(loadRun(dir).arms.get("eidnara")?.search).toEqual({
         results: { legacy_scan: ["no_lane"], fused: 42, errored: 0 },
-        bound: { max_degraded_share: "0.1" },
+        bound: null,
     });
     expect(evidenceRun([dir], join(root, "fused"), null)).toContain(
-        "| run | eidnara | 43 | 42 | 1 (no_lane) | 2.3% | 0.1 | none | 0 |",
+        "| run | eidnara | 43 | 42 | 1 (no_lane) | 2.3% | none: every fallback refuses | none | 0 |",
     );
     writeFileSync(manifestPath, manifest);
     rmSync(join(dir, "eidnara", "capabilities.json"));
@@ -1469,27 +1470,33 @@ test("the report counts a fused arm's degraded search answers from its capabilit
         ...(bound === undefined ? {} : { search_fallback: { max_degraded_share: bound } }),
     });
     const fused = { plugin: true, search: "fused" };
-    const read = (r: Parameters<typeof fusedSearch>[2], profile = fused) =>
-        fusedSearch("eidnara-hybrid", profile, r);
-    expect(read(record(["no_lane"], "0.1"))).toEqual({
+    const tenth = { max_degraded_share: "0.1" };
+    const read = (
+        r: Parameters<typeof fusedSearch>[2],
+        registered: typeof tenth | null = null,
+        profile = fused,
+    ) => fusedSearch("eidnara-hybrid", profile, r, registered);
+    expect(read(record(["no_lane"], "0.1"), tenth)).toEqual({
         results: { legacy_scan: ["no_lane"], fused: 42, errored: 2 },
-        bound: { max_degraded_share: "0.1" },
+        bound: tenth,
     });
     // A record from before the bound holds the observation alone, and a record of a run whose
     // registration names no bound holds a null one.
     expect(read(record(["no_lane"]))?.bound).toBeNull();
     expect(read(record(["no_lane"], null))?.bound).toBeNull();
-    // Another route, an absent record, another arm's record, and a malformed observation or
-    // bound give no row.
-    expect(read(record([]), { plugin: true, search: "legacy-scan" })).toBeNull();
+    // The bound is the one the run's registration names: a record that holds another gives no row.
+    expect(read(record(["no_lane"], "0.9"), tenth)).toBeNull();
+    expect(read(record(["no_lane"], "0.1"))).toBeNull();
+    expect(read(record(["no_lane"]), tenth)).toBeNull();
+    expect(read(record(["no_lane"], 0.1), tenth)).toBeNull();
+    // Another route, an absent record, another arm's record, and a malformed observation give
+    // no row.
+    expect(read(record([]), null, { plugin: true, search: "legacy-scan" })).toBeNull();
     expect(read(null)).toBeNull();
-    expect(read(record(["no_lane"], "0.1", "eidnara"))).toBeNull();
+    expect(read(record(["no_lane"], "0.1", "eidnara"), tenth)).toBeNull();
     expect(read({ observed: { arm: "eidnara-hybrid", search: null } })).toBeNull();
     expect(read(record([1]))).toBeNull();
     expect(read(record("no_lane"))).toBeNull();
-    for (const bound of ["garbage", "0", "1", "0.10", 0.1]) {
-        expect(read(record(["no_lane"], bound))).toBeNull();
-    }
     for (const odd of [-1, 1.5, Number.POSITIVE_INFINITY, "42"]) {
         for (const search of [
             { legacy_scan: [], fused: odd, errored: 0 },
