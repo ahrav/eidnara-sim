@@ -519,7 +519,32 @@ complete evidence only when the two agree:
   Eidnara compaction off whose pass logged fewer output messages than input
   (`in=` and `out=`), logged no counts, or that made a `history_summarizer`
   call; or a search result from a
-  route other than the declared one.
+  route other than the declared one, read for a fused-route arm as the
+  next item states.
+- A fused-route arm's legacy-scan answers are read by the reason the
+  plugin's fallback note names. The product's contract (Eidnara
+  `docs/properties/fusion-routes/query-route/catalog.md`) ends one call as
+  `lane_unavailable` with reason `snapshot_changed` when a kernel commit
+  lands between two revalidation slices, and with reason `no_lane` when
+  every lane the query declares fails for that call; the plugin then
+  answers that call from the legacy snapshot scan and names the reason
+  (`route-search.ts`, `execute.ts`). Those two reasons are transient
+  (`TRANSIENT_FALLBACK_REASONS`), and a legacy-scan answer that names one
+  is a degraded answer of the declared route. Every other reason reports a
+  state that outlasts the call, such as `disabled` (the route holds no
+  limit set), a search admission code (`no_manifest`, `lane_not_ready`,
+  `no_family`, `family_refused`), or an unreadable projection
+  (`projection_read`), and is persistent. The record's `search_fallback`
+  holds the count for every fused arm: `answered` (fused plus legacy-scan
+  results), `degraded` with its `degraded_reasons`, `degraded_share`
+  (`degraded` over `answered`; errored results carry no answer and stay
+  out), the `persistent` reasons, and `max_degraded_share`, the bound the
+  run's qualification registers (`search_fallback`, `docs/run-command.md`)
+  or `null`. Under a registered bound the arm is a mismatch when an answer
+  names a persistent reason or when `degraded_share` exceeds the bound.
+  A run whose registration names no bound keeps the rule it ran under:
+  every legacy-scan answer on a fused arm is a mismatch. `observed.search`
+  keeps one `legacy_scan` reason per fallback result either way.
 - `capabilities.json` also holds `source_capture`: the Kernel source
   descriptors (`srcdesc:*` observations) in `<arm>/final-store/kernel.sqlite`
   by class (`messages`, `raw_tool_spans`, `repository_documents`), how many

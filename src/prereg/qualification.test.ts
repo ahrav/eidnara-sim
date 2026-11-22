@@ -547,6 +547,69 @@ test("the registrations before the caching condition keep their digests", () => 
     }
 });
 
+test("a registration names the bound on a fused arm's degraded search answers", () => {
+    const w4s = loadQualification("W4S");
+    const bounded = (value: unknown, patch: (q: Record<string, unknown>) => void = () => {}) => {
+        const q = structuredClone(w4s) as unknown as Record<string, unknown>;
+        q.search_fallback = value;
+        patch(q);
+        return validateQualification(q, S);
+    };
+    expect(bounded({ max_degraded_share: "0.1" })).toEqual([]);
+    // The share is a canonical decimal inside (0, 1), so it hashes the same on every runtime.
+    for (const value of [0.1, "0", "1", "0.10", "1.5", "-0.1", null]) {
+        expect(bounded({ max_degraded_share: value })).toEqual([
+            "search_fallback.max_degraded_share: expected a canonical decimal in (0, 1)",
+        ]);
+    }
+    expect(bounded({})).toEqual(["search_fallback.max_degraded_share: missing"]);
+    expect(bounded({ max_degraded_share: "0.1", reasons: ["no_lane"] })).toEqual([
+        "search_fallback.reasons: unknown field",
+    ]);
+    // The bound reads a fused arm's answers, so a registration that names it runs one.
+    const plain = (q: Record<string, unknown>) => {
+        const arms = ["host", "eidnara"];
+        q.arms = { run: arms, order_by_seed: w4s.seeds.map(() => arms) };
+        q.contrasts = [["eidnara", "host"]];
+        q.builds = {
+            ...(q.builds as object),
+            contrasts: [["eidnara", "eidnara"]],
+        };
+        (q.analysis as { cost_per_arm_seed_usd: object }).cost_per_arm_seed_usd = {
+            host: 1,
+            eidnara: 1,
+        };
+    };
+    expect(bounded({ max_degraded_share: "0.1" }, plain)).toEqual([
+        "search_fallback: expected a run arm that declares the fused route",
+    ]);
+    // The bound is part of the registration a run binds by hash.
+    const on = { ...structuredClone(w4s), search_fallback: { max_degraded_share: "0.1" } };
+    expect(qualificationHash(on)).not.toBe(qualificationHash(w4s));
+});
+
+test("the registrations before the search-fallback bound keep their digests and name none", () => {
+    const digests: Record<string, string> = {
+        Q: "389e84aeb4023b246a53743645d860c4c9becc27b81e43db2a8a84a443fbbdfc",
+        H: "f27f3c8b780d4dee3e087b9d8395a96a01c67cfc947a9953ae7b5d793f981d65",
+        C8X: "ff9a09d3b24c8dbd2d2b53443de710a48fbc68dcf05f503b1e7248cf14f85453",
+        C8XH: "cf75e20a0932aa20fe8d7464aa9caed898f64d80b8ff5efd6fe3d23d2df24ba4",
+        PCH: "979f64b178f860359067fa832260900969159a5fcaa3277135c68487f20fe147",
+        W3S: "f1d08f08c641ff975eba36b9677c0bc220ac21d86dc1e80a622f9dcea11fea47",
+        W3SH: "1d7d01b8efb46008ba8f2b832ac709ba387cb64f2626d72f440759db99de8b43",
+        W3P: "c982f5d42ca732565b05707783e7c1199c0451d4f409bea3eaadaf18bb1e930d",
+        W4S: "a1d70476c52db713110036025553181b88bc5af28b979cfd00a75bffce29c99e",
+        W4SH: "f376dbfe9314ab576e9562a7949dc94c6a1988eac36efeb550dd12cca407f34b",
+        W4P: "fe96e65a39ab0f2e11200f595bee56cbb96a07c7b792a5d7046df3b1ed4e7db7",
+    };
+    for (const [id, digest] of Object.entries(digests)) {
+        expect(qualificationHash(loadQualification(id))).toBe(digest);
+    }
+    for (const id of QUALIFICATIONS) {
+        expect(loadQualification(id).search_fallback).toBeUndefined();
+    }
+});
+
 test("PCH runs host and eidnara on C8H's held-out seed 605 with prompt caching on", () => {
     const pch = loadQualification("PCH");
     const c8h = loadQualification("C8H");

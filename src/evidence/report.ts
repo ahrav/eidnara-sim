@@ -1,3 +1,4 @@
+import { searchFallback } from "../run/capabilities";
 import type { SessionHealth } from "./health";
 import type { RunData } from "./load";
 import type { ProbeEvidence } from "./stages";
@@ -128,6 +129,57 @@ const median = (xs: number[]) => {
     return s.length % 2 ? (s[m] as number) : ((s[m - 1] as number) + (s[m] as number)) / 2;
 };
 
+/**
+ * The fused-route arms' `eidnara_search` results by route, one row per run and arm: a degraded
+ * answer is a legacy-scan answer on a transient reason, counted with its share of the answered
+ * results beside the bound the run registered (`docs/hosts.md`).
+ */
+function searchRoutes(runs: RunEvidence[]): string[] {
+    const out = [
+        "",
+        "### Search route answers",
+        "",
+        "Per arm that declares the fused route, from its capability record: the `eidnara_search` results the fused route ranked, the degraded answers (the legacy snapshot scan answered one call the route ended on a transient reason), their share of the answered results beside the registered bound, the legacy-scan answers on any other reason, and the errored results.",
+        "",
+        row([
+            "run",
+            "arm",
+            "answered",
+            "fused",
+            "degraded",
+            "degraded share",
+            "registered bound",
+            "other fallback reasons",
+            "errored",
+        ]),
+        row(["---", "---", "---", "---", "---", "---", "---", "---", "---"]),
+    ];
+    let any = false;
+    for (const r of runs) {
+        for (const [arm, data] of r.run.arms) {
+            if (!data.search) continue;
+            any = true;
+            const { results, bound } = data.search;
+            const f = searchFallback(results, bound);
+            out.push(
+                row([
+                    r.name,
+                    arm,
+                    f.answered,
+                    results.fused,
+                    f.degraded === 0 ? 0 : `${f.degraded} (${f.degraded_reasons.join(", ")})`,
+                    f.degraded_share === null ? "" : `${(100 * f.degraded_share).toFixed(1)}%`,
+                    f.max_degraded_share ?? "none: every fallback refuses",
+                    [...new Set(f.persistent)].sort().join(", ") || "none",
+                    results.errored,
+                ]),
+            );
+        }
+    }
+    if (!any) out.push(row(["none", "", "", "", "", "", "", "", ""]));
+    return out;
+}
+
 export function renderEvidence(runs: RunEvidence[]): string {
     const out: string[] = ["## Evidence path", ""];
     out.push(
@@ -192,6 +244,7 @@ export function renderEvidence(runs: RunEvidence[]): string {
             );
         }
     }
+    out.push(...searchRoutes(runs));
     out.push(
         "",
         "### Context health",

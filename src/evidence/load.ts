@@ -23,6 +23,7 @@ import {
     rebuildRequest,
 } from "../proxy/requests";
 import { CallLog, type HeldCall } from "../run/calllog";
+import type { ArmObservation, SearchFallbackBound } from "../run/capabilities";
 import { type Entry, eachLine, readJournal, readJsonl } from "../run/journal";
 import { scenarioHash } from "../scenario/compile";
 import { admittedArms, loadPrereg } from "../scenario/inputs";
@@ -127,6 +128,47 @@ export interface ArmData {
     /** Null when the Kernel store is absent or unreadable. */
     descriptors: SourceDescriptor[] | null;
     answers: Map<string, string[]> | null;
+    /**
+     * A fused-route arm's `eidnara_search` results by route and the bound its run registered for
+     * degraded answers, from the arm's capability record; null for an arm on another route or a
+     * record without a search observation.
+     */
+    search?: FusedSearch | null;
+}
+
+export interface FusedSearch {
+    results: NonNullable<ArmObservation["search"]>;
+    bound: SearchFallbackBound | null;
+}
+
+/** The capability record fields the evidence path reads. */
+export interface CapabilityView {
+    profile?: ArmProfileView;
+    observed?: { search?: { legacy_scan?: unknown; fused?: unknown; errored?: unknown } | null };
+    search_fallback?: { max_degraded_share?: unknown };
+}
+
+/** A fused arm's search results and registered bound as its capability record holds them. */
+export function fusedSearch(
+    profile: ArmProfileView | null,
+    record: CapabilityView | null,
+): FusedSearch | null {
+    const s = record?.observed?.search;
+    const reasons = s?.legacy_scan;
+    if (
+        profile?.search !== "fused" ||
+        !Array.isArray(reasons) ||
+        !reasons.every((r) => typeof r === "string") ||
+        typeof s?.fused !== "number" ||
+        typeof s.errored !== "number"
+    ) {
+        return null;
+    }
+    const bound = record?.search_fallback?.max_degraded_share;
+    return {
+        results: { legacy_scan: reasons, fused: s.fused, errored: s.errored },
+        bound: typeof bound === "string" ? { max_degraded_share: bound } : null,
+    };
 }
 
 export interface RunData {
@@ -597,12 +639,12 @@ export function loadRun(dir: string): RunData {
         const pluginLog = lstatSync(logPath, { throwIfNoEntry: false })?.isFile()
             ? readFileSync(logPath, "utf8").split("\n")
             : null;
-        const capabilities = readJsonFile<{ profile?: ArmProfileView }>(
-            join(root, "capabilities.json"),
-        );
+        const capabilities = readJsonFile<CapabilityView>(join(root, "capabilities.json"));
+        const profile = manifest.arms?.[arm]?.profile ?? capabilities?.profile ?? null;
         arms.set(arm, {
             arm,
-            profile: manifest.arms?.[arm]?.profile ?? capabilities?.profile ?? null,
+            profile,
+            search: fusedSearch(profile, capabilities),
             tools,
             transcripts:
                 manifest.host === "pi"

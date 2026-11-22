@@ -277,6 +277,81 @@ test("every daemon start of the fused arm logs the production route over its emb
     ]);
 });
 
+test("a fused arm's fallback on a transient reason is a degraded answer under a registered bound", () => {
+    const note = (reason: string) =>
+        `Memory: the fused search route is unavailable (${reason}); results come from the legacy snapshot scan.\n[1] [memory] x`;
+    const hybrid = (results: string[]) => {
+        const root = captured(armRoot([PI_ON, PASS], results));
+        daemonLog(root, [READY, ROUTE]);
+        return observeArm("eidnara-hybrid", "pi", root, { agent: 1 });
+    };
+    const fused = (n: number) => Array<string>(n).fill(FUSED);
+    const bound = { max_degraded_share: "0.1" };
+    const record = (results: string[], registered: typeof bound | null) =>
+        capabilityRecord(hybrid(results), null, AUDITED_BUILDS[0], "off", registered);
+
+    // The shape of the run this rule was written for: one `no_lane` answer among 43 results.
+    const one = record([...fused(42), note("no_lane")], bound);
+    expect(one.mismatches).toEqual([]);
+    expect(one.search_fallback).toEqual({
+        max_degraded_share: "0.1",
+        answered: 43,
+        degraded: 1,
+        degraded_reasons: ["no_lane"],
+        degraded_share: 1 / 43,
+        persistent: [],
+    });
+    expect(one.observed.search?.legacy_scan).toEqual(["no_lane"]);
+    // The same evidence under a registration that names no bound is refused, with the count kept.
+    const unregistered = record([...fused(42), note("no_lane")], null);
+    expect(unregistered.mismatches).toEqual([
+        "1 eidnara_search results came from the legacy snapshot scan (no_lane), but the arm declares the fused route",
+    ]);
+    expect(unregistered.search_fallback).toMatchObject({
+        max_degraded_share: null,
+        degraded: 1,
+        degraded_share: 1 / 43,
+    });
+    // A reason that outlasts the call refuses under the bound, whatever its share.
+    for (const reason of ["disabled", "no_family", "lane_not_ready", "projection_read", "other"]) {
+        expect(record([...fused(42), note(reason)], bound).mismatches).toEqual([
+            `1 eidnara_search results came from the legacy snapshot scan for a persistent reason (${reason}), but the arm declares the fused route`,
+        ]);
+    }
+    // The share is read against the bound: 2 of 20 answers is the bound, 3 of 20 exceeds it.
+    const mixed = [note("snapshot_changed"), note("no_lane")];
+    expect(record([...fused(18), ...mixed], bound).mismatches).toEqual([]);
+    const over = record([...fused(17), ...mixed, note("no_lane")], bound);
+    expect(over.mismatches).toEqual([
+        "3 of 20 answered eidnara_search results came from the legacy snapshot scan on a transient reason (no_lane, snapshot_changed): degraded share 0.150, registered bound 0.1",
+    ]);
+    expect(over.search_fallback).toMatchObject({ degraded: 3, degraded_share: 0.15 });
+    // An errored result is no answer, so it stays out of the share's denominator.
+    const refused = "Error: the memory search route answered deadline; no results were returned.";
+    expect(
+        record([...fused(8), note("no_lane"), ...Array<string>(6).fill(refused)], bound).mismatches,
+    ).toEqual([
+        "1 of 9 answered eidnara_search results came from the legacy snapshot scan on a transient reason (no_lane): degraded share 0.111, registered bound 0.1",
+    ]);
+    // Both refusals are reported when a run shows both.
+    expect(
+        record([FUSED, note("no_lane"), note("disabled")], bound).mismatches.map((m) =>
+            m.slice(0, 40),
+        ),
+    ).toEqual([
+        "1 eidnara_search results came from the l",
+        "1 of 3 answered eidnara_search results c",
+    ]);
+    // The bound belongs to the fused route: an arm on the legacy scan carries no fallback section,
+    // and an arm that declares no search route is refused for any legacy answer as before.
+    const legacy = observeArm("eidnara", "pi", captured(armRoot([PI_ON, PASS], [LEGACY])), {
+        agent: 1,
+    });
+    const plain = capabilityRecord(legacy, null, AUDITED_BUILDS[0], "off", bound);
+    expect(plain.mismatches).toEqual([]);
+    expect("search_fallback" in plain).toBe(false);
+});
+
 test("delivery evidence must match the statements the final store holds", () => {
     const root = captured(armRoot([PI_ON, PASS]));
     const db = new Database(join(root, "..", "final-store", "kernel.sqlite"));

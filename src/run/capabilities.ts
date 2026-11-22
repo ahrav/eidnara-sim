@@ -1338,10 +1338,13 @@ export function bootMismatches(profile: ArmProfile, o: Pick<ArmObservation, "boo
 /**
  * Every difference between what the arm's profile declares and what its run evidence shows, read
  * against the capabilities the arm's daemon variant has on `build`, the audited build the run bound.
+ * `fallback` is the bound the run's qualification registers for a fused arm's degraded search
+ * answers (`search_fallback`); a run whose registration names none refuses every fallback answer.
  */
 export function armMismatches(
     o: ArmObservation,
     build: AuditedBuild = AUDITED_BUILDS[0],
+    fallback: SearchFallbackBound | null = null,
 ): string[] {
     const profile = armProfile(o.arm);
     const caps = profile.daemon === null ? undefined : build.variants[profile.daemon];
@@ -1384,7 +1387,9 @@ export function armMismatches(
     out.push(...routeMismatches(profile, o));
     if (caps) out.push(...buildMismatches(profile, o, caps, build.label));
     if (o.search) {
-        if (profile.search !== "legacy-scan" && o.search.legacy_scan.length > 0) {
+        if (profile.search === "fused" && fallback) {
+            out.push(...fallbackMismatches(o.search, fallback));
+        } else if (profile.search !== "legacy-scan" && o.search.legacy_scan.length > 0) {
             const reasons = [...new Set(o.search.legacy_scan)].join(", ");
             out.push(
                 `${o.search.legacy_scan.length} eidnara_search results came from the legacy snapshot scan (${reasons}), but the arm declares the ${profile.search} route`,
@@ -1411,23 +1416,95 @@ function backgroundOf(
 }
 
 /**
+ * The fallback reasons that end one call and leave the route serving: the product's contract
+ * (Eidnara `docs/properties/fusion-routes/query-route/catalog.md`) ends a request as
+ * `lane_unavailable` with reason `snapshot_changed` when a kernel commit lands between two
+ * revalidation slices, and with reason `no_lane` when every lane the query declares fails for
+ * that call; the plugin then answers from the legacy snapshot scan and names the reason in the
+ * result (`route-search.ts`, `execute.ts`). Every other reason the note can carry reports a
+ * state that outlasts the call: `disabled` (the route holds no limit set), the search admission
+ * codes (`no_manifest`, `lane_not_ready`, `no_family`, `family_refused`, and the gate's other
+ * denials), and an unreadable projection (`projection_read`).
+ */
+export const TRANSIENT_FALLBACK_REASONS: readonly string[] = ["snapshot_changed", "no_lane"];
+
+/** The bound a qualification registers for a fused arm's degraded search answers (`search_fallback`). */
+export interface SearchFallbackBound {
+    /** The largest share of the arm's answered searches the legacy scan may answer on a transient reason, as the canonical decimal the registration holds. */
+    max_degraded_share: string;
+}
+
+/**
+ * A fused arm's `eidnara_search` answers by route: the answered results (fused plus legacy scan),
+ * the degraded ones (a legacy-scan answer on a transient reason) with their share of the answered
+ * results, the reasons of the legacy-scan answers on any other reason, and the registered bound,
+ * null for a run whose registration names none.
+ */
+export function searchFallback(
+    search: NonNullable<ArmObservation["search"]>,
+    bound: SearchFallbackBound | null,
+) {
+    const transient = search.legacy_scan.filter((r) => TRANSIENT_FALLBACK_REASONS.includes(r));
+    const answered = search.fused + search.legacy_scan.length;
+    return {
+        max_degraded_share: bound?.max_degraded_share ?? null,
+        answered,
+        degraded: transient.length,
+        degraded_reasons: [...new Set(transient)].sort(),
+        degraded_share: answered === 0 ? null : transient.length / answered,
+        persistent: search.legacy_scan.filter((r) => !TRANSIENT_FALLBACK_REASONS.includes(r)),
+    };
+}
+
+/**
+ * A fused arm's fallback answers under a registered bound: a legacy-scan answer on a transient
+ * reason is a degraded answer of the declared route, and the arm is refused when an answer names
+ * any other reason or when the degraded share of its answered searches exceeds the bound.
+ */
+function fallbackMismatches(
+    search: NonNullable<ArmObservation["search"]>,
+    bound: SearchFallbackBound,
+): string[] {
+    const f = searchFallback(search, bound);
+    const out: string[] = [];
+    if (f.persistent.length > 0) {
+        const reasons = [...new Set(f.persistent)].sort().join(", ");
+        out.push(
+            `${f.persistent.length} eidnara_search results came from the legacy snapshot scan for a persistent reason (${reasons}), but the arm declares the fused route`,
+        );
+    }
+    if (f.degraded_share !== null && f.degraded_share > Number(bound.max_degraded_share)) {
+        out.push(
+            `${f.degraded} of ${f.answered} answered eidnara_search results came from the legacy snapshot scan on a transient reason (${f.degraded_reasons.join(", ")}): degraded share ${f.degraded_share.toFixed(3)}, registered bound ${bound.max_degraded_share}`,
+        );
+    }
+    return out;
+}
+
+/**
  * The arm's `capabilities.json`: its profile, the build the run bound (`eidnaraBuild`, as the
- * manifest records it), the run's prompt-caching condition, what the evidence shows, and every
- * difference between the two.
+ * manifest records it), the run's prompt-caching condition, a fused arm's fallback answers under
+ * the registered bound, what the evidence shows, and every difference between the two.
  */
 export function capabilityRecord<B>(
     observed: ArmObservation,
     eidnaraBuild: B,
     build: AuditedBuild | undefined,
     caching: PromptCaching,
+    fallback: SearchFallbackBound | null = null,
 ) {
+    const profile = armProfile(observed.arm);
     return {
-        profile: armProfile(observed.arm),
+        profile,
         eidnara_build: eidnaraBuild,
         prompt_caching: caching,
+        // A fused arm's record counts its fallback answers under the bound the run registered.
+        ...(profile.search === "fused" && observed.search
+            ? { search_fallback: searchFallback(observed.search, fallback) }
+            : {}),
         observed,
         mismatches: [
-            ...armMismatches(observed, build),
+            ...armMismatches(observed, build, fallback),
             ...cachingMismatches(caching, observed.prompt_caching, backgroundOf(observed, build)),
         ],
     };

@@ -26,6 +26,7 @@ import { EIDNARA_MARKER, sessionHealth } from "./health";
 import {
     type ArmData,
     type EvidenceScenario,
+    fusedSearch,
     loadRun,
     type RunData,
     readPiAnswers,
@@ -1431,6 +1432,53 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     expect(loadRun(dir).arms.get("eidnara")?.objects).toBeNull();
     writeFileSync(join(dir, "grades.jsonl"), `${JSON.stringify({ ...graded, version: 2 })}\n`);
     expect(() => loadRun(dir)).toThrow(/version 2/);
+});
+
+test("the report counts a fused arm's degraded search answers from its capability record", () => {
+    const record = (legacy: unknown, bound?: string) => ({
+        observed: { search: { legacy_scan: legacy, fused: 42, errored: 2, contested: 0 } },
+        ...(bound === undefined ? {} : { search_fallback: { max_degraded_share: bound } }),
+    });
+    const fused = { plugin: true, search: "fused" };
+    expect(fusedSearch(fused, record(["no_lane"], "0.1"))).toEqual({
+        results: { legacy_scan: ["no_lane"], fused: 42, errored: 2 },
+        bound: { max_degraded_share: "0.1" },
+    });
+    // A record from before the bound holds the observation alone.
+    expect(fusedSearch(fused, record(["no_lane"]))?.bound).toBeNull();
+    // Another route, an absent record, and a malformed observation give no row.
+    expect(fusedSearch({ plugin: true, search: "legacy-scan" }, record([]))).toBeNull();
+    expect(fusedSearch(fused, null)).toBeNull();
+    expect(fusedSearch(fused, { observed: { search: null } })).toBeNull();
+    expect(fusedSearch(fused, record([1]))).toBeNull();
+    expect(fusedSearch(fused, record("no_lane"))).toBeNull();
+
+    const run = (name: string, search: ArmData["search"]) => {
+        const r = build({ arm: "eidnara-hybrid" });
+        (r.arms.get("eidnara-hybrid") as ArmData).search = search;
+        return { name, run: r, probes: [], sessions: [] };
+    };
+    const rows = (report: string) => {
+        const lines = report.split("\n");
+        const at = lines.indexOf("### Search route answers");
+        return lines.slice(at + 6, lines.indexOf("### Context health", at) - 1);
+    };
+    const results = (legacy_scan: string[]) => ({ legacy_scan, fused: 42, errored: 2 });
+    expect(
+        rows(
+            renderEvidence([
+                run("A", { results: results(["no_lane"]), bound: { max_degraded_share: "0.1" } }),
+                run("B", { results: results(["disabled", "snapshot_changed"]), bound: null }),
+                run("C", { results: results([]), bound: null }),
+                run("D", null),
+            ]),
+        ),
+    ).toEqual([
+        "| A | eidnara-hybrid | 43 | 42 | 1 (no_lane) | 2.3% | 0.1 | none | 2 |",
+        "| B | eidnara-hybrid | 44 | 42 | 1 (snapshot_changed) | 2.3% | none: every fallback refuses | disabled | 2 |",
+        "| C | eidnara-hybrid | 42 | 42 | 0 | 0.0% | none: every fallback refuses | none | 2 |",
+    ]);
+    expect(rows(renderEvidence([run("D", null)]))).toEqual(["| none |  |  |  |  |  |  |  |  |"]);
 });
 
 test("a descriptor whose creation or retirement commit the log lacks leaves the descriptors unread", () => {

@@ -28,6 +28,7 @@ import {
     sameSet,
     text,
     uint32,
+    unitRate,
 } from "./validate";
 
 export const QUALIFICATION_SCHEMA = "sim-qualification/v1";
@@ -150,6 +151,16 @@ export interface Qualification {
      * cache points for a Claude model under either value.
      */
     prompt_caching?: PromptCaching;
+    /**
+     * The bound on a fused-route arm's degraded search answers. The product answers one
+     * `eidnara_search` call from the legacy snapshot scan when the route ends that call on a
+     * transient reason (`TRANSIENT_FALLBACK_REASONS`, `src/run/capabilities.ts`); the arm's
+     * capability record counts each such result as a degraded answer, and the arm is refused when
+     * their share of its answered searches exceeds `max_degraded_share` (a canonical decimal in
+     * (0, 1)) or when a fallback names any other reason. A registration without the section
+     * refuses every fallback answer on a fused arm.
+     */
+    search_fallback?: { max_degraded_share: string };
     claim: "descriptive";
 }
 
@@ -228,6 +239,7 @@ const SECTIONS: Record<string, Shape> = {
                 ? null
                 : "expected an object of positive integer costs by arm",
     },
+    search_fallback: { max_degraded_share: unitRate },
 };
 
 /**
@@ -488,6 +500,12 @@ function checkSections(q: Qualification, errors: string[]): void {
         if (!sameSet(Object.keys(a.cost_per_arm_seed_usd), q.arms.run)) {
             errors.push("analysis.cost_per_arm_seed_usd: expected one cost per run arm");
         }
+    }
+    if (
+        q.search_fallback &&
+        !q.arms.run.some((a) => isArmName(a) && armProfile(a).search === "fused")
+    ) {
+        errors.push("search_fallback: expected a run arm that declares the fused route");
     }
     const control = q.no_source_control;
     if (control !== undefined) {
