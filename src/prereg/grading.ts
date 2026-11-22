@@ -928,8 +928,8 @@ export interface DeferralRevision {
     replaces: { revision: (typeof POSITIVE_REVISIONS)[number]; rule: string; verdict: "fail" };
     /**
      * The metrics the graders of this revision report beside a verdict and that decide none:
-     * `P12.reply_names_identity`, whether a P12 turn's whole final reply matches the check's
-     * `must` patterns (`reply-matches-identity`).
+     * `P12.reply_names_identity`, whether a graded P12 turn's whole final reply matches the
+     * check's `must` patterns (`reply-matches-identity`).
      */
     reported_metrics: { name: string; rule: string }[];
     labels: OpenChoiceLabel[];

@@ -1860,8 +1860,8 @@ function failureEvidence(probe: ProbeItem, sources: SourceEvent[], identity: str
 }
 
 /**
- * Whether the turn's final reply names the error identity (`must`); undefined when the snapshot
- * holds no whole reply. The verdict reads the named file alone, so this is a reported metric
+ * Whether a graded turn's final reply names the error identity (`must`); undefined when the
+ * snapshot holds no whole reply. The verdict reads the named file alone, so this is a reported metric
  * (`reported_metrics`, `prereg/G15.json`): a failing turn whose reply names the identity knew it
  * and left the entry unwritten.
  */

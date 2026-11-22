@@ -41,7 +41,7 @@
             "labels": "0.987",
             "verdict": "0.994"
         },
-        "hand_audited": 24,
+        "hand_audited": 28,
         "design": {
             "campaigns": [
                 "C8",
