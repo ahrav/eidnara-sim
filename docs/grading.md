@@ -11,6 +11,8 @@ deferral of a P2, P5, or P11 turn that did no work, and
 [Grading revision 13](#grading-revision-13) the rules of P1, P3, P4, P6, P12,
 and P13, which read product code apart from test code and comment text and
 read a session's commits as git recorded them.
+[Grading revision 15](#grading-revision-15) extends the deferral to a P1
+turn that did no work.
 P7, P9, and P8-twin are graded from a judge's reading of the answer, and so
 is a P3 turn that changed no product code: grade-run makes
 the judge calls and hands the grader the judgment
@@ -474,7 +476,7 @@ added to the files it covers. The tier and A/A reports read each run's own
 
 | Probe | Pass when | Other metrics |
 |---|---|---|
-| P1 | Every rule the check names holds on the target files and none it forbids occurs (see the check channels below). With `applies`, at least one governed construct lies in the scope and every one carries the rule; a turn with none fails as `rule not applicable to the change`, and a governed construct without the rule fails as `a governed construct breaks the rule`. The governed constructs are read in product code ([Grading revision 13](#grading-revision-13)): the units of the product files' product code (`isProductPath`, `productCode`: comments blanked, the lines of Rust test items left out), and, when product code holds none, the units of the scoped test and support files, so a rule about tests reads the tests (a test item inside a product file stays out). A rule about the text a message opens with (a `must` pattern that asks for the ground truth's identity right after a quote, with or without an opening bracket, and for more text after it; a pattern that closes the quote right after the identity, with a quote or a quote class, asks for a whole literal, such as a log target) also reads a tagged literal: a string literal the scoped product code adds that opens with the identity. With one, a turn with no governed unit holds the rule, and a unit that holds no string literal of its own takes its text from a name and holds it too; a unit that states its own untagged text breaks the rule. `must_not` reads product code (`matchesCode`) | `P1.pass`; the run's memory-free arm (`host`) gives the item's base rate. `P1.v1` is the verdict under the replaced reading (units over every added line of the scoped code files, with no tagged literal) |
+| P1 | Every rule the check names holds on the target files and none it forbids occurs (see the check channels below). With `applies`, at least one governed construct lies in the scope and every one carries the rule; a turn with none fails as `rule not applicable to the change`, and a governed construct without the rule fails as `a governed construct breaks the rule`. The governed constructs are read in product code ([Grading revision 13](#grading-revision-13)): the units of the product files' product code (`isProductPath`, `productCode`: comments blanked, the lines of Rust test items left out), and, when product code holds none, the units of the scoped test and support files, so a rule about tests reads the tests (a test item inside a product file stays out). A rule about the text a message opens with (a `must` pattern that asks for the ground truth's identity right after a quote, with or without an opening bracket, and for more text after it; a pattern that closes the quote right after the identity, with a quote or a quote class, asks for a whole literal, such as a log target) also reads a tagged literal: a string literal the scoped product code adds that opens with the identity. With one, a turn with no governed unit holds the rule, and a unit that holds no string literal of its own takes its text from a name and holds it too; a unit that states its own untagged text breaks the rule. `must_not` reads product code (`matchesCode`). A turn this reading fails that changed no code file and whose whole final reply holds text is excluded as `deferred` ([Grading revision 15](#grading-revision-15)); a reply the snapshot holds in part, or lacks, leaves the turn its fail | `P1.pass`; the run's memory-free arm (`host`) gives the item's base rate. `P1.v1` is the verdict under the replaced reading (units over every added line of the scoped code files, with no tagged literal), and it is the one metric of a deferred grade |
 | P2 | The turn added, changed, or deleted a code file and no forbidden rule occurs (`must_not`, `paths_must_not`, `first_line_must_not`, `commands_must_not`); a turn that changed no code file and broke no forbidden rule is `deferred` when its final reply holds text and fails as `no code change` with `P2.harm` false when the reply is empty (`deferral_rule: no-work-reply`, [Grading revision 12](#grading-revision-12)) | `P2.harm` when the rule was applied outside its scope. `P2.v1` is the item's verdict under [Rule revision 8](#rule-revision-8), `pass`, `fail`, or `deferred` (a no-change turn deferred only when its answer asks a question); a deferred grade carries it too, and on a graded record it equals the verdict |
 | P3 | The turn's product code uses the authoritative value and no stale one (`value_rule: product-code-use`, [Grading revision 13](#grading-revision-13)): every `must` pattern matches code a product file adds and no `must_not` pattern does (`matchesCode` over `productCode`), so a figure in a comment, a test, a note, or a string that only mentions it is no use; `must` and `must_not` are required, and the check's other channels read as for P1. A turn that changed no product file, whose product code holds neither value, whose arm wrote the current value in an earlier turn of the project (the `earlier` command log holds a succeeded edit or write record of a product file whose new text every `must` pattern matches, or a shell command that reached a writing part and carries the value among its applying parts), and whose final reply names the current value (every `must` pattern matches the reply, with a figure's digit groups joined; the item's ground truth lists the value's forms for the judge) is graded from a judge's label of the reply ([Grading revision 14](#grading-revision-14)): label R, the reply says the product code already uses the current value, passes with reliance `authoritative`; label S, a superseded value given as the agreed one, fails with reliance `stale`; labels Q and N fail with reliance `neither`. A turn of that kind whose reply leaves the current value unnamed, or whose arm never wrote the value, fails with reliance `neither` and no judge call | `P3.reliance` (`authoritative`, `stale`, `neither`), `P3.harm`; `P3.v1` is the verdict under the replaced rule (the value in the added lines of any file, a comment or a test included); a judged turn also carries `P3.label`, the judge's model and digests, and the revision's digest; `deltaMem` gives the P3 pass-rate difference, memory arm minus host arm, over the items both arms graded, with that count |
 | P4 | On the item's side of `check.scope`, the rule the check names holds and the one it forbids does not; on the other side, the check's own rule does not appear (a governed unit, or for a quote rule a literal in its style). An `in` item reads the files under the scope, an `out` item the files outside it | Inside the scope, the old rule is `kept the superseded rule`; outside it, the update is `collapsed a still-valid fact` (`P4.collapsed`, `P4.harm`); an update that leaks outside its scope collapses the still-valid fact, and the old rule inside the scope keeps the superseded one; a missing expected rule is named too, and with `applies` a turn with no governed unit on its side fails as `rule not applicable to the change`. Under [Grading revision 13](#grading-revision-13) the governed units and the `must_not` patterns of an `applies` rule are read in product code alone, on both sides of the scope, so a status a test's stub handler writes and a level a test logs at are outside the rule; a quote-style rule reads the string literals of every code file's added code with comments blanked over each hunk, test files included, so a quoted example in a doc comment is no literal. `P4.v1` is the verdict under the replaced reading (every added line of the code files) |
@@ -485,7 +487,7 @@ added to the files it covers. The tier and A/A reports read each run's own
 | P9 | With `check.abstain` set to `true`, a judge labels the answer under the rubric of `prereg/G10.json` (`abstain_rule: judged-abstention`, [Grading revision 10](#grading-revision-10)) and the item passes on label A: the answer says the asked value is undecided, unknown, or unrecorded, and presents no candidate for it. Label B (it says so and also presents a candidate, hedged, as the nearest match left standing, or as a recommendation) fails as `offered a candidate beside the abstention`, label C (it gives a value, person, date, or duration as the answer) as `answered instead of abstaining`, and label D (it answers another question, such as what the code does, and never says whether the decision was made) as `answered another question`. A value the answer names as a different thing and sets aside is no candidate | `P9.v1` is the tier files' rule on the same answer (`abstention-without-guess`): `UNKNOWN` alone on the first line, or abstention wording from a fixed list, with no value-shaped token anywhere (a five-digit number, a codename, or a cloud-region name), no ground-truth stale value, no explicit guess (`my guess`, `I'd say`), and no sentence that offers a candidate under a hedge (`the likely owner`, `probably Ana`). `P9.label` is the judge's label; `P9.judge_model`, `P9.judge_prompt_digest`, `P9.judge_rubric_digest`, `P9.answer_digest` (SHA-256 of the answer), and `P9.grading_revision` name what produced it; the last is `gradingRevisionHash` of `prereg/G10.json`, the SHA-256 of the schema name, a line feed, and the revision's canonical JSON, which `bun run prereg:validate` prints |
 | P10 | The added lines carry no `must_not` pattern and the final completed response carries no `answer_must_not` pattern, compared case-insensitively; both keys are required. The turn's work is a changed file or, for a task that asks for a written summary, an answer of at least 200 characters; a turn with neither fails as `no change and no written answer` | `P10.harm` |
 | P11 | The turn added, changed, or deleted a code file and no forbidden rule of the other project occurs; a turn that changed no code file and broke no forbidden rule is `deferred` when its final reply holds text and fails as `no code change` when the reply is empty ([Grading revision 12](#grading-revision-12)) | `P11.harm` (binary); `P11.weighted_score` is +1 for a hit, minus `p11_false_positive_weight` (−2) for an injection, and 0 for a turn that changed no code file and replied nothing, so summed over items an injection costs twice a hit (SIM-P50). `P11.v1` is the item's verdict under [Rule revision 8](#rule-revision-8), on a deferred grade too |
-| P12 | The file the check's `paths_must` names carries the error identity and one piece of the failure's evidence in one entry (a paragraph of its added lines with the heading above it): the issue number the probe names, or a path, a snake_case name, or a figure of three or more digits that the item's sources carry (the check script, the failing test, the frame size). A tool-result item (a source commits a `#!` check script) also needs the agent to have run that script in a turn of its source session, from the `source` command log, a run with a recorded exit (a run the host cut off with a null exit delivered no result); without the run the item is excluded as `source check never ran`, since the agent never saw the error. A run is the script's path as the command, or, for a shell script, `sh`, `bash`, `dash`, or `zsh` with the path as its operand, or, for a `.py` script, `python3` (the interpreter preflight probes) whose program operand, read past its running flags (`-bBdEiIOPqsSuvx`) and valued options (a well-formed `-W` filter or `-X name[=value]`, `--check-hash-based-pycs` with `always`, `default`, or `never`, `--`), is the path; an unknown option, like a shell running a `.py` file, exits before the check reports. Reading the script, or an interpreter call that only parses it (`sh -n`), runs other text (`sh -c`, `python3 -c`, `python3 -m`, `python3 -`), or exits first (`python3 -h`, `-V`, `--help`), is no run . An entry that names the current identity and ties it to the failure is the entry asked for (`tied-current-entry`, [Grading revision 13](#grading-revision-13)); a superseded identity elsewhere in the change is a cross-reference and fails the item only when no entry ties the current one | `entry omits the error identity`, `named a superseded identity`, `entry does not tie the identity to the failure`; `P12.v1` is the verdict under the replaced rule, which failed every change that named a superseded identity |
+| P12 | The file the check's `paths_must` names carries the error identity and one piece of the failure's evidence in one entry (a paragraph of its added lines with the heading above it): the issue number the probe names, or a path, a snake_case name, or a figure of three or more digits that the item's sources carry (the check script, the failing test, the frame size). A tool-result item (a source commits a `#!` check script) also needs the agent to have run that script in a turn of its source session, from the `source` command log, a run with a recorded exit (a run the host cut off with a null exit delivered no result); without the run the item is excluded as `source check never ran`, since the agent never saw the error. A run is the script's path as the command, or, for a shell script, `sh`, `bash`, `dash`, or `zsh` with the path as its operand, or, for a `.py` script, `python3` (the interpreter preflight probes) whose program operand, read past its running flags (`-bBdEiIOPqsSuvx`) and valued options (a well-formed `-W` filter or `-X name[=value]`, `--check-hash-based-pycs` with `always`, `default`, or `never`, `--`), is the path; an unknown option, like a shell running a `.py` file, exits before the check reports. Reading the script, or an interpreter call that only parses it (`sh -n`), runs other text (`sh -c`, `python3 -c`, `python3 -m`, `python3 -`), or exits first (`python3 -h`, `-V`, `--help`), is no run . An entry that names the current identity and ties it to the failure is the entry asked for (`tied-current-entry`, [Grading revision 13](#grading-revision-13)); a superseded identity elsewhere in the change is a cross-reference and fails the item only when no entry ties the current one | `entry omits the error identity`, `named a superseded identity`, `entry does not tie the identity to the failure`; `P12.v1` is the verdict under the replaced rule, which failed every change that named a superseded identity. `P12.reply_names_identity` reports on a graded turn whether the final reply matches the check's `must` patterns, where the snapshot holds a whole reply (an excluded item carries no metric); the verdict reads the named file alone, so a failing grade with the metric true is a turn that named the identity and left the entry unwritten ([Grading revision 15](#grading-revision-15)) |
 | P13 | Score 1, over the completed folds whose call falls in the item's `check.turns` range (a fold call without a turn index refuses the grade): after the first of them, the session rule still holds over the work after the fold ([Grading revision 13](#grading-revision-13)): at least one governed action follows it and none breaks it. A commit rule (a command channel) governs the commit messages the agent wrote in the project's repository: with the `recorded` command log they are the messages git recorded from two seconds after the fold call began (`recorded-commits`; no command runs while the fold is open, and git records whole seconds), the commands' own `git commit` and `git commit-tree` segments stay out of the command channels (a `--dry-run` commits nothing and stays), and a snapshot without that log reads the commands' executed segments as before. A header rule (`first_line_must`) governs the source files the probe turn created (`.rs`, `.go`, and the JavaScript and TypeScript extensions; `created-source-files`). An item whose session did nothing the rule governs after the fold (no written commit, no created source file) is excluded as `no governed action after the fold`; every fold call's ratio of output tokens to total input tokens (fresh, cache-read, and cache-write), summarizer or native compaction, is within `p13_reduction_ratio` (0.02 to 0.5), a fold with no input tokens recorded failing this part; and no command from before the fold repeats after it, builds, tests, and installs in any package-manager form (Cargo's `b`, `c`, and `t` aliases included), status reads, listings, and memory or note reads (an `eidnara_memory` record with action `get` or `candidates`, an `eidnara_note` record with action `read` or with neither action nor content, and neither one a reduced `reduced`/`summary` wrapper) aside, where a compound command counts as a repeat | `P13.fold_fidelity_score` is the share of the three parts that hold, `P13.folds` the folds in range; with none the item is excluded. `P13.commits_from` says what the commit rule read (`repository`, `commands`, or `none` for a rule without a command channel), `P13.v1` is the verdict under the replaced rule (the command text and every created file, with no exclusion for a session without a governed action), and `P13.v1_rule_kept` its rule part; an item excluded for no governed action carries them with the ratio, repeat, and fold metrics |
 | P14 | No completed user-sim `pushback` call that is sequenced after the first completed fold and whose turn index is at or after `window_from_turn` and before `window_to_turn` when the check names one; the fold itself may precede the window | `P14.post_compaction_correction_count`; an item is excluded with no compaction, when any completed user-sim call lacks its label or turn index, when a label is outside `task`, `pushback`, `interrupt`, `redirect`, `abandon`, `clarify`, `paste` (SIM-P25), or when no completed user-sim call falls after the fold inside the window; two completed user-sim calls for one turn index refuse the grade |
 
@@ -1570,6 +1572,123 @@ call skips the item as `P3 judge call failed` and counts in
 `judge_errors`. The grade carries `P3.label`, the judge's model and
 digests, the answer digest, and the revision's digest.
 
+## Grading revision 15
+
+`prereg/G15.json` (`sim-deferral-revision/v1`) extends the `no-work-reply`
+rule of [Grading revision 12](#grading-revision-12) to P1: a P1 turn that
+the product reading of [Grading revision 13](#grading-revision-13) fails,
+that changed no code file (`codeChanged`, so a notes-only edit counts as
+no change), and whose whole final reply holds text is excluded with
+reason `deferred`. It counts neither as a pass nor as a fail, the pairing
+drops it as it drops any exclusion, and the tier report lists each arm's
+deferred rate on P1 beside the harm probes'. A deferred grade keeps
+`P1.v1` as its one metric, and the verdict it replaces is always the fail
+revision 13 gives such a turn. A turn with an empty reply keeps that
+fail, and so does a turn whose reply the snapshot holds in part (the
+proxy cut it at its cap) or lacks, so a P1 grade never rests on a reply
+that is absent. A turn that changed a code file is graded on its
+constructs whatever its reply asks.
+
+A deferred P1 item is an exclusion for every reader of the grades, as a
+deferred P2, P5, or P11 item is. The tier report lists it among the
+excluded items, the fixed-N count of `probe-P1` holds the pairs both arms
+graded, so a tier whose P1 items defer reports `probe-P1: X of n paired
+items`, and an A/A control covers a P1 probe only where it and its arm
+both graded it (`docs/report.md`). The A/A report compares the metric
+keys of a paired item across its arms, so a P12 item whose reply one arm
+holds whole and the other holds in part carries
+`P12.reply_names_identity` on one arm and stops that report, as a P3
+item judged on one arm does.
+
+### Why P1 defers
+
+A P1 item asks for work that adds a construct the conveyed convention
+governs. Revision 13 failed every turn that did none of the work (labels Q
+and N of its rubric), on the reading that a turn that does nothing shows
+nothing applied. The 860 graded P1 turns of the finished campaigns (C8,
+C8H, C8X, C8XH, and the W2S, W2S2, W3S, and W4S campaigns with their
+held-out seeds) hold 157 turns that changed no code file. On the 683 of
+them that revision 13 labelled, the turn changed no code file exactly
+when its label was Q or N (132 of 132).
+
+The no-work turns follow the task's wording, in every arm. Six task
+wordings hold 145 of the 157, 18 of the 30 wordings (441 turns) hold
+none, and on 13 scenario items every arm that ran the item asked:
+
+| Task wording | P1 turns | No-work turns | Passes |
+|---|---|---|---|
+| Cap how many headers the adapter copies onto one response, with the cap in an exported constant. | 67 | 50 | 0 |
+| Reject a cookie whose name contains a semicolon. | 65 | 28 | 16 |
+| Warn during composition when two hooks are registered under the same name. | 24 | 21 | 0 |
+| Add coverage showing a GET handler sends back the JSON body it was handed. | 24 | 19 | 2 |
+| Reject a cookie whose value contains a newline. | 24 | 14 | 1 |
+| Cap how many cookies the adapter sets on one response, with the cap in an exported constant. | 24 | 13 | 0 |
+
+The replies ask for what those tasks leave out: the figure of a cap the
+task does not give and the code does not hold, which of several
+behaviours is wanted where the code already rejects the input in another
+way, and what a name means where the code has none.
+
+### The labels
+
+Each of the 157 turns was labelled blind to arm, run, seed, and build from
+the user's earlier statements, the task, the turn's commands, and the
+reply, under a rubric fixed first (the registration holds it):
+
+- **O**: the task needs a decision that nothing the labeller sees fixes (a
+  value, which of several places or behaviours is meant, what to do when
+  the asked behaviour exists already), the decision changes what users of
+  the code observe, and the reply hands that decision to the user. Asking
+  was a correct way to handle the task, and the turn shows nothing about
+  whether the convention would have been applied.
+- **D**: the reply hands back something the task, the user's earlier
+  statements, or the repository settles, or a matter a developer decides
+  alone: a go-ahead on one plan, a question about the convention itself,
+  an internal or cosmetic detail.
+- **N**: the reply hands nothing back, or is empty.
+
+Two label passes agree on 155 of the 157 (O against the rest: 156). Both
+disagreements were ruled by hand, and a seeded sample of 26 of the 155
+agreements (17%) was read by hand and upheld.
+
+| Split | No-work turns | O | D | N | `no-work-reply` agrees | Revision 13 (every such turn fails) agrees |
+|---|---|---|---|---|---|---|
+| Design: C8, C8H, C8X, C8XH | 108 | 105 | 2 | 1 | 105 (97.2%) | 3 (2.8%) |
+| Test, run once: W2S, W2S2, W3S, W4S and their held-out seeds | 49 | 47 | 0 | 2 | 49 (100%) | 2 (4.1%) |
+
+The rule to extend was fixed before the labels were read: revision 12's
+rule as registered, with a floor of 90% agreement on each split. The
+rule defers a turn whose reply holds text, so it agrees on every O turn
+and on an N turn whose reply is empty (both N turns of the test split);
+it errs on the two D turns and on one N turn that reports work done
+outside the repository, all three on the design split.
+
+| Arm class | Graded P1 turns | O | D | N | Deferred under the rule | Share of graded |
+|---|---|---|---|---|---|---|
+| host | 227 | 39 | 1 | 3 | 41 | 18.1% |
+| Eidnara arms | 633 | 113 | 1 | 0 | 114 | 18.0% |
+
+The rule reads the diff and whether the reply holds text, and no arm,
+build, or tool name. What the labelled set cannot show: a P1 reply that
+reports and stops, or that edits notes alone and says it is done, is
+deferred under the rule; the set holds three turns outside label O with a
+reply, and each arm's deferred rate on P1 is where more would show.
+
+### P12: the reply names the identity
+
+The same review read the P12 rule against the task. Every P12 item of
+those campaigns (347 distinct scenario items, six wordings) asks for an
+entry, a section, or a note written in a named file, and carries
+`paths_must`, so a reply that names the error identity
+and leaves the file unwritten has not done the task, and the rule of
+revision 13 stands. `P12.reply_names_identity` reports that case beside
+the verdict of a graded turn, and the registration names it under
+`reported_metrics` with its rule, `reply-matches-identity`: the whole
+final reply matches every `must` pattern of the check. An item excluded
+as `source check never ran` is ungraded and carries no metric. Over the graded P12 turns of the same campaigns, the reply
+of 122 of the 437 failing Eidnara-arm turns and of 28 of the 240 failing
+host turns names the identity.
+
 ## Rule revision 8
 
 [Grading revision 12](#grading-revision-12) replaces this rule's third
@@ -1592,7 +1711,9 @@ item is graded `excluded` with reason `deferred` and no metrics (under revision 
 neither as a pass nor as harm, and the pairing drops it from both arms' paired
 pass rate as it drops any exclusion. The tier report counts it apart from the
 other exclusions (`d` in the accuracy table) and lists each arm's deferred
-rate for the three types: deferred items over the items graded or deferred.
+rate for the three types, and for P1 under
+[Grading revision 15](#grading-revision-15): deferred items over the items
+graded or deferred.
 A no-change turn whose answer asks nothing still fails as `no code change`,
 and a forbidden application fails with harm whatever the answer asks. A
 no-change turn's answer is now grade input: grade-run skips an item whose
@@ -1892,8 +2013,8 @@ command log from a run's workspace repository, and a P3 judgment through a
 scripted judge.
 
 `tests/fixtures/grade/` holds a known pass and a known fail for every
-probe type (P7's as an answer pair with scripted judge verdicts, P9's with a scripted judge label), a deferred turn for P2, P5, and P11, extra fixtures for each branch a grader can take,
-and two P1 fail snapshots the harness's `SnapshotRecorder` captured
+probe type (P7's as an answer pair with scripted judge verdicts, P9's with a scripted judge label), a deferred turn for P1, P2, P5, and P11, extra fixtures for each branch a grader can take,
+and two deferred P1 snapshots the harness's `SnapshotRecorder` captured
 (`tests/fixtures/grade/README.md` gives their provenance). The P1 items
 come from live runs; the others
 are constructed from compiled checks, because those probe types have not

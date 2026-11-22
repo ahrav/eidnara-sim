@@ -10,11 +10,14 @@ export const JUDGED_REVISIONS = ["G10", "G11", "G14"] as const;
 export const RULE_REVISIONS = ["G12"] as const;
 /** The revisions of the positive, diff-graded probes, whose rules the grader computes from the turn's artefacts. */
 export const POSITIVE_REVISIONS = ["G13"] as const;
+/** The revisions that extend a registered deferral rule to further probes. */
+export const DEFERRAL_REVISIONS = ["G15"] as const;
 /** Every grading revision under `prereg/`. */
 export const GRADING_REVISIONS = [
     ...JUDGED_REVISIONS,
     ...RULE_REVISIONS,
     ...POSITIVE_REVISIONS,
+    ...DEFERRAL_REVISIONS,
 ] as const;
 export type JudgedRevisionId = (typeof JUDGED_REVISIONS)[number];
 export const ABSTAIN_LABELS = ["A", "B", "C", "D"] as const;
@@ -843,26 +846,39 @@ export function validatePositiveRevision(value: unknown): string[] {
             errors.push(`${at}.validation: expected an object`);
             continue;
         }
-        errors.push(
-            ...keysOf(
-                v,
-                [
-                    "labelled_items",
-                    "label_counts",
-                    "label_passes",
-                    "label_pass_agreement",
-                    "hand_audited",
-                    "design",
-                    "test",
-                    "superseded_rule",
-                ],
-                `${at}.validation`,
-            ),
-            ...labelledSetErrors(v, `${at}.validation`, "items", spec.labels),
-        );
-        errors.push(...passErrors(v, `${at}.validation`, ["labels", "verdict"]));
+        errors.push(...labelledValidationErrors(v, `${at}.validation`, "items", spec.labels));
     }
     return errors;
+}
+
+/**
+ * The errors of a rule's `validation` block at `at`: its keys, its labelled set counted in
+ * `unit`, and the two label passes with their agreement over the labels and over the verdict.
+ */
+function labelledValidationErrors(
+    v: Obj,
+    at: string,
+    unit: "items" | "turns",
+    labels: readonly string[],
+): string[] {
+    return [
+        ...keysOf(
+            v,
+            [
+                `labelled_${unit}`,
+                "label_counts",
+                "label_passes",
+                "label_pass_agreement",
+                "hand_audited",
+                "design",
+                "test",
+                "superseded_rule",
+            ],
+            at,
+        ),
+        ...labelledSetErrors(v, at, unit, labels),
+        ...passErrors(v, at, ["labels", "verdict"]),
+    ];
 }
 
 /** The digest of a positive-probe revision, which `bun run prereg:validate` prints. */
@@ -873,4 +889,151 @@ export function positiveRevisionHash(revision: PositiveRevision): string {
 /** `prereg/<id>.json`, accepted only when it validates as a positive-probe revision and names `id`. */
 export function loadPositiveRevision(id: string, dir?: string): PositiveRevision {
     return loadAs<PositiveRevision>(id, dir, validatePositiveRevision);
+}
+
+export const DEFERRAL_SCHEMA = "sim-deferral-revision/v1";
+/** The probes revision 15 extends the `no-work-reply` deferral rule to. */
+export const DEFERRAL_PROBES = ["P1"] as const;
+/**
+ * The labels of a P1 turn that changed no code file: its reply asks about a choice the task
+ * leaves open, hands back something the task or the convention settles, or hands nothing back.
+ */
+const OPEN_CHOICE_LABELS = ["O", "D", "N"] as const;
+type OpenChoiceLabel = (typeof OPEN_CHOICE_LABELS)[number];
+/** The metric revision 15 reports on a P12 grade beside its verdict. */
+export const REPORTED_METRIC = {
+    name: "P12.reply_names_identity",
+    rule: "reply-matches-identity",
+} as const;
+
+/**
+ * Revision 15 extends revision 12's `no-work-reply` rule to P1: a P1 turn that changed no code
+ * file, that the product reading of revision 13 fails, and whose final reply holds text is
+ * excluded as deferred. The labelled no-work turns show the reply asking about a choice the
+ * task leaves open (label O), so the turn shows nothing about the convention. A deferred grade
+ * keeps `P1.v1`, and a turn with an empty reply keeps the verdict revision 13 gives it.
+ */
+export interface DeferralRevision {
+    schema: typeof DEFERRAL_SCHEMA;
+    id: (typeof DEFERRAL_REVISIONS)[number];
+    revision: number;
+    frozen: true;
+    probes: (typeof DEFERRAL_PROBES)[number][];
+    /** The property P1 names; a deferred turn shows nothing about it. */
+    property: string;
+    deferral_rule: typeof DEFERRAL_RULE;
+    /** The revision that registers the rule for the harm probes. */
+    extends: (typeof RULE_REVISIONS)[number];
+    /** The rule whose verdict on such a turn this revision replaces: revision 13's, a fail. */
+    replaces: { revision: (typeof POSITIVE_REVISIONS)[number]; rule: string; verdict: "fail" };
+    /**
+     * The metrics the graders of this revision report beside a verdict and that decide none:
+     * `P12.reply_names_identity`, whether a graded P12 turn's whole final reply matches the
+     * check's `must` patterns (`reply-matches-identity`).
+     */
+    reported_metrics: { name: string; rule: string }[];
+    labels: OpenChoiceLabel[];
+    deferred_labels: OpenChoiceLabel[];
+    /** The rubric the labelled turns were read under. */
+    rubric: string;
+    /** The P1 turns that changed no code file: their labels and the rule's agreement on each split. */
+    validation: {
+        labelled_turns: number;
+        label_counts: Record<OpenChoiceLabel, number>;
+        label_passes: number;
+        label_pass_agreement: { labels: string; verdict: string };
+        hand_audited: number;
+        design: SplitOf<"turns">;
+        test: SplitOf<"turns">;
+        superseded_rule: { turns: number; agreed: number };
+    };
+}
+
+/** Every way `value` departs from a deferral revision; empty when it is one. */
+export function validateDeferralRevision(value: unknown): string[] {
+    if (!isObj(value)) return ["expected an object"];
+    const errors = keysOf(
+        value,
+        [
+            "schema",
+            "id",
+            "revision",
+            "frozen",
+            "probes",
+            "property",
+            "deferral_rule",
+            "extends",
+            "replaces",
+            "reported_metrics",
+            "labels",
+            "deferred_labels",
+            "rubric",
+            "validation",
+        ],
+        "revision",
+    );
+    if (value.schema !== DEFERRAL_SCHEMA) errors.push(`schema: expected ${DEFERRAL_SCHEMA}`);
+    if (!(DEFERRAL_REVISIONS as readonly unknown[]).includes(value.id)) {
+        errors.push(`id: expected one of ${DEFERRAL_REVISIONS.join(", ")}`);
+    }
+    if (!Number.isSafeInteger(value.revision) || value.id !== `G${String(value.revision)}`) {
+        errors.push("revision: expected the integer the id names");
+    }
+    if (value.frozen !== true) errors.push("frozen: expected true");
+    if (!same(value.probes, DEFERRAL_PROBES)) {
+        errors.push(`probes: expected ${list(DEFERRAL_PROBES)}`);
+    }
+    if (typeof value.property !== "string" || value.property.trim() === "") {
+        errors.push("property: expected the property the probe names");
+    }
+    if (value.deferral_rule !== DEFERRAL_RULE) {
+        errors.push(`deferral_rule: expected ${DEFERRAL_RULE}`);
+    }
+    if (value.extends !== RULE_REVISIONS[0]) errors.push(`extends: expected ${RULE_REVISIONS[0]}`);
+    const replaced = POSITIVE_RULES.find((r) => r.probe === DEFERRAL_PROBES[0]);
+    const replaces = value.replaces;
+    if (
+        !isObj(replaces) ||
+        replaces.revision !== POSITIVE_REVISIONS[0] ||
+        replaces.rule !== replaced?.rule ||
+        replaces.verdict !== "fail" ||
+        Object.keys(replaces).length !== 3
+    ) {
+        errors.push(
+            `replaces: expected the fail of ${POSITIVE_REVISIONS[0]}'s rule ${replaced?.rule}`,
+        );
+    }
+    const reported = value.reported_metrics;
+    const [metric] = Array.isArray(reported) ? reported : [];
+    if (
+        !Array.isArray(reported) ||
+        reported.length !== 1 ||
+        !isObj(metric) ||
+        metric.name !== REPORTED_METRIC.name ||
+        metric.rule !== REPORTED_METRIC.rule ||
+        Object.keys(metric).length !== 2
+    ) {
+        errors.push(
+            `reported_metrics: expected ${REPORTED_METRIC.name} under ${REPORTED_METRIC.rule}`,
+        );
+    }
+    if (!same(value.labels, OPEN_CHOICE_LABELS)) {
+        errors.push(`labels: expected ${OPEN_CHOICE_LABELS.join(", ")}`);
+    }
+    if (!same(value.deferred_labels, ["O"])) errors.push("deferred_labels: expected O alone");
+    errors.push(...rubricErrors(value.rubric, OPEN_CHOICE_LABELS));
+    const v = value.validation;
+    if (!isObj(v)) return [...errors, "validation: expected an object"];
+    errors.push(...labelledValidationErrors(v, "validation", "turns", OPEN_CHOICE_LABELS));
+    return errors;
+}
+
+/** The digest of a deferral revision, which `bun run prereg:validate` prints. */
+export function deferralRevisionHash(revision: DeferralRevision): string {
+    return sha256Hex(`${DEFERRAL_SCHEMA}\n${canonicalJson(revision)}`);
+}
+
+/** `prereg/<id>.json`, accepted only when it validates as a deferral revision and names `id`. */
+export function loadDeferralRevision(id: string, dir?: string): DeferralRevision {
+    return loadAs<DeferralRevision>(id, dir, validateDeferralRevision);
 }

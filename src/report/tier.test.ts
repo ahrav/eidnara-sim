@@ -423,8 +423,16 @@ describe("tier report", () => {
             graded("host", "q-2", "pass"),
         ];
         const text = renderTier(report);
+        expect(text).toContain("## Deferred items");
         expect(text).toContain("| P2 | eidnara | 1/2 | 0.50 |");
         expect(text).toContain("| P2 | host | 0/2 | 0.00 |");
+        // P1 turns defer too, so the table lists the type beside the harm probes.
+        report.grades = [
+            { ...graded("eidnara", "q-4", "excluded", "deferred"), probe_type: "P1" },
+            { ...graded("eidnara", "q-5", "fail"), probe_type: "P1" },
+            { ...graded("eidnara", "q-6", "pass"), probe_type: "P1" },
+        ];
+        expect(renderTier(report)).toContain("| P1 | eidnara | 1/3 | 0.33 |");
         expect(text).toContain("1/3 (f0 e1 d1)");
         expect(text).toContain("1/2 (f1 e0 d0)");
     });
@@ -1539,6 +1547,19 @@ describe("tier report", () => {
     test("an A/A control counts and lends its scale only with full probe coverage", () => {
         const g = fixture();
         g.grades = g.grades.filter((r) => !(r.arm === "host~aa" && r.item === "q-p1-3"));
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: control host~aa covers 7 of 8 P1 probes",
+        );
+    });
+
+    test("a deferred P1 item is outside a control's coverage, as any exclusion is", () => {
+        const g = fixture();
+        for (const r of g.grades) {
+            if (r.arm === "host~aa" && r.item === "q-p1-3") {
+                Object.assign(r, { verdict: "excluded", reason: "deferred" });
+                r.metrics = { "P1.v1": false };
+            }
+        }
         expect(tierInput(prereg, [g]).incomplete).toContain(
             "run pi/101: control host~aa covers 7 of 8 P1 probes",
         );

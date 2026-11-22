@@ -97,7 +97,11 @@ also carry these optional sections and fields:
   `clarify` item) are outside the gate: their right answer withholds or
   leaves out what a source says, and the oracle note quotes it, so the
   oracle arm sits below the host there by design. The apply graders stay
-  strict: a clarifying question on an apply item fails it.
+  strict: a clarifying question on an apply item fails it. P1 is the one
+  apply probe with a deferred outcome: a P1 turn that its product reading
+  fails, that changed no code file, and that replied is excluded as
+  `deferred` and stays out of the gate's rates; a turn the reading passes
+  stays a pass (`docs/grading.md`, Grading revision 15).
 
 - `no_source_control`: the run arm that serves as the memory-free control.
   It must be a run arm whose delivery mode is `none`: it meets the same

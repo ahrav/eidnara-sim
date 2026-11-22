@@ -199,10 +199,9 @@
     }
   ],
   "expect": {
-    "verdict": "fail",
-    "reason": "rule not applied",
+    "verdict": "excluded",
+    "reason": "deferred",
     "metrics": {
-      "P1.pass": false,
       "P1.v1": false
     },
     "inputs": [

@@ -3,10 +3,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
     type AbstainRevision,
+    DEFERRAL_REVISIONS,
+    deferralRevisionHash,
     gradingRevisionFor,
     gradingRevisionHash,
     gradingRevisionPath,
     JUDGED_REVISIONS,
+    loadDeferralRevision,
     loadGradingRevision,
     loadPositiveRevision,
     loadRuleRevision,
@@ -15,6 +18,7 @@ import {
     RULE_REVISIONS,
     type RuleRevision,
     ruleRevisionHash,
+    validateDeferralRevision,
     validateGradingRevision,
     validatePositiveRevision,
     validateRuleRevision,
@@ -602,5 +606,146 @@ describe("the positive-probe revision", () => {
                 (rule(r, 0).validation as Record<string, unknown>).hand_audited = 100_000;
             }),
         ).toEqual(["rules[0].validation.hand_audited: expected a count within the labelled items"]);
+    });
+});
+
+describe("deferral revisions", () => {
+    const g15 = loadDeferralRevision("G15");
+    const edited = (change: (r: Record<string, unknown>) => void) => {
+        const copy = structuredClone(g15) as unknown as Record<string, unknown>;
+        change(copy);
+        return validateDeferralRevision(copy);
+    };
+    const validation = (r: Record<string, unknown>) => r.validation as Record<string, unknown>;
+
+    test("every deferral revision loads under its own schema, apart from the other kinds", () => {
+        for (const id of DEFERRAL_REVISIONS) expect(loadDeferralRevision(id).id).toBe(id);
+        expect(() => loadRuleRevision("G15")).toThrow("prereg/G15.json refused");
+        expect(() => loadGradingRevision("G15")).toThrow("prereg/G15.json refused");
+        expect(() => loadDeferralRevision("G12")).toThrow("prereg/G12.json refused");
+        expect(deferralRevisionHash(g15)).toMatch(/^[0-9a-f]{64}$/);
+        // The digest covers the rubric and the counts.
+        const reworded = { ...g15, rubric: `${g15.rubric} More.` };
+        expect(deferralRevisionHash(reworded)).not.toBe(deferralRevisionHash(g15));
+        const recounted = structuredClone(g15);
+        recounted.validation.hand_audited += 1;
+        expect(deferralRevisionHash(recounted)).not.toBe(deferralRevisionHash(g15));
+    });
+
+    test("G15 extends the no-work-reply rule of G12 to P1 and replaces the fail G13 gives such a turn", () => {
+        expect(validateDeferralRevision(g15)).toEqual([]);
+        expect(g15).toMatchObject({
+            probes: ["P1"],
+            deferral_rule: loadRuleRevision("G12").deferral_rule,
+            extends: "G12",
+            replaces: { revision: "G13", rule: "product-governed-units", verdict: "fail" },
+            reported_metrics: [
+                { name: "P12.reply_names_identity", rule: "reply-matches-identity" },
+            ],
+            labels: ["O", "D", "N"],
+            deferred_labels: ["O"],
+        });
+        // The replaced rule is the one G13 registers for P1.
+        const p1 = loadPositiveRevision("G13").rules.find((r) => r.probe === "P1");
+        expect(g15.replaces.rule).toBe(p1?.rule as string);
+    });
+
+    test("the labelled turns hold the counts the rule was chosen on", () => {
+        const v = g15.validation;
+        expect(v.design.turns + v.test.turns).toBe(v.labelled_turns);
+        expect(v.label_counts.O + v.label_counts.D + v.label_counts.N).toBe(v.labelled_turns);
+        // The rule defers every turn with a reply, so it agrees on the O turns, and on an N turn
+        // whose reply is empty; the replaced rule fails every turn, so it agrees on D and N.
+        expect(v.design.agreed + v.test.agreed).toBeGreaterThanOrEqual(v.label_counts.O);
+        expect(v.design.agreed + v.test.agreed).toBeLessThanOrEqual(
+            v.label_counts.O + v.label_counts.N,
+        );
+        expect(v.superseded_rule.agreed).toBe(v.label_counts.D + v.label_counts.N);
+        // The design campaigns are the c8 ones and the test campaigns the later ones.
+        expect(v.design.campaigns.every((c) => c.startsWith("C8"))).toBe(true);
+        expect(v.test.campaigns.every((c) => c.startsWith("W"))).toBe(true);
+    });
+
+    test("a revision that departs from the registered rule is refused by field", () => {
+        expect(validateDeferralRevision(null)).toEqual(["expected an object"]);
+        expect(edited((r) => (r.schema = "sim-grading-rule-revision/v1"))).toEqual([
+            "schema: expected sim-deferral-revision/v1",
+        ]);
+        expect(edited((r) => Object.assign(r, { id: "G12" }))).toEqual([
+            "id: expected one of G15",
+            "revision: expected the integer the id names",
+        ]);
+        expect(edited((r) => (r.frozen = false))).toEqual(["frozen: expected true"]);
+        expect(edited((r) => (r.probes = ["P1", "P3"]))).toEqual(["probes: expected P1 alone"]);
+        expect(edited((r) => (r.property = " "))).toEqual([
+            "property: expected the property the probe names",
+        ]);
+        expect(edited((r) => (r.deferral_rule = "question"))).toEqual([
+            "deferral_rule: expected no-work-reply",
+        ]);
+        expect(edited((r) => (r.extends = "G13"))).toEqual(["extends: expected G12"]);
+        for (const replaces of [
+            { revision: "G12", rule: "product-governed-units", verdict: "fail" },
+            { revision: "G13", rule: "product-code-use", verdict: "fail" },
+            { revision: "G13", rule: "product-governed-units", verdict: "pass" },
+            { revision: "G13", rule: "product-governed-units", verdict: "fail", part: "x" },
+            null,
+        ]) {
+            expect(edited((r) => (r.replaces = replaces))).toEqual([
+                "replaces: expected the fail of G13's rule product-governed-units",
+            ]);
+        }
+        for (const reported of [
+            [],
+            [{ name: "P12.reply_names_identity", rule: "other" }],
+            [{ name: "P12.names", rule: "reply-matches-identity" }],
+            [
+                { name: "P12.reply_names_identity", rule: "reply-matches-identity" },
+                { name: "P1.asked", rule: "reply-holds-text" },
+            ],
+            null,
+        ]) {
+            expect(edited((r) => (r.reported_metrics = reported))).toEqual([
+                "reported_metrics: expected P12.reply_names_identity under reply-matches-identity",
+            ]);
+        }
+        expect(edited((r) => (r.labels = ["O", "N"]))[0]).toBe("labels: expected O, D, N");
+        expect(edited((r) => (r.deferred_labels = ["O", "D"]))).toEqual([
+            "deferred_labels: expected O alone",
+        ]);
+        expect(
+            edited((r) => (r.rubric = String(r.rubric).replace(/^D: /m, "Determined: "))),
+        ).toEqual(["rubric: defines no label D"]);
+        expect(edited((r) => (r.judge = { model: "m" }))).toEqual(["revision.judge: unknown key"]);
+        expect(edited((r) => delete r.validation)).toEqual([
+            "revision.validation: missing",
+            "validation: expected an object",
+        ]);
+    });
+
+    test("the validation counts are held to the labelled turns", () => {
+        expect(edited((r) => (validation(r).labelled_turns = 158))).toContain(
+            "validation.label_counts: expected one count per label summing to labelled_turns",
+        );
+        expect(
+            edited((r) => ((validation(r).design as Record<string, unknown>).agreed = 999)),
+        ).toEqual(["validation.design: expected agreed turns within the turn count"]);
+        expect(
+            edited((r) => ((validation(r).test as Record<string, unknown>).campaigns = ["C8"])),
+        ).toEqual([
+            "validation: a campaign lies in the design split or the test split, one of them",
+        ]);
+        expect(edited((r) => (validation(r).label_passes = 1))).toEqual([
+            "validation.label_passes: expected at least two independent passes",
+        ]);
+        expect(edited((r) => (validation(r).label_pass_agreement = { labels: "0.99" }))).toContain(
+            "validation.label_pass_agreement.verdict: missing",
+        );
+        expect(edited((r) => (validation(r).hand_audited = 1000))).toEqual([
+            "validation.hand_audited: expected a count within the labelled turns",
+        ]);
+        expect(edited((r) => (validation(r).superseded_rule = { turns: 1, agreed: 0 }))).toEqual([
+            "validation.superseded_rule: expected its agreement over the labelled turns",
+        ]);
     });
 });

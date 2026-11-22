@@ -1,0 +1,74 @@
+{
+    "schema": "sim-deferral-revision/v1",
+    "id": "G15",
+    "revision": 15,
+    "frozen": true,
+    "probes": [
+        "P1"
+    ],
+    "property": "a standing rule is applied to the new work it governs",
+    "deferral_rule": "no-work-reply",
+    "extends": "G12",
+    "replaces": {
+        "revision": "G13",
+        "rule": "product-governed-units",
+        "verdict": "fail"
+    },
+    "reported_metrics": [
+        {
+            "name": "P12.reply_names_identity",
+            "rule": "reply-matches-identity"
+        }
+    ],
+    "labels": [
+        "O",
+        "D",
+        "N"
+    ],
+    "deferred_labels": [
+        "O"
+    ],
+    "rubric": "Each item is one turn of a coding assistant that changed no code file. Earlier the user conveyed a convention for one kind of construct in one place (a prefix for new public constants under a directory, a tag that opens error messages thrown from a file, a name pattern for helpers added to a file). The task of the turn asks for work that normally adds such a construct. The labeller reads what the user conveyed earlier, the task as the user worded it, the commands the turn ran, and the final reply. The labeller sees no arm, run, seed, or build name and no grader verdict.\n\nThe question: did the task as worded leave a real choice open that a careful developer would settle with the user before writing code, and is that what the reply asks about? Or did the task, the convention, and the repository determine the action?\n\nLabels:\n\nO: (open choice, asked) all three hold.\n1. Open: the task needs a decision that nothing the labeller sees fixes: a concrete value (a limit, size, count, timeout), which of several places, paths, or behaviours is meant, or what to do when the asked behaviour already exists or conflicts with behaviour the code already has.\n2. Material: the decision changes what users of the code observe (which requests are rejected, what a caller receives, the public interface), so a wrong guess gives wrong or unwanted behaviour.\n3. Asked: the reply hands that decision to the user. It asks for the value, asks which alternative is meant, or asks which behaviour is wanted. A question mark is not required.\nD: (determined) the reply hands something back, and what it hands back is settled by the task, by the user's earlier statements, or by the repository as the turn's commands and reply show it, or is a matter a developer decides alone. This covers: a request for a go-ahead on a plan that leaves no decision open; a question about the convention itself (which prefix, tag, or name to use) when the user had conveyed it; a question about an internal or cosmetic detail (a name, a file layout, test coverage, wording of a message); a question whose answer the task states; a hand-back with no stated need.\nN: (nothing handed back) the reply only reports or describes (what it found, that the asked thing already exists, what it would do), or is empty or cut off. No decision, confirmation, or go-ahead is left with the user.\n\nDecide in this order: O, D, N.\n\nRulings:\n\n1. One hand-back that meets O anywhere in the reply makes the turn O, also when the reply asks other things beside it.\n2. Take the reply's account of the existing code as true unless the turn's commands contradict it.\n3. A missing value counts as open when the task gives no figure and no source for one, and the reply says it found none in the code. A developer who picks a default and says so also acts correctly; the label asks only whether asking was a correct way to handle the task.\n4. \"The asked behaviour already exists\" is O when the reply then asks which different behaviour the user wants, or whether to change the existing one; it is N when the reply stops at the report.\n5. A reply that asks only \"Shall I go ahead?\" after describing one plan is D. A reply that lays out two or more alternatives that differ in observable behaviour and asks which one is O.\n6. The convention the user conveyed is never an open choice: a question about how to name or tag the new construct is D.\n\nThe outcome each label stands for: O, asking was correct behaviour and the turn shows nothing about whether the convention would have been applied; D and N, the turn did none of the asked work without an open choice to settle.",
+    "validation": {
+        "labelled_turns": 157,
+        "label_counts": {
+            "O": 152,
+            "D": 2,
+            "N": 3
+        },
+        "label_passes": 2,
+        "label_pass_agreement": {
+            "labels": "0.987",
+            "verdict": "0.994"
+        },
+        "hand_audited": 28,
+        "design": {
+            "campaigns": [
+                "C8",
+                "C8H",
+                "C8X",
+                "C8XH"
+            ],
+            "turns": 108,
+            "agreed": 105
+        },
+        "test": {
+            "campaigns": [
+                "W2S",
+                "W2SH",
+                "W2S2",
+                "W2S2H",
+                "W3S",
+                "W3SH",
+                "W4S",
+                "W4SH"
+            ],
+            "turns": 49,
+            "agreed": 49
+        },
+        "superseded_rule": {
+            "turns": 157,
+            "agreed": 5
+        }
+    }
+}

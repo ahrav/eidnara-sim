@@ -14,12 +14,13 @@ fail. The known pass adds one constant line to the recorded diff. The other
 files are constructed from the compiled checks of seed 101 (S) to exercise
 each grader's pass and fail branches.
 
-`P1-fail-recorded-host.json` and `P1-fail-recorded-eidnara.json` are
+`P1-deferred-recorded-host.json` and `P1-deferred-recorded-eidnara.json` are
 snapshots the harness's own `SnapshotRecorder` captured in the 2026-10-16
 `grade-1` run (S seed 101, both arms, Pi), graded under the P1 check: in
-both arms the agent declined the change because mini-redis has no multi-key
-GET. That run asked the task before the rule was conveyed; the P1 grader
-reads the same artefacts.
+both arms the agent changed no file and asked what the user wanted, because
+mini-redis has no multi-key GET. Each turn is deferred (`prereg/G15.json`)
+and keeps `P1.v1`. That run asked the task before the rule was conveyed; the
+P1 grader reads the same artefacts.
 
 The P7 files hold an answer pair and the judge's two verdicts, scripted for
 the test; `P7-pass` and `P7-fail` are the pairs the live judge
@@ -85,3 +86,9 @@ labels; the label is scripted for the test (`judge.label`). The first
 reply says the code already uses the constant and ends with a conditional
 offer (label R), and the second says nothing uses the constant yet and
 asks whether its figure is the agreed one (label Q).
+
+`P12-fail-named-in-reply` is a turn whose reply names the error identity
+and leaves the named file unwritten: it fails as the task asks for the
+entry, and `P12.reply_names_identity` records that the reply held the
+identity. The P12 files without a proxy-call artefact carry no such
+metric.
