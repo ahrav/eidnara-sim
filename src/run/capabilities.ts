@@ -1459,6 +1459,16 @@ export function searchFallback(search: NonNullable<ArmObservation["search"]>) {
 }
 
 /**
+ * Whether `part` of `whole` is a share above the canonical decimal `bound`, compared in whole
+ * numbers so a bound of any length is read at its registered digits.
+ */
+export function exceedsShare(part: number, whole: number, bound: string): boolean {
+    const [units = "0", fraction = ""] = bound.split(".");
+    const scale = 10n ** BigInt(fraction.length);
+    return BigInt(part) * scale > BigInt(whole) * BigInt(units + fraction);
+}
+
+/**
  * A fused arm's fallback answers under a registered bound: a legacy-scan answer on a transient
  * reason is a degraded answer of the declared route, and the arm is refused when an answer names
  * any other reason or when the degraded share of its answered searches exceeds the bound.
@@ -1474,7 +1484,7 @@ function fallbackMismatches(
             `${f.persistent} eidnara_search results came from the legacy snapshot scan for a persistent reason (${f.persistent_reasons.join(", ")}), but the arm declares the fused route`,
         );
     }
-    if (f.degraded_share !== null && f.degraded_share > Number(bound.max_degraded_share)) {
+    if (exceedsShare(f.degraded, f.answered, bound.max_degraded_share)) {
         out.push(
             `${f.degraded} of ${f.answered} answered eidnara_search results came from the legacy snapshot scan on a transient reason (${f.degraded_reasons.join(", ")}), a share above the registered bound ${bound.max_degraded_share}`,
         );

@@ -583,6 +583,10 @@ test("a registration names the bound on a fused arm's degraded search answers", 
     expect(bounded({ max_degraded_share: "0.1" }, plain)).toEqual([
         "search_fallback: expected a run arm that declares the fused route",
     ]);
+    // The arm check reads search results from Pi's transcripts, so a bounded registration runs there.
+    expect(bounded({ max_degraded_share: "0.1" }, (q) => (q.hosts = ["pi", "opencode"]))).toEqual([
+        "search_fallback: the bound is read from Pi transcripts; hosts lists opencode",
+    ]);
     // The bound is part of the registration a run binds by hash.
     const on = { ...structuredClone(w4s), search_fallback: { max_degraded_share: "0.1" } };
     expect(qualificationHash(on)).not.toBe(qualificationHash(w4s));

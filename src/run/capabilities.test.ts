@@ -5,6 +5,7 @@ import {
     linkSync,
     mkdirSync,
     mkdtempSync,
+    readFileSync,
     rmSync,
     symlinkSync,
     writeFileSync,
@@ -30,6 +31,7 @@ import {
     CachingTally,
     cachingMismatches,
     capabilityRecord,
+    exceedsShare,
     logLength,
     noteRequest,
     observeArm,
@@ -350,6 +352,17 @@ test("a fused arm's fallback on a transient reason is a degraded answer under a 
         "3 of 20 answered eidnara_search results came from the legacy snapshot scan on a transient reason (no_lane, snapshot_changed), a share above the registered bound 0.1",
     ]);
     expect(over.search_fallback).toMatchObject({ degraded: 3, degraded_share: 0.15 });
+    // The bound is compared at its registered digits: a bound a hair under one tenth, which a
+    // double rounds to one tenth, refuses 2 of 20.
+    expect(exceedsShare(2, 20, "0.1")).toBe(false);
+    expect(exceedsShare(2, 20, "0.099999999999999999999")).toBe(true);
+    expect(exceedsShare(1, 3, "0.333")).toBe(true);
+    expect(exceedsShare(1, 3, "0.334")).toBe(false);
+    expect(exceedsShare(0, 0, "0.1")).toBe(false);
+    const hair = { max_degraded_share: "0.099999999999999999999" };
+    expect(record(hair, { legacy_scan: mixed, fused: 18 }).mismatches).toEqual([
+        "2 of 20 answered eidnara_search results came from the legacy snapshot scan on a transient reason (no_lane, snapshot_changed), a share above the registered bound 0.099999999999999999999",
+    ]);
     // An errored result is no answer, so it stays out of the share's denominator.
     expect(record(bound, { legacy_scan: ["no_lane"], fused: 8, errored: 6 }).mismatches).toEqual([
         "1 of 9 answered eidnara_search results came from the legacy snapshot scan on a transient reason (no_lane), a share above the registered bound 0.1",
@@ -1041,6 +1054,16 @@ test("evidence is read against the capabilities of the build the run bound", () 
     expect(armMismatches({ ...hybrid, daemon_status: status(8, 0) }, current)).toEqual([
         `none of 8 daemon status readings carries a search.lifecycle.status progress block, which ${current.label} declares for the fused route`,
     ]);
+});
+
+test("a complete search result at a transcript's end is counted without its final newline", () => {
+    const root = armRoot([PI_ON, PASS], [FUSED, LEGACY]);
+    const file = join(root, "home/.pi/agent/sessions/--ws--/2026_sim-s-0000.jsonl");
+    writeFileSync(file, readFileSync(file, "utf8").trimEnd());
+    expect(observeArm("eidnara", "pi", root, {}).search).toMatchObject({
+        legacy_scan: ["disabled"],
+        fused: 1,
+    });
 });
 
 test("a search result that renders a contest is counted", () => {

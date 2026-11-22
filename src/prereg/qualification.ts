@@ -157,8 +157,9 @@ export interface Qualification {
      * transient reason (`TRANSIENT_FALLBACK_REASONS`, `src/run/capabilities.ts`); the arm's
      * capability record counts each such result as a degraded answer, and the arm is refused when
      * their share of its answered searches exceeds `max_degraded_share` (a canonical decimal in
-     * (0, 1)) or when a fallback names any other reason. A registration without the section
-     * refuses every fallback answer on a fused arm.
+     * (0, 1)) or when a fallback names any other reason. The check counts the results in Pi's
+     * transcripts, so a registration with the section runs on Pi. A registration without the
+     * section refuses every fallback answer on a fused arm.
      */
     search_fallback?: { max_degraded_share: string };
     claim: "descriptive";
@@ -501,11 +502,17 @@ function checkSections(q: Qualification, errors: string[]): void {
             errors.push("analysis.cost_per_arm_seed_usd: expected one cost per run arm");
         }
     }
-    if (
-        q.search_fallback &&
-        !q.arms.run.some((a) => isArmName(a) && armProfile(a).search === "fused")
-    ) {
-        errors.push("search_fallback: expected a run arm that declares the fused route");
+    if (q.search_fallback) {
+        if (!q.arms.run.some((a) => isArmName(a) && armProfile(a).search === "fused")) {
+            errors.push("search_fallback: expected a run arm that declares the fused route");
+        }
+        // The arm check counts search results from Pi's transcripts (`observeArm`), so the
+        // bound is enforced on that host.
+        for (const host of q.hosts.filter((h) => h !== "pi")) {
+            errors.push(
+                `search_fallback: the bound is read from Pi transcripts; hosts lists ${host}`,
+            );
+        }
     }
     const control = q.no_source_control;
     if (control !== undefined) {

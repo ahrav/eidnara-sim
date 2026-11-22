@@ -160,7 +160,10 @@ also carry these optional sections and fields:
   the arm is refused when the degraded share of its answered searches
   exceeds the bound, or when a fallback names any other reason
   (`docs/hosts.md`, arm capability check). The registration must run an arm that
-  declares the fused route, and the field is part of its hash. Every
+  declares the fused route, on Pi alone, since the check counts the search
+  results in Pi's transcripts, and the field is part of its hash. The share
+  is compared with the bound in whole numbers, at the bound's registered
+  digits. Every
   registration through W4P names none, so its hash stands and each of its
   fused arms is refused for any legacy-scan answer, as it ran. The rate
   behind a bound of `0.1`: the fused arms of the W2S2, W3S, and W4S
