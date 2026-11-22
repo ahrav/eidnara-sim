@@ -131,9 +131,10 @@ export interface ArmData {
     /**
      * A fused-route arm's `eidnara_search` results by route and the bound its run registered for
      * degraded answers, from the arm's capability record; null for an arm on another route or a
-     * record without a search observation.
+     * record without a search observation (a host whose transcripts the capability check leaves
+     * unread).
      */
-    search?: FusedSearch | null;
+    search: FusedSearch | null;
 }
 
 export interface FusedSearch {
@@ -155,12 +156,13 @@ export function fusedSearch(
 ): FusedSearch | null {
     const s = record?.observed?.search;
     const reasons = s?.legacy_scan;
+    const count = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
     if (
         profile?.search !== "fused" ||
         !Array.isArray(reasons) ||
         !reasons.every((r) => typeof r === "string") ||
-        typeof s?.fused !== "number" ||
-        typeof s.errored !== "number"
+        !count(s?.fused) ||
+        !count(s.errored)
     ) {
         return null;
     }

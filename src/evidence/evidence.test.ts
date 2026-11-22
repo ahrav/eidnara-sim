@@ -193,6 +193,7 @@ function build(spec: Spec): RunData {
                     objects: spec.objects === undefined ? [] : spec.objects,
                     descriptors: spec.descriptors === undefined ? [] : spec.descriptors,
                     answers: spec.answers ?? null,
+                    search: null,
                     captures: [
                         {
                             session: "s-1",
@@ -1412,6 +1413,31 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     loaded.callLog?.close();
     if (loaded.parts instanceof RequestPartLog) loaded.parts.close();
     expect(loadRun(dir).arms.get("eidnara")?.objects?.length).toBe(2);
+    // A fused arm's search answers and registered bound come from its capability record, and
+    // the profile the manifest pins decides whether the arm declares the fused route.
+    expect(loadRun(dir).arms.get("eidnara")?.search).toBeNull();
+    writeFileSync(
+        join(dir, "eidnara", "capabilities.json"),
+        JSON.stringify({
+            profile: { plugin: true, search: "fused" },
+            observed: { search: { legacy_scan: ["no_lane"], fused: 42, errored: 0 } },
+            search_fallback: { max_degraded_share: "0.1" },
+        }),
+    );
+    expect(loadRun(dir).arms.get("eidnara")?.search).toBeNull();
+    writeFileSync(
+        manifestPath,
+        manifest.replace('{"plugin":true}', '{"plugin":true,"search":"fused"}'),
+    );
+    expect(loadRun(dir).arms.get("eidnara")?.search).toEqual({
+        results: { legacy_scan: ["no_lane"], fused: 42, errored: 0 },
+        bound: { max_degraded_share: "0.1" },
+    });
+    expect(evidenceRun([dir], join(root, "fused"), null)).toContain(
+        "| run | eidnara | 43 | 42 | 1 (no_lane) | 2.3% | 0.1 | none | 0 |",
+    );
+    writeFileSync(manifestPath, manifest);
+    rmSync(join(dir, "eidnara", "capabilities.json"));
     const k = new Database(join(dir, "eidnara", "final-store", "kernel.sqlite"));
     k.run("insert into decisions values ('decision:8', 'x', 'project:KEY_A')");
     k.close();
@@ -1444,14 +1470,21 @@ test("the report counts a fused arm's degraded search answers from its capabilit
         results: { legacy_scan: ["no_lane"], fused: 42, errored: 2 },
         bound: { max_degraded_share: "0.1" },
     });
-    // A record from before the bound holds the observation alone.
+    // A record from before the bound holds the observation alone, and a record of a run whose
+    // registration names no bound holds a null one.
     expect(fusedSearch(fused, record(["no_lane"]))?.bound).toBeNull();
+    const unbound = { ...record(["no_lane"]), search_fallback: { max_degraded_share: null } };
+    expect(fusedSearch(fused, unbound)?.bound).toBeNull();
     // Another route, an absent record, and a malformed observation give no row.
     expect(fusedSearch({ plugin: true, search: "legacy-scan" }, record([]))).toBeNull();
     expect(fusedSearch(fused, null)).toBeNull();
     expect(fusedSearch(fused, { observed: { search: null } })).toBeNull();
     expect(fusedSearch(fused, record([1]))).toBeNull();
     expect(fusedSearch(fused, record("no_lane"))).toBeNull();
+    for (const fusedCount of [-1, 1.5, Number.POSITIVE_INFINITY, "42"]) {
+        const odd = { observed: { search: { legacy_scan: [], fused: fusedCount, errored: 0 } } };
+        expect(fusedSearch(fused, odd)).toBeNull();
+    }
 
     const run = (name: string, search: ArmData["search"]) => {
         const r = build({ arm: "eidnara-hybrid" });
@@ -1463,7 +1496,7 @@ test("the report counts a fused arm's degraded search answers from its capabilit
         const at = lines.indexOf("### Search route answers");
         return lines.slice(at + 6, lines.indexOf("### Context health", at) - 1);
     };
-    const results = (legacy_scan: string[]) => ({ legacy_scan, fused: 42, errored: 2 });
+    const results = (legacy_scan: string[], fused = 42) => ({ legacy_scan, fused, errored: 2 });
     expect(
         rows(
             renderEvidence([
@@ -1471,12 +1504,14 @@ test("the report counts a fused arm's degraded search answers from its capabilit
                 run("B", { results: results(["disabled", "snapshot_changed"]), bound: null }),
                 run("C", { results: results([]), bound: null }),
                 run("D", null),
+                run("E", { results: results([], 0), bound: null }),
             ]),
         ),
     ).toEqual([
         "| A | eidnara-hybrid | 43 | 42 | 1 (no_lane) | 2.3% | 0.1 | none | 2 |",
         "| B | eidnara-hybrid | 44 | 42 | 1 (snapshot_changed) | 2.3% | none: every fallback refuses | disabled | 2 |",
         "| C | eidnara-hybrid | 42 | 42 | 0 | 0.0% | none: every fallback refuses | none | 2 |",
+        "| E | eidnara-hybrid | 0 | 0 | 0 |  | none: every fallback refuses | none | 2 |",
     ]);
     expect(rows(renderEvidence([run("D", null)]))).toEqual(["| none |  |  |  |  |  |  |  |  |"]);
 });

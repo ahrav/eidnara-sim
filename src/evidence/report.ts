@@ -160,7 +160,7 @@ function searchRoutes(runs: RunEvidence[]): string[] {
             if (!data.search) continue;
             any = true;
             const { results, bound } = data.search;
-            const f = searchFallback(results, bound);
+            const f = searchFallback(results);
             out.push(
                 row([
                     r.name,
@@ -169,8 +169,8 @@ function searchRoutes(runs: RunEvidence[]): string[] {
                     results.fused,
                     f.degraded === 0 ? 0 : `${f.degraded} (${f.degraded_reasons.join(", ")})`,
                     f.degraded_share === null ? "" : `${(100 * f.degraded_share).toFixed(1)}%`,
-                    f.max_degraded_share ?? "none: every fallback refuses",
-                    [...new Set(f.persistent)].sort().join(", ") || "none",
+                    bound?.max_degraded_share ?? "none: every fallback refuses",
+                    f.persistent_reasons.join(", ") || "none",
                     results.errored,
                 ]),
             );

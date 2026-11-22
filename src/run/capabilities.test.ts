@@ -280,18 +280,35 @@ test("every daemon start of the fused arm logs the production route over its emb
 test("a fused arm's fallback on a transient reason is a degraded answer under a registered bound", () => {
     const note = (reason: string) =>
         `Memory: the fused search route is unavailable (${reason}); results come from the legacy snapshot scan.\n[1] [memory] x`;
-    const hybrid = (results: string[]) => {
-        const root = captured(armRoot([PI_ON, PASS], results));
-        daemonLog(root, [READY, ROUTE]);
-        return observeArm("eidnara-hybrid", "pi", root, { agent: 1 });
-    };
-    const fused = (n: number) => Array<string>(n).fill(FUSED);
     const bound = { max_degraded_share: "0.1" };
-    const record = (results: string[], registered: typeof bound | null) =>
-        capabilityRecord(hybrid(results), null, AUDITED_BUILDS[0], "off", registered);
-
-    // The shape of the run this rule was written for: one `no_lane` answer among 43 results.
-    const one = record([...fused(42), note("no_lane")], bound);
+    // The shape of the run this rule was written for, read from disk: one `no_lane` answer
+    // among 43 results.
+    const root = captured(
+        armRoot([PI_ON, PASS], [...Array<string>(42).fill(FUSED), note("no_lane")]),
+    );
+    daemonLog(root, [READY, ROUTE]);
+    const observed = observeArm("eidnara-hybrid", "pi", root, { agent: 1 });
+    expect(observed.search).toEqual({
+        legacy_scan: ["no_lane"],
+        fused: 42,
+        errored: 0,
+        contested: 0,
+    });
+    const record = (
+        registered: typeof bound | null,
+        search: { legacy_scan: string[]; fused: number; errored?: number } = {
+            legacy_scan: ["no_lane"],
+            fused: 42,
+        },
+    ) =>
+        capabilityRecord(
+            { ...observed, search: { errored: 0, contested: 0, ...search } },
+            null,
+            AUDITED_BUILDS[0],
+            "off",
+            registered,
+        );
+    const one = record(bound);
     expect(one.mismatches).toEqual([]);
     expect(one.search_fallback).toEqual({
         max_degraded_share: "0.1",
@@ -299,11 +316,12 @@ test("a fused arm's fallback on a transient reason is a degraded answer under a 
         degraded: 1,
         degraded_reasons: ["no_lane"],
         degraded_share: 1 / 43,
-        persistent: [],
+        persistent: 0,
+        persistent_reasons: [],
     });
     expect(one.observed.search?.legacy_scan).toEqual(["no_lane"]);
     // The same evidence under a registration that names no bound is refused, with the count kept.
-    const unregistered = record([...fused(42), note("no_lane")], null);
+    const unregistered = record(null);
     expect(unregistered.mismatches).toEqual([
         "1 eidnara_search results came from the legacy snapshot scan (no_lane), but the arm declares the fused route",
     ]);
@@ -314,36 +332,39 @@ test("a fused arm's fallback on a transient reason is a degraded answer under a 
     });
     // A reason that outlasts the call refuses under the bound, whatever its share.
     for (const reason of ["disabled", "no_family", "lane_not_ready", "projection_read", "other"]) {
-        expect(record([...fused(42), note(reason)], bound).mismatches).toEqual([
+        const refused = record(bound, { legacy_scan: [reason], fused: 42 });
+        expect(refused.mismatches).toEqual([
             `1 eidnara_search results came from the legacy snapshot scan for a persistent reason (${reason}), but the arm declares the fused route`,
         ]);
+        expect(refused.search_fallback).toMatchObject({
+            degraded: 0,
+            persistent: 1,
+            persistent_reasons: [reason],
+        });
     }
     // The share is read against the bound: 2 of 20 answers is the bound, 3 of 20 exceeds it.
-    const mixed = [note("snapshot_changed"), note("no_lane")];
-    expect(record([...fused(18), ...mixed], bound).mismatches).toEqual([]);
-    const over = record([...fused(17), ...mixed, note("no_lane")], bound);
+    const mixed = ["snapshot_changed", "no_lane"];
+    expect(record(bound, { legacy_scan: mixed, fused: 18 }).mismatches).toEqual([]);
+    const over = record(bound, { legacy_scan: [...mixed, "no_lane"], fused: 17 });
     expect(over.mismatches).toEqual([
-        "3 of 20 answered eidnara_search results came from the legacy snapshot scan on a transient reason (no_lane, snapshot_changed): degraded share 0.150, registered bound 0.1",
+        "3 of 20 answered eidnara_search results came from the legacy snapshot scan on a transient reason (no_lane, snapshot_changed), a share above the registered bound 0.1",
     ]);
     expect(over.search_fallback).toMatchObject({ degraded: 3, degraded_share: 0.15 });
     // An errored result is no answer, so it stays out of the share's denominator.
-    const refused = "Error: the memory search route answered deadline; no results were returned.";
-    expect(
-        record([...fused(8), note("no_lane"), ...Array<string>(6).fill(refused)], bound).mismatches,
-    ).toEqual([
-        "1 of 9 answered eidnara_search results came from the legacy snapshot scan on a transient reason (no_lane): degraded share 0.111, registered bound 0.1",
+    expect(record(bound, { legacy_scan: ["no_lane"], fused: 8, errored: 6 }).mismatches).toEqual([
+        "1 of 9 answered eidnara_search results came from the legacy snapshot scan on a transient reason (no_lane), a share above the registered bound 0.1",
     ]);
+    // An arm with no answered search has no share, and the bound refuses nothing there.
+    const unanswered = record(bound, { legacy_scan: [], fused: 0 });
+    expect(unanswered.search_fallback).toMatchObject({ answered: 0, degraded_share: null });
+    expect(unanswered.mismatches.filter((m) => m.includes("legacy snapshot scan"))).toEqual([]);
     // Both refusals are reported when a run shows both.
-    expect(
-        record([FUSED, note("no_lane"), note("disabled")], bound).mismatches.map((m) =>
-            m.slice(0, 40),
-        ),
-    ).toEqual([
-        "1 eidnara_search results came from the l",
-        "1 of 3 answered eidnara_search results c",
+    const both = record(bound, { legacy_scan: ["no_lane", "disabled", "disabled"], fused: 1 });
+    expect(both.mismatches).toEqual([
+        "2 eidnara_search results came from the legacy snapshot scan for a persistent reason (disabled), but the arm declares the fused route",
+        "1 of 4 answered eidnara_search results came from the legacy snapshot scan on a transient reason (no_lane), a share above the registered bound 0.1",
     ]);
-    // The bound belongs to the fused route: an arm on the legacy scan carries no fallback section,
-    // and an arm that declares no search route is refused for any legacy answer as before.
+    // The bound belongs to the fused route: an arm on the legacy scan carries no fallback section.
     const legacy = observeArm("eidnara", "pi", captured(armRoot([PI_ON, PASS], [LEGACY])), {
         agent: 1,
     });
@@ -1163,7 +1184,7 @@ test("the capability record names the run's caching condition beside what the ar
         cache_write_tokens: 0,
     });
     observed.prompt_caching = { components: { agent: counts(0) } };
-    const off = capabilityRecord(observed, null, undefined, "off");
+    const off = capabilityRecord(observed, null, undefined, "off", null);
     expect(off).toMatchObject({
         profile: armProfile("host"),
         eidnara_build: null,
@@ -1171,16 +1192,16 @@ test("the capability record names the run's caching condition beside what the ar
         observed: { prompt_caching: { components: { agent: { with_cache_points: 0 } } } },
         mismatches: [],
     });
-    expect(capabilityRecord(observed, null, undefined, "on").mismatches).toEqual([
+    expect(capabilityRecord(observed, null, undefined, "on", null).mismatches).toEqual([
         "2 of 2 agent requests carry no cache point, but the run registers prompt caching on",
     ]);
     // One request with a cache point leaves the other one outside the condition.
     observed.prompt_caching = { components: { agent: counts(1) } };
-    expect(capabilityRecord(observed, null, undefined, "on").mismatches).toEqual([
+    expect(capabilityRecord(observed, null, undefined, "on", null).mismatches).toEqual([
         "1 of 2 agent requests carry no cache point, but the run registers prompt caching on",
     ]);
     observed.prompt_caching = { components: { agent: counts(2) } };
-    expect(capabilityRecord(observed, null, undefined, "on")).toMatchObject({
+    expect(capabilityRecord(observed, null, undefined, "on", null)).toMatchObject({
         prompt_caching: "on",
         mismatches: [],
     });
@@ -1409,11 +1430,11 @@ test("a Pi arm's background requests show the cache-point layout its build decla
     arm.prompt_caching = paired;
     const w3 = auditedBuild("eval/w3-all") as AuditedBuild;
     const w2b = auditedBuild("eval/w2b") as AuditedBuild;
-    expect(capabilityRecord(arm, null, w2b, "on").mismatches).toEqual([]);
-    expect(capabilityRecord(arm, null, w3, "on").mismatches).toEqual(
+    expect(capabilityRecord(arm, null, w2b, "on", null).mismatches).toEqual([]);
+    expect(capabilityRecord(arm, null, w3, "on", null).mismatches).toEqual(
         cachingMismatches("on", paired, { layout: "system", label: w3.label }),
     );
-    expect(capabilityRecord({ ...arm, host: "opencode" }, null, w3, "on").mismatches).toEqual(
+    expect(capabilityRecord({ ...arm, host: "opencode" }, null, w3, "on", null).mismatches).toEqual(
         armMismatches({ ...arm, host: "opencode" }, w3),
     );
 });

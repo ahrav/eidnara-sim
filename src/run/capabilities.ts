@@ -1416,15 +1416,18 @@ function backgroundOf(
 }
 
 /**
- * The fallback reasons that end one call and leave the route serving: the product's contract
- * (Eidnara `docs/properties/fusion-routes/query-route/catalog.md`) ends a request as
- * `lane_unavailable` with reason `snapshot_changed` when a kernel commit lands between two
+ * The fallback reasons the product's contract gives for one call that the route ends while it
+ * keeps serving (Eidnara `docs/properties/fusion-routes/query-route/catalog.md`): a request ends
+ * as `lane_unavailable` with reason `snapshot_changed` when a kernel commit lands between two
  * revalidation slices, and with reason `no_lane` when every lane the query declares fails for
  * that call; the plugin then answers from the legacy snapshot scan and names the reason in the
- * result (`route-search.ts`, `execute.ts`). Every other reason the note can carry reports a
- * state that outlasts the call: `disabled` (the route holds no limit set), the search admission
- * codes (`no_manifest`, `lane_not_ready`, `no_family`, `family_refused`, and the gate's other
- * denials), and an unreadable projection (`projection_read`).
+ * result (`route-search.ts`, `execute.ts`). `no_lane` reports only that every declared lane
+ * failed, so a lane that fails on every call reports it too, and the registered share bound is
+ * the check that separates the two. Every other reason the note can carry reports a state that
+ * outlasts the call:
+ * `disabled` (the route holds no limit set), the search admission codes (`no_manifest`,
+ * `lane_not_ready`, `no_family`, `family_refused`, and the gate's other denials), and an
+ * unreadable projection (`projection_read`).
  */
 export const TRANSIENT_FALLBACK_REASONS: readonly string[] = ["snapshot_changed", "no_lane"];
 
@@ -1434,25 +1437,24 @@ export interface SearchFallbackBound {
     max_degraded_share: string;
 }
 
+const uniqueSorted = (reasons: string[]) => [...new Set(reasons)].sort();
+
 /**
  * A fused arm's `eidnara_search` answers by route: the answered results (fused plus legacy scan),
- * the degraded ones (a legacy-scan answer on a transient reason) with their share of the answered
- * results, the reasons of the legacy-scan answers on any other reason, and the registered bound,
- * null for a run whose registration names none.
+ * the degraded ones (a legacy-scan answer on a transient reason) with their reasons and their
+ * share of the answered results, and the legacy-scan answers on any other reason with theirs.
  */
-export function searchFallback(
-    search: NonNullable<ArmObservation["search"]>,
-    bound: SearchFallbackBound | null,
-) {
+export function searchFallback(search: NonNullable<ArmObservation["search"]>) {
     const transient = search.legacy_scan.filter((r) => TRANSIENT_FALLBACK_REASONS.includes(r));
     const answered = search.fused + search.legacy_scan.length;
+    const persistent = search.legacy_scan.filter((r) => !TRANSIENT_FALLBACK_REASONS.includes(r));
     return {
-        max_degraded_share: bound?.max_degraded_share ?? null,
         answered,
         degraded: transient.length,
-        degraded_reasons: [...new Set(transient)].sort(),
+        degraded_reasons: uniqueSorted(transient),
         degraded_share: answered === 0 ? null : transient.length / answered,
-        persistent: search.legacy_scan.filter((r) => !TRANSIENT_FALLBACK_REASONS.includes(r)),
+        persistent: persistent.length,
+        persistent_reasons: uniqueSorted(persistent),
     };
 }
 
@@ -1465,17 +1467,16 @@ function fallbackMismatches(
     search: NonNullable<ArmObservation["search"]>,
     bound: SearchFallbackBound,
 ): string[] {
-    const f = searchFallback(search, bound);
+    const f = searchFallback(search);
     const out: string[] = [];
-    if (f.persistent.length > 0) {
-        const reasons = [...new Set(f.persistent)].sort().join(", ");
+    if (f.persistent > 0) {
         out.push(
-            `${f.persistent.length} eidnara_search results came from the legacy snapshot scan for a persistent reason (${reasons}), but the arm declares the fused route`,
+            `${f.persistent} eidnara_search results came from the legacy snapshot scan for a persistent reason (${f.persistent_reasons.join(", ")}), but the arm declares the fused route`,
         );
     }
     if (f.degraded_share !== null && f.degraded_share > Number(bound.max_degraded_share)) {
         out.push(
-            `${f.degraded} of ${f.answered} answered eidnara_search results came from the legacy snapshot scan on a transient reason (${f.degraded_reasons.join(", ")}): degraded share ${f.degraded_share.toFixed(3)}, registered bound ${bound.max_degraded_share}`,
+            `${f.degraded} of ${f.answered} answered eidnara_search results came from the legacy snapshot scan on a transient reason (${f.degraded_reasons.join(", ")}), a share above the registered bound ${bound.max_degraded_share}`,
         );
     }
     return out;
@@ -1491,16 +1492,21 @@ export function capabilityRecord<B>(
     eidnaraBuild: B,
     build: AuditedBuild | undefined,
     caching: PromptCaching,
-    fallback: SearchFallbackBound | null = null,
+    fallback: SearchFallbackBound | null,
 ) {
     const profile = armProfile(observed.arm);
     return {
         profile,
         eidnara_build: eidnaraBuild,
         prompt_caching: caching,
-        // A fused arm's record counts its fallback answers under the bound the run registered.
+        // A fused arm whose transcripts were read counts its fallback answers beside the bound the run registered.
         ...(profile.search === "fused" && observed.search
-            ? { search_fallback: searchFallback(observed.search, fallback) }
+            ? {
+                  search_fallback: {
+                      max_degraded_share: fallback?.max_degraded_share ?? null,
+                      ...searchFallback(observed.search),
+                  },
+              }
             : {}),
         observed,
         mismatches: [

@@ -184,7 +184,8 @@ table of answers with an Eidnara marker (streamed and persisted, each with its
 share) and of `content_filtered` calls and turns, and an arm comparison whose healthy rows leave out the turns, calls, and probes of
 flagged sessions from `flagged_from` on, which get rows of their own.
 The `### Search route answers` table has one row per run and arm that
-declares the fused route, read from the arm's `capabilities.json`: the
+declares the fused route and whose capability record holds a search
+observation (a Pi arm), read from the arm's `capabilities.json`: the
 answered `eidnara_search` results, the ones the fused route ranked, the
 degraded answers with their transient reasons and their share of the
 answered results, the bound the run registered (`search_fallback`,
