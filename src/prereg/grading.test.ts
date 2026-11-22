@@ -624,6 +624,12 @@ describe("deferral revisions", () => {
         expect(() => loadGradingRevision("G15")).toThrow("prereg/G15.json refused");
         expect(() => loadDeferralRevision("G12")).toThrow("prereg/G12.json refused");
         expect(deferralRevisionHash(g15)).toMatch(/^[0-9a-f]{64}$/);
+        // The digest covers the rubric and the counts.
+        const reworded = { ...g15, rubric: `${g15.rubric} More.` };
+        expect(deferralRevisionHash(reworded)).not.toBe(deferralRevisionHash(g15));
+        const recounted = structuredClone(g15);
+        recounted.validation.hand_audited += 1;
+        expect(deferralRevisionHash(recounted)).not.toBe(deferralRevisionHash(g15));
     });
 
     test("G15 extends the no-work-reply rule of G12 to P1 and replaces the fail G13 gives such a turn", () => {
@@ -633,6 +639,9 @@ describe("deferral revisions", () => {
             deferral_rule: loadRuleRevision("G12").deferral_rule,
             extends: "G12",
             replaces: { revision: "G13", rule: "product-governed-units", verdict: "fail" },
+            reported_metrics: [
+                { name: "P12.reply_names_identity", rule: "reply-matches-identity" },
+            ],
             labels: ["O", "D", "N"],
             deferred_labels: ["O"],
         });
@@ -648,6 +657,9 @@ describe("deferral revisions", () => {
         // The rule defers every turn with a reply, so it agrees on the O turns, and on an N turn
         // whose reply is empty; the replaced rule fails every turn, so it agrees on D and N.
         expect(v.design.agreed + v.test.agreed).toBeGreaterThanOrEqual(v.label_counts.O);
+        expect(v.design.agreed + v.test.agreed).toBeLessThanOrEqual(
+            v.label_counts.O + v.label_counts.N,
+        );
         expect(v.superseded_rule.agreed).toBe(v.label_counts.D + v.label_counts.N);
         // The design campaigns are the c8 ones and the test campaigns the later ones.
         expect(v.design.campaigns.every((c) => c.startsWith("C8"))).toBe(true);
@@ -681,6 +693,20 @@ describe("deferral revisions", () => {
         ]) {
             expect(edited((r) => (r.replaces = replaces))).toEqual([
                 "replaces: expected the fail of G13's rule product-governed-units",
+            ]);
+        }
+        for (const reported of [
+            [],
+            [{ name: "P12.reply_names_identity", rule: "other" }],
+            [{ name: "P12.names", rule: "reply-matches-identity" }],
+            [
+                { name: "P12.reply_names_identity", rule: "reply-matches-identity" },
+                { name: "P1.asked", rule: "reply-holds-text" },
+            ],
+            null,
+        ]) {
+            expect(edited((r) => (r.reported_metrics = reported))).toEqual([
+                "reported_metrics: expected P12.reply_names_identity under reply-matches-identity",
             ]);
         }
         expect(edited((r) => (r.labels = ["O", "N"]))[0]).toBe("labels: expected O, D, N");

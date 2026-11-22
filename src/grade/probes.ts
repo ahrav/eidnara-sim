@@ -17,6 +17,7 @@ import {
     DEFERRAL_PROBES,
     GRADING_REVISIONS,
     JUDGED_PROBES,
+    REPORTED_METRIC,
     RULE_PROBES,
     TWIN_LABELS,
     type TwinLabel,
@@ -1860,8 +1861,9 @@ function failureEvidence(probe: ProbeItem, sources: SourceEvent[], identity: str
 
 /**
  * Whether the turn's final reply names the error identity (`must`); undefined when the snapshot
- * holds no whole reply. The verdict reads the named file alone, so this is a reported metric: a
- * failing turn whose reply names the identity knew it and left the entry unwritten.
+ * holds no whole reply. The verdict reads the named file alone, so this is a reported metric
+ * (`reported_metrics`, `prereg/G15.json`): a failing turn whose reply names the identity knew it
+ * and left the entry unwritten.
  */
 function replyNames(r: ArtefactReader, c: Check): boolean | undefined {
     const reply = wholeReply(r);
@@ -1870,8 +1872,9 @@ function replyNames(r: ArtefactReader, c: Check): boolean | undefined {
 }
 
 /**
- * The turn's final reply, or undefined when the snapshot holds no whole one: no agent call of
- * the turn, no completed one, or a reply the proxy cut at its cap. The graders that read a
+ * The turn's final reply, or undefined when the snapshot holds no whole one: no single
+ * proxy-call artefact, no agent call of the turn, no completed one, or a reply the proxy cut at
+ * its cap. The graders that read a
  * reply beside the artefacts their verdict rests on (P1's deferral, P12's reported metric) keep
  * the verdict those artefacts give when the reply is unreadable.
  */
@@ -1915,7 +1918,7 @@ function p12(r: ArtefactReader, c: Check, probe: ProbeItem, sources: SourceEvent
     const replied = replyNames(r, c);
     const extra = {
         "P12.v1": names && !superseded && tied,
-        ...(replied === undefined ? {} : { "P12.reply_names_identity": replied }),
+        ...(replied === undefined ? {} : { [REPORTED_METRIC.name]: replied }),
     };
     if (!names) return binary("P12", false, extra, "entry omits the error identity");
     // An entry that names the current identity and ties it to the failure is the entry asked
@@ -2243,8 +2246,8 @@ const GRADERS: Record<string, Grader> = {
         const extra = { "P1.v1": applied(w, c).held };
         // A turn the product reading fails, that changed no code file, and whose whole reply
         // holds text has put the task back to the user (`deferral_rule: no-work-reply`,
-        // `prereg/G15.json`): it shows nothing applied and nothing broken, so it is excluded as
-        // deferred and keeps the tier rule's verdict as its metric.
+        // `prereg/G15.json`): it added no construct for the rule to hold on, so it is excluded
+        // as deferred and keeps the tier rule's verdict as its metric.
         if (!result.held && !codeChanged(r) && (wholeReply(r) ?? "").trim() !== "") {
             return { verdict: "excluded", reason: DEFERRED, metrics: extra };
         }
@@ -2713,7 +2716,7 @@ const METRIC_FIELDS: Record<string, Record<string, (v: unknown) => boolean>> = {
     P3: { ...P3_FIELDS, "P3.v1": bool },
     P4: { "P4.harm": bool, "P4.collapsed": bool, "P4.v1": bool },
     P6: { ...P6_FIELDS, "P6.v1": bool },
-    P12: { "P12.v1": bool, "P12.reply_names_identity": bool },
+    P12: { "P12.v1": bool, [REPORTED_METRIC.name]: bool },
     P8: { "P8.cross_session_pass_rate": bool },
     P9: {
         "P9.cross_session_pass_rate": bool,

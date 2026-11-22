@@ -1552,6 +1552,19 @@ describe("tier report", () => {
         );
     });
 
+    test("a deferred P1 item is outside a control's coverage, as any exclusion is", () => {
+        const g = fixture();
+        for (const r of g.grades) {
+            if (r.arm === "host~aa" && r.item === "q-p1-3") {
+                Object.assign(r, { verdict: "excluded", reason: "deferred" });
+                r.metrics = { "P1.v1": false };
+            }
+        }
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: control host~aa covers 7 of 8 P1 probes",
+        );
+    });
+
     test("call capture must cover every completed turn for the F7 count to stand", () => {
         const g = fixture();
         const [dropped] = arm(g, "eidnara").calls.splice(0, 1);

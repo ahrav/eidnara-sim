@@ -217,6 +217,10 @@ describe("P1: the rule holds on every construct it governs, in its scope", () =>
             answer: asks,
         };
         expect(outcome(p1, prefixed)).toEqual(["pass"]);
+        // A turn the rule holds on is a pass whatever files it changed: a check that reads a
+        // note passes on a notes-only edit beside a question.
+        const noted = { ...p1, check: { must: [token], paths_must: ["^notes/"] } } as ProbeItem;
+        expect(outcome(noted, { ...note, answer: asks })).toEqual(["pass"]);
         // A code change outside the rule's scope is work, so it stays a fail beside a question.
         const elsewhere = { files: [constant("src/lib.rs", "MAX_KEYS")], answer: asks };
         expect(outcome(p1, elsewhere)).toEqual(["fail", "rule not applicable to the change"]);

@@ -441,6 +441,7 @@ describe("grading harness", () => {
         const unshaped: GradeRecord["metrics"][] = [
             {},
             { "P1.v1": "fail" },
+            { "P1.pass": false },
             { "P1.v1": false, "P1.pass": false },
         ];
         for (const metrics of unshaped) {

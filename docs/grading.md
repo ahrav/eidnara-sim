@@ -1589,6 +1589,17 @@ proxy cut it at its cap) or lacks, so a P1 grade never rests on a reply
 that is absent. A turn that changed a code file is graded on its
 constructs whatever its reply asks.
 
+A deferred P1 item is an exclusion for every reader of the grades, as a
+deferred P2, P5, or P11 item is. The tier report lists it among the
+excluded items, the fixed-N count of `probe-P1` holds the pairs both arms
+graded, so a tier whose P1 items defer reports `probe-P1: X of n paired
+items`, and an A/A control covers a P1 probe only where it and its arm
+both graded it (`docs/report.md`). The A/A report compares the metric
+keys of a paired item across its arms, so a P12 item whose reply one arm
+holds whole and the other holds in part carries
+`P12.reply_names_identity` on one arm and stops that report, as a P3
+item judged on one arm does.
+
 ### Why P1 defers
 
 A P1 item asks for work that adds a construct the conveyed convention
@@ -1671,7 +1682,9 @@ entry, a section, or a note written in a named file, and carries
 `paths_must`, so a reply that names the error identity
 and leaves the file unwritten has not done the task, and the rule of
 revision 13 stands. `P12.reply_names_identity` reports that case beside
-the verdict. Over the graded P12 turns of the same campaigns, the reply
+the verdict, and the registration names it under `reported_metrics` with
+its rule, `reply-matches-identity`: the whole final reply matches every
+`must` pattern of the check. Over the graded P12 turns of the same campaigns, the reply
 of 122 of the 437 failing Eidnara-arm turns and of 28 of the 240 failing
 host turns names the identity.
 

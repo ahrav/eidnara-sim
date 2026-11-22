@@ -846,26 +846,39 @@ export function validatePositiveRevision(value: unknown): string[] {
             errors.push(`${at}.validation: expected an object`);
             continue;
         }
-        errors.push(
-            ...keysOf(
-                v,
-                [
-                    "labelled_items",
-                    "label_counts",
-                    "label_passes",
-                    "label_pass_agreement",
-                    "hand_audited",
-                    "design",
-                    "test",
-                    "superseded_rule",
-                ],
-                `${at}.validation`,
-            ),
-            ...labelledSetErrors(v, `${at}.validation`, "items", spec.labels),
-        );
-        errors.push(...passErrors(v, `${at}.validation`, ["labels", "verdict"]));
+        errors.push(...labelledValidationErrors(v, `${at}.validation`, "items", spec.labels));
     }
     return errors;
+}
+
+/**
+ * The errors of a rule's `validation` block at `at`: its keys, its labelled set counted in
+ * `unit`, and the two label passes with their agreement over the labels and over the verdict.
+ */
+function labelledValidationErrors(
+    v: Obj,
+    at: string,
+    unit: "items" | "turns",
+    labels: readonly string[],
+): string[] {
+    return [
+        ...keysOf(
+            v,
+            [
+                `labelled_${unit}`,
+                "label_counts",
+                "label_passes",
+                "label_pass_agreement",
+                "hand_audited",
+                "design",
+                "test",
+                "superseded_rule",
+            ],
+            at,
+        ),
+        ...labelledSetErrors(v, at, unit, labels),
+        ...passErrors(v, at, ["labels", "verdict"]),
+    ];
 }
 
 /** The digest of a positive-probe revision, which `bun run prereg:validate` prints. */
@@ -887,6 +900,11 @@ export const DEFERRAL_PROBES = ["P1"] as const;
  */
 const OPEN_CHOICE_LABELS = ["O", "D", "N"] as const;
 type OpenChoiceLabel = (typeof OPEN_CHOICE_LABELS)[number];
+/** The metric revision 15 reports on a P12 grade beside its verdict. */
+export const REPORTED_METRIC = {
+    name: "P12.reply_names_identity",
+    rule: "reply-matches-identity",
+} as const;
 
 /**
  * Revision 15 extends revision 12's `no-work-reply` rule to P1: a P1 turn that changed no code
@@ -908,6 +926,12 @@ export interface DeferralRevision {
     extends: (typeof RULE_REVISIONS)[number];
     /** The rule whose verdict on such a turn this revision replaces: revision 13's, a fail. */
     replaces: { revision: (typeof POSITIVE_REVISIONS)[number]; rule: string; verdict: "fail" };
+    /**
+     * The metrics the graders of this revision report beside a verdict and that decide none:
+     * `P12.reply_names_identity`, whether a P12 turn's whole final reply matches the check's
+     * `must` patterns (`reply-matches-identity`).
+     */
+    reported_metrics: { name: string; rule: string }[];
     labels: OpenChoiceLabel[];
     deferred_labels: OpenChoiceLabel[];
     /** The rubric the labelled turns were read under. */
@@ -940,6 +964,7 @@ export function validateDeferralRevision(value: unknown): string[] {
             "deferral_rule",
             "extends",
             "replaces",
+            "reported_metrics",
             "labels",
             "deferred_labels",
             "rubric",
@@ -978,6 +1003,20 @@ export function validateDeferralRevision(value: unknown): string[] {
             `replaces: expected the fail of ${POSITIVE_REVISIONS[0]}'s rule ${replaced?.rule}`,
         );
     }
+    const reported = value.reported_metrics;
+    const [metric] = Array.isArray(reported) ? reported : [];
+    if (
+        !Array.isArray(reported) ||
+        reported.length !== 1 ||
+        !isObj(metric) ||
+        metric.name !== REPORTED_METRIC.name ||
+        metric.rule !== REPORTED_METRIC.rule ||
+        Object.keys(metric).length !== 2
+    ) {
+        errors.push(
+            `reported_metrics: expected ${REPORTED_METRIC.name} under ${REPORTED_METRIC.rule}`,
+        );
+    }
     if (!same(value.labels, OPEN_CHOICE_LABELS)) {
         errors.push(`labels: expected ${OPEN_CHOICE_LABELS.join(", ")}`);
     }
@@ -985,24 +1024,7 @@ export function validateDeferralRevision(value: unknown): string[] {
     errors.push(...rubricErrors(value.rubric, OPEN_CHOICE_LABELS));
     const v = value.validation;
     if (!isObj(v)) return [...errors, "validation: expected an object"];
-    errors.push(
-        ...keysOf(
-            v,
-            [
-                "labelled_turns",
-                "label_counts",
-                "label_passes",
-                "label_pass_agreement",
-                "hand_audited",
-                "design",
-                "test",
-                "superseded_rule",
-            ],
-            "validation",
-        ),
-        ...labelledSetErrors(v, "validation", "turns", OPEN_CHOICE_LABELS),
-        ...passErrors(v, "validation", ["labels", "verdict"]),
-    );
+    errors.push(...labelledValidationErrors(v, "validation", "turns", OPEN_CHOICE_LABELS));
     return errors;
 }
 

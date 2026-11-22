@@ -14,6 +14,12 @@
         "rule": "product-governed-units",
         "verdict": "fail"
     },
+    "reported_metrics": [
+        {
+            "name": "P12.reply_names_identity",
+            "rule": "reply-matches-identity"
+        }
+    ],
     "labels": [
         "O",
         "D",
