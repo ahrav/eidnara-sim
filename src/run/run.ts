@@ -2640,7 +2640,13 @@ async function runArms(
                 `manifest.json eidnara_build ${manifest.eidnara_build?.commit} names no audited build`,
             );
         }
-        const record = capabilityRecord(observed, manifest.eidnara_build, build, caching);
+        const record = capabilityRecord(
+            observed,
+            manifest.eidnara_build,
+            build,
+            caching,
+            qualificationOf(o)?.search_fallback ?? null,
+        );
         const { mismatches } = record;
         writeAtomic(join(o.out, arm, "capabilities.json"), `${JSON.stringify(record, null, 2)}\n`);
         if (mismatches.length > 0) {

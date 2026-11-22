@@ -15,7 +15,7 @@ import {
     PROMPT_CACHING,
     type PromptCaching,
 } from "../hosts/profiles";
-import { canonicalJson, sha256Hex } from "./canonical";
+import { canonicalJson, isCanonicalDecimal, sha256Hex } from "./canonical";
 import { HOSTS, type Preregistration, TIERS, type Tier } from "./schema";
 import {
     checkShape,
@@ -150,6 +150,17 @@ export interface Qualification {
      * cache points for a Claude model under either value.
      */
     prompt_caching?: PromptCaching;
+    /**
+     * The bound on a fused-route arm's degraded search answers. The product answers one
+     * `eidnara_search` call from the legacy snapshot scan when the route ends that call on a
+     * transient reason (`TRANSIENT_FALLBACK_REASONS`, `src/run/capabilities.ts`); the arm's
+     * capability record counts each such result as a degraded answer, and the arm is refused when
+     * their share of its answered searches exceeds `max_degraded_share` (a canonical decimal in
+     * (0, 1)) or when a fallback names any other reason. The check counts the results in Pi's
+     * transcripts, so a registration with the section runs on Pi. A registration without the
+     * section refuses every fallback answer on a fused arm.
+     */
+    search_fallback?: { max_degraded_share: string };
     claim: "descriptive";
 }
 
@@ -175,6 +186,14 @@ export interface Analysis {
     budget_usd: { low: number; high: number };
     cost_per_arm_seed_usd: Record<string, number>;
 }
+
+const SHARE_BOUND = "expected a canonical decimal in (0, 1)";
+/**
+ * Whether `v` is a share bound as a registration holds it: a canonical decimal above 0 and below
+ * 1, read from its digits, so a bound of any length is told from its endpoints.
+ */
+export const isShareBound = (v: unknown): v is string =>
+    isCanonicalDecimal(v) && v.startsWith("0.");
 
 const commitHash = (v: unknown) =>
     typeof v === "string" && /^[0-9a-f]{40}$/.test(v) ? null : "expected a full commit hash";
@@ -228,6 +247,7 @@ const SECTIONS: Record<string, Shape> = {
                 ? null
                 : "expected an object of positive integer costs by arm",
     },
+    search_fallback: { max_degraded_share: (v) => (isShareBound(v) ? null : SHARE_BOUND) },
 };
 
 /**
@@ -487,6 +507,18 @@ function checkSections(q: Qualification, errors: string[]): void {
         }
         if (!sameSet(Object.keys(a.cost_per_arm_seed_usd), q.arms.run)) {
             errors.push("analysis.cost_per_arm_seed_usd: expected one cost per run arm");
+        }
+    }
+    if (q.search_fallback) {
+        if (!q.arms.run.some((a) => isArmName(a) && armProfile(a).search === "fused")) {
+            errors.push("search_fallback: expected a run arm that declares the fused route");
+        }
+        // The arm check counts search results from Pi's transcripts (`observeArm`), so the
+        // bound is enforced on that host.
+        for (const host of q.hosts.filter((h) => h !== "pi")) {
+            errors.push(
+                `search_fallback: the bound is read from Pi transcripts; hosts lists ${host}`,
+            );
         }
     }
     const control = q.no_source_control;
