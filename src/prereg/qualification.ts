@@ -193,7 +193,7 @@ const SHARE_BOUND = "expected a canonical decimal in (0, 1)";
  * 1, read from its digits, so a bound of any length is told from its endpoints.
  */
 export const isShareBound = (v: unknown): v is string =>
-    isCanonicalDecimal(v) && /^0\.\d*[1-9]$/.test(v);
+    isCanonicalDecimal(v) && v.startsWith("0.");
 
 const commitHash = (v: unknown) =>
     typeof v === "string" && /^[0-9a-f]{40}$/.test(v) ? null : "expected a full commit hash";

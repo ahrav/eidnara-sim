@@ -333,7 +333,8 @@ test("a fused arm's fallback on a transient reason is a degraded answer under a 
         degraded_share: 1 / 43,
     });
     // A reason that outlasts the call refuses under the bound, whatever its share.
-    for (const reason of ["disabled", "no_family", "lane_not_ready", "projection_read", "other"]) {
+    const lasting = ["disabled", "no_manifest", "no_family", "lane_not_ready", "projection_read"];
+    for (const reason of [...lasting, "family_refused", "other"]) {
         const refused = record(bound, { legacy_scan: [reason], fused: 42 });
         expect(refused.mismatches).toEqual([
             `1 eidnara_search results came from the legacy snapshot scan for a persistent reason (${reason}), but the arm declares the fused route`,
@@ -1070,8 +1071,9 @@ test("evidence is read against the capabilities of the build the run bound", () 
 });
 
 test("the fallback note is read where the plugin writes it, at the start of the result", () => {
+    // The quoted note stands at the start of a line inside the result, after its first line.
     const quoted =
-        "Found 1 results\n\n[1] [memory] score=0.9 match=fused\nUser stated: the reply was `Memory: the fused search route is unavailable (no_lane); results come from the legacy snapshot scan.`";
+        "Found 1 results\n\n[1] [memory] score=0.9 match=fused\nUser stated: the reply was\nMemory: the fused search route is unavailable (no_lane); results come from the legacy snapshot scan.";
     const root = armRoot([PI_ON, PASS], [quoted, LEGACY]);
     expect(observeArm("eidnara", "pi", root, {}).search).toMatchObject({
         legacy_scan: ["disabled"],

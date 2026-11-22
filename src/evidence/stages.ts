@@ -169,11 +169,12 @@ export function toolTraffic(body: ConverseBody): {
 }
 
 /**
- * The note the plugin opens a legacy-scan answer with. It is read at the start of the result, so
- * a ranked memory whose own text quotes the note stays an answer of the route that ranked it.
+ * The note the plugin opens a legacy-scan answer with. It is read at the start of the result,
+ * after the block tag (`§<n>§`) the daemon puts ahead of a tool output in a request body, so a
+ * ranked memory whose own text quotes the note stays an answer of the route that ranked it.
  */
 const FALLBACK =
-    /^Memory: the fused search route is unavailable \(([^)]*)\); results come from the legacy snapshot scan/;
+    /^(?:\u00a7\d+\u00a7 ?)?Memory: the fused search route is unavailable \(([^)]*)\); results come from the legacy snapshot scan/;
 
 /** The route an `eidnara_search` result reports, with the legacy scan's fallback reason. */
 export function searchRoute(text: string, isError: boolean): { route: string; fallback?: string } {

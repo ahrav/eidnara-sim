@@ -1490,10 +1490,30 @@ test("the report counts a fused arm's degraded search answers from its capabilit
     for (const bound of ["garbage", "0", "1", "0.10", 0.1]) {
         expect(read(record(["no_lane"], bound))).toBeNull();
     }
-    for (const fusedCount of [-1, 1.5, Number.POSITIVE_INFINITY, "42"]) {
-        const search = { legacy_scan: [], fused: fusedCount, errored: 0 };
-        expect(read({ observed: { arm: "eidnara-hybrid", search } })).toBeNull();
+    for (const odd of [-1, 1.5, Number.POSITIVE_INFINITY, "42"]) {
+        for (const search of [
+            { legacy_scan: [], fused: odd, errored: 0 },
+            { legacy_scan: [], fused: 42, errored: odd },
+        ]) {
+            expect(read({ observed: { arm: "eidnara-hybrid", search } })).toBeNull();
+        }
     }
+    // A request body carries the daemon's block tag ahead of the tool output; a transcript holds
+    // the output alone. The note is read in both forms, and nowhere past the start.
+    const note =
+        "Memory: the fused search route is unavailable (disabled); results come from the legacy snapshot scan.";
+    expect(searchRoute(`${note}\n\n1. x`, false)).toEqual({
+        route: "legacy-scan",
+        fallback: "disabled",
+    });
+    expect(searchRoute(`\u00a74\u00a7 ${note}\n\n1. x`, false)).toEqual({
+        route: "legacy-scan",
+        fallback: "disabled",
+    });
+    expect(searchRoute(`Found 1 results\n${note}`, false)).toEqual({ route: "fused" });
+    expect(searchRoute(`\u00a74\u00a7 Found 1 results\n${note}`, false)).toEqual({
+        route: "fused",
+    });
 
     const run = (name: string, search: ArmData["search"]) => {
         const r = build({ arm: "eidnara-hybrid" });
