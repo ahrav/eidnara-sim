@@ -209,6 +209,18 @@ const CONTROL_GRACE_MS = 5_000;
  */
 export const REVIEWER_IDLE_INTERVAL_MS = 30_000;
 
+/**
+ * The drains a settle step sends before a clock advance. Each pass of the worker opens with its
+ * claim catch-up, which acknowledges the commits up to the Kernel tip it captured and commits the
+ * descriptors it publishes after that capture, so that commit waits for the next pass (Eidnara
+ * `crates/daemon/src/claim_sources.rs`, `change_page`). A drain ends at its first pass that
+ * settles no run. The second drain's pass consumes the first drain's publication commit and
+ * publishes nothing for it, which leaves the `claim-sources` checkpoint at the tip, so the
+ * advance ages no unconsumed commit: the two passes the worker would have run in 60 s of idle
+ * time, the age at which a memory read turns `stale`.
+ */
+const ADVANCE_DRAINS = 2;
+
 /** What a settle step ran before: the end of a session, or a clock advance. */
 export type SettleKind = "session_end" | "advance";
 
@@ -1436,9 +1448,12 @@ export class HostDriver implements ArmDriver {
      * (`beforeAdvance`): the open background jobs end (`settle`), and the fixture drains the
      * reviewer's worker, which runs review passes until one settles nothing, so the reviews of
      * the published messages end, and the worker's claim catch-up runs, before the scheduler moves
-     * scenario time. The drain is the step's one request to the fixture control. Each call appends
-     * one `ReviewDrainRecord` to `review-drain.jsonl`, whose `before` names the kind. A drain that
-     * fails is recorded with its error, and the step returns. A `settle` that rejects (the
+     * scenario time. The step sends `drains` drains, one after the other's answer (one at a
+     * session end, `ADVANCE_DRAINS` before an advance); they are its requests to the fixture
+     * control, they share the step's one wait, and `settled` sums the runs they settled. Each
+     * call appends one `ReviewDrainRecord` to `review-drain.jsonl`, whose `before` names the kind.
+     * A drain that fails is recorded with its error, the step sends no further drain, and the
+     * step returns. A `settle` that rejects (the
      * scheduler's job deadline) is recorded and rethrown, which stops the run; the resume reopens
      * the session and delivers the `session_end` again (`settlesSessionEnds`), or reaches the
      * same advance and runs its step again. The step waits `REVIEW_DRAIN_MS` for its drain; a
@@ -1451,6 +1466,7 @@ export class HostDriver implements ArmDriver {
     private async settleReviews(
         at: Omit<DrainStep, "started_wall_ms">,
         daemonGone: boolean,
+        drains = 1,
     ): Promise<void> {
         if (!reviewsMemory(armProfile(this.o.arm))) return;
         const step: DrainStep = { ...at, started_wall_ms: Date.now() };
@@ -1473,14 +1489,18 @@ export class HostDriver implements ArmDriver {
             if (busy !== null) {
                 errors.push(busy);
             } else {
-                const request = drainReply(daemon);
-                const reply = await withDeadline(request, drainMs);
-                if (reply === null) {
-                    errors.push(`review drain unanswered after ${drainMs} ms`);
-                    this.holdDrain(daemon, step, request);
-                } else {
-                    settled = reply.settled;
-                    if (reply.error !== null) errors.push(reply.error);
+                const until = Date.now() + drainMs;
+                for (let sent = 0; sent < drains && errors.length === 0; sent++) {
+                    const request = drainReply(daemon);
+                    const reply = await withDeadline(request, Math.max(0, until - Date.now()));
+                    if (reply === null) {
+                        errors.push(`review drain unanswered after ${drainMs} ms`);
+                        this.holdDrain(daemon, step, request);
+                    } else if (reply.error !== null) {
+                        errors.push(reply.error);
+                    } else {
+                        settled = (settled ?? 0) + (reply.settled ?? 0);
+                    }
                 }
             }
         }
@@ -1508,9 +1528,10 @@ export class HostDriver implements ArmDriver {
 
     /**
      * The settle step before the scheduler advances the arm's clock `skipMs` onto `next`, or
-     * null when the advance owes none (`settlesAdvance`). The step's line carries `before`
-     * `advance`, `next` as `next_event`, and `skipMs` as `skip_ms`. A daemon that is gone gets
-     * no control request and the line says so; the next event reports the exit.
+     * null when the advance owes none (`settlesAdvance`). The step sends `ADVANCE_DRAINS`
+     * drains, and its line carries `before` `advance`, `next` as `next_event`, and `skipMs` as
+     * `skip_ms`. A daemon that is gone gets no control request and the line says so; the next
+     * event reports the exit.
      */
     beforeAdvance(skipMs: number, next: ScenarioEvent): Promise<void> | null {
         if (!this.settlesAdvance(skipMs)) return null;
@@ -1522,6 +1543,7 @@ export class HostDriver implements ArmDriver {
                 skip_ms: skipMs,
             },
             !this.daemonAlive(),
+            ADVANCE_DRAINS,
         );
     }
 

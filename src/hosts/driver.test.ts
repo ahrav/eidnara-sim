@@ -1086,10 +1086,11 @@ touch ${escaped}
         expect(driver.beforeAdvance(29_999, next)).toBeNull();
         expect(calls).toEqual([]);
         expect(existsSync(join(armDir, "review-drain.jsonl"))).toBe(false);
-        // The interval itself owes one, and the session stays open through it.
+        // The interval itself owes one, and the session stays open through it. The step drains
+        // twice, so the second drain's pass consumes what the first one's catch-up published.
         expect(driver.settlesAdvance(30_000)).toBe(true);
         await driver.beforeAdvance(30_000, next);
-        expect(calls).toEqual(["settle", "drain"]);
+        expect(calls).toEqual(["settle", "drain", "drain"]);
         expect((driver.host as unknown as FakeHost).closed).toBe(0);
         expect(drains(armDir)).toEqual([
             {
@@ -1099,21 +1100,22 @@ touch ${escaped}
                 skip_ms: 30_000,
                 started_wall_ms: expect.any(Number),
                 wall_ms: expect.any(Number),
-                settled: 3,
+                settled: 6,
                 error: null,
             },
         ]);
-        // Each owed advance appends one line, and a session end's line names its own kind.
+        // Each owed advance appends one line, and a session end's line names its own kind and
+        // keeps its one drain.
         await driver.beforeAdvance(90_000, ev("session_start", { id: "e-9", session: "s-0005" }));
         await driver.event(ev("session_end", { id: "e-8", session: "s-0004" }));
         expect(
             drains(armDir).map((d) => [d.before, d.session, d.next_event, d.skip_ms, d.settled]),
         ).toEqual([
-            ["advance", "s-0004", "e-7", 30_000, 3],
-            ["advance", "s-0005", "e-9", 90_000, 3],
+            ["advance", "s-0004", "e-7", 30_000, 6],
+            ["advance", "s-0005", "e-9", 90_000, 6],
             ["session_end", "s-0004", undefined, undefined, 3],
         ]);
-        expect(calls).toHaveLength(6);
+        expect(calls.slice(3)).toEqual(["settle", "drain", "drain", "settle", "drain"]);
         expect(exits).toEqual([]);
     });
 
@@ -1125,7 +1127,8 @@ touch ${escaped}
             next_event: "e-7",
             skip_ms: 45_000,
         };
-        // A failed drain resolves the step, so the scheduler goes on to the advance.
+        // A failed drain resolves the step with no second drain sent, so the scheduler goes on
+        // to the advance.
         const calls: string[] = [];
         const refused = new Error("fixture control rejected: memory_reviewer_unavailable");
         const thrown = ending("eidnara-reviewer", reviewing(calls, refused), calls);
@@ -1168,6 +1171,49 @@ touch ${escaped}
             settled: null,
             error: "open jobs did not settle: Error: busy set held the clock past 1200000 ms: job:x",
         });
+    });
+
+    test("the step before an advance sends its second drain after the first's answer, inside the step's one wait", async () => {
+        // The first drain runs 80 ms and the second 250 ms against a step that waits 200 ms in all.
+        const model = control([80, 250]);
+        const { driver, armDir } = ending("eidnara-reviewer", stackOver(model), [], {
+            reviewDrainMs: 200,
+        });
+        const next = ev("user_turn", { id: "e-7", session: "s-0004" });
+        const began = Date.now();
+        await driver.beforeAdvance(60_000, next);
+        const waited = Date.now() - began;
+        // One request at a time: the second drain goes out once the first has answered.
+        const drain = `review-drain ${REVIEW_DRAIN_REQUEST_MS}`;
+        expect(model.log).toEqual([`send ${drain}`, "answer review-drain", `send ${drain}`]);
+        // The wait is the step's, so the second drain had what the first left of it.
+        expect(waited).toBeGreaterThanOrEqual(190);
+        expect(waited).toBeLessThan(260);
+        // The line keeps the first drain's runs and names the second as unanswered.
+        expect(drains(armDir)).toEqual([
+            {
+                session: "s-0004",
+                before: "advance",
+                next_event: "e-7",
+                skip_ms: 60_000,
+                started_wall_ms: expect.any(Number),
+                wall_ms: expect.any(Number),
+                settled: 4,
+                error: "review drain unanswered after 200 ms",
+            },
+        ]);
+        // The second drain is the control's held request, and its answer is a late line of the step.
+        await driver.event(ev("session_end", { session: "s-0004" }));
+        expect(model.log.slice(3)).toEqual([
+            "answer review-drain",
+            `send ${drain}`,
+            "answer review-drain",
+        ]);
+        expect(drains(armDir).map((d) => [d.before, d.late, d.settled, d.error])).toEqual([
+            ["advance", undefined, 4, "review drain unanswered after 200 ms"],
+            ["advance", true, 4, null],
+            ["session_end", undefined, 4, null],
+        ]);
     });
 
     test("a drain that outlasts an advance's step stays the control's open request, and the session end's step waits for it", async () => {

@@ -324,11 +324,14 @@ same tick. Every advance of an arm without the switch takes that path, so
 the reviewer arm alone is given this settle time. The step is the one a
 session end runs:
 the open-jobs wait, the wait for an earlier drain the control has yet to
-answer, the drain through `DaemonStack.reviewDrain` with its 300,000 ms
-wait, and one line in `review-drain.jsonl`, with `before` `advance`,
-`next_event` (the event the clock advances onto), `skip_ms` (the scenario
-time the advance skips, as the scheduler asked), and `session` (the
-session of that event). After the step the scheduler waits for the busy
+answer, the drain through `DaemonStack.reviewDrain`, and one line in
+`review-drain.jsonl`, with `before` `advance`, `next_event` (the event the
+clock advances onto), `skip_ms` (the scenario time the advance skips, as
+the scheduler asked), and `session` (the session of that event). Before an
+advance the step sends two drains (`ADVANCE_DRAINS`), the second once the
+first has answered, inside the step's one wait of 300,000 ms, and
+`settled` is the sum of the runs both settled; the reason is the worker's
+claim catch-up, below. After the step the scheduler waits for the busy
 set again, which holds the reviewer calls the drain started, and advances
 the clock from where that wait left it; when the drain's calls carried
 the clock to the event's time, the event starts there with the gap already
@@ -339,18 +342,21 @@ or more (14 before a user turn, one before an `apply_diff`, one before a
 
 Failures follow the session end's step. A drain that fails, a drain that
 passes the step's wait, and an earlier drain still unanswered are recorded
-on the line, the step returns, and the advance proceeds; a drain that
-passed its wait stays the control's one open request, and the next step or
-the generation's counter read waits for it as above. A daemon that is gone
-is spared the control request, its line says so, and the next event
-reports the exit. The step runs before the scheduler journals the advance,
-and the journal's record of it is the `RegisterJob` and `EndJob` entries of
-the calls the drain made, between the preceding event and the
-`AdvanceClock`. A stop inside the step (a signal, the wall budget, the job
-deadline of a reviewer call or of the open-jobs wait, a daemon exit)
-therefore leaves a journal whose last arm entries are those job entries;
-the resume closes a job the stop cut as `failed(interrupted)`, reaches the
-same event with the advance still to make, and runs the step again, which
+on the line, the step sends no further drain and returns, and the advance
+proceeds; a drain that passed its wait stays the control's one open
+request, and the next step or the generation's counter read waits for it as
+above. When the first drain answered and the second failed or passed the
+wait, the line holds the first drain's runs as `settled` beside the error,
+and the second drain's answer is the `late` line. A daemon that is gone is
+spared the control request, its line says so, and the next event reports
+the exit. The step runs before the scheduler journals the advance, and the
+journal's record of it is the `RegisterJob` and `EndJob` entries of the
+calls the drain made, between the preceding event and the `AdvanceClock`. A
+stop inside the step (a signal, the wall budget, a daemon exit, or the job
+deadline, which journals the fatal record of the job that passed it)
+therefore leaves a journal that ends short of the `AdvanceClock`; the
+resume closes a job the stop cut as `failed(interrupted)`, reaches the same
+event with the advance still to make, and runs the step again, which
 appends a second `advance` line for that event. A request the drain makes
 carries the scope the run holds, which is the last event's: before a user
 turn of an open session the open session as `session`, `turn` `null`, and
@@ -362,20 +368,25 @@ last pass's catch-up published and retired nothing. A catch-up that
 publishes or retires descriptors commits them after it captured the tip
 it works toward (`change_page` captures the target, applies a page of
 commits, and acknowledges the commits it applied, up to the target), so
-that commit is past the checkpoint
-when the pass ends, and the next pass's catch-up consumes it. A drain ends
-at its first pass that settles no run, so a drain whose one pass publishes
-the descriptors of a memory captured since the worker's last pass returns
-with that publication commit unconsumed: the final store of the pilot
-`s5prefix/V104-reviewer` holds the checkpoint at commit 431 and the
-consumer's own publication as commit 432. Between sessions the session
-end's step and the step before the next session's first event give two
-drains in a row, and the second consumes the first's publication. Before a
-user turn of an open session the step is one drain, so after a turn that
-captured a memory the advance can still leave that publication commit
-older than 60 s, until the worker's own next pass, at most 30 s of real
-time after its last one. The observation counts the reads this leaves
-lagging (`reviewer.log.derived_lag`, below).
+that commit is past the checkpoint when the pass ends, and the next pass's
+catch-up consumes it. Consuming it publishes nothing, since the catch-up
+reads a commit's decision rows alone (`change_item`) and a publication
+commit holds descriptor rows. A drain ends at its first pass that settles
+no run, so a drain whose one pass publishes the descriptors of a memory
+captured since the worker's last pass returns with that publication commit
+unconsumed: the final store of the pilot `s5prefix/V104-reviewer` holds
+the checkpoint at commit 431 and the consumer's own publication as commit
+432, and the final store of `s5prefixpre/V104-reviewer` holds the
+checkpoint at its tip, commit 488. An advance of 60 s or more would read
+the unconsumed publication commit as that old. The second drain's first
+pass consumes it, which leaves the checkpoint at the tip, and that pass
+ends the drain when it settles no run. These are the two passes the
+worker runs in 60 s of idle time. A second drain whose pass settles a run
+that changes a decision goes on to a further pass, whose catch-up
+publishes for that change and leaves its commit to the worker's own next
+pass, at most 30 s of real time after its last one. The observation
+counts the turns to lagging reads that remain (`reviewer.log.derived_lag`,
+below).
 
 The daemon runs under the interposer with real monotonic clocks
 (`docs/time.md`), so its wall clock is scenario time and its timers are
