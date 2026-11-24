@@ -266,8 +266,8 @@ the variants read there:
 
 | Build | Commit | Variants | Read for |
 |---|---|---|---|
-| `eval/w9` (`AUDITED_EIDNARA`, the current build) | `4c293f183` | all three | the reviewer campaign: `main` `ea12bff2a` plus the heads of Eidnara #1236 (the block's closing sentence), #1237 (the dated replacement mark), #1238 (named files), #1232 (failed-command records), #1239 (the durable-text redactor), and #1240 to #1243 (the memory reviewer) |
-| `main-ea12bff2a` | `ea12bff2a` | all three | the reference arm of the reviewer campaign: `main` with the PRs of `eval/w4` as merged, plus #1233 (general talk classed `status`) and #1235 (a user's sentence approved by the speaker its extractor names) |
+| `eval/w9` (`AUDITED_EIDNARA`, the current build) | `4c293f183` | all three | the reviewer campaign (W5S, W5SH, W5P): `main` `ea12bff2a` plus the heads of Eidnara #1236 (the block's closing sentence), #1237 (the dated replacement mark), #1238 (named files), #1232 (failed-command records), #1239 (the durable-text redactor), and #1240 to #1243 (the memory reviewer) |
+| `main-ea12bff2a` | `ea12bff2a` | all three | the reference arm of the reviewer campaign (W5S, W5SH, W5P): `main` with the PRs of `eval/w4` as merged, plus #1233 (general talk classed `status`) and #1235 (a user's sentence approved by the speaker its extractor names) |
 | `eval/w4` | `6aabc77e1` | all three | the correctness retest (W4S, W4SH, W4P): `main` `228f9fb74` (which holds the merged Eidnara #1221 to #1224) plus the open heads of #1230, #1227, #1228, and #1229 |
 | `eval/w3-all` | `a996cc466` | all three | the caching-on retest (W3S, W3SH, W3P): `main` `2fbeb6059` (which holds #1220 as merged, three capture commits past the head in `eval/w2b`) plus the open heads of Eidnara #1223, #1224, #1221, and #1222 |
 | `eval/w2b` | `ae1b673b7` | all three | the S rerun (W2S2, W2S2H) and the reference arm of both retests: `main` `1bf1ae612` (which holds the merged heads of Eidnara #1209, #1212, #1213, #1214, and #1215) plus the open heads of #1220 and #1217 |

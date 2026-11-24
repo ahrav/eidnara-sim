@@ -177,8 +177,10 @@ also carry these optional sections and fields:
   id, an unknown role, and an id that is empty or carries a provider
   prefix. Under `off` the `v1` table holds one set of rates for every
   model. The section is part of the registration's hash when present.
-  Every registration through W4P names none, so its hash, its model list,
-  and its price table are what they were.
+  W5S, W5SH, and W5P name `global.anthropic.claude-haiku-5-5`, the stage-1
+  model of their `eidnara-reviewer` arm. Every registration through W4P
+  names none, so its hash, its model list, and its price table are what
+  they were.
 - `search_fallback` (`max_degraded_share`): the bound on a fused-route
   arm's degraded search answers, a canonical decimal in (0, 1), read from
   its digits. A legacy-scan
@@ -191,8 +193,9 @@ also carry these optional sections and fields:
   results in Pi's transcripts, and the field is part of its hash. The share
   is compared with the bound in whole numbers, at the bound's registered
   digits. Every
-  registration through W4P names none, so its hash stands and each of its
-  fused arms is refused for any legacy-scan answer, as it ran. The rate
+  registration names none: each hash through W4P stands, each fused arm of
+  those registrations is refused for any legacy-scan answer, as it ran, and
+  W5S, W5SH, and W5P run arms of the legacy-scan route alone. The rate
   behind a bound of `0.1`: the fused arms of the W2S2, W3S, and W4S
   campaigns (15 runs with their held-out seeds) returned 536 answered
   `eidnara_search` results, 17 to 59 a run, 1 of them a transient fallback
@@ -329,6 +332,32 @@ event of the W3 retest over 590, 711, 587, 1,182, and 414 events.
 
 `--qualification W4P` (`prereg/W4P.json`, revision 1) is that retest's
 pilot: W3P's scenario and arms with W4S's build contrasts.
+
+`--qualification W5S` (`prereg/W5S.json`, revision 1) and
+`--qualification W5SH` (`prereg/W5SH.json`, revision 1) run the `eval/w9`
+build (`4c293f183`) against the main commit `main-ea12bff2a` with
+`prompt_caching: "on"`, tier S on Pi, with W4S's control, no-source
+control, and harm probes. The arms are `host`, `eidnara`, and
+`eidnara-reviewer`, with contrasts `eidnara` vs `host`, `eidnara-reviewer`
+vs `eidnara`, and `eidnara-reviewer` vs `host`, and the build contrast is
+`eidnara` on `eval/w9` against `eidnara` on `main-ea12bff2a`. Both name
+`global.anthropic.claude-haiku-5-5` as
+`side_models.memory_reviewer_stage1`, the stage-1 model the reviewer arm
+writes into its configuration. W5S runs W4S's diagnosed seeds 104 and 107
+again and adds seed 109; W5SH runs W4SH's held-out seed 614 again and adds
+seed 617, and reports apart from W5S. No campaign ran seeds 109 and 617
+before (`docs/scenario.md`). Every arm runs at the campaign's sim revision
+under the caching condition and grading revisions 10 to 15, `host` and the
+reference arm included. Each seed is four runs launched together: `host`,
+`eidnara`, and `eidnara-reviewer` on `eval/w9`, and `eidnara` on
+`main-ea12bff2a` through its own `config`. The budget is $2k to $5k for
+W5S's twelve runs and $1.5k to $4k for W5SH's eight at the `v3` table, from
+the recorded $0.19 per event of the W4 retest over 590, 711, 572, 1,182,
+and 557 events.
+
+`--qualification W5P` (`prereg/W5P.json`, revision 1) is that campaign's
+pilot: W4P's scenario (tier M, held-out seed 605, C8H's control) with
+W5S's arms, contrasts, build contrast, and side model.
 
 `--qualification PCH` (`prereg/PCH.json`, revision 1) is the prompt-caching
 pilot: tier M on Pi over C8H's held-out seed 605 with `host` and `eidnara`
