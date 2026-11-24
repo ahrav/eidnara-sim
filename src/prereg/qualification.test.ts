@@ -10,7 +10,6 @@ import {
     RANKING_GATE_ITEMS,
     referenceBuildArms,
     referenceErrors,
-    reviewerStage1Model,
     sideModelsOf,
     validateQualification,
 } from "./qualification";
@@ -642,7 +641,6 @@ test("the W5 registrations name the reviewer's stage-1 model, and every other re
         if (id in digests) {
             expect(qualificationHash(q)).toBe(digests[id] as string);
             expect(sideModelsOf(q)).toEqual(stage1);
-            expect(reviewerStage1Model(q)).toBe(stage1.memory_reviewer_stage1);
             // The side model is part of the digest: the registration without it hashes apart.
             const { side_models: _stage1, ...without } = q;
             expect(qualificationHash(without)).not.toBe(digests[id] as string);
@@ -1014,10 +1012,4 @@ test("a reviewer arm is contrasted with the eidnara arm beside a build contrast,
     expect(buildRefusal(retest, w9, ["host", "eidnara", "eidnara-reviewer"])).toBeNull();
     expect(buildRefusal(retest, main, ["eidnara"])).toBeNull();
     expect(buildRefusal(retest, main, ["eidnara-reviewer"])).not.toBeNull();
-    // The run reads the registered stage-1 model through one function.
-    const haiku = "global.anthropic.claude-haiku-5-5";
-    expect(reviewerStage1Model({ side_models: { memory_reviewer_stage1: haiku } })).toBe(haiku);
-    for (const none of [null, undefined, {}]) {
-        expect(reviewerStage1Model(none)).toBeUndefined();
-    }
 });

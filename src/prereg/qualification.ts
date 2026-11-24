@@ -369,7 +369,7 @@ export function validateQualification(value: unknown, tier: Preregistration): st
             continue;
         }
         for (const gap of capabilityGaps(arm, builds?.current)) errors.push(`arms.run: ${gap}`);
-        if (reviewsMemory(armProfile(arm)) && reviewerStage1Model(q) === undefined) {
+        if (reviewsMemory(armProfile(arm)) && q.side_models?.memory_reviewer_stage1 === undefined) {
             errors.push(
                 `arms.run: ${arm} runs the memory reviewer, and side_models.memory_reviewer_stage1 names no stage-1 model`,
             );
@@ -404,15 +404,6 @@ export function validateQualification(value: unknown, tier: Preregistration): st
     });
     return errors;
 }
-
-/**
- * The stage-1 model a registration names for the memory reviewer, under
- * `side_models.memory_reviewer_stage1`; undefined for a registration that names none. The run
- * hands it to a reviewer arm's configuration and to the arm's capability check.
- */
-export const reviewerStage1Model = (
-    q: Pick<Qualification, "side_models"> | null | undefined,
-): string | undefined => sideModelsOf(q ?? null)?.memory_reviewer_stage1;
 
 /**
  * The audited builds `q.builds` names, or undefined without the section or when a name is refused:
