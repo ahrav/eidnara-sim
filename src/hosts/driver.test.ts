@@ -1305,7 +1305,8 @@ touch ${escaped}
         await driver.event(ev("session_end", { session: "s-0001" }));
         expect(await driver.event(ev("session_end", { session: "s-0002" }))).toEqual({});
         expect(model.log).toHaveLength(1);
-        expect(drains(armDir)[1]).toEqual({
+        const [first, second] = drains(armDir);
+        expect(second).toEqual({
             session: "s-0002",
             started_wall_ms: expect.any(Number),
             wall_ms: expect.any(Number),
@@ -1314,6 +1315,11 @@ touch ${escaped}
                 /^the review drain of session s-0001 is unanswered after \d+ ms, and the fixture control takes one request at a time$/,
             ),
         });
+        // The time counts from the start of the drain's own step, so it covers both steps' waits.
+        const waited = Number(second?.error?.match(/after (\d+) ms/)?.[1]);
+        const sinceFirst = (second?.wall_ms ?? 0) - (first?.started_wall_ms ?? 0);
+        expect(waited).toBeLessThanOrEqual(sinceFirst);
+        expect(waited).toBeGreaterThanOrEqual(sinceFirst - 20);
         // A daemon fault reads the dying generation without a wait, so it sends no request either.
         (driver as unknown as { noteDaemon(): void }).noteDaemon();
         const daemon = driver.daemon as DaemonStack;

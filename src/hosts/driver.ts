@@ -117,7 +117,7 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm
      * before a fault takes one down, so each daemon lifetime has a first and a last sample.
      */
     sampleDaemon?: () => void;
-    /** The bound of one review drain at a session's end; `REVIEW_DRAIN_MS` when absent. */
+    /** How long a settle step waits for its review drain; `REVIEW_DRAIN_MS` when absent. */
     reviewDrainMs?: number;
     /**
      * Sessions whose every user turn the driver snapshots before the prompt, so `lastTurnWork`
@@ -873,20 +873,20 @@ export class HostDriver implements ArmDriver {
      * to. The fixture answers the requests of its control connection one at a time, in order, and
      * its client ends on the reply to a request it stopped waiting for, so the driver sends the
      * control of a daemon process one request at a time: a later settle step and the generation's
-     * counter read wait for this drain first. `returned` resolves once the drain's answer or
-     * failure is on record.
+     * counter read wait for this drain first. `step` is the settle step that sent it, and
+     * `returned` resolves once the drain's answer or failure is on record.
      */
     private unanswered: {
         daemon: DaemonStack;
         pid: number | null;
-        session: string;
-        sent_wall_ms: number;
+        step: Pick<ReviewDrainRecord, "session" | "started_wall_ms">;
         returned: Promise<void>;
     } | null = null;
 
     /**
      * Waits up to `ms` for the review drain the fixture control of `daemon` has yet to answer.
-     * Returns null once the control holds none, and the reason to record when it still holds one.
+     * Returns null once the control holds none, and the reason to record when it still holds one,
+     * with the time since the drain's step began.
      */
     private async controlBusy(daemon: DaemonStack, ms: number): Promise<string | null> {
         const open = () => {
@@ -898,8 +898,8 @@ export class HostDriver implements ArmDriver {
         await withDeadline(drain.returned, ms);
         const still = open();
         if (still === null) return null;
-        const waited = Date.now() - still.sent_wall_ms;
-        return `the review drain of session ${still.session} is unanswered after ${waited} ms, and the fixture control takes one request at a time`;
+        const waited = Date.now() - still.step.started_wall_ms;
+        return `the review drain of session ${still.step.session} is unanswered after ${waited} ms, and the fixture control takes one request at a time`;
     }
 
     /**
@@ -912,13 +912,7 @@ export class HostDriver implements ArmDriver {
         step: Pick<ReviewDrainRecord, "session" | "started_wall_ms">,
         request: Promise<DrainReply>,
     ): void {
-        const drain = {
-            daemon,
-            pid: daemon.pid(),
-            session: step.session,
-            sent_wall_ms: Date.now(),
-            returned: Promise.resolve(),
-        };
+        const drain = { daemon, pid: daemon.pid(), step, returned: Promise.resolve() };
         drain.returned = request.then((reply) => {
             if (this.unanswered === drain) this.unanswered = null;
             try {

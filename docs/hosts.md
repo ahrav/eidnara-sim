@@ -227,8 +227,9 @@ the drain is unanswered:
 - the next settle step waits up to 300,000 ms for the drain, then sends
   its own drain; when the drain is still unanswered, the
   step's line names it (`the review drain of session <id> is unanswered
-  after <n> ms, and the fixture control takes one request at a time`) and
-  the step sends no request;
+  after <n> ms, and the fixture control takes one request at a time`,
+  with `<n>` counted from the start of the drain's own step) and the step
+  sends no request;
 - the read of the generation's `source_capture` counters waits for the
   drain first: at the arm's finish for as long as the drain's control
   request can stay open, since an unread finish fails the arm; at a stop
