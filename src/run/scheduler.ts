@@ -1940,16 +1940,15 @@ export class Scheduler {
         const reopened = this.reopened?.event === e.id ? this.reopened : null;
         const clock = this.clock as Clock;
         if (reopened) clock.end(`turn:${e.id}`);
-        const settled = async (): Promise<void> => {
+        // A job that registered after the wait leaves the clock busy short of the schedule, so
+        // the wait runs again before the clock may jump. Each wait ends with its busy check,
+        // the stop check, and what follows them (the call to the driver, or the jump) in one
+        // tick.
+        const held = () => clock.busyIds().length > 0 && clock.now() < e.scenario_ms;
+        do {
             await this.awaitDue(e);
-            // A job that registered after the wait leaves the clock busy short of the schedule,
-            // so the wait runs again before the clock may jump.
-            while (clock.busyIds().length > 0 && clock.now() < e.scenario_ms) {
-                await this.awaitDue(e);
-            }
-            this.checkStop();
-        };
-        await settled();
+        } while (held());
+        this.checkStop();
         // A step the driver owes before this advance runs with the advance still unjournaled, so
         // a stop inside it leaves the resume at this same point. The step's jobs hold the clock,
         // so the wait runs again, and the advance covers what is left of the gap.
@@ -1958,7 +1957,10 @@ export class Scheduler {
             skipMs > 0 ? (driver.beforeAdvance?.(skipMs, structuredClone(e)) ?? null) : null;
         if (owed !== null) {
             await this.untilFatal(owed);
-            await settled();
+            do {
+                await this.awaitDue(e);
+            } while (held());
+            this.checkStop();
         }
         this.outage = null;
         const sleep = this.sleepBefore(e);

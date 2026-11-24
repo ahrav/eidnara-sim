@@ -8619,6 +8619,69 @@ describe("a step the driver owes before a clock advance", () => {
         expect(kinds).toEqual(await run(fakeDriver([]), []));
     });
 
+    test("a job that registers any number of microtasks after an event lands on one side of the next advance", async () => {
+        // A second session opens 60 s after the first one's end, so the advance onto
+        // `e-100000` is the scheduler's next step after the `session_end`.
+        const sessions: ScenarioEvent[] = [
+            ...fixtureEvents(1),
+            { id: "e-100000", kind: "session_start", scenario_ms: 120_000, session: "s-0001" },
+            { id: "e-199999", kind: "session_end", scenario_ms: 120_000, session: "s-0001" },
+        ];
+        const run = async (k: number, owes: boolean) => {
+            const j = new Journal(join(dir(), "j.jsonl"));
+            // The job registers `k` microtasks after the `session_end` returns and ends 1 ms on.
+            let ending: ReturnType<typeof setTimeout> | undefined;
+            const register = (left: number) => {
+                if (left > 0) return queueMicrotask(() => register(left - 1));
+                driver.arm().jobStart("bg");
+                ending = setTimeout(() => driver.arm().jobEnd("bg"), 1);
+            };
+            const driver: FakeDriver = {
+                ...fakeDriver([]),
+                event: async (e) => {
+                    if (e.id === "e-999999") register(k);
+                    // The second session's start takes a timer's turn, so the job is
+                    // registered by the time the arm's last event waits for the busy set.
+                    if (e.id === "e-100000") await Bun.sleep(1);
+                    return {};
+                },
+                beforeAdvance: owes ? async () => undefined : () => null,
+            };
+            await new Scheduler({
+                ...options,
+                events: sessions,
+                journal: j,
+                drivers: { a: driver },
+            })
+                .run()
+                .finally(() => clearTimeout(ending));
+            // Both advances are journaled, each with the busy set empty, and the job is
+            // registered and ended on one side of the second.
+            const kinds = j.entries.map((e) => e.kind);
+            expect(
+                j.entries.filter((e) => e.kind === "AdvanceClock").map((e) => e.next_event),
+            ).toEqual(["e-999999", "e-100000"]);
+            expect(kinds.filter((kind) => kind === "RegisterJob" || kind === "EndJob")).toEqual([
+                "RegisterJob",
+                "EndJob",
+            ]);
+            expect(kinds.at(-1)).toBe("EndRun");
+            invariants(j.entries);
+            j.close();
+        };
+        // The sweep covers a driver that answers null and one that owes a step.
+        const stopped: string[] = [];
+        for (const owes of [false, true]) {
+            const answer = owes ? "step" : "null";
+            for (let k = 0; k <= 60; k++) {
+                await run(k, owes).catch(
+                    (caught) => void stopped.push(`${answer}, k=${k}: ${caught}`),
+                );
+            }
+        }
+        expect(stopped).toEqual([]);
+    });
+
     test("a stop inside the step leaves the advance unjournaled, and the resume runs the step again", async () => {
         const path = join(dir(), "j.jsonl");
         let reason: string | null = null;
