@@ -235,7 +235,9 @@ the drain is unanswered:
   request can stay open, since an unread finish fails the arm; at a stop
   that leaves the arm to a resume for 30 s; and at a daemon fault without
   a wait, since the kill follows. A drain still unanswered then leaves the
-  generation unread, with that reason.
+  generation unread, with that reason. The generation is listed when the
+  drain wait ends, so a harness killed during the wait leaves it to the
+  resume, which lists it as `harness`; the read then has its own 35 s.
 
 When the drain answers, or fails (its hour passes, or the daemon stops or
 is killed, which closes the control), the driver appends a line with

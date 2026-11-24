@@ -25,7 +25,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { GitBound, git } from "../git";
 import type { CallView, Command } from "../grade/artefacts";
 import { captureCountersProblem } from "../run/capabilities";
-import { MAX_TIMER_MS, withDeadline } from "../run/deadline";
+import { withDeadline } from "../run/deadline";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import type { DaemonStatusReading } from "../run/sampler";
 import {
@@ -796,11 +796,13 @@ export class HostDriver implements ArmDriver {
 
     /**
      * recordGeneration persists each generation's `source_capture` counters before the daemon
-     * ends, because the daemon process owns them. `waitMs` bounds the wait for capture to settle,
-     * and `drainWaitMs` the wait for a review drain the fixture control has yet to answer; a
-     * drain still unanswered then leaves the generation unread, with no request sent.
-     * A generation already listed keeps its entry, so a read a killed harness left pending stays
-     * unread. The pending entry stands until the read returns.
+     * ends, because the daemon process owns them. `drainWaitMs` bounds the wait for a review
+     * drain the fixture control has yet to answer, which comes first; a drain still unanswered
+     * then leaves the generation unread, with no request sent. `waitMs` bounds the wait for
+     * capture to settle and `deadlineMs` the read as a whole. A generation already listed keeps
+     * its entry, so a read a killed harness left pending stays unread. The pending entry is
+     * written when the read is sent and stands until the read returns, so a harness killed during
+     * the drain wait leaves the generation unlisted.
      */
     private recordGeneration(
         daemon: DaemonStack,
@@ -830,22 +832,20 @@ export class HostDriver implements ArmDriver {
     ): Promise<CaptureGeneration | null> {
         if (!armProfile(this.o.arm).source_capture) return null;
         const id = this.daemonId;
-        const generations = this.captureGenerations();
-        const listed = generations.find((g) => sameGeneration(g.daemon, id));
+        const listed = this.captureGenerations().find((g) => sameGeneration(g.daemon, id));
         if (listed) return listed;
+        const busy = await this.controlBusy(daemon, drainWaitMs);
+        const generations = this.captureGenerations();
         const pending: CaptureGeneration = {
             daemon: id,
             ended,
             counters: null,
-            error: "the counter read did not finish",
+            error: busy !== null ? `Error: ${busy}` : "the counter read did not finish",
         };
         this.writeCaptureGenerations([...generations, pending]);
+        if (busy !== null) return pending;
         const reading = Promise.resolve()
-            .then(() => this.controlBusy(daemon, drainWaitMs))
-            .then((busy) => {
-                if (busy !== null) throw new Error(busy);
-                return daemon.sourceCapture(waitMs);
-            })
+            .then(() => daemon.sourceCapture(waitMs))
             .then(
                 (counters) => {
                     const problem = captureCountersProblem(counters);
@@ -853,13 +853,11 @@ export class HostDriver implements ArmDriver {
                 },
                 (caught: unknown) => ({ counters: null, error: String(caught) }),
             );
-        // The drain wait and the read each have their bound, so the reply's deadline is their sum.
-        const bound = Math.min(drainWaitMs + deadlineMs, MAX_TIMER_MS);
         let timer: ReturnType<typeof setTimeout> | undefined;
         const expired = new Promise<{ counters: null; error: string }>((done) => {
             timer = setTimeout(
-                () => done({ counters: null, error: `no counter reply in ${bound} ms` }),
-                bound,
+                () => done({ counters: null, error: `no counter reply in ${deadlineMs} ms` }),
+                deadlineMs,
             );
         });
         const read = await Promise.race([reading, expired]).finally(() => clearTimeout(timer));

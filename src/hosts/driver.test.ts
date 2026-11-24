@@ -1280,7 +1280,12 @@ touch ${escaped}
         });
         await driver.event(ev("session_end", { session: "s-0001" }));
         expect(model.log).toHaveLength(1);
-        await driver.finish();
+        const finishing = driver.finish();
+        // The generation is listed once the drain has answered and the read goes out, so a
+        // harness killed during the wait leaves a generation a resume lists as its own.
+        await Bun.sleep(60);
+        expect(existsSync(join(armDir, "source-capture.json"))).toBe(false);
+        await finishing;
         // The counter read went out after the drain's answer, and both lines are on record.
         expect(model.log.slice(1)).toEqual([
             "answer review-drain",
