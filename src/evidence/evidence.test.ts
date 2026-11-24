@@ -1297,7 +1297,38 @@ test("evidence-run reads a run directory and writes only under --out", () => {
         join(dir, "journal.jsonl"),
         journal.map((e) => `${JSON.stringify(e)}\n`).join(""),
     );
-    writeFileSync(join(dir, "calls.jsonl"), r.calls.map((c) => `${JSON.stringify(c)}\n`).join(""));
+    // The reviewer made one stage-1 call on this arm; a record of another arm label is no call of it.
+    const reviewerCall = (seq: number, arm: string): CallRecord => ({
+        ...(r.calls[0] as CallRecord),
+        seq,
+        arm,
+        turn: null,
+        component: "memory_reviewer_stage1",
+        model: "global.anthropic.claude-haiku-5-5",
+        request: undefined,
+    });
+    const recorded = [
+        ...r.calls,
+        reviewerCall(r.calls.length, "eidnara"),
+        reviewerCall(r.calls.length + 1, "eidnara~aa"),
+    ];
+    writeFileSync(join(dir, "calls.jsonl"), recorded.map((c) => `${JSON.stringify(c)}\n`).join(""));
+    // The arm's reviewer artefacts: one log line of each kind the report counts a review by, and
+    // one settle step.
+    const haiku = "amazon-bedrock/global.anthropic.claude-haiku-5-5";
+    writeFileSync(
+        join(dir, "eidnara", "daemon.log"),
+        [
+            "daemon: memory_reviewer enqueued job=1e272ec4862b8c69 trigger=later_statement later=1 source=1",
+            `daemon: memory_reviewer stage 1 job=1e272ec4862b8c69 decider=chat_model model=${haiku} request=80f14b8005030580 decision=flagged changes=yes relation=replaces work_ended=no strongest=ref-3 later=1`,
+            "daemon: memory_reviewer applied a proposal: job=1e272ec4862b8c69 disputed",
+            "",
+        ].join("\n"),
+    );
+    writeFileSync(
+        join(dir, "eidnara", "review-drain.jsonl"),
+        `${JSON.stringify({ session: "s-2", started_wall_ms: 1_000, wall_ms: 3_500, settled: 2, error: null })}\n`,
+    );
     writeFileSync(
         join(dir, "requests.jsonl"),
         [...((r.parts as Map<string, RequestPart> | null) ?? [])]
@@ -1410,24 +1441,32 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     const reviewer = JSON.parse(readFileSync(join(out, "run", "evidence-reviewer.json"), "utf8"));
     expect(reviewer.schema).toBe("sim-evidence-reviewer/v1");
     expect(Object.keys(reviewer.arms)).toEqual(["eidnara"]);
+    // The counts come from the arm's own directory and from the arm's own call records.
     expect(reviewer.arms.eidnara).toMatchObject({
         switch: false,
-        log: { selections: 0, stage1_failed: 0, gate_closed: 0 },
-        drains: { calls: 0 },
-        calls: { memory_reviewer_stage1: 0, memory_reviewer_stage2: 0 },
+        log: {
+            enqueued: { later_statement: 1 },
+            selections: 0,
+            stage1: { chat_model: { keep: 0, flagged: 1, models: [haiku] } },
+            stage1_failed: 0,
+            applied: { disputed: 1 },
+            gate_closed: 0,
+        },
+        drains: { calls: 1, settled_runs: 2, total_wall_ms: 2_500, errors: 0 },
+        calls: { memory_reviewer_stage1: 1, memory_reviewer_stage2: 0 },
         status: null,
     });
     expect(report).toContain(
-        "| run | eidnara | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | no reading |",
+        `| run | eidnara | off | later_statement 1 | 0 | chat_model: 0 keep, 1 flagged (${haiku}) | 0 | 0 | 0 | disputed 1 | 0 left for a reader, 0 unapplied | 0 | 1 steps, 2 runs settled, 2.5 s in all, 2.5 s the longest, 0 with an error | memory_reviewer_stage1 1 | no reading |`,
     );
     expect(report).toContain("| run | eidnara | q-1 | P1 | fail |");
     // The loaded records hold each request's digest and length; the log supplies the part ids.
     const loaded = loadRun(dir);
     expect(loaded.calls.map((c) => c.request && Object.keys(c.request))).toEqual(
-        r.calls.map((c) => c.request && ["sha256", "bytes"]),
+        recorded.map((c) => c.request && ["sha256", "bytes"]),
     );
     expect(loaded.calls.map((c) => requestRef(loaded, c) as unknown)).toEqual(
-        r.calls.map((c) => c.request ?? null),
+        recorded.map((c) => c.request ?? null),
     );
     loaded.callLog?.close();
     if (loaded.parts instanceof RequestPartLog) loaded.parts.close();
