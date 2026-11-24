@@ -1044,8 +1044,18 @@ test("the memory reviewer's log lines are counted by the form the daemon writes 
         "direct_host_fixture: search route production, embedding model gte",
         // A reviewer line counts from its line's start alone.
         "note: daemon: memory_reviewer applied a proposal: job=aa disputed",
+        // The turn back to served, and a lag line that starts after its line's start.
+        `daemon: project memory served verdict_seq=2 project=${"4b".repeat(32)}`,
+        "note: daemon: project memory served from canonical rows while derived consumers lag: consumers=1 lag_positions=0 oldest_unconsumed_age_ms=9999999 verdict_seq=9 project=aa",
     ];
-    writeFileSync(path, `${[...other, ...REVIEW_LOG, ...other, REVIEW_LOG[1]].join("\n")}\n`);
+    // The line the daemon writes when a project's reads turn to lagging (Eidnara
+    // `canonical_memory.rs`), as the pilot's reviewer arm logged it.
+    const lag = (ageMs: number, seq: number) =>
+        `daemon: project memory served from canonical rows while derived consumers lag: consumers=1 lag_positions=0 oldest_unconsumed_age_ms=${ageMs} verdict_seq=${seq} project=${"4b".repeat(32)}`;
+    writeFileSync(
+        path,
+        `${[...other, lag(543_732, 1), ...REVIEW_LOG, lag(1_243_099, 3), ...other, REVIEW_LOG[1], lag(667_398, 5)].join("\n")}\n`,
+    );
     const haiku = "amazon-bedrock/global.anthropic.claude-haiku-5-5";
     const log = readReviewerLog(path);
     expect(log).toEqual({
@@ -1084,8 +1094,10 @@ test("the memory reviewer's log lines are counted by the form the daemon writes 
         },
         gate_closed: 1,
         other: 1,
+        // Three turns to lagging, with the largest age among them.
+        derived_lag: { lines: 3, max_age_ms: 1_243_099 },
     });
-    // Every counted form but the gate line and the unclassed one shows a review ran.
+    // Every counted form but the gate line and the unclassed one shows a review ran; a lag line shows none.
     expect(reviewLines(log)).toBe(REVIEW_LOG.length + 1 - 2);
     // A name the daemon adds later is counted under itself, and a decider's models stay bounded.
     const models = Array.from({ length: 10 }, (_, i) => `p/m${i}`);
@@ -1115,8 +1127,18 @@ test("the memory reviewer's log lines are counted by the form the daemon writes 
         other: 0,
         models: models.slice(0, 8),
     });
+    expect(later.derived_lag).toEqual({ lines: 0, max_age_ms: 0 });
+    // A log with lag lines alone, as an arm without the reviewer switch would write them, shows no review.
+    writeFileSync(path, `${lag(61_000, 1)}\n`);
+    const lagging = readReviewerLog(path);
+    expect(lagging.derived_lag).toEqual({ lines: 1, max_age_ms: 61_000 });
+    expect([reviewLines(lagging), lagging.other]).toEqual([0, 0]);
     // An absent log counts nothing.
     expect(reviewLines(readReviewerLog(join(dir, "absent.log")))).toBe(0);
+    expect(readReviewerLog(join(dir, "absent.log")).derived_lag).toEqual({
+        lines: 0,
+        max_age_ms: 0,
+    });
 });
 
 test("the settle steps are totalled from review-drain.jsonl", () => {

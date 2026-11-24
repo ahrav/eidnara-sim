@@ -250,6 +250,10 @@ without a capability record has its row too:
 - the settle steps of `<arm>/review-drain.jsonl`: steps, runs settled, wall
   time in all and the longest, lines with an error, and the drains that
   answered after their step stopped waiting (`late` lines, `docs/hosts.md`);
+- the times the daemon logged a project's reads turning to lagging behind a
+  derived consumer (`reviewer.log.derived_lag`, `docs/hosts.md`), with the
+  largest age of the oldest unconsumed commit among them; an explicit
+  search answers `stale` while reads lag;
 - the gateway's calls of `memory_reviewer_stage1` and
   `memory_reviewer_stage2` in `calls.jsonl`;
 - the reviewer's activation state in the daemon status readings of

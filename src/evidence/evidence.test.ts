@@ -1458,7 +1458,7 @@ test("evidence-run reads a run directory and writes only under --out", () => {
         status: null,
     });
     expect(report).toContain(
-        `| run | eidnara | off | later_statement 1 | 0 | chat_model: 0 keep, 1 flagged (${haiku}) | 0 | 0 | 0 | disputed 1 | 0 left for a reader, 0 unapplied | 0 | 1 steps, 2 runs settled, 2.5 s in all, 2.5 s the longest, 0 with an error | memory_reviewer_stage1 1 | no reading |`,
+        `| run | eidnara | off | later_statement 1 | 0 | chat_model: 0 keep, 1 flagged (${haiku}) | 0 | 0 | 0 | disputed 1 | 0 left for a reader, 0 unapplied | 0 | 1 steps, 2 runs settled, 2.5 s in all, 2.5 s the longest, 0 with an error | 0 | memory_reviewer_stage1 1 | no reading |`,
     );
     expect(report).toContain("| run | eidnara | q-1 | P1 | fail |");
     // The loaded records hold each request's digest and length; the log supplies the part ids.
@@ -1925,6 +1925,10 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
                 "daemon: memory_reviewer applied a proposal: job=1e272ec4862b8c69 contested",
                 `daemon: memory_reviewer stage 1 request ended without an answer: job=dbf9bc4ef617824b decider=chat_model model=${haiku} terminal_not_recorded the execution cutoff has passed`,
                 "daemon: memory_reviewer run ended without settlement: fenced",
+                // Two turns to lagging reads (Eidnara `canonical_memory.rs`), with a turn back between them.
+                "daemon: project memory served from canonical rows while derived consumers lag: consumers=1 lag_positions=0 oldest_unconsumed_age_ms=543732 verdict_seq=1 project=4bb5",
+                "daemon: project memory served verdict_seq=2 project=4bb5",
+                "daemon: project memory served from canonical rows while derived consumers lag: consumers=1 lag_positions=0 oldest_unconsumed_age_ms=90500 verdict_seq=3 project=4bb5",
                 "",
             ].join("\n"),
         );
@@ -1980,6 +1984,7 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
                 applied: { contested: 1 },
                 stage1_failed: 1,
                 unsettled: { fenced: 1 },
+                derived_lag: { lines: 2, max_age_ms: 543_732 },
             },
             drains: {
                 calls: 2,
@@ -2026,9 +2031,9 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
         ]).split("\n");
         const at = report.indexOf("### Memory reviewer");
         expect(report.slice(at + 6, report.indexOf("### Context health", at) - 1)).toEqual([
-            `| A | eidnara-reviewer | on | current_work 1, later_statement 1 | 1 | chat_model: 0 keep, 1 flagged (${haiku}); none: 1 keep, 0 flagged (none) | 1 | fenced 1 | 0 | contested 1 | 0 left for a reader, 0 unapplied | 0 | 2 steps, 3 runs settled, 3.0 s in all, 6.0 s the longest, 1 with an error, 1 drains answered after their step | memory_reviewer_stage1 1, memory_reviewer_stage2 1 | open in 1 of 2 readings, last open | unread | unread |`,
-            "| B | eidnara | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | no reading | 2 live, 1 retired | 0 live, 0 retired |",
-            "| D | host | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | memory_reviewer_stage1 3 | no reading | unread | unread |",
+            `| A | eidnara-reviewer | on | current_work 1, later_statement 1 | 1 | chat_model: 0 keep, 1 flagged (${haiku}); none: 1 keep, 0 flagged (none) | 1 | fenced 1 | 0 | contested 1 | 0 left for a reader, 0 unapplied | 0 | 2 steps, 3 runs settled, 3.0 s in all, 6.0 s the longest, 1 with an error, 1 drains answered after their step | 2, oldest unconsumed commit 543.7 s at most | memory_reviewer_stage1 1, memory_reviewer_stage2 1 | open in 1 of 2 readings, last open | unread | unread |`,
+            "| B | eidnara | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | 0 | no reading | 2 live, 1 retired | 0 live, 0 retired |",
+            "| D | host | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | memory_reviewer_stage1 3 | no reading | unread | unread |",
         ]);
     } finally {
         rmSync(root, { recursive: true, force: true });

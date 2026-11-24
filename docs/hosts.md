@@ -374,7 +374,8 @@ drains in a row, and the second consumes the first's publication. Before a
 user turn of an open session the step is one drain, so after a turn that
 captured a memory the advance can still leave that publication commit
 older than 60 s, until the worker's own next pass, at most 30 s of real
-time after its last one.
+time after its last one. The observation counts the reads this leaves
+lagging (`reviewer.log.derived_lag`, below).
 
 The daemon runs under the interposer with real monotonic clocks
 (`docs/time.md`), so its wall clock is scenario time and its timers are
@@ -1188,6 +1189,16 @@ complete evidence only when the two agree:
     closed` line and every other line that opens `daemon: memory_reviewer`
     are counted apart (`gate_closed`, `other`) and show no review: a daemon
     with a reviewer host writes the gate line with the switch off.
+    `derived_lag` counts, on every arm, the lines `daemon: project memory
+    served from canonical rows while derived consumers lag: consumers=<n>
+    lag_positions=<n> oldest_unconsumed_age_ms=<n> verdict_seq=<n>
+    project=<digest>` (`ReadReport::observe` in
+    `crates/daemon/src/canonical_memory.rs`): the daemon writes one each
+    time a project's reads turn from served to lagging, so `lines` is the
+    number of those turns and `max_age_ms` the largest
+    `oldest_unconsumed_age_ms` among them (0 with none). The lines open
+    with another prefix than the reviewer's, count as no review, and enter
+    no mismatch.
     Reviews are the `enqueued` lines, requests the `chat_model` and
     `classifier` decisions, and changes written the `applied` lines of
     kind `disputed`, `contested`, `retired`, and `revised`.

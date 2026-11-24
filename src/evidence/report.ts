@@ -203,6 +203,7 @@ function reviewerCells(r: ReviewerEvidence): string[] {
     const seconds = (ms: number) => (ms / 1000).toFixed(1);
     const pair = (c: { live: number; retired: number } | null) =>
         c === null ? "unread" : `${c.live} live, ${c.retired} retired`;
+    const lag = log.derived_lag;
     return [
         r.switch === null ? "" : r.switch ? "on" : "off",
         counts(log.enqueued),
@@ -217,6 +218,9 @@ function reviewerCells(r: ReviewerEvidence): string[] {
         drains.calls + drains.unreadable === 0
             ? "none"
             : `${drains.calls} steps, ${drains.settled_runs} runs settled, ${seconds(drains.total_wall_ms)} s in all, ${seconds(drains.max_wall_ms)} s the longest, ${drains.errors} with an error${(drains.late_answers ?? 0) > 0 ? `, ${drains.late_answers} drains answered after their step` : ""}${drains.unreadable > 0 ? `, ${drains.unreadable} unreadable lines` : ""}`,
+        lag === undefined || lag.lines === 0
+            ? "0"
+            : `${lag.lines}, oldest unconsumed commit ${seconds(lag.max_age_ms)} s at most`,
         counts(r.calls),
         status === null || status.readings === 0
             ? "no reading"
@@ -246,6 +250,7 @@ function memoryReviewer(runs: RunEvidence[]): string[] {
         "proposals left",
         "waits",
         "settle steps",
+        "turns to lagging reads",
         "gateway calls",
         "status",
         "failed-command records",
@@ -255,7 +260,7 @@ function memoryReviewer(runs: RunEvidence[]): string[] {
         "",
         "### Memory reviewer",
         "",
-        "Per arm, read by one rule: the reviewer's lines in `daemon.log` over every daemon generation (review jobs enqueued by trigger, selection passes, stage-1 decisions by decider with the models named, failed stage-1 requests, runs that ended without settlement by reason, reviews ended on a later reference the model was not shown, proposals applied by kind, proposals left for a reader or left unapplied, and the lines that report reviews waiting), the settle steps of `review-drain.jsonl`, the gateway's calls of the reviewer's two components, the reviewer's activation state in the daemon's status readings, and the final store's failed-command records and disputed objects (`docs/hosts.md`). An arm with the switch off shows no review; a disputed object there comes from the agent's own `eidnara_memory` dispute.",
+        "Per arm, read by one rule: the reviewer's lines in `daemon.log` over every daemon generation (review jobs enqueued by trigger, selection passes, stage-1 decisions by decider with the models named, failed stage-1 requests, runs that ended without settlement by reason, reviews ended on a later reference the model was not shown, proposals applied by kind, proposals left for a reader or left unapplied, and the lines that report reviews waiting), the settle steps of `review-drain.jsonl`, the times the daemon logged a project's reads turning to lagging behind a derived consumer with the largest age of the oldest unconsumed commit (an explicit search answers `stale` while reads lag), the gateway's calls of the reviewer's two components, the reviewer's activation state in the daemon's status readings, and the final store's failed-command records and disputed objects (`docs/hosts.md`). An arm with the switch off shows no review; a disputed object there comes from the agent's own `eidnara_memory` dispute.",
         "",
         row(head),
         row(head.map(() => "---")),
