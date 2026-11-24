@@ -146,12 +146,28 @@ export interface ReviewerLogObservation {
     gate_closed: number;
     /** Every other line that opens `daemon: memory_reviewer`. */
     other: number;
+    /**
+     * `daemon: project memory served from canonical rows while derived consumers lag` lines
+     * (Eidnara `crates/daemon/src/canonical_memory.rs`, `ReadReport::observe`): the daemon writes
+     * one when a project's reads turn from served to lagging, so `lines` counts those turns, and
+     * `max_age_ms` is the largest `oldest_unconsumed_age_ms` among them, 0 with none. A read
+     * lags when an outbox consumer's oldest unconsumed commit is 60 s old or more on the
+     * daemon's wall clock, and an explicit search then answers `stale` (`docs/hosts.md`). Read on
+     * every arm; absent on observations recorded before it was read.
+     */
+    derived_lag?: { lines: number; max_age_ms: number };
 }
 
 /** The settle step's records in `review-drain.jsonl` (`docs/hosts.md`). */
 export interface ReviewDrainObservation {
-    /** Settle steps: lines of the shape the driver writes, the `late` ones left out. */
+    /** Settle steps of both kinds: lines of the shape the driver writes, the `late` ones left out. */
     calls: number;
+    /**
+     * `calls` by the step's kind: the steps at session ends (`before` `session_end`, and every
+     * line that carries no `before`) and the steps before clock advances (`before` `advance`).
+     * Absent on observations recorded before it was read, whose steps are all session ends'.
+     */
+    calls_by_kind?: { session_end: number; advance: number };
     /**
      * `late` lines: the answer or the failure of a drain that its step recorded as unanswered.
      * Absent on observations recorded before it was read.
@@ -202,6 +218,9 @@ export function reviewLines(log: ReviewerLogObservation): number {
 }
 
 const REVIEWER_PREFIX = "daemon: memory_reviewer ";
+const DERIVED_LAG_PREFIX =
+    "daemon: project memory served from canonical rows while derived consumers lag: ";
+const DERIVED_LAG_AGE = /(?:^| )oldest_unconsumed_age_ms=(\d+)(?: |$)/;
 const STAGE1_DECISION =
     /^stage 1 job=\S+ decider=(\S+) model=(\S+) request=\S+ decision=(\S+)(?: |$)/;
 const APPLIED_PROPOSAL = /^applied a proposal: job=\S+ (\S+)$/;
@@ -254,9 +273,17 @@ export function readReviewerLog(path: string): ReviewerLogObservation {
         ),
         gate_closed: 0,
         other: 0,
+        derived_lag: { lines: 0, max_age_ms: 0 },
     };
     const ended = out.unsettled as Record<string, number>;
+    const lag = out.derived_lag as { lines: number; max_age_ms: number };
     eachLine(path, (line) => {
+        if (line.startsWith(DERIVED_LAG_PREFIX)) {
+            lag.lines++;
+            const age = DERIVED_LAG_AGE.exec(line.slice(DERIVED_LAG_PREFIX.length));
+            if (age) lag.max_age_ms = Math.max(lag.max_age_ms, Number(age[1]));
+            return;
+        }
         if (!line.startsWith(REVIEWER_PREFIX)) return;
         const rest = line.slice(REVIEWER_PREFIX.length);
         const enqueued = ENQUEUED_JOB.exec(rest);
@@ -315,8 +342,10 @@ export function readReviewerLog(path: string): ReviewerLogObservation {
 
 /** Reads `review-drain.jsonl`, one settle step or one late answer per line; an absent file holds no call. */
 export function readReviewDrains(path: string): ReviewDrainObservation {
+    const byKind = { session_end: 0, advance: 0 };
     const out: ReviewDrainObservation = {
         calls: 0,
+        calls_by_kind: byKind,
         late_answers: 0,
         unreadable: 0,
         settled_runs: 0,
@@ -333,6 +362,7 @@ export function readReviewDrains(path: string): ReviewDrainObservation {
             settled?: unknown;
             error?: unknown;
             late?: unknown;
+            before?: unknown;
         };
         try {
             record = JSON.parse(line);
@@ -344,13 +374,16 @@ export function readReviewDrains(path: string): ReviewDrainObservation {
         const ended = count(record?.wall_ms);
         const settled = record?.settled === null ? 0 : count(record?.settled);
         const error = record?.error;
+        // A line that carries no `before` is a session end's.
+        const kind = record?.before === undefined ? "session_end" : record.before;
         if (
             started === null ||
             ended === null ||
             ended < started ||
             settled === null ||
             !(error === null || typeof error === "string") ||
-            !(record.late === undefined || record.late === true)
+            !(record.late === undefined || record.late === true) ||
+            !(kind === "session_end" || kind === "advance")
         ) {
             out.unreadable++;
             return;
@@ -359,6 +392,7 @@ export function readReviewDrains(path: string): ReviewDrainObservation {
         if (record.late === true) out.late_answers = (out.late_answers ?? 0) + 1;
         else {
             out.calls++;
+            byKind[kind]++;
             out.total_wall_ms += ended - started;
         }
         out.settled_runs += settled;

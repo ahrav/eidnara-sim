@@ -1044,8 +1044,18 @@ test("the memory reviewer's log lines are counted by the form the daemon writes 
         "direct_host_fixture: search route production, embedding model gte",
         // A reviewer line counts from its line's start alone.
         "note: daemon: memory_reviewer applied a proposal: job=aa disputed",
+        // The turn back to served, and a lag line that starts after its line's start.
+        `daemon: project memory served verdict_seq=2 project=${"4b".repeat(32)}`,
+        "note: daemon: project memory served from canonical rows while derived consumers lag: consumers=1 lag_positions=0 oldest_unconsumed_age_ms=9999999 verdict_seq=9 project=aa",
     ];
-    writeFileSync(path, `${[...other, ...REVIEW_LOG, ...other, REVIEW_LOG[1]].join("\n")}\n`);
+    // The line the daemon writes when a project's reads turn to lagging (Eidnara
+    // `canonical_memory.rs`), as the pilot's reviewer arm logged it.
+    const lag = (ageMs: number, seq: number) =>
+        `daemon: project memory served from canonical rows while derived consumers lag: consumers=1 lag_positions=0 oldest_unconsumed_age_ms=${ageMs} verdict_seq=${seq} project=${"4b".repeat(32)}`;
+    writeFileSync(
+        path,
+        `${[...other, lag(543_732, 1), ...REVIEW_LOG, lag(1_243_099, 3), ...other, REVIEW_LOG[1], lag(667_398, 5)].join("\n")}\n`,
+    );
     const haiku = "amazon-bedrock/global.anthropic.claude-haiku-5-5";
     const log = readReviewerLog(path);
     expect(log).toEqual({
@@ -1084,8 +1094,10 @@ test("the memory reviewer's log lines are counted by the form the daemon writes 
         },
         gate_closed: 1,
         other: 1,
+        // Three turns to lagging, with the largest age among them.
+        derived_lag: { lines: 3, max_age_ms: 1_243_099 },
     });
-    // Every counted form but the gate line and the unclassed one shows a review ran.
+    // Every counted form but the gate line and the unclassed one shows a review ran; a lag line shows none.
     expect(reviewLines(log)).toBe(REVIEW_LOG.length + 1 - 2);
     // A name the daemon adds later is counted under itself, and a decider's models stay bounded.
     const models = Array.from({ length: 10 }, (_, i) => `p/m${i}`);
@@ -1115,16 +1127,55 @@ test("the memory reviewer's log lines are counted by the form the daemon writes 
         other: 0,
         models: models.slice(0, 8),
     });
+    expect(later.derived_lag).toEqual({ lines: 0, max_age_ms: 0 });
+    // A log with lag lines alone, as an arm without the reviewer switch would write them, shows no review.
+    writeFileSync(path, `${lag(61_000, 1)}\n`);
+    const lagging = readReviewerLog(path);
+    expect(lagging.derived_lag).toEqual({ lines: 1, max_age_ms: 61_000 });
+    expect([reviewLines(lagging), lagging.other]).toEqual([0, 0]);
     // An absent log counts nothing.
     expect(reviewLines(readReviewerLog(join(dir, "absent.log")))).toBe(0);
+    expect(readReviewerLog(join(dir, "absent.log")).derived_lag).toEqual({
+        lines: 0,
+        max_age_ms: 0,
+    });
 });
 
 test("the settle steps are totalled from review-drain.jsonl", () => {
     const dir = tmp();
     const path = join(dir, "review-drain.jsonl");
     const lines = [
+        // A line written before the kind was recorded is a session end's.
         { session: "s-1", started_wall_ms: 1_000, wall_ms: 4_500, settled: 3, error: null },
-        { session: "s-2", started_wall_ms: 9_000, wall_ms: 9_200, settled: 0, error: null },
+        {
+            session: "s-2",
+            before: "session_end",
+            started_wall_ms: 9_000,
+            wall_ms: 9_200,
+            settled: 0,
+            error: null,
+        },
+        // Two steps before clock advances, the second with a drain that failed.
+        {
+            session: "s-2",
+            before: "advance",
+            next_event: "e-000007",
+            skip_ms: 90_000,
+            started_wall_ms: 12_000,
+            wall_ms: 14_100,
+            settled: 1,
+            error: null,
+        },
+        {
+            session: "s-3",
+            before: "advance",
+            next_event: "e-000011",
+            skip_ms: 30_000,
+            started_wall_ms: 15_000,
+            wall_ms: 17_000,
+            settled: null,
+            error: "review drain failed: Error: fixture control is unavailable",
+        },
         {
             session: "s-3",
             started_wall_ms: 20_000,
@@ -1169,18 +1220,30 @@ test("the settle steps are totalled from review-drain.jsonl", () => {
             error: null,
             late: "yes",
         }),
+        // A kind the driver never writes.
+        JSON.stringify({
+            session: "s-9",
+            before: "finish",
+            started_wall_ms: 1,
+            wall_ms: 3,
+            settled: 1,
+            error: null,
+        }),
     ];
     writeFileSync(path, `${[...lines, ...odd].join("\n")}\n`);
-    // A late line adds its runs and its duration and is no step of its own.
+    // A late line adds its runs and its duration and is no step of its own. The steps of both
+    // kinds are totalled together and counted apart.
     expect(readReviewDrains(path)).toEqual({
-        calls: 4,
+        calls: 6,
+        calls_by_kind: { session_end: 4, advance: 2 },
         late_answers: 1,
-        unreadable: 5,
-        settled_runs: 12,
-        total_wall_ms: 3_500 + 200 + 305_000 + 31_000,
+        unreadable: 6,
+        settled_runs: 13,
+        total_wall_ms: 3_500 + 200 + 2_100 + 2_000 + 305_000 + 31_000,
         max_wall_ms: 500_000,
-        errors: 2,
+        errors: 3,
         first_errors: [
+            "review drain failed: Error: fixture control is unavailable",
             "review drain unanswered after 300000 ms",
             "source capture did not settle: Error: source capture never settled",
         ],
@@ -1194,7 +1257,7 @@ test("the settle steps are totalled from review-drain.jsonl", () => {
         memory_reviewer_stage2: 1,
     });
     expect(seen.calls).toEqual({ memory_reviewer_stage1: 4, memory_reviewer_stage2: 1 });
-    expect(seen.drains.calls).toBe(4);
+    expect(seen.drains.calls).toBe(6);
     expect(seen.log.selections).toBe(1);
     expect(observeReviewer(tmp(), { agent: 9 }).calls).toEqual({
         memory_reviewer_stage1: 0,

@@ -53,6 +53,16 @@ export interface ArmDriver {
      * session of a pending `session_end` with a fresh host and delivers the event.
      */
     settlesSessionEnds?(): boolean;
+    /**
+     * Called when the arm's clock is about to advance `skipMs` onto `next`, with the busy set
+     * empty, for every advance except the jump of a laptop sleep. Returns the step the arm owes
+     * before that advance (the settle step of an arm that runs the memory reviewer, once its
+     * advances since the last step sum to the review worker's idle interval or more), or null
+     * when the advance owes none. The scheduler awaits a returned step, then waits for the
+     * busy set again, which holds the jobs the step started, and advances the clock from where
+     * that wait left it. An advance that owes no step follows the call in the same tick.
+     */
+    beforeAdvance?(skipMs: number, next: ScenarioEvent): Promise<void> | null;
     /** Whether the driver has a mechanism for the fault; a run refuses an unsupported one before it starts. */
     supports?(f: FaultEpisode): boolean;
     event(e: ScenarioEvent): Promise<TurnOutcome>;
@@ -1929,19 +1939,40 @@ export class Scheduler {
         // A turn the resume left open for delivery gives its hold back for the waits below,
         // which a quiet busy set ends, and takes it again where a turn begins.
         const reopened = this.reopened?.event === e.id ? this.reopened : null;
-        if (reopened) (this.clock as Clock).end(`turn:${e.id}`);
-        await this.awaitDue(e);
-        // A job that registered after the wait leaves the clock busy short of the schedule, so
-        // the wait runs again before the clock may jump.
-        for (;;) {
-            const clock = this.clock as Clock;
-            if (clock.busyIds().length === 0 || clock.now() >= e.scenario_ms) break;
-            await this.awaitDue(e);
-        }
-        this.checkStop();
-        this.outage = null;
         const clock = this.clock as Clock;
+        if (reopened) clock.end(`turn:${e.id}`);
+        // A job that registered after the wait leaves the clock busy short of the schedule, so
+        // the wait runs again before the clock may jump. Each wait ends with its busy check,
+        // the stop check, and what follows them (the call to the driver, or the jump) in one
+        // tick.
+        const held = () => clock.busyIds().length > 0 && clock.now() < e.scenario_ms;
+        do {
+            await this.awaitDue(e);
+        } while (held());
+        this.checkStop();
+        // The jump's cause comes first. A laptop sleep suspends the machine for its gap, so the
+        // daemon's worker runs its next pass after the wake and the jump goes ahead with the
+        // driver unasked. The driver's sum of skipped idle time stays as it was before the
+        // sleep, since the gap adds idle time of a suspended daemon alone, and after the wake
+        // the consumer's lag is the one the product would show. Every other jump skips idle
+        // time of a running daemon. A step the driver owes before it runs with the advance
+        // still unjournaled, so a stop inside it leaves the resume at this same point. The
+        // step's jobs hold the clock, so the wait runs again, and the advance covers what is
+        // left of the gap.
         const sleep = this.sleepBefore(e);
+        const skipMs = e.scenario_ms - clock.now();
+        const owed =
+            skipMs > 0 && !sleep
+                ? (driver.beforeAdvance?.(skipMs, structuredClone(e)) ?? null)
+                : null;
+        if (owed !== null) {
+            await this.untilFatal(owed);
+            do {
+                await this.awaitDue(e);
+            } while (held());
+            this.checkStop();
+        }
+        this.outage = null;
         const arm = this.arm ?? "";
         const fromMs = clock.now();
         const jumped = fromMs < e.scenario_ms;

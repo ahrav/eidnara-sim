@@ -93,7 +93,9 @@ so it runs on `eval/w9` and is refused on every earlier build, whose
 fixture installs no reviewer host. A contrast pairs two arms that differ in
 delivery mode, search route, or reviewer switch (`sameTreatment`), so
 `eidnara-reviewer` against `eidnara` is one. The settle step this arm runs
-at each session end is described under "Memory reviewer settle step".
+at each session end and before each clock advance that brings the time
+skipped since its last step to 30 s or more is described under "Memory
+reviewer settle step".
 
 Source capture is on for `eidnara`, `eidnara-cf`, `eidnara-hybrid`,
 `eidnara-search`, and `eidnara-reviewer` (`source_capture` in the profile)
@@ -203,12 +205,14 @@ in the worker's own next pass, which starts at most 30 s of real time
 after the worker's last one and can run inside the next session.
 
 Each step appends one line to `<arm>/review-drain.jsonl`: `session`,
-`started_wall_ms`, `wall_ms`, `settled` (the runs settled, or `null`), and
-`error` (or `null`). A drain that fails or whose build has no `review-drain`
-control is recorded with its error, and the session end returns. A daemon
-that is gone at the session end gets no control request and its line says
-so. A resume that delivers a `session_end` again appends a second line for
-the session.
+`before` (`session_end` here, `advance` on the lines of the step before a
+clock advance, below; a line that carries no `before` is a session end's,
+written before the member existed), `started_wall_ms`, `wall_ms`, `settled`
+(the runs settled, or `null`), and `error` (or `null`). A drain that fails
+or whose build has no `review-drain` control is recorded with its error,
+and the session end returns. A daemon that is gone at the session end gets
+no control request and its line says so. A resume that delivers a
+`session_end` again appends a second line for the session.
 
 A drain that passes the step's wait is recorded as
 `review drain unanswered after 300000 ms`, and the session end returns; the
@@ -228,8 +232,9 @@ the drain is unanswered:
   its own drain; when the drain is still unanswered, the
   step's line names it (`the review drain of session <id> is unanswered
   after <n> ms, and the fixture control takes one request at a time`,
-  with `<n>` counted from the start of the drain's own step) and the step
-  sends no request;
+  with `<n>` counted from the start of the drain's own step; the drain of
+  a step before a clock advance is named `the review drain sent before the
+  advance onto <event>`) and the step sends no request;
 - the read of the generation's `source_capture` counters waits for the
   drain first: at the arm's finish for as long as the drain's control
   request can stay open, since an unread finish fails the arm; at a stop
@@ -276,6 +281,135 @@ as `session`, `turn` `null`, and the session's last user turn as
 that turn as `turn`, with the turn before it as `origin_turn` while the
 turn's first agent answer is still to come (`docs/proxy.md`).
 
+#### The step before a clock advance
+
+The same arm runs the step before every clock advance that brings the
+scenario time its advances have skipped since its last settle step to
+30,000 ms or more (`REVIEWER_IDLE_INTERVAL_MS` in `src/hosts/driver.ts`,
+the worker's `IDLE_INTERVAL` in
+`crates/daemon/src/memory_reviewer/worker.rs`), between sessions and
+between two turns of an open session. The reason is the freshness rule of
+the Kernel's memory reads. With the reviewer switch on, the Kernel has one
+outbox consumer, `claim-sources` (`crates/daemon/src/claim_sources.rs`),
+which publishes claim descriptors for committed decisions; the reviewer
+arm's Kernel alone has it. A memory read reports its state `stale`
+when a consumer's oldest unconsumed commit is 60 s old or more on the
+daemon's wall clock (`LAG_AGE_THRESHOLD_MS` in
+`crates/daemon/src/kernel_routes/serving.rs`; the age is `now` less the
+`created_at` of the oldest outbox row past the consumer's checkpoint,
+`crates/kernel/src/facts.rs`), and the explicit search tool answers a
+`stale` read with `Error: Memory results may lag recent changes; the
+projector has not caught up.`
+(`packages/opencode-plugin/src/shared/kernel-client/state.ts`). The
+consumer advances in the worker's pass alone: each pass over the switched
+projects opens with a claim catch-up (`publish_claims` in
+`memory_reviewer/review_cycle.rs`, called from `switched_pass` in
+`memory_reviewer/worker.rs`), which applies the commits past the
+checkpoint and acknowledges them (`change_page` in `claim_sources.rs`). The
+daemon's wall clock is scenario time and the worker's interval is real
+time, so a commit a few real seconds old reads as minutes old once the
+scheduler has moved scenario time, and the next turn's search answers the
+error: in both S5 prefix pilots of seed 104 the one `eidnara_search` of the
+reviewer arm answered it, after a clock advance of 1.5 minutes, while the
+searches of the arms without the switch answered with results. With real
+idle time of the skipped length the worker's pass comes first, every 30 s.
+An advance of 30 s or more skips idle time in which the worker would have
+run a pass, so the step runs before it. A shorter advance ages an
+unconsumed commit by under 30 s, and several of them inside one idle
+interval of the worker add up, so the driver sums them: it keeps the
+scenario time the arm's advances have skipped since its last settle step
+of either kind (a session end's or an advance's, whatever the step's
+outcome) or since the daemon's last start or restart, and the step runs
+before the advance that brings that sum to 30 s or more. The advances
+between two steps therefore age an unconsumed commit by under 30 s in
+all, and the worker's own next pass follows within 30 s of real time, so
+the commit stays under 60 s old.
+
+The jump of a `laptop_sleep` fault runs with the driver unasked
+(`sleepBefore` in `src/run/scheduler.ts` names the jump's cause before the
+question). The machine is suspended for the gap, so the daemon's worker
+runs its next pass after the wake, and a step before the jump would stand
+for a pass the product runs only then. The driver's sum stays as it was
+before the sleep: it counts idle time of a running daemon, and the sleep
+gap is time of a suspended one. After the wake the consumer's lag is the
+one the product would show: a memory read ahead of the worker's first pass
+after the wake reads a commit left unconsumed before the sleep as old as
+the gap.
+
+The scheduler asks the arm's driver before each advance (`beforeAdvance` in
+`src/run/scheduler.ts`, with the scenario time the advance skips and the
+event it lands on), once the wait for the event has found the busy set
+empty. The host driver answers with the step for an arm that runs the
+memory reviewer and an advance that brings the summed skip to 30,000 ms or
+more (`settlesAdvance`), and with `null` otherwise, and an advance answered
+with `null` follows in the same tick. Every advance of an arm without the
+switch takes that path and the driver keeps no sum for it, so the reviewer
+arm alone is given this settle time. The step is the one a
+session end runs: the open-jobs wait, the wait for an earlier drain the
+control has yet to answer, the drain through `DaemonStack.reviewDrain`, and
+one line in `review-drain.jsonl`, with `before` `advance`, `next_event`
+(the event the clock advances onto), `skip_ms` (the scenario time the
+advance skips, as the scheduler asked), `skipped_since_settle_ms` (the
+summed skip, this advance included), and `session` (the session of that
+event). Before an advance the step sends two drains (`ADVANCE_DRAINS`), the
+second once the first has answered, inside the step's one wait of 300,000
+ms, and `settled` is the sum of the runs both settled; the reason is the
+worker's claim catch-up, below. After the step the scheduler waits for the
+busy set again, which holds the reviewer calls the drain started, and
+advances the clock from where that wait left it; when the drain's calls
+carried the clock to the event's time, the event starts there with the gap
+already spent. In the journal of the pilot `s5prefix/V104-reviewer` 16 of
+the reviewer arm's 17 advances skipped 30 s or more (14 before a user turn,
+one before an `apply_diff`, one before a `session_start`).
+
+Failures follow the session end's step. A drain that fails, a drain that
+passes the step's wait, and an earlier drain still unanswered are recorded
+on the line, the step sends no further drain and returns, and the advance
+proceeds; a drain that passed its wait stays the control's one open
+request, and the next step or the generation's counter read waits for it as
+above. When the first drain answered and the second failed or passed the
+wait, the line holds the first drain's runs as `settled` beside the error,
+and the second drain's answer is the `late` line. A daemon that is gone is
+spared the control request, its line says so, and the next event reports
+the exit. The step runs before the scheduler journals the advance, and the
+journal's record of it is the `RegisterJob` and `EndJob` entries of the
+calls the drain made, between the preceding event and the `AdvanceClock`. A
+stop inside the step (a signal, the wall budget, a daemon exit, or the job
+deadline, which journals the fatal record of the job that passed it)
+therefore leaves a journal that ends short of the `AdvanceClock`; the
+resume closes a job the stop cut as `failed(interrupted)`, reaches the same
+event with the advance still to make, and runs the step again, which
+appends a second `advance` line for that event. A request the drain makes
+carries the scope the run holds, which is the last event's: before a user
+turn of an open session the open session as `session`, `turn` `null`, and
+the session's last user turn as `origin_turn`; before the first event of
+the next session the ended session, as the session end's step.
+
+A drain leaves the `claim-sources` checkpoint at the Kernel's tip when its
+last pass's catch-up published and retired nothing. A catch-up that
+publishes or retires descriptors commits them after it captured the tip
+it works toward (`change_page` captures the target, applies a page of
+commits, and acknowledges the commits it applied, up to the target), so
+that commit is past the checkpoint when the pass ends, and the next pass's
+catch-up consumes it. Consuming it publishes nothing, since the catch-up
+reads a commit's decision rows alone (`change_item`) and a publication
+commit holds descriptor rows. A drain ends at its first pass that settles
+no run, so a drain whose one pass publishes the descriptors of a memory
+captured since the worker's last pass returns with that publication commit
+unconsumed: the final store of the pilot `s5prefix/V104-reviewer` holds
+the checkpoint at commit 431 and the consumer's own publication as commit
+432, and the final store of `s5prefixpre/V104-reviewer` holds the
+checkpoint at its tip, commit 488. An advance of 60 s or more would read
+the unconsumed publication commit as that old. The second drain's first
+pass consumes it, which leaves the checkpoint at the tip, and that pass
+ends the drain when it settles no run. These are the two passes the
+worker runs in 60 s of idle time. A second drain whose pass settles a run
+that changes a decision goes on to a further pass, whose catch-up
+publishes for that change and leaves its commit to the worker's own next
+pass, at most 30 s of real time after its last one. The observation
+counts the turns to lagging reads that remain (`reviewer.log.derived_lag`,
+below).
+
 The daemon runs under the interposer with real monotonic clocks
 (`docs/time.md`), so its wall clock is scenario time and its timers are
 real time:
@@ -285,13 +419,18 @@ real time:
 | Review hold of a pending or disputed proposal | 7 days | scenario time | the scenario spans about 3 days, so a hold stays for the run |
 | Retention of captured messages, the evidence a review reads | 30 days | scenario time | every source stays readable |
 | Queue lifetime of a review job | 1 day | scenario time | the drain runs every ready job before the jump to the next session; the largest jump between sessions of S4 seed 104 was 13.2 hours |
-| Worker idle interval | 30 s | real time | the drain replaces the wait between sessions |
+| Worker idle interval | 30 s | real time | the drain replaces the wait between sessions and before every other clock advance that brings the summed skip to 30 s or more |
+| Age at which a consumer's oldest unconsumed commit makes a memory read `stale` | 60 s | scenario time | a clock advance ages every unconsumed commit by its length; the step before an advance that brings the summed skip to 30 s or more runs the worker's catch-up first |
 | Pause of a project's reviews after a failed stage-1 request | 60 s, and 2 s before the run's next attempt | real time | a provider failure delays reviews in real time, past a drain |
-| Deadlines of one attempt and of one run | 30 s and 120 s | real time for an attempt; a run's execution cutoff and its lease are also read on the daemon's wall clock | a drain ends every run before the clock jumps to the next session; a jump between two turns of an open session can end a run in flight (below) |
+| Deadlines of one attempt and of one run | 30 s and 120 s | real time for an attempt; a run's execution cutoff and its lease are also read on the daemon's wall clock | a drain ends every run before the clock jumps to the next session and before every other jump that brings the summed skip to 30 s or more; a jump that leaves the sum under 30 s between two turns of an open session can end a run in flight (below) |
 | Life of an `open` activation state without a new pass | 300 s | real time | the worker's passes renew it while the daemon runs |
 
-A clock advance between two turns of an open session can end a review run
-that is between its gateway reply and the daemon's record of it. A user
+A clock advance that leaves the summed skip under 30 s between two turns
+of an open session can end a review run that is between its gateway reply
+and the daemon's record of it; before an advance that owes the step the
+settle step's drain waits for the
+worker's pass in flight (a pass holds the worker's `serial` lock, which the
+drain's first pass takes next), so that run ends before the jump. A user
 turn in an open session waits only for the clock, and the scheduler moves
 scenario time to the turn's scheduled time once no job holds it; a reviewer
 call holds its jobs while its request is in flight at the gateway, and its
@@ -1087,15 +1226,29 @@ complete evidence only when the two agree:
     closed` line and every other line that opens `daemon: memory_reviewer`
     are counted apart (`gate_closed`, `other`) and show no review: a daemon
     with a reviewer host writes the gate line with the switch off.
+    `derived_lag` counts, on every arm, the lines `daemon: project memory
+    served from canonical rows while derived consumers lag: consumers=<n>
+    lag_positions=<n> oldest_unconsumed_age_ms=<n> verdict_seq=<n>
+    project=<digest>` (`ReadReport::observe` in
+    `crates/daemon/src/canonical_memory.rs`): the daemon writes one each
+    time a project's reads turn from served to lagging, so `lines` is the
+    number of those turns and `max_age_ms` the largest
+    `oldest_unconsumed_age_ms` among them (0 with none). The lines open
+    with another prefix than the reviewer's, count as no review, and enter
+    no mismatch.
     Reviews are the `enqueued` lines, requests the `chat_model` and
     `classifier` decisions, and changes written the `applied` lines of
     kind `disputed`, `contested`, `retired`, and `revised`.
-  - `reviewer.drains` totals `review-drain.jsonl`: the settle steps
-    (`calls`), the `late` lines (`late_answers`: the answers of drains
+  - `reviewer.drains` totals `review-drain.jsonl`: the settle steps of
+    both kinds (`calls`) and the same count by kind (`calls_by_kind`:
+    `session_end`, which takes every line without a `before`, and
+    `advance`), the `late` lines (`late_answers`: the answers of drains
     their step recorded as unanswered), the runs settled over both, the
     steps' wall time in all, the longest wall time of a step or of a drain
     a `late` line reports, the lines with an error and the first three
-    messages, and the lines of another shape.
+    messages, and the lines of another shape, a line with another `before`
+    among them. A record written before the kinds were counted holds
+    `calls` alone, all of them session ends' steps.
   - `reviewer.calls` counts the arm's gateway calls of the reviewer's two
     components, `memory_reviewer_stage1` and `memory_reviewer_stage2`
     (`REVIEWER_COMPONENTS`).
