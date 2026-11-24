@@ -502,7 +502,9 @@ export class HostDriver implements ArmDriver {
     /**
      * On the arm that runs the memory reviewer, the scenario time its clock advances have skipped
      * since its last settle step of either kind or its daemon's last start: idle time the worker
-     * has yet to run a pass for. It stays 0 on every other arm.
+     * has yet to run a pass for. The scheduler asks about every jump except a laptop sleep's,
+     * whose gap the daemon spends suspended, so that jump leaves the sum as it is. It stays 0
+     * on every other arm.
      */
     private skippedSinceSettleMs = 0;
 

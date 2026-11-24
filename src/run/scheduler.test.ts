@@ -8775,4 +8775,58 @@ describe("a step the driver owes before a clock advance", () => {
         expect(readJournal(path).at(-1)?.kind).toBe("EndRun");
         clean(path);
     });
+
+    test("the jump of a laptop sleep runs with the driver unasked, while every other jump asks", async () => {
+        const gap = 8 * 3_600_000;
+        const slept: ScenarioEvent[] = [
+            { id: "e-000000", kind: "session_start", scenario_ms: 0, session: "s-0000" },
+            { id: "e-000001", kind: "session_end", scenario_ms: 0, session: "s-0000" },
+            { id: "e-100000", kind: "session_start", scenario_ms: gap, session: "s-0001" },
+            {
+                id: "e-100001",
+                kind: "user_turn",
+                scenario_ms: gap + 60_000,
+                session: "s-0001",
+                index: 0,
+            },
+            { id: "e-100002", kind: "session_end", scenario_ms: gap + 60_000, session: "s-0001" },
+        ];
+        const sleep = {
+            ...episode("f-sleep", "laptop_sleep", { kind: "session_start", session: "s-0001" }),
+            params: { duration_ms: gap },
+        };
+        // The driver owes a step before every advance it is asked about.
+        const asked = async (faults: FaultEpisode[]) => {
+            const j = new Journal(join(dir(), "j.jsonl"));
+            const calls: string[] = [];
+            const driver: FakeDriver = {
+                ...fakeDriver([]),
+                beforeAdvance: async (skipMs, next) => void calls.push(`${next.id} ${skipMs}`),
+            };
+            await new Scheduler({
+                ...options,
+                events: slept,
+                faults,
+                journal: j,
+                drivers: { a: driver },
+            }).run();
+            invariants(j.entries);
+            const jumps = j.entries
+                .filter((e) => e.kind === "AdvanceClock")
+                .map((e) => e.fault ?? e.next_event);
+            j.close();
+            return { calls, jumps };
+        };
+        // The jump across the gap is the sleep's, so the first question is the one for the
+        // jump onto the turn, a minute after the wake.
+        expect(await asked([sleep])).toEqual({
+            calls: ["e-100001 60000"],
+            jumps: ["f-sleep", "e-100001"],
+        });
+        // The same gap with the machine awake is idle time of a running daemon.
+        expect(await asked([])).toEqual({
+            calls: [`e-100000 ${gap}`, "e-100001 60000"],
+            jumps: ["e-100000", "e-100001"],
+        });
+    });
 });

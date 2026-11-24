@@ -169,7 +169,8 @@ call through it is refused:
    lands on (`beforeAdvance`); a step the driver returns is awaited, the wait
    of step 1 runs again for the jobs the step started, and the jump covers
    what is left of the gap (the settle step of an arm that runs the memory
-   reviewer, `docs/hosts.md`). When the event
+   reviewer, `docs/hosts.md`). The jump of a laptop sleep runs with the
+   driver unasked, since the daemon is suspended for that gap. When the event
    opens a session with a laptop sleep, that jump carries the fault id and the
    sleep fires first; the compiler sizes the sleep to the gap before its
    session, so the jump spans the gap and lands on the session's first event.

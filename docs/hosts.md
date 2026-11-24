@@ -325,6 +325,17 @@ between two steps therefore age an unconsumed commit by under 30 s in
 all, and the worker's own next pass follows within 30 s of real time, so
 the commit stays under 60 s old.
 
+The jump of a `laptop_sleep` fault runs with the driver unasked
+(`sleepBefore` in `src/run/scheduler.ts` names the jump's cause before the
+question). The machine is suspended for the gap, so the daemon's worker
+runs its next pass after the wake, and a step before the jump would stand
+for a pass the product runs only then. The driver's sum stays as it was
+before the sleep: it counts idle time of a running daemon, and the sleep
+gap is time of a suspended one. After the wake the consumer's lag is the
+one the product would show: a memory read ahead of the worker's first pass
+after the wake reads a commit left unconsumed before the sleep as old as
+the gap.
+
 The scheduler asks the arm's driver before each advance (`beforeAdvance` in
 `src/run/scheduler.ts`, with the scenario time the advance skips and the
 event it lands on), once the wait for the event has found the busy set
