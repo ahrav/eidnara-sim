@@ -996,7 +996,10 @@ complete evidence only when the two agree:
     mark, and so does the agent's own `eidnara_memory` dispute action,
     which every audited build has. `statements.disputed_statements` counts
     the statement records among them by their memory (above), which the
-    owing sessions leave out.
+    owing sessions leave out. The two counts are read apart from the
+    statements: a store they cannot be read from leaves `failed_commands`
+    and `disputed` out and names why in `statements.counts_error`, and the
+    statement check stands on the statements read.
   - `delivery.contested_blocks` counts agent requests whose
     `<project-memory>` block renders a contested statement, and
     `search.contested` the `eidnara_search` results with a `Contested by`

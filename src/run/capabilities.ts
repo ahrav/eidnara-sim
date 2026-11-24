@@ -12,12 +12,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { blockMarks, bodyText, injectedBlocks, searchRoute } from "../evidence/stages";
-import {
-    payloadManifest,
-    processMemoryBlock,
-    progressBlock,
-    reviewerBlock,
-} from "../hosts/arms";
+import { payloadManifest, processMemoryBlock, progressBlock, reviewerBlock } from "../hosts/arms";
 import {
     type ArmProfile,
     AUDITED_BUILDS,
@@ -735,14 +730,20 @@ export type StatementObservation = {
     /**
      * The committed failed-command records: decisions of kind `TOOL_FAILURE` on a `tool_failure`
      * lineage (Eidnara `memory_capture/failures.rs`), the live ones and those a later result of
-     * the command retired. Absent on observations recorded before it was read.
+     * the command retired. Absent on observations recorded before it was read, and with a
+     * `counts_error`.
      */
     failed_commands?: { live: number; retired: number };
+    /**
+     * Why the failed-command records and the disputed objects could not be counted in a store
+     * whose statements were read; absent when they were counted. It decides no mismatch.
+     */
+    counts_error?: string;
     /**
      * The objects whose latest committed admission decision is `disputed` (the Kernel's
      * `mark_disputed`), live and retired. The memory reviewer's `contest` mode writes the mark,
      * and so does the agent's `eidnara_memory` dispute action on every build. Absent on
-     * observations recorded before it was read.
+     * observations recorded before it was read, and with a `counts_error`.
      */
     disputed?: { live: number; retired: number };
 } | null;
@@ -1388,6 +1389,40 @@ const APPROVED_LIVE_MEMORIES = `admission_decisions ap
       and o.invalidated_commit_seq is null`;
 
 /**
+ * The failed-command records and the disputed objects of a final Kernel store. Neither count
+ * takes part in the statement check, so a store they cannot be read from leaves both out and
+ * names why in `counts_error`, and the statements read stands.
+ */
+function storeCounts(
+    db: Database,
+): Pick<NonNullable<StatementObservation>, "failed_commands" | "disputed" | "counts_error"> {
+    const pair = (sql: string) => {
+        const { n, live } = db.query(sql).get() as { n: number; live: number };
+        return { live, retired: n - live };
+    };
+    try {
+        return {
+            // A command's records share the lineage `tool_failure:<digest>`; the bare name is its first part.
+            failed_commands: pair(
+                `select count(*) as n, coalesce(sum(o.invalidated_commit_seq is null), 0) as live
+                 from decisions d join object_registry o on o.object_id = d.object_id
+                 where d.decision_kind = 'TOOL_FAILURE'
+                   and (o.source_id = 'tool_failure' or o.source_id glob 'tool_failure:*')
+                   and d.created_commit_seq in (select commit_seq from commit_log)`,
+            ),
+            disputed: pair(
+                `select count(*) as n, coalesce(sum(o.invalidated_commit_seq is null), 0) as live
+                 from object_registry o
+                 where o.created_commit_seq in (select commit_seq from commit_log)
+                   and ${LATEST_OWN_DISPOSITION} = 'disputed'`,
+            ),
+        };
+    } catch (caught) {
+        return { counts_error: (caught as Error).message };
+    }
+}
+
+/**
  * The accepted user statements of a final Kernel store: `stm_*` decisions, each naming its capture
  * session in the rationale of its JSON payload, with the live ones told apart from those an
  * invalidation retired and from those whose memory is disputed. Null when the store is absent or
@@ -1459,24 +1494,6 @@ export function readStatements(kernelPath: string): StatementObservation {
             const record = end !== null && typeof end === "object" && !Array.isArray(end);
             if (lifetime === "current_work" && record) endedWork++;
         }
-        // A command's records share the lineage `tool_failure:<digest>`; the bare name is its first part.
-        const failed = db
-            .query(
-                `select count(*) as n, coalesce(sum(o.invalidated_commit_seq is null), 0) as live
-                 from decisions d join object_registry o on o.object_id = d.object_id
-                 where d.decision_kind = 'TOOL_FAILURE'
-                   and (o.source_id = 'tool_failure' or o.source_id glob 'tool_failure:*')
-                   and d.created_commit_seq in (select commit_seq from commit_log)`,
-            )
-            .get() as { n: number; live: number };
-        const disputed = db
-            .query(
-                `select count(*) as n, coalesce(sum(o.invalidated_commit_seq is null), 0) as live
-                 from object_registry o
-                 where o.created_commit_seq in (select commit_seq from commit_log)
-                   and ${LATEST_OWN_DISPOSITION} = 'disputed'`,
-            )
-            .get() as { n: number; live: number };
         return {
             count: rows.length,
             sessions: [...sessions].sort(),
@@ -1486,8 +1503,7 @@ export function readStatements(kernelPath: string): StatementObservation {
             error: null,
             lifetimes,
             ended_work: endedWork,
-            failed_commands: { live: failed.live, retired: failed.n - failed.live },
-            disputed: { live: disputed.live, retired: disputed.n - disputed.live },
+            ...storeCounts(db),
             lineages: {
                 count: lineages.length,
                 largest: Math.max(0, ...lineages.map((l) => l.n)),

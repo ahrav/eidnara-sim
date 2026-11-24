@@ -1422,6 +1422,38 @@ test("failed-command records and disputed objects are counted in the final store
             "global.anthropic.claude-haiku-5-5",
         ),
     ).toEqual([]);
+    // A store the two counts cannot be read from keeps its statements read: the counts are left
+    // out with their own reason, and the statement check stands.
+    const store = new Database(join(root, "..", "final-store", "kernel.sqlite"));
+    store.run("alter table decisions drop column decision_kind");
+    store.run(
+        "insert into decisions (object_id, decision_payload, created_commit_seq) values ('stm_a', ?, 1)",
+        [new TextEncoder().encode(JSON.stringify({ rationale: '{"session":"sim-s-0001"}' }))],
+    );
+    store.run("insert into object_registry values ('stm_a', 'decision', 'user', 1, null, ?)", [
+        `memory_capture_statement:${"a".repeat(32)}`,
+    ]);
+    store.close();
+    const partial = observeArm("eidnara", "pi", root, { agent: 2, memory_capture: 1 });
+    expect(partial.statements).toMatchObject({
+        count: 1,
+        sessions: ["sim-s-0001"],
+        error: null,
+        counts_error: expect.stringContaining("decision_kind"),
+    });
+    expect(partial.statements).not.toHaveProperty("failed_commands");
+    expect(partial.statements).not.toHaveProperty("disputed");
+    partial.delivery = {
+        requests: 2,
+        unreadable: 0,
+        injected_blocks: 0,
+        notes: { expected: 0, delivered: 0, missing: [], misplaced: [] },
+        memory_blocks: 0,
+        sessions: 1,
+        memory_due: false,
+        due_blocks: 0,
+    };
+    expect(armMismatches(partial, w9)).toEqual([]);
 });
 
 test("reviewer evidence is held to the arm's switch, the daemon's status, and the registered stage-1 model", () => {
