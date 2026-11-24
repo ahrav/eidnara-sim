@@ -241,7 +241,8 @@ without a capability record has its row too:
   not shown, proposals applied by kind, proposals left for a reader and
   left unapplied, and the lines that report reviews waiting;
 - the settle steps of `<arm>/review-drain.jsonl`: steps, runs settled, wall
-  time in all and the longest, and steps with an error;
+  time in all and the longest, lines with an error, and the drains that
+  answered after their step stopped waiting (`late` lines, `docs/hosts.md`);
 - the gateway's calls of `memory_reviewer_stage1` and
   `memory_reviewer_stage2` in `calls.jsonl`;
 - the reviewer's activation state in the daemon status readings of

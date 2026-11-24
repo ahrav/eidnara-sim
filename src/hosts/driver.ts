@@ -25,7 +25,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { GitBound, git } from "../git";
 import type { CallView, Command } from "../grade/artefacts";
 import { captureCountersProblem } from "../run/capabilities";
-import { withDeadline } from "../run/deadline";
+import { MAX_TIMER_MS, withDeadline } from "../run/deadline";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import type { DaemonStatusReading } from "../run/sampler";
 import {
@@ -44,6 +44,7 @@ import {
     type HostContext,
     makeHost,
     type PromptResult,
+    REVIEW_DRAIN_REQUEST_MS,
     type SimHost,
     type ToolRun,
 } from "./arms";
@@ -187,23 +188,34 @@ export function combineCaptureGenerations(generations: readonly CaptureGeneratio
     };
 }
 
-/** The bound of one review drain at a session's end: the fixture control's own timeout. */
+/**
+ * How long a settle step waits for its review drain, and for an earlier step's drain the fixture
+ * control has yet to answer.
+ */
 export const REVIEW_DRAIN_MS = 300_000;
 
 /** How long past its own timeout a control request may stay unanswered before the driver stops waiting. */
 const CONTROL_GRACE_MS = 5_000;
 
-/** One line of `<arm>/review-drain.jsonl`: a session end's settle step on an arm that runs the memory reviewer. */
+/**
+ * One line of `<arm>/review-drain.jsonl`: a session end's settle step on an arm that runs the
+ * memory reviewer, or, with `late`, the answer of a drain whose step recorded it unanswered.
+ */
 export interface ReviewDrainRecord {
     session: string;
     /** Wall time at which the step began, before the open-jobs wait. */
     started_wall_ms: number;
-    /** Wall time at which the step ended. */
+    /** Wall time at which the step ended, or, on a `late` line, at which the drain answered. */
     wall_ms: number;
     /** The review runs the drain settled, or null when it returned none. */
     settled: number | null;
-    /** Why source capture did not settle or the drain returned no count, or null. */
+    /** Why the open jobs or source capture did not settle or the drain returned no count, or null. */
     error: string | null;
+    /**
+     * Set on the line a drain's answer appends after its step stopped waiting for it:
+     * `wall_ms - started_wall_ms` is then how long the drain ran, counted from its step's start.
+     */
+    late?: true;
 }
 
 /** The longest a daemon fault waits for the dying generation's counters before its kill. */
@@ -214,6 +226,33 @@ const CAPTURE_SETTLE_MS = 30_000;
 
 /** A stop's bound on the read: the 30 s settle wait and one more control request. */
 const STOP_READ_MS = 35_000;
+
+/** How long a stop that leaves the arm to a resume waits for a review drain the control has yet to answer. */
+const STOP_DRAIN_WAIT_MS = 30_000;
+
+/** What a review drain returned: the runs it settled, or why it returned none. */
+type DrainReply = Pick<ReviewDrainRecord, "settled" | "error">;
+
+/** Sends the fixture's review drain to `daemon` and resolves, whenever the control answers, to what it returned. */
+function drainReply(daemon: DaemonStack): Promise<DrainReply> {
+    const failed = (caught: unknown): DrainReply => ({
+        settled: null,
+        error: `review drain failed: ${String(caught).slice(0, 500)}`,
+    });
+    return Promise.resolve()
+        .then(() => {
+            if (typeof daemon.reviewDrain !== "function") {
+                throw new Error("the daemon stack has no reviewDrain function");
+            }
+            return daemon.reviewDrain();
+        })
+        .then((count): DrainReply => {
+            if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+                return failed(new Error(`the drain returned ${JSON.stringify(count)}`));
+            }
+            return { settled: count, error: null };
+        }, failed);
+}
 
 const sameGeneration = (a: CaptureGeneration["daemon"], b: CaptureGeneration["daemon"]): boolean =>
     a !== null && b !== null && a.pid === b.pid && a.start === b.start;
@@ -762,7 +801,9 @@ export class HostDriver implements ArmDriver {
 
     /**
      * recordGeneration persists each generation's `source_capture` counters before the daemon
-     * ends, because the daemon process owns them. `waitMs` bounds the wait for capture to settle.
+     * ends, because the daemon process owns them. `waitMs` bounds the wait for capture to settle,
+     * and `drainWaitMs` the wait for a review drain the fixture control has yet to answer; a
+     * drain still unanswered then leaves the generation unread, with no request sent.
      * A generation already listed keeps its entry, so a read a killed harness left pending stays
      * unread. The pending entry stands until the read returns.
      */
@@ -771,10 +812,11 @@ export class HostDriver implements ArmDriver {
         ended: string,
         waitMs: number,
         deadlineMs: number,
+        drainWaitMs: number,
     ): Promise<CaptureGeneration | null> {
         // A caller that arrives while the generation's read is in flight waits for that read.
         if (this.reading?.daemon === daemon) return this.reading.entry;
-        const entry = this.readGeneration(daemon, ended, waitMs, deadlineMs);
+        const entry = this.readGeneration(daemon, ended, waitMs, deadlineMs, drainWaitMs);
         this.reading = { daemon, entry };
         return entry.finally(() => {
             if (this.reading?.entry === entry) this.reading = null;
@@ -789,6 +831,7 @@ export class HostDriver implements ArmDriver {
         ended: string,
         waitMs: number,
         deadlineMs: number,
+        drainWaitMs: number,
     ): Promise<CaptureGeneration | null> {
         if (!armProfile(this.o.arm).source_capture) return null;
         const id = this.daemonId;
@@ -803,7 +846,11 @@ export class HostDriver implements ArmDriver {
         };
         this.writeCaptureGenerations([...generations, pending]);
         const reading = Promise.resolve()
-            .then(() => daemon.sourceCapture(waitMs))
+            .then(() => this.controlBusy(daemon, drainWaitMs))
+            .then((busy) => {
+                if (busy !== null) throw new Error(busy);
+                return daemon.sourceCapture(waitMs);
+            })
             .then(
                 (counters) => {
                     const problem = captureCountersProblem(counters);
@@ -811,17 +858,86 @@ export class HostDriver implements ArmDriver {
                 },
                 (caught: unknown) => ({ counters: null, error: String(caught) }),
             );
+        // The drain wait and the read each have their bound, so the reply's deadline is their sum.
+        const bound = Math.min(drainWaitMs + deadlineMs, MAX_TIMER_MS);
         let timer: ReturnType<typeof setTimeout> | undefined;
         const expired = new Promise<{ counters: null; error: string }>((done) => {
             timer = setTimeout(
-                () => done({ counters: null, error: `no counter reply in ${deadlineMs} ms` }),
-                deadlineMs,
+                () => done({ counters: null, error: `no counter reply in ${bound} ms` }),
+                bound,
             );
         });
         const read = await Promise.race([reading, expired]).finally(() => clearTimeout(timer));
         const entry = { ...pending, ...read };
         this.writeCaptureGenerations([...generations, entry]);
         return entry;
+    }
+
+    /**
+     * The review drain the fixture control has yet to answer, with the daemon process it was sent
+     * to. The fixture answers the requests of its control connection one at a time, in order, and
+     * its client ends on the reply to a request it stopped waiting for, so the driver sends the
+     * control of a daemon process one request at a time: a later settle step and the generation's
+     * counter read wait for this drain first. `returned` resolves once the drain's answer or
+     * failure is on record.
+     */
+    private unanswered: {
+        daemon: DaemonStack;
+        pid: number | null;
+        session: string;
+        sent_wall_ms: number;
+        returned: Promise<void>;
+    } | null = null;
+
+    /**
+     * Waits up to `ms` for the review drain the fixture control of `daemon` has yet to answer.
+     * Returns null once the control holds none, and the reason to record when it still holds one.
+     */
+    private async controlBusy(daemon: DaemonStack, ms: number): Promise<string | null> {
+        const open = () => {
+            const drain = this.unanswered;
+            return drain?.daemon === daemon && drain.pid === daemon.pid() ? drain : null;
+        };
+        const drain = open();
+        if (drain === null) return null;
+        await withDeadline(drain.returned, ms);
+        const still = open();
+        if (still === null) return null;
+        const waited = Date.now() - still.sent_wall_ms;
+        return `the review drain of session ${still.session} is unanswered after ${waited} ms, and the fixture control takes one request at a time`;
+    }
+
+    /**
+     * Holds `request`, a review drain its settle step stopped waiting for, as the control's
+     * unanswered request, and appends its answer or its failure to `review-drain.jsonl` as a
+     * `late` line when it returns.
+     */
+    private holdDrain(
+        daemon: DaemonStack,
+        step: Pick<ReviewDrainRecord, "session" | "started_wall_ms">,
+        request: Promise<DrainReply>,
+    ): void {
+        const drain = {
+            daemon,
+            pid: daemon.pid(),
+            session: step.session,
+            sent_wall_ms: Date.now(),
+            returned: Promise.resolve(),
+        };
+        drain.returned = request.then((reply) => {
+            if (this.unanswered === drain) this.unanswered = null;
+            try {
+                this.appendDrain({ ...step, wall_ms: Date.now(), ...reply, late: true });
+            } catch (caught) {
+                // The answer arrives outside any event, so a record that cannot be written is reported here.
+                console.error(`arm ${this.o.arm}: review-drain.jsonl: ${String(caught)}`);
+            }
+        });
+        this.unanswered = drain;
+    }
+
+    private appendDrain(record: ReviewDrainRecord): void {
+        appendFileSync(join(this.armDir, "review-drain.jsonl"), `${JSON.stringify(record)}\n`);
     }
 
     private get ballast(): string | null {
@@ -1315,13 +1431,17 @@ export class HostDriver implements ArmDriver {
      * fixture drains the reviewer's worker, which runs review passes until one settles nothing,
      * so the reviews of the session's last messages end before the scheduler moves scenario time
      * to the next session. Each call appends one `ReviewDrainRecord` to `review-drain.jsonl`. A
-     * capture that does not settle, a drain that fails, and a drain that passes its bound
-     * (`REVIEW_DRAIN_MS`) are recorded with their error and the session end returns; the worker
-     * keeps running in the daemon. Every other arm skips the step and writes no file.
+     * capture that does not settle and a drain that fails are recorded with their error, and the
+     * session end returns. The step waits `REVIEW_DRAIN_MS` for its drain; a drain that passes
+     * the wait is recorded as unanswered, the session end returns, and the drain stays the
+     * control's one open request (`holdDrain`) while the worker keeps running in the daemon. A
+     * step that finds an earlier drain unanswered waits `REVIEW_DRAIN_MS` for it and, when it
+     * stays unanswered, records that and sends no request. Every other arm skips the step and
+     * writes no file.
      */
     private async settleReviews(e: ScenarioEvent, daemonGone: boolean): Promise<void> {
         if (!reviewsMemory(armProfile(this.o.arm))) return;
-        const started_wall_ms = Date.now();
+        const step = { session: String(e.session), started_wall_ms: Date.now() };
         const errors: string[] = [];
         let settled: number | null = null;
         const daemon = this.daemon;
@@ -1337,32 +1457,32 @@ export class HostDriver implements ArmDriver {
             errors.push("the daemon is not running");
         } else {
             await this.o.settle?.();
-            try {
-                await answered(daemon.sourceCapture(CAPTURE_SETTLE_MS), CAPTURE_SETTLE_MS);
-            } catch (caught) {
-                errors.push(`source capture did not settle: ${String(caught).slice(0, 500)}`);
-            }
-            try {
-                if (typeof daemon.reviewDrain !== "function") {
-                    throw new Error("the daemon stack has no reviewDrain function");
+            const busy = await this.controlBusy(daemon, drainMs);
+            if (busy !== null) {
+                errors.push(busy);
+            } else {
+                try {
+                    await answered(daemon.sourceCapture(CAPTURE_SETTLE_MS), CAPTURE_SETTLE_MS);
+                } catch (caught) {
+                    errors.push(`source capture did not settle: ${String(caught).slice(0, 500)}`);
                 }
-                const count = await answered(daemon.reviewDrain(drainMs), drainMs);
-                if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
-                    throw new Error(`the drain returned ${JSON.stringify(count)}`);
+                const request = drainReply(daemon);
+                const reply = await withDeadline(request, drainMs);
+                if (reply === null) {
+                    errors.push(`review drain unanswered after ${drainMs} ms`);
+                    this.holdDrain(daemon, step, request);
+                } else {
+                    settled = reply.settled;
+                    if (reply.error !== null) errors.push(reply.error);
                 }
-                settled = count;
-            } catch (caught) {
-                errors.push(`review drain failed: ${String(caught).slice(0, 500)}`);
             }
         }
-        const record: ReviewDrainRecord = {
-            session: String(e.session),
-            started_wall_ms,
+        this.appendDrain({
+            ...step,
             wall_ms: Date.now(),
             settled,
             error: errors.length > 0 ? errors.join("; ") : null,
-        };
-        appendFileSync(join(this.armDir, "review-drain.jsonl"), `${JSON.stringify(record)}\n`);
+        });
     }
 
     /** Reports a daemon that is gone, and returns whether it did. */
@@ -1766,7 +1886,8 @@ export class HostDriver implements ArmDriver {
         const stores = this.owedStores();
         this.o.sampleDaemon?.();
         // A mid-fold kill lands while the fold runs, so its dying generation goes unread.
-        if (readFirst) await this.recordGeneration(daemon, `fault ${fault}`, 0, FAULT_READ_MS);
+        // The kill follows at once, so a review drain the control has yet to answer leaves the generation unread.
+        if (readFirst) await this.recordGeneration(daemon, `fault ${fault}`, 0, FAULT_READ_MS, 0);
         else {
             const error = "a mid-fold kill ends the generation unread";
             this.listUnread(this.daemonId, `fault ${fault}`, error);
@@ -2004,8 +2125,19 @@ export class HostDriver implements ArmDriver {
             if (daemon) {
                 let generation: CaptureGeneration | null = null;
                 try {
-                    const ended = checkFinalStore ? "finish" : "stop";
-                    generation = await this.recordGeneration(daemon, ended, 30_000, STOP_READ_MS);
+                    // An unread finish fails the arm for good, so the finish waits for an
+                    // unanswered review drain as long as its control request can stay open; a
+                    // stop that leaves the arm to a resume waits as long as it does for capture.
+                    const [ended, drainWaitMs] = checkFinalStore
+                        ? ["finish", REVIEW_DRAIN_REQUEST_MS]
+                        : ["stop", STOP_DRAIN_WAIT_MS];
+                    generation = await this.recordGeneration(
+                        daemon,
+                        ended,
+                        30_000,
+                        STOP_READ_MS,
+                        drainWaitMs,
+                    );
                 } catch (caught) {
                     // The record is evidence only; a failed write still lets the daemon stop.
                     failure ??= caught;
@@ -2016,6 +2148,10 @@ export class HostDriver implements ArmDriver {
             }
             await daemon?.stop();
             this.daemon = null;
+            // The stopped daemon's control has closed, which fails a drain it had yet to answer;
+            // that failure is on record before the arm's files are read or removed.
+            if (this.unanswered) await withDeadline(this.unanswered.returned, CONTROL_GRACE_MS);
+            this.unanswered = null;
             if (daemon && checkFinalStore) {
                 // The final store check reads the store the stopped daemon left.
                 const check = checkStore(this.storeDb);

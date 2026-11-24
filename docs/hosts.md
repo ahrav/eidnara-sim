@@ -183,19 +183,50 @@ handling therefore runs a settle step after the host session closed
    control), so the later statement and the later message a review reads
    are published;
 3. it calls the fixture's `review-drain` control through
-   `DaemonStack.reviewDrain` with a bound of 300,000 ms (`REVIEW_DRAIN_MS`).
-   The daemon runs review passes until one settles nothing and answers with
-   the number of runs settled.
+   `DaemonStack.reviewDrain` and waits up to 300,000 ms (`REVIEW_DRAIN_MS`)
+   for the answer. The daemon runs review passes until one settles nothing
+   and answers with the number of runs settled.
 
 Each step appends one line to `<arm>/review-drain.jsonl`: `session`,
 `started_wall_ms`, `wall_ms`, `settled` (the runs settled, or `null`), and
 `error` (or `null`). A capture that does not settle is recorded and the
-drain still runs. A drain that fails, that passes its bound, whose control
-gives no reply within five seconds after the bound, or whose build has no
-`review-drain` control is recorded with its error, and the session end
-returns; the worker keeps running in the daemon. A daemon that is gone at
-the session end gets no control request and its line says so. A resume
-that delivers a `session_end` again appends a second line for the session.
+drain still runs. A drain that fails or whose build has no `review-drain`
+control is recorded with its error, and the session end returns. A daemon
+that is gone at the session end gets no control request and its line says
+so. A resume that delivers a `session_end` again appends a second line for
+the session.
+
+A drain that passes the step's wait is recorded as
+`review drain unanswered after 300000 ms`, and the session end returns; the
+worker keeps running in the daemon. The fixture answers the requests of its
+control connection one at a time, in order, and the stack's control client
+ends on the reply to a request it stopped waiting for (Eidnara
+`packages/e2e-tests/src/rust-runner/hermetic-host.ts`,
+`FixtureControlClient`), after which every control request of that daemon
+process fails. The control request of a drain therefore carries a timeout
+of its own, one hour (`REVIEW_DRAIN_REQUEST_MS` in `src/hosts/arms.ts`:
+twelve times the step's wait and three times the job deadline of tiers S
+and M, within which an unbroken chain of background calls stops the run),
+and the driver sends that daemon process no other control request while
+the drain is unanswered:
+
+- the next settle step waits up to 300,000 ms for the drain, then runs its
+  own capture wait and drain; when the drain is still unanswered, the
+  step's line names it (`the review drain of session <id> is unanswered
+  after <n> ms, and the fixture control takes one request at a time`) and
+  the step sends no request;
+- the read of the generation's `source_capture` counters waits for the
+  drain first: at the arm's finish for as long as the drain's control
+  request can stay open, since an unread finish fails the arm; at a stop
+  that leaves the arm to a resume for 30 s; and at a daemon fault without
+  a wait, since the kill follows. A drain still unanswered then leaves the
+  generation unread, with that reason.
+
+When the drain answers, or fails (its hour passes, or the daemon stops or
+is killed, which closes the control), the driver appends a line with
+`late: true`, the step's `session` and `started_wall_ms`, the time of the
+answer as `wall_ms`, and the drain's `settled` or `error`, so
+`wall_ms - started_wall_ms` of a `late` line is how long the drain ran.
 A `settle` that passes the scheduler's job deadline stops the run as it
 does on a probe turn. Every other arm runs no step and writes no file. A
 pass settles nothing while a project's reviews wait out the 60 s after a
@@ -984,10 +1015,12 @@ complete evidence only when the two agree:
     Reviews are the `enqueued` lines, requests the `chat_model` and
     `classifier` decisions, and changes written the `applied` lines of
     kind `disputed`, `contested`, `retired`, and `revised`.
-  - `reviewer.drains` totals `review-drain.jsonl`: the settle steps, the
-    runs they settled, their wall time in all and the longest, the steps
-    with an error and the first three messages, and the lines of another
-    shape.
+  - `reviewer.drains` totals `review-drain.jsonl`: the settle steps
+    (`calls`), the `late` lines (`late_answers`: the answers of drains
+    their step recorded as unanswered), the runs settled over both, the
+    steps' wall time in all, the longest wall time of a step or of a drain
+    a `late` line reports, the lines with an error and the first three
+    messages, and the lines of another shape.
   - `reviewer.calls` counts the arm's gateway calls of the reviewer's two
     components, `memory_reviewer_stage1` and `memory_reviewer_stage2`
     (`REVIEWER_COMPONENTS`).

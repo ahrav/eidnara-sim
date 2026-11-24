@@ -320,6 +320,18 @@ export const fixtureDaemonConfig = (
     ...reviewerSwitch(model, arm, reviewerStage1Model),
 });
 
+/**
+ * The fixture control's timeout of one `review-drain` request: one hour. The fixture answers the
+ * requests of its control connection one at a time, in order, and its client ends on the reply
+ * to a request it stopped waiting for (Eidnara `hermetic-host.ts`, `FixtureControlClient`), so
+ * the request stays open until the drain answers. A drain ends at the first pass that settles
+ * nothing, and each review run ends within the reviewer's own request deadlines. One hour is
+ * twelve times the wait of a settle step (`REVIEW_DRAIN_MS` in `driver.ts`) and three times the
+ * job deadline of tiers S and M (1,200,000 ms), within which an unbroken chain of background
+ * calls stops the run.
+ */
+export const REVIEW_DRAIN_REQUEST_MS = 3_600_000;
+
 export interface DaemonContext {
     config: SimConfig;
     root: string;
@@ -462,11 +474,11 @@ export class DaemonStack {
 
     /**
      * Runs the daemon's memory reviewer passes until one settles nothing, through the fixture's
-     * `review-drain` control, and resolves to the number of review runs that settled. `timeoutMs`
-     * bounds the control request; the worker keeps running in the daemon after it. A build whose
-     * fixture control has no such request throws.
+     * `review-drain` control, and resolves to the number of review runs that settled once the
+     * control answers. `timeoutMs` is the control request's own timeout. A build whose fixture
+     * control has no such request throws.
      */
-    async reviewDrain(timeoutMs: number): Promise<number> {
+    async reviewDrain(timeoutMs = REVIEW_DRAIN_REQUEST_MS): Promise<number> {
         const drain = this.stack?.reviewDrain;
         if (typeof drain !== "function") {
             throw new Error("the daemon's fixture control has no review drain");

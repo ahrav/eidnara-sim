@@ -147,16 +147,22 @@ export interface ReviewerLogObservation {
 
 /** The settle step's records in `review-drain.jsonl` (`docs/hosts.md`). */
 export interface ReviewDrainObservation {
-    /** Lines of the shape the driver writes. */
+    /** Settle steps: lines of the shape the driver writes, the `late` ones left out. */
     calls: number;
+    /**
+     * `late` lines: the answer or the failure of a drain that its step recorded as unanswered.
+     * Absent on observations recorded before it was read.
+     */
+    late_answers?: number;
     /** Lines of any other shape. */
     unreadable: number;
-    /** The review runs the drains settled, summed. */
+    /** The review runs the drains settled, summed over the steps and the late answers. */
     settled_runs: number;
-    /** Wall time of the steps, summed, and of the longest one. */
+    /** Wall time of the steps, summed. */
     total_wall_ms: number;
+    /** The longest wall time of a step or of a drain a `late` line reports. */
     max_wall_ms: number;
-    /** Calls that recorded an error, with the first three messages. */
+    /** Steps and late answers that recorded an error, with the first three messages. */
     errors: number;
     first_errors: string[];
 }
@@ -287,10 +293,11 @@ export function readReviewerLog(path: string): ReviewerLogObservation {
     return out;
 }
 
-/** Reads `review-drain.jsonl`, one settle step per line; an absent file holds no call. */
+/** Reads `review-drain.jsonl`, one settle step or one late answer per line; an absent file holds no call. */
 export function readReviewDrains(path: string): ReviewDrainObservation {
     const out: ReviewDrainObservation = {
         calls: 0,
+        late_answers: 0,
         unreadable: 0,
         settled_runs: 0,
         total_wall_ms: 0,
@@ -305,6 +312,7 @@ export function readReviewDrains(path: string): ReviewDrainObservation {
             wall_ms?: unknown;
             settled?: unknown;
             error?: unknown;
+            late?: unknown;
         };
         try {
             record = JSON.parse(line);
@@ -321,14 +329,19 @@ export function readReviewDrains(path: string): ReviewDrainObservation {
             ended === null ||
             ended < started ||
             settled === null ||
-            !(error === null || typeof error === "string")
+            !(error === null || typeof error === "string") ||
+            !(record.late === undefined || record.late === true)
         ) {
             out.unreadable++;
             return;
         }
-        out.calls++;
+        // A late line reports the drain of a step an earlier line already counts.
+        if (record.late === true) out.late_answers = (out.late_answers ?? 0) + 1;
+        else {
+            out.calls++;
+            out.total_wall_ms += ended - started;
+        }
         out.settled_runs += settled;
-        out.total_wall_ms += ended - started;
         out.max_wall_ms = Math.max(out.max_wall_ms, ended - started);
         if (typeof error === "string") {
             out.errors++;

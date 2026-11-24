@@ -1111,7 +1111,7 @@ test("the settle steps are totalled from review-drain.jsonl", () => {
             started_wall_ms: 20_000,
             wall_ms: 325_000,
             settled: null,
-            error: "review drain failed: Error: no reply in 305000 ms",
+            error: "review drain unanswered after 300000 ms",
         },
         {
             session: "s-4",
@@ -1119,6 +1119,15 @@ test("the settle steps are totalled from review-drain.jsonl", () => {
             wall_ms: 431_000,
             settled: 2,
             error: "source capture did not settle: Error: source capture never settled",
+        },
+        // The answer of the drain that s-3 recorded as unanswered: the drain ran 500 s.
+        {
+            session: "s-3",
+            started_wall_ms: 20_000,
+            wall_ms: 520_000,
+            settled: 7,
+            error: null,
+            late: true,
         },
     ].map((l) => JSON.stringify(l));
     // A line of another shape is counted apart: an end before its start, a count that is no integer.
@@ -1133,17 +1142,27 @@ test("the settle steps are totalled from review-drain.jsonl", () => {
             error: null,
         }),
         JSON.stringify({ session: "s-7", started_wall_ms: 1, wall_ms: 3, settled: 1 }),
+        JSON.stringify({
+            session: "s-8",
+            started_wall_ms: 1,
+            wall_ms: 3,
+            settled: 1,
+            error: null,
+            late: "yes",
+        }),
     ];
     writeFileSync(path, `${[...lines, ...odd].join("\n")}\n`);
+    // A late line adds its runs and its duration and is no step of its own.
     expect(readReviewDrains(path)).toEqual({
         calls: 4,
-        unreadable: 4,
-        settled_runs: 5,
+        late_answers: 1,
+        unreadable: 5,
+        settled_runs: 12,
         total_wall_ms: 3_500 + 200 + 305_000 + 31_000,
-        max_wall_ms: 305_000,
+        max_wall_ms: 500_000,
         errors: 2,
         first_errors: [
-            "review drain failed: Error: no reply in 305000 ms",
+            "review drain unanswered after 300000 ms",
             "source capture did not settle: Error: source capture never settled",
         ],
     });

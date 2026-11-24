@@ -1866,7 +1866,27 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
         );
         writeFileSync(
             join(arm, "review-drain.jsonl"),
-            `${JSON.stringify({ session: "s-1", started_wall_ms: 1_000, wall_ms: 3_500, settled: 2, error: null })}\n${JSON.stringify({ session: "s-2", started_wall_ms: 9_000, wall_ms: 9_500, settled: null, error: "review drain failed: Error: boom" })}\n`,
+            [
+                { session: "s-1", started_wall_ms: 1_000, wall_ms: 3_500, settled: 2, error: null },
+                {
+                    session: "s-2",
+                    started_wall_ms: 9_000,
+                    wall_ms: 9_500,
+                    settled: null,
+                    error: "review drain unanswered after 500 ms",
+                },
+                // The drain of s-2 answered 6 s after its step began.
+                {
+                    session: "s-2",
+                    started_wall_ms: 9_000,
+                    wall_ms: 15_000,
+                    settled: 1,
+                    error: null,
+                    late: true,
+                },
+            ]
+                .map((line) => `${JSON.stringify(line)}\n`)
+                .join(""),
         );
         const reading = (state: string) =>
             JSON.stringify({
@@ -1894,9 +1914,10 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
             log: { selections: 1, applied: { contested: 1 } },
             drains: {
                 calls: 2,
-                settled_runs: 2,
+                late_answers: 1,
+                settled_runs: 3,
                 total_wall_ms: 3_000,
-                max_wall_ms: 2_500,
+                max_wall_ms: 6_000,
                 errors: 1,
             },
             calls: { memory_reviewer_stage1: 1, memory_reviewer_stage2: 1 },
@@ -1936,7 +1957,7 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
         ]).split("\n");
         const at = report.indexOf("### Memory reviewer");
         expect(report.slice(at + 6, report.indexOf("### Context health", at) - 1)).toEqual([
-            `| A | eidnara-reviewer | on | current_work 1, later_statement 1 | 1 | chat_model: 0 keep, 1 flagged (${haiku}); none: 1 keep, 0 flagged (none) | 0 | 0 | contested 1 | 0 left for a reader, 0 unapplied | 0 | 2 steps, 2 runs settled, 3.0 s in all, 2.5 s the longest, 1 with an error | memory_reviewer_stage1 1, memory_reviewer_stage2 1 | open in 1 of 2 readings, last open | unread | unread |`,
+            `| A | eidnara-reviewer | on | current_work 1, later_statement 1 | 1 | chat_model: 0 keep, 1 flagged (${haiku}); none: 1 keep, 0 flagged (none) | 0 | 0 | contested 1 | 0 left for a reader, 0 unapplied | 0 | 2 steps, 3 runs settled, 3.0 s in all, 6.0 s the longest, 1 with an error, 1 drains answered after their step | memory_reviewer_stage1 1, memory_reviewer_stage2 1 | open in 1 of 2 readings, last open | unread | unread |`,
             "| B | eidnara | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | no reading | 2 live, 1 retired | 0 live, 0 retired |",
             "| D | host | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | memory_reviewer_stage1 3 | no reading | unread | unread |",
         ]);

@@ -215,7 +215,7 @@ function reviewerCells(r: ReviewerEvidence): string[] {
         counts(log.waits),
         drains.calls + drains.unreadable === 0
             ? "none"
-            : `${drains.calls} steps, ${drains.settled_runs} runs settled, ${seconds(drains.total_wall_ms)} s in all, ${seconds(drains.max_wall_ms)} s the longest, ${drains.errors} with an error${drains.unreadable > 0 ? `, ${drains.unreadable} unreadable lines` : ""}`,
+            : `${drains.calls} steps, ${drains.settled_runs} runs settled, ${seconds(drains.total_wall_ms)} s in all, ${seconds(drains.max_wall_ms)} s the longest, ${drains.errors} with an error${(drains.late_answers ?? 0) > 0 ? `, ${drains.late_answers} drains answered after their step` : ""}${drains.unreadable > 0 ? `, ${drains.unreadable} unreadable lines` : ""}`,
         counts(r.calls),
         status === null || status.readings === 0
             ? "no reading"
