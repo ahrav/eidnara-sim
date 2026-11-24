@@ -1448,20 +1448,19 @@ export class HostDriver implements ArmDriver {
      * (`beforeAdvance`): the open background jobs end (`settle`), and the fixture drains the
      * reviewer's worker, which runs review passes until one settles nothing, so the reviews of
      * the published messages end, and the worker's claim catch-up runs, before the scheduler moves
-     * scenario time. The step sends `drains` drains, one after the other's answer (one at a
-     * session end, `ADVANCE_DRAINS` before an advance); they are its requests to the fixture
-     * control, they share the step's one wait, and `settled` sums the runs they settled. Each
-     * call appends one `ReviewDrainRecord` to `review-drain.jsonl`, whose `before` names the kind.
-     * A drain that fails is recorded with its error, the step sends no further drain, and the
-     * step returns. A `settle` that rejects (the
-     * scheduler's job deadline) is recorded and rethrown, which stops the run; the resume reopens
-     * the session and delivers the `session_end` again (`settlesSessionEnds`), or reaches the
-     * same advance and runs its step again. The step waits `REVIEW_DRAIN_MS` for its drain; a
-     * drain that passes the wait is recorded as unanswered, the step returns, and the drain stays
-     * the control's one open request (`holdDrain`) while the worker keeps running in the daemon. A
-     * step that finds an earlier drain unanswered waits `REVIEW_DRAIN_MS` for it and, when it
-     * stays unanswered, records that and sends no request. Every other arm skips the step and
-     * writes no file.
+     * scenario time. The step sends `drains` drains, each once the one before it answered (one at
+     * a session end, `ADVANCE_DRAINS` before an advance); they are its requests to the fixture
+     * control, they share the step's one wait of `REVIEW_DRAIN_MS`, and `settled` sums the runs
+     * they settled. Each call appends one `ReviewDrainRecord` to `review-drain.jsonl`, whose
+     * `before` names the kind. A drain that fails is recorded with its error and ends the step's
+     * drains, and the step returns. A `settle` that rejects (the scheduler's job deadline) is
+     * recorded and rethrown, which stops the run; the resume reopens the session and delivers
+     * the `session_end` again (`settlesSessionEnds`), or reaches the same advance and runs its
+     * step again. A drain that passes the step's wait is recorded as unanswered, the step
+     * returns, and the drain stays the control's one open request (`holdDrain`) while the worker
+     * keeps running in the daemon. A step that finds an earlier drain unanswered waits
+     * `REVIEW_DRAIN_MS` for it and, when it stays unanswered, records that and sends no request.
+     * Every other arm skips the step and writes no file.
      */
     private async settleReviews(
         at: Omit<DrainStep, "started_wall_ms">,
