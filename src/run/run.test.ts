@@ -30,6 +30,7 @@ import {
     faultOverride,
     loadManifest,
     loadScenario,
+    type Manifest,
     manifestIdentity,
     type RunOptions,
     readCallLog,
@@ -42,6 +43,7 @@ import {
     requirePinnedPath,
     requirePlainArtifacts,
     runIdentity,
+    runPriceTable,
     runSteps,
     treeIdentity,
 } from "./run";
@@ -874,6 +876,108 @@ describe("run inputs", () => {
         expect(manifestIdentity(on.manifest)).not.toBe(
             manifestIdentity({ ...on.manifest, prompt_caching: "off" }),
         );
+    });
+
+    test("a run records its registration's side models, and a resume holds the manifest to them", async () => {
+        const checks: Preflight = {
+            launcher: "/launcher",
+            time_injection: [],
+            distortions: [],
+            hosts: [{ host: "pi", version: "0.80.2", transcript_paths: [] }],
+            upgrade: [],
+            toolchain: [],
+        };
+        const out = dir();
+        const opus = "global.anthropic.claude-opus-5-5";
+        const haiku = "global.anthropic.claude-haiku-5-5";
+        const o: RunOptions = {
+            config: { ...config, agent_model: opus },
+            tier: "M",
+            seed: 605,
+            host: "pi",
+            out,
+            qualification: "PCH",
+        };
+        const scenario = writeScenario(out, scenarioBody(605, "M"));
+        // A registration that names no side model records none and keeps the v2 table.
+        const { manifest } = await loadManifest(o, scenario, checks);
+        expect(manifest.side_models).toBeNull();
+        expect(JSON.stringify(manifest.price_table)).toBe(
+            '{"version":"v2-opus-5-5-global-2026-11","rates":{"input":4,"output":20,"cache_read":0.2,"cache_write":5,"cache_write_1h":8}}',
+        );
+        // A manifest written before the field resumes and stays as written.
+        const path = join(out, "manifest.json");
+        const { side_models: _none, ...before } = manifest;
+        writeFileSync(path, JSON.stringify(before));
+        const resumed = await loadManifest(o, scenario, checks);
+        expect("side_models" in resumed.manifest).toBe(false);
+        expect(manifestIdentity(resumed.manifest)).toBe(manifestIdentity(before as Manifest));
+        // A manifest that names a side model its registration lacks is another run's.
+        const stage1 = { memory_reviewer_stage1: haiku };
+        writeFileSync(path, JSON.stringify({ ...before, side_models: stage1 }));
+        await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
+            /resume options differ from the manifest: side_models/,
+        );
+        for (const bad of [
+            {},
+            { memory_reviewer_stage1: "" },
+            [haiku],
+            { ...stage1, other: haiku },
+        ]) {
+            writeFileSync(path, JSON.stringify({ ...before, side_models: bad }));
+            await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
+                /side_models is not a model name per registered role/,
+            );
+        }
+        // The side models are part of the execution digest the journal's Preflight entries bind.
+        expect(manifestIdentity(manifest)).not.toBe(
+            manifestIdentity({ ...manifest, side_models: stage1 }),
+        );
+    });
+
+    test("a caching-on run names only models its price table holds rates for", () => {
+        const opus = "global.anthropic.claude-opus-5-5";
+        const haiku = "global.anthropic.claude-haiku-5-5";
+        const stage1 = { memory_reviewer_stage1: haiku };
+        const run = { prompt_caching: "on" as const, models: [opus], side_model: null };
+        expect(runPriceTable({ ...run, side_models: null }).version).toBe(
+            "v2-opus-5-5-global-2026-11",
+        );
+        // The registered Haiku side model selects the table that holds its rates.
+        const v3 = runPriceTable({ ...run, side_models: stage1 });
+        expect(v3.version).toBe("v3-opus-5-5-haiku-5-5-global-2026-11");
+        expect(v3.models?.[haiku]).toEqual({
+            input: 0.1,
+            output: 0.5,
+            cache_read: 0.01,
+            cache_write: 0.125,
+            cache_write_1h: 0.2,
+        });
+        expect(runPriceTable({ ...run, side_model: haiku, side_models: stage1 })).toBe(v3);
+        // Without the registration Haiku has no rates, as an agent model or as the side model.
+        expect(() => runPriceTable({ ...run, side_model: haiku, side_models: null })).toThrow(
+            `prices calls at v2-opus-5-5-global-2026-11, which holds no rates for ${haiku}`,
+        );
+        // A registered side model outside the tables, or another agent model beside a
+        // registered one, is refused by name.
+        const sonnet = "global.anthropic.claude-sonnet-5-5";
+        expect(() =>
+            runPriceTable({ ...run, side_models: { memory_reviewer_stage1: sonnet } }),
+        ).toThrow(`which holds no rates for ${sonnet}`);
+        expect(() =>
+            runPriceTable({ ...run, models: [opus, sonnet], side_models: stage1 }),
+        ).toThrow(
+            `prices calls at v3-opus-5-5-haiku-5-5-global-2026-11, which holds no rates for ${sonnet}`,
+        );
+        // A caching-off run records the v1 table for any models.
+        expect(
+            runPriceTable({
+                prompt_caching: "off",
+                models: ["m"],
+                side_model: sonnet,
+                side_models: stage1,
+            }).version,
+        ).toBe("v1");
     });
 
     test("a staging file that is a link is refused instead of followed", async () => {

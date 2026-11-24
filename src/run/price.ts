@@ -13,7 +13,21 @@ export interface Price {
 
 export interface PriceTable {
     version: string;
+    /** The rates of every call whose model `models` leaves out. */
     rates: Price;
+    /** Rates by model id; a call whose record names a listed model takes that model's rates. */
+    models?: Record<string, Price>;
+}
+
+/** The part of a price table that prices a call: the default rates and the rates by model. */
+export type Rates = Pick<PriceTable, "rates" | "models">;
+
+/** The rates `table` holds for a call of `model`: the model's own when listed, else `rates`. */
+export function ratesFor(table: Rates, model: string | undefined): Price {
+    const listed = table.models;
+    return model !== undefined && listed && Object.hasOwn(listed, model)
+        ? (listed[model] as Price)
+        : table.rates;
 }
 
 /**
@@ -37,29 +51,84 @@ export const CACHED_PRICE_TABLE: PriceTable = {
     rates: { input: 4, output: 20, cache_read: 0.2, cache_write: 5, cache_write_1h: 8 },
 };
 
-const RATES = ["input", "output", "cache_read", "cache_write"] as const;
+/**
+ * The table a run with prompt caching on records when its registration names a side model with
+ * rates of its own (`side_models`, `docs/run-command.md`): the `CACHED_PRICE_TABLE` rates for
+ * every model it leaves out, and the rates of Claude Haiku 5.5 through the global inference
+ * profile at standard context, from the AWS price list bulk file
+ * `https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrockFoundationModels/current/us-west-2/index.json`
+ * published 2026-11-23T09:58:41Z (`docs/report.md`, Cost). The model's long-context rates are
+ * a separate entry of that file, five times these; a stage-1 request of the memory reviewer
+ * sends about 1,500 to 4,300 prompt tokens and is priced at the standard-context rates.
+ */
+export const CACHED_SIDE_PRICE_TABLE = {
+    version: "v3-opus-5-5-haiku-5-5-global-2026-11",
+    rates: CACHED_PRICE_TABLE.rates,
+    models: {
+        "global.anthropic.claude-haiku-5-5": {
+            input: 0.1,
+            output: 0.5,
+            cache_read: 0.01,
+            cache_write: 0.125,
+            cache_write_1h: 0.2,
+        },
+    },
+} satisfies PriceTable;
 
-/** Whether `table` is a versioned table whose rates are the four required ones, and the 1-hour write rate when named, each finite and non-negative. */
-export function isPriceTable(table: unknown): table is PriceTable {
-    const t = table as Partial<PriceTable> | null | undefined;
-    const rates = t?.rates as Record<string, unknown> | null | undefined;
-    if (typeof t?.version !== "string" || t.version === "") return false;
-    if (typeof rates !== "object" || rates === null) return false;
+const RATES = ["input", "output", "cache_read", "cache_write"] as const;
+const KNOWN_RATES: readonly string[] = [...RATES, "cache_write_1h"];
+
+/** Whether `price` names the four required rates, and the 1-hour write rate at most, each finite and non-negative. */
+function isPrice(price: unknown): price is Price {
+    if (typeof price !== "object" || price === null || Array.isArray(price)) return false;
+    const rates = price as Record<string, unknown>;
     const rate = (k: string) =>
         typeof rates[k] === "number" && Number.isFinite(rates[k]) && (rates[k] as number) >= 0;
-    const known: readonly string[] = [...RATES, "cache_write_1h"];
-    return RATES.every(rate) && Object.keys(rates).every((k) => known.includes(k) && rate(k));
+    return RATES.every(rate) && Object.keys(rates).every((k) => KNOWN_RATES.includes(k) && rate(k));
+}
+
+/** Whether `models` maps model ids to rates: an object whose every key is a name and every value a `Price`. */
+export function isModelPrices(models: unknown): models is Record<string, Price> {
+    if (typeof models !== "object" || models === null || Array.isArray(models)) return false;
+    return Object.entries(models).every(([model, price]) => model !== "" && isPrice(price));
 }
 
 /**
- * Whether `CACHED_PRICE_TABLE` holds `model`'s rates: Claude Opus 5.5 through the global inference
- * profile. The in-Region profiles cost 10% more, and every other model has rates of its own.
+ * Whether `table` is a versioned table whose default rates are the four required ones, and the
+ * 1-hour write rate when named, each finite and non-negative, and whose `models`, when present,
+ * hold such rates per model id.
  */
-export const pricedByCachedTable = (model: string): boolean =>
-    /^global\.anthropic\.claude-opus-5-5(-v\d+(:\d+)?)?$/.test(model);
+export function isPriceTable(table: unknown): table is PriceTable {
+    const t = table as Partial<PriceTable> | null | undefined;
+    if (typeof t?.version !== "string" || t.version === "") return false;
+    return isPrice(t.rates) && (t.models === undefined || isModelPrices(t.models));
+}
 
-export const priceTableFor = (caching: PromptCaching): PriceTable =>
-    caching === "on" ? CACHED_PRICE_TABLE : PRICE_TABLE;
+/** A registration's side models, by the role each serves (`side_models`); null or absent for none. */
+export type SideModelIds = Readonly<Record<string, string>> | null | undefined;
+
+/**
+ * The table a run records when it starts. A caching-off run takes `PRICE_TABLE`, which holds one
+ * set of rates for every model. A caching-on run takes `CACHED_PRICE_TABLE`, or
+ * `CACHED_SIDE_PRICE_TABLE` when a registered side model has rates of its own there.
+ */
+export function priceTableFor(caching: PromptCaching, sideModels?: SideModelIds): PriceTable {
+    if (caching !== "on") return PRICE_TABLE;
+    const own = Object.values(sideModels ?? {}).some((model) =>
+        Object.hasOwn(CACHED_SIDE_PRICE_TABLE.models, model),
+    );
+    return own ? CACHED_SIDE_PRICE_TABLE : CACHED_PRICE_TABLE;
+}
+
+/**
+ * Whether the table of a caching-on run with `sideModels` holds `model`'s rates. The default
+ * rates are those of Claude Opus 5.5 through the global inference profile; the in-Region
+ * profiles cost 10% more, and every other model has rates of its own, which the table holds for
+ * a registered side model it lists (`priceTableFor`).
+ */
+export const pricedByCachedTable = (model: string, sideModels?: SideModelIds): boolean =>
+    /^global\.anthropic\.claude-opus-5-5(-v\d+(:\d+)?)?$/.test(model) ||
+    Object.hasOwn(priceTableFor("on", sideModels).models ?? {}, model);
 
 /** The token counts of one call record that a price applies to. */
 export interface CallTokens {

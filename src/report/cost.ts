@@ -5,7 +5,7 @@ import type { ArmLogs, RunLogs } from "../oracle/logs";
 import { HARNESS } from "../oracle/oracles";
 import type { CallRecord } from "../proxy/records";
 import { readJsonl } from "../run/journal";
-import { callUsd, type Price } from "../run/price";
+import { callUsd, type Rates, ratesFor } from "../run/price";
 import { notesOf } from "./intrusive";
 
 export interface ComponentCost {
@@ -49,9 +49,15 @@ type Tokens = Pick<
     | "cache_read_tokens"
     | "cache_write_tokens"
     | "cache_write_1h_tokens"
->;
+> &
+    Partial<Pick<CallRecord, "model">>;
 
-export function componentCosts(calls: readonly Tokens[], price: Price): ComponentCost[] {
+/**
+ * The calls and tokens of each component, most expensive first. Each call is priced at the rates
+ * `table` holds for its record's `model` (`ratesFor`): the model's own when the table lists it,
+ * else the default rates.
+ */
+export function componentCosts(calls: readonly Tokens[], table: Rates): ComponentCost[] {
     const byComponent = new Map<string, ComponentCost>();
     for (const c of calls) {
         const row = byComponent.get(c.component) ?? {
@@ -68,7 +74,7 @@ export function componentCosts(calls: readonly Tokens[], price: Price): Componen
         row.output += c.output_tokens;
         row.cache_read += c.cache_read_tokens;
         row.cache_write += c.cache_write_tokens;
-        row.usd += callUsd(c, price);
+        row.usd += callUsd(c, ratesFor(table, c.model));
         byComponent.set(c.component, row);
     }
     return [...byComponent.values()].sort((a, b) => b.usd - a.usd);
@@ -84,7 +90,7 @@ export function judgeCost(run: RunLogs): ComponentCost | null {
     const path = join(run.dir, "judge-calls.jsonl");
     if (run.price === null || !existsSync(path) || !gradingComplete(run)) return null;
     const calls = readJsonl<Tokens>(path);
-    return componentCosts(calls, run.price.rates).find((c) => c.component === "judge") ?? null;
+    return componentCosts(calls, run.price).find((c) => c.component === "judge") ?? null;
 }
 
 /**
@@ -131,7 +137,7 @@ export function costPanel(run: RunLogs, arm: ArmLogs, grades: GradeRecord[]): Co
             typeof e.event === "string",
     );
     if (interrupted) return null;
-    const components = componentCosts(arm.calls, run.price.rates);
+    const components = componentCosts(arm.calls, run.price);
     const sum = (rows: ComponentCost[]) => rows.reduce((s, c) => s + c.usd, 0);
     const usd = sum(components.filter((c) => !HARNESS.has(c.component)));
     const total = (field: keyof Tokens & `${string}_tokens`) =>

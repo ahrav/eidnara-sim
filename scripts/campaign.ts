@@ -499,7 +499,8 @@ for (;;) {
             // A linked run directory is refused by its step, and its records count for nothing.
             if (lstatSync(runDir(spec, run.name), { throwIfNoEntry: false })?.isSymbolicLink())
                 continue;
-            spends.set(run.name, readSpend(path, spends.get(run.name) ?? noSpend(), spec.prices));
+            const read = spends.get(run.name) ?? noSpend();
+            spends.set(run.name, readSpend(path, read, spec.prices, spec.model_prices));
         } catch (caught) {
             spendErrors.push(`run ${run.name} spend read failed: ${(caught as Error).message}`);
         }

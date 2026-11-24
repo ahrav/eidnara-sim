@@ -6,7 +6,7 @@ import type { GradeRecord } from "../grade/probes";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
 import { RESPONSE_TEXT_LIMIT } from "../proxy/records";
 import type { Entry } from "../run/journal";
-import { PRICE_TABLE } from "../run/price";
+import { CACHED_PRICE_TABLE, CACHED_SIDE_PRICE_TABLE, PRICE_TABLE } from "../run/price";
 import { loadPrereg } from "../scenario/inputs";
 import { costPanel, judgeCost } from "./cost";
 import { intrusiveness, percentile } from "./intrusive";
@@ -904,6 +904,77 @@ describe("intrusiveness panel", () => {
         writeFileSync(join(dir, "eidnara", "memory.json"), "null\n");
         const unavailable = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
         expect(unavailable.corrections_referencing_injected_text).toBeNull();
+    });
+});
+
+describe("cost by model", () => {
+    const opus = "global.anthropic.claude-opus-5-5";
+    const haiku = "global.anthropic.claude-haiku-5-5";
+    const tokens = {
+        input_tokens: 458_000,
+        output_tokens: 250_000,
+        cache_read_tokens: 1_042_000,
+        cache_write_tokens: 0,
+    };
+    const calls = [
+        { component: "memory_reviewer_stage1", model: haiku, ...tokens },
+        { component: "memory_reviewer_stage2", model: opus, ...tokens },
+        { component: "user-sim", model: haiku, ...tokens },
+        { component: "agent", model: opus, ...tokens },
+    ] as ArmLogs["calls"];
+    const atOpus = (458_000 * 4 + 1_042_000 * 0.2 + 250_000 * 20) / 1e6;
+    const atHaiku = (458_000 * 0.1 + 1_042_000 * 0.01 + 250_000 * 0.5) / 1e6;
+    const panel = (price: RunLogs["price"]) => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-panel-"));
+        const cost = costPanel({ ...run([], dir), price }, arm({ calls }), []);
+        if (cost === null) throw new Error("the run records a price table");
+        return cost;
+    };
+
+    test("the v3 table gives each reviewer stage a row priced at its model's rates", () => {
+        const cost = panel(CACHED_SIDE_PRICE_TABLE);
+        expect(cost.price_table).toBe("v3-opus-5-5-haiku-5-5-global-2026-11");
+        const usd = Object.fromEntries(cost.components.map((c) => [c.component, c.usd]));
+        expect(Object.keys(usd).sort()).toEqual([
+            "agent",
+            "memory_reviewer_stage1",
+            "memory_reviewer_stage2",
+            "user-sim",
+        ]);
+        expect(usd.memory_reviewer_stage1).toBeCloseTo(atHaiku, 12);
+        expect(usd.memory_reviewer_stage2).toBeCloseTo(atOpus, 12);
+        expect(usd.agent).toBeCloseTo(atOpus, 12);
+        // The arm's total holds both stages; the user simulator's Haiku calls stay apart.
+        expect(cost.usd).toBeCloseTo(2 * atOpus + atHaiku, 12);
+        expect(cost.harness_usd).toBeCloseTo(atHaiku, 12);
+        expect(cost.components.find((c) => c.component === "memory_reviewer_stage1")).toMatchObject(
+            { calls: 1, input: 458_000, output: 250_000, cache_read: 1_042_000, cache_write: 0 },
+        );
+    });
+
+    test("the v2 table prices the same records at its one set of rates", () => {
+        const cost = panel(CACHED_PRICE_TABLE);
+        expect(cost.price_table).toBe("v2-opus-5-5-global-2026-11");
+        for (const c of cost.components) expect(c.usd).toBeCloseTo(atOpus, 12);
+        expect(cost.usd).toBeCloseTo(3 * atOpus, 12);
+        expect(cost.harness_usd).toBeCloseTo(atOpus, 12);
+    });
+
+    test("the judge's calls take the rates the table holds for the judge's model", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-panel-"));
+        const judged = (model: string) =>
+            JSON.stringify({ component: "judge", arm: "judge", model, ...tokens });
+        writeFileSync(
+            join(dir, "judge-calls.jsonl"),
+            `${judged("global.openai.gpt-5.6-luna")}\n${judged(haiku)}\n`,
+        );
+        writeFileSync(
+            join(dir, "grade-summary.json"),
+            JSON.stringify({ judge_errors: 0, journal_seq: 7 }),
+        );
+        const priced = (price: RunLogs["price"]) => judgeCost({ ...run([], dir), price })?.usd;
+        expect(priced(CACHED_SIDE_PRICE_TABLE)).toBeCloseTo(atOpus + atHaiku, 12);
+        expect(priced(CACHED_PRICE_TABLE)).toBeCloseTo(2 * atOpus, 12);
     });
 });
 

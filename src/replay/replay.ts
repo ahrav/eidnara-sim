@@ -813,11 +813,11 @@ function repeatResult(
     if (NOTE_VARIANTS.has(variant) && !turn.applications.some((a) => a.changed)) {
         failures.push(`${variant} changed no agent request`);
     }
-    const rates = source.manifest.price_table.rates;
-    const cost = componentCosts(turn.records, rates);
+    const table = source.manifest.price_table;
+    const cost = componentCosts(turn.records, table);
     const own = componentCosts(
         turn.records.filter((r) => r.turn === source.event.id),
-        rates,
+        table,
     );
     return {
         repeat: k,
@@ -862,11 +862,11 @@ function failedRepeat(
     const reason = caught instanceof Error ? caught.message : String(caught);
     const logged = join(repeatDir, "calls.jsonl");
     const records = existsSync(logged) ? readJsonl<CallRecord>(logged) : [];
-    const rates = source.manifest.price_table.rates;
-    const cost = componentCosts(records, rates);
+    const table = source.manifest.price_table;
+    const cost = componentCosts(records, table);
     const own = componentCosts(
         records.filter((r) => r.turn === source.event.id),
-        rates,
+        table,
     );
     return {
         repeat: k,

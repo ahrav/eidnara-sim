@@ -150,13 +150,35 @@ also carry these optional sections and fields:
   with a host caller's request that carries none (at the end of the
   session that shows it, and again before `EndArm`), records the cache gap
   of each call a host under test makes, and prices its calls at the `v2`
-  table (`docs/hosts.md`, Prompt
-  caching; `docs/report.md`, Cost). The `v2` table holds the rates of one
-  model, so a caching-on run refuses a `--models` entry or a `--side-model`
-  other than Claude Opus 5.5 through the global inference profile. The
+  table, or at the `v3` table with a registered side model that table
+  lists (`docs/hosts.md`, Prompt
+  caching; `docs/report.md`, Cost). A caching-on run names only models its
+  table holds rates for, so it refuses a `--models` entry or a
+  `--side-model` other than Claude Opus 5.5 through the global inference
+  profile, the model of the default rates, or a registered side model with
+  rates of its own in `v3`. The
   field is part of the registration's hash.
   Every registration through W2S2H names none, so its hash, its requests,
   and its prices are what they were.
+- `side_models` (`memory_reviewer_stage1`): the models the registration's
+  runs call beside the agent model and `--side-model`, by role. The one
+  role is `memory_reviewer_stage1`, the model that decides stage 1 of the
+  daemon's memory reviewer; its value is a bare Bedrock model id
+  (`global.anthropic.claude-haiku-5-5`, without a provider prefix). The run
+  records the section in its manifest (`side_models`, null without one; a
+  resume compares it), hands the stage-1 model to every arm's host stack
+  (`reviewerStage1Model`, which an arm with the reviewer writes into its
+  Eidnara configuration), and lists it in Pi's `models.json` and enabled
+  models beside the agent and side models (`docs/hosts.md`). Under
+  `prompt_caching: "on"` the model must have rates in the table the run
+  records: `global.anthropic.claude-haiku-5-5` selects the `v3` table,
+  which prices each call at its model's rates, and Claude Opus 5.5 through
+  the global inference profile keeps `v2`; the validator refuses any other
+  id, an unknown role, and an id that is empty or carries a provider
+  prefix. Under `off` the `v1` table holds one set of rates for every
+  model. The section is part of the registration's hash when present.
+  Every registration through W4P names none, so its hash, its model list,
+  and its price table are what they were.
 - `search_fallback` (`max_degraded_share`): the bound on a fused-route
   arm's degraded search answers, a canonical decimal in (0, 1), read from
   its digits. A legacy-scan
@@ -481,14 +503,17 @@ toolchain wrappers are created exclusively after removing any planted name.
    it writes (`arms`, `docs/hosts.md`), the
    Bedrock region and profile name, base wall time, the prompt-caching
    condition the qualification registers (`prompt_caching`, `off` for a tier
-   run), the price table that condition selects (the version
-   and rates the report prices the run's calls at), and preflight result. The working-tree digest hashes an
+   run), the side models it registers (`side_models`, null for none), the
+   price table the condition and the side models select (the version
+   and rates the report prices the run's calls at, with rates by model
+   where the table holds them), and preflight result. The working-tree digest hashes an
    untracked symlink's target text.
    A later invocation refuses a manifest whose `schema` is not
    `sim-run-manifest/v3` or whose execution fields are out of range (an event
    count outside the compiled schedule, a non-positive context limit, an
    unnamed model, a non-integer seed, an unknown host, a price table without a
-   version or with a negative or non-finite rate), revalidates a saved
+   version or with a negative or non-finite rate, side models that name a
+   role outside the registered ones or no model for one), revalidates a saved
    fault override as on the first run, and refuses when any option it states differs from the manifest, when the manifest's arm order is not a non-empty subsequence
    of the seed's pre-registered arm order (with each A/A control right after
    its arm), when a resumed journal breaks the
@@ -720,7 +745,13 @@ field keeps every record. Every `poll_ms` the supervisor:
   input, output, cache-read, and cache-write tokens, and optionally
   `cache_write_1h` for 1-hour cache writes; c7's 5, 25, 0.5, and
   6.25 by default, charged to every component and model, so a campaign over
-  a caching-on registration names the `v2` rates of `docs/report.md`); a complete line
+  a caching-on registration names the `v2` rates of `docs/report.md`). An
+  optional `model_prices` object maps a model id to rates of the same
+  shape (`{"<model id>": {input, output, cache_read, cache_write,
+  cache_write_1h?}}`): a record whose `model` it lists is priced at those
+  rates, and every other record at `prices`, so a campaign over a
+  registration with a side model names that model's `v3` rates there. A
+  campaign file without `model_prices` prices every record at `prices`. A complete line
   that is not a JSON object counts for nothing. The supervisor reads each
   file from where the last poll stopped, and from its start after a restart
   or when the file shrank or was replaced (another inode, or first bytes

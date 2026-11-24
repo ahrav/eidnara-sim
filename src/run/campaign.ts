@@ -11,7 +11,7 @@ import {
 import { isAbsolute, join } from "node:path";
 import { interruptions } from "./interruptions";
 import { type Entry, readJournal } from "./journal";
-import { callUsd, isPriceTable, PRICE_TABLE, type Price } from "./price";
+import { callUsd, isModelPrices, isPriceTable, PRICE_TABLE, type Price, ratesFor } from "./price";
 
 /** USD per million tokens, by token class. */
 export type Prices = Price;
@@ -44,7 +44,10 @@ export interface CampaignSpec {
     sim_upgrade: string | null;
     /** The most runs that may hold a launch slot at once, or null for no limit. */
     max_concurrent: number | null;
+    /** The rates of every call record whose model `model_prices` leaves out. */
     prices: Prices;
+    /** Rates by model id; a call record that names a listed model is priced at that model's rates. */
+    model_prices: Record<string, Prices>;
     /** The total spend past which the supervisor raises an alert, or null for none. */
     spend_cap_usd: number | null;
 }
@@ -163,6 +166,11 @@ export function parseCampaign(raw: unknown): CampaignSpec {
             "prices needs non-negative input, output, cache_read, and cache_write, and may name cache_write_1h",
         );
     }
+    if (o?.model_prices !== undefined && !isModelPrices(o.model_prices)) {
+        problems.push(
+            "model_prices needs, per model id, non-negative input, output, cache_read, and cache_write, and may name cache_write_1h",
+        );
+    }
     const cap = o?.spend_cap_usd;
     if (cap != null && !(typeof cap === "number" && Number.isFinite(cap) && cap > 0)) {
         problems.push("spend_cap_usd is not a positive number");
@@ -189,6 +197,7 @@ export function parseCampaign(raw: unknown): CampaignSpec {
         sim_upgrade: spec.sim_upgrade ?? null,
         max_concurrent: spec.max_concurrent ?? null,
         prices: spec.prices ?? C7_PRICES,
+        model_prices: spec.model_prices ?? {},
         spend_cap_usd: spec.spend_cap_usd ?? null,
     };
 }
@@ -260,8 +269,15 @@ const HEAD_BYTES = 256;
 
 const tokens = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
 
-/** The USD cost of one call record at `prices`; a field that is not a positive number counts as 0. */
-export function recordUsd(c: Record<string, unknown>, prices: Prices): number {
+/**
+ * The USD cost of one call record: at the rates `models` holds for the record's `model`, else at
+ * `prices`. A token field that is not a positive number counts as 0.
+ */
+export function recordUsd(
+    c: Record<string, unknown>,
+    prices: Prices,
+    models: Record<string, Prices> = {},
+): number {
     const written = tokens(c.cache_write_tokens);
     return callUsd(
         {
@@ -271,17 +287,22 @@ export function recordUsd(c: Record<string, unknown>, prices: Prices): number {
             cache_write_tokens: written,
             cache_write_1h_tokens: Math.min(written, tokens(c.cache_write_1h_tokens)),
         },
-        prices,
+        ratesFor({ rates: prices, models }, typeof c.model === "string" ? c.model : undefined),
     );
 }
 
 /**
- * Adds the call records appended to `path` since `prev` to its spend. Only complete lines count,
- * so a record still being written is read on a later poll, and a line that is not a JSON object
- * is passed over. A file that shrank or was replaced is read again from its start; an absent file
- * has spent nothing, and any other open failure is thrown.
+ * Adds the call records appended to `path` since `prev` to its spend, each priced by `recordUsd`.
+ * Only complete lines count, so a record still being written is read on a later poll, and a line
+ * that is not a JSON object is passed over. A file that shrank or was replaced is read again from
+ * its start; an absent file has spent nothing, and any other open failure is thrown.
  */
-export function readSpend(path: string, prev: Spend, prices: Prices): Spend {
+export function readSpend(
+    path: string,
+    prev: Spend,
+    prices: Prices,
+    models: Record<string, Prices> = {},
+): Spend {
     let fd: number;
     try {
         fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -322,7 +343,7 @@ export function readSpend(path: string, prev: Spend, prices: Prices): Spend {
                 }
                 if (c === null || typeof c !== "object" || Array.isArray(c)) continue;
                 const record = c as Record<string, unknown>;
-                const usd = recordUsd(record, prices);
+                const usd = recordUsd(record, prices, models);
                 const component =
                     typeof record.component === "string" ? record.component : "unknown";
                 spend.usd += usd;

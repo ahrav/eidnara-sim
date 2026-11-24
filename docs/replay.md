@@ -182,7 +182,7 @@ index, the session's fault firings, the clock targets, and the preflight.
 
 Each result holds the verdict, the reason (the grader's reason, or the
 grade's false metrics when it gives none, then any failure), the grade record, the cost priced at the source run's price
-table in total (`cost_usd`, every call the repeat's proxy saw, session open
+table, each call at the rates the table holds for its model, in total (`cost_usd`, every call the repeat's proxy saw, session open
 included), for the probe turn's own calls (`cost_turn_usd`), and per
 component, the prompt latency, the agent call count, each call's request
 digest and size, the count of rewritten requests (null when the turn

@@ -308,7 +308,7 @@ function panels(r: TierReport): string[] {
                 ];
             }),
         ),
-        "## Cost (est $ at the price table each run's manifest recorded, named per row; arm totals leave out harness calls; a run that recorded no table has no rows)",
+        "## Cost (est $ at the price table each run's manifest recorded, named per row, each call at the rates the table holds for its model; arm totals leave out harness calls; a run that recorded no table has no rows)",
         "",
         ...table(
             [

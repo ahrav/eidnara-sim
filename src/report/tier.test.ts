@@ -9,7 +9,7 @@ import type { Preregistration } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import type { CallRecord } from "../proxy/records";
 import type { Entry } from "../run/journal";
-import { PRICE_TABLE } from "../run/price";
+import { CACHED_SIDE_PRICE_TABLE, PRICE_TABLE } from "../run/price";
 import type { Scenario } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import { falsificationPairs } from "./falsify";
@@ -1117,6 +1117,28 @@ describe("tier report", () => {
         const text = renderTier(tierReport(prereg, [g], boundary));
         expect(text).toContain(
             `| ${g.run.dir} | eidnara | v1 | TOTAL | 13 | 12007 | 1203 | 0 | 0 |`,
+        );
+    });
+
+    test("the cost table names the run's price table and prices a reviewer row at its model's rates", () => {
+        const g = fixture();
+        g.run.price = CACHED_SIDE_PRICE_TABLE;
+        arm(g, "eidnara").calls.push({
+            ...(arm(g, "eidnara").calls[0] as CallRecord),
+            component: "memory_reviewer_stage1",
+            model: "global.anthropic.claude-haiku-5-5",
+            input_tokens: 458_000,
+            output_tokens: 250_000,
+            cache_read_tokens: 1_042_000,
+            cache_write_tokens: 0,
+        });
+        const text = renderTier(tierReport(prereg, [g], boundary));
+        expect(text).toContain(
+            "## Cost (est $ at the price table each run's manifest recorded, named per row, each call at the rates the table holds for its model;",
+        );
+        // (458,000 * 0.1 + 1,042,000 * 0.01 + 250,000 * 0.5) / 1e6 = 0.18122.
+        expect(text).toContain(
+            `| ${g.run.dir} | eidnara | v3-opus-5-5-haiku-5-5-global-2026-11 | memory_reviewer_stage1 | 1 | 458000 | 250000 | 1042000 | 0 | 0.18 |`,
         );
     });
 

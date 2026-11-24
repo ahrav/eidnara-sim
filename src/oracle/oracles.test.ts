@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { armBase } from "../hosts/arms";
+import { CACHED_SIDE_PRICE_TABLE } from "../run/price";
 import { scenarioHash } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import { type ArmLogs, loadRun, type RunLogs } from "./logs";
@@ -1636,6 +1637,31 @@ describe("oracle round twenty-one", () => {
         expect(oracle(titled, "F4").map((a) => a.evidence)).toEqual([
             "call 0 completed, then 600 s with no tool run, call, or turn end",
         ]);
+    });
+});
+
+describe("a run priced by model", () => {
+    test("the manifest's price table holds rates by model, and a malformed one is refused", () => {
+        const haiku = "global.anthropic.claude-haiku-5-5";
+        const { dir, line } = completeDir(["host", "eidnara"]);
+        const path = join(dir, "manifest.json");
+        const manifest = JSON.parse(readFileSync(path, "utf8"));
+        const record = (price_table: unknown) =>
+            writeFileSync(path, JSON.stringify({ ...manifest, price_table }));
+        record(CACHED_SIDE_PRICE_TABLE);
+        const reviewer = call({ component: "memory_reviewer_stage1", model: haiku });
+        writeFileSync(join(dir, "calls.jsonl"), line(reviewer));
+        const run = loadRun(dir, prereg);
+        expect(run.price).toEqual(CACHED_SIDE_PRICE_TABLE);
+        expect(run.price?.models?.[haiku]?.cache_read).toBe(0.01);
+        const [held] = run.arms.find((a) => a.arm === "eidnara")?.calls ?? [];
+        expect([held?.component, held?.model]).toEqual(["memory_reviewer_stage1", haiku]);
+        for (const models of [{ [haiku]: { input: 0.1 } }, [], { [haiku]: null }]) {
+            record({ ...CACHED_SIDE_PRICE_TABLE, models });
+            expect(() => loadRun(dir, prereg)).toThrow(
+                /price_table is not a versioned table of non-negative rates/,
+            );
+        }
     });
 });
 

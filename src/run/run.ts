@@ -43,10 +43,13 @@ import {
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import {
     buildRefusal,
+    isSideModels,
     promptCachingOf,
     type Qualification,
     qualificationHash,
     qualificationSeed,
+    type SideModels,
+    sideModelsOf,
 } from "../prereg/qualification";
 import type { Preregistration, Tier } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
@@ -249,8 +252,14 @@ export interface Manifest {
      */
     prompt_caching?: PromptCaching;
     /**
+     * The side models the run's qualification registers, by role (`side_models`); null for a
+     * tier run and a registration that names none, as a manifest from before the field reads. A
+     * resume must present the same.
+     */
+    side_models?: SideModels | null;
+    /**
      * The rates the cost panel prices this run's calls at, fixed when the run starts:
-     * `priceTableFor` the run's prompt-caching condition.
+     * `priceTableFor` the run's prompt-caching condition and side models.
      */
     price_table: PriceTable;
     preflight: Preflight;
@@ -551,6 +560,9 @@ function manifestProblems(m: Manifest, compiledEvents: number): string[] {
     }
     if (m.prompt_caching !== undefined && !PROMPT_CACHING.includes(m.prompt_caching)) {
         problems.push(`prompt_caching ${m.prompt_caching} is neither on nor off`);
+    }
+    if (m.side_models != null && !isSideModels(m.side_models)) {
+        problems.push("side_models is not a model name per registered role");
     }
     return problems;
 }
@@ -1546,6 +1558,35 @@ export function requireMechanisms(
     }
 }
 
+/**
+ * The price table a run of these models records: `priceTableFor` its caching condition and its
+ * registered side models. A caching-on run prices each call at its model's rates, so its table
+ * holds the rates of every model the run names (the agent models, the side model, and the
+ * registered side models); a run that names any other model is refused.
+ */
+export function runPriceTable(run: {
+    prompt_caching: PromptCaching;
+    models: readonly string[];
+    side_model: string | null;
+    side_models: SideModels | null;
+}): PriceTable {
+    const table = priceTableFor(run.prompt_caching, run.side_models);
+    const named = [
+        ...run.models,
+        ...(run.side_model ? [run.side_model] : []),
+        ...Object.values(run.side_models ?? {}),
+    ];
+    const unpriced = [...new Set(named)].filter(
+        (m) => run.prompt_caching === "on" && !pricedByCachedTable(m, run.side_models),
+    );
+    if (unpriced.length > 0) {
+        throw new HarnessFailure(
+            `prompt caching on prices calls at ${table.version}, which holds no rates for ${unpriced.join(", ")}`,
+        );
+    }
+    return table;
+}
+
 /** Returns the run's manifest and this invocation's preflight result. */
 export async function loadManifest(
     o: RunOptions,
@@ -1585,6 +1626,7 @@ export async function loadManifest(
         qualification: qualificationRef(o),
         wall_budget_ms: requireWallBudget(o.wallBudgetMs) ?? null,
         prompt_caching: promptCachingOf(qualificationOf(o)),
+        side_models: sideModelsOf(qualificationOf(o)),
     };
     /** Computed once the inputs it hashes exist: before the probe on a resume, after it on a first run. */
     const digests = () => ({
@@ -1666,12 +1708,14 @@ export async function loadManifest(
             turns_await_jobs: o.turnsAwaitJobs !== undefined,
             wall_budget_ms: o.wallBudgetMs !== undefined,
         };
-        // A manifest from before qualifications, wall budgets, or the caching condition names none.
+        // A manifest from before qualifications, wall budgets, the caching condition, or side
+        // models names none.
         const recorded = {
             ...manifest,
             qualification: manifest.qualification ?? null,
             wall_budget_ms: manifest.wall_budget_ms ?? null,
             prompt_caching: manifest.prompt_caching ?? "off",
+            side_models: manifest.side_models ?? null,
         };
         const differs = Object.entries(wanted).filter(
             ([k, v]) => given[k] !== false && !sameJson(recorded[k as keyof Manifest], v),
@@ -1735,15 +1779,7 @@ export async function loadManifest(
         return revision ? { manifest, checks, revision } : { manifest, checks };
     }
     requireMechanisms(wanted.fault_override ?? scenario.faults, wanted.models);
-    // A caching-on run prices every host call at one model's rates, so its models are that model.
-    const unpriced = [...wanted.models, ...(wanted.side_model ? [wanted.side_model] : [])].filter(
-        (m) => wanted.prompt_caching === "on" && !pricedByCachedTable(m),
-    );
-    if (unpriced.length > 0) {
-        throw new HarnessFailure(
-            `prompt caching on prices calls at ${priceTableFor("on").version}, which holds no rates for ${unpriced.join(", ")}`,
-        );
-    }
+    const table = runPriceTable(wanted);
     sources(
         wanted.tapes,
         wanted.events,
@@ -1760,7 +1796,7 @@ export async function loadManifest(
         eidnara_build: bind(wanted.order),
         tape_sha256: tapeDigests(wanted.tapes),
         base_wall_ms: Date.now(),
-        price_table: priceTableFor(wanted.prompt_caching),
+        price_table: table,
         preflight: checks,
     };
     writeAtomic(path, `${JSON.stringify(manifest, null, 2)}\n`);

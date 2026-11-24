@@ -10,6 +10,7 @@ import {
     RANKING_GATE_ITEMS,
     referenceBuildArms,
     referenceErrors,
+    sideModelsOf,
     validateQualification,
 } from "./qualification";
 import { preregistrationHash } from "./validate";
@@ -544,6 +545,87 @@ test("the registrations before the caching condition keep their digests", () => 
         const q = loadQualification(id);
         expect(qualificationHash(q)).toBe(digest);
         expect(promptCachingOf(q)).toBe("off");
+    }
+});
+
+test("a registration names the stage-1 model of the memory reviewer as its one side model", () => {
+    const haiku = "global.anthropic.claude-haiku-5-5";
+    const opus = "global.anthropic.claude-opus-5-5";
+    const named = (value: unknown, caching?: "on" | "off") =>
+        edit((q) => {
+            q.side_models = value;
+            if (caching) q.prompt_caching = caching;
+        });
+    expect(sideModelsOf(null)).toBeNull();
+    expect(sideModelsOf(Q)).toBeNull();
+    for (const caching of [undefined, "off", "on"] as const) {
+        expect(named({ memory_reviewer_stage1: haiku }, caching)).toEqual([]);
+    }
+    // The role is the one admitted key, and the section names it.
+    expect(named({ memory_reviewer_stage1: haiku, memory_reviewer_stage2: opus })).toEqual([
+        "side_models.memory_reviewer_stage2: unknown field",
+    ]);
+    expect(named({ history_summarizer: haiku })).toEqual([
+        "side_models.memory_reviewer_stage1: missing",
+        "side_models.history_summarizer: unknown field",
+    ]);
+    expect(named({})).toEqual(["side_models.memory_reviewer_stage1: missing"]);
+    for (const shape of [[haiku], haiku, null]) {
+        expect(named(shape)).toEqual(["side_models: expected an object"]);
+    }
+    // The id is the bare Bedrock model id a request path names.
+    for (const id of ["", " ", `amazon-bedrock/${haiku}`, ` ${haiku}`, 5, null]) {
+        expect(named({ memory_reviewer_stage1: id })).toEqual([
+            "side_models.memory_reviewer_stage1: expected a Bedrock model id",
+        ]);
+    }
+    // A caching-on run prices each call at its model's rates, so the table holds the side model's:
+    // Haiku 5.5 through the global profile has rates of its own, and Opus 5.5 the default rates.
+    expect(named({ memory_reviewer_stage1: opus }, "on")).toEqual([]);
+    expect(named({ memory_reviewer_stage1: `${opus}-v1:0` }, "on")).toEqual([]);
+    for (const other of [
+        "us.anthropic.claude-haiku-5-5",
+        "global.anthropic.claude-haiku-5-5-v1:0",
+        "global.anthropic.claude-sonnet-5-5",
+    ]) {
+        expect(named({ memory_reviewer_stage1: other }, "on")).toEqual([
+            `side_models.memory_reviewer_stage1: prompt caching on prices calls at v2-opus-5-5-global-2026-11, which holds no rates for ${other}`,
+        ]);
+        // The caching-off table holds one set of rates for every model.
+        expect(named({ memory_reviewer_stage1: other }, "off")).toEqual([]);
+    }
+    // The side models are part of the registration a run binds by hash.
+    const with_ = { ...structuredClone(Q), side_models: { memory_reviewer_stage1: haiku } };
+    expect(sideModelsOf(with_)).toEqual({ memory_reviewer_stage1: haiku });
+    expect(qualificationHash(with_)).not.toBe(qualificationHash(Q));
+    const other = { ...structuredClone(Q), side_models: { memory_reviewer_stage1: opus } };
+    expect(qualificationHash(other)).not.toBe(qualificationHash(with_));
+});
+
+test("the registrations before side models keep their digests and name none", () => {
+    const digests: Record<string, string> = {
+        Q: "389e84aeb4023b246a53743645d860c4c9becc27b81e43db2a8a84a443fbbdfc",
+        H: "f27f3c8b780d4dee3e087b9d8395a96a01c67cfc947a9953ae7b5d793f981d65",
+        C8: "c3762c53df8901401cbe5c990b773016cc97367d280645145628094a07723ff9",
+        C8H: "fc1448b33d715e11794b91d6c1f5444a182817d534886d8e65f92c691f723d02",
+        C8X: "ff9a09d3b24c8dbd2d2b53443de710a48fbc68dcf05f503b1e7248cf14f85453",
+        C8XH: "cf75e20a0932aa20fe8d7464aa9caed898f64d80b8ff5efd6fe3d23d2df24ba4",
+        W2S: "c3a0a2df1e3bdcbfa4028e33c85253b5d0ac20a89d5a3260683f4fda444ee4f0",
+        W2SH: "8802f2ac4cf0fdc3e558ff3fd3b76734db02ac671ec3f0cdfbde24b34fc263ad",
+        W2S2: "c2621c571e56cdf27952c74a04d4a6bb9f8349d8f5044f183f5cb8378aafe01a",
+        W2S2H: "1023e9ad1a5880850676d0e4302b8bbe2a5179f81ecaa70d661110aea4f45b36",
+        PCH: "979f64b178f860359067fa832260900969159a5fcaa3277135c68487f20fe147",
+        W3S: "f1d08f08c641ff975eba36b9677c0bc220ac21d86dc1e80a622f9dcea11fea47",
+        W3SH: "1d7d01b8efb46008ba8f2b832ac709ba387cb64f2626d72f440759db99de8b43",
+        W3P: "c982f5d42ca732565b05707783e7c1199c0451d4f409bea3eaadaf18bb1e930d",
+        W4S: "a1d70476c52db713110036025553181b88bc5af28b979cfd00a75bffce29c99e",
+        W4SH: "f376dbfe9314ab576e9562a7949dc94c6a1988eac36efeb550dd12cca407f34b",
+        W4P: "fe96e65a39ab0f2e11200f595bee56cbb96a07c7b792a5d7046df3b1ed4e7db7",
+    };
+    for (const [id, digest] of Object.entries(digests)) {
+        const q = loadQualification(id);
+        expect(qualificationHash(q)).toBe(digest);
+        expect(sideModelsOf(q)).toBeNull();
     }
 });
 
