@@ -1769,24 +1769,29 @@ test("Pi's model definitions are today's bytes with caching off, and differ in t
     expect(piModelName(OPUS, "on")).not.toMatch(/opus-4-|sonnet-4-|fable-5/);
 });
 
-test("Pi lists the registered reviewer stage-1 model under the display-name rule of its other models", () => {
-    const written = (caching: "on" | "off") => {
-        const ctx = { ...context(runDir()), model: OPUS, reviewerStage1Model: HAIKU };
-        const host = new PiSimHost({ ...ctx, promptCaching: caching });
+test("an arm's Pi lists the agent and side models alone, whatever stage-1 model the run registers", () => {
+    const written = (extra: Partial<HostContext>) => {
+        const host = new PiSimHost({ ...context(runDir()), model: OPUS, ...extra });
         (host as Untyped).writeConfigs(null);
-        const read = (file: string) => JSON.parse(readFileSync(join(host.agentDir, file), "utf8"));
-        const models = read("models.json").providers["amazon-bedrock"].models as Untyped[];
+        const read = (file: string) => readFileSync(join(host.agentDir, file), "utf8");
+        const models = JSON.parse(read("models.json")).providers["amazon-bedrock"].models;
         return {
-            models: models.map((m) => [m.id, m.name]),
-            enabled: read("settings.json").enabledModels,
+            models: (models as Untyped[]).map((m) => m.id),
+            enabled: JSON.parse(read("settings.json")).enabledModels,
+            files: [read("models.json"), read("settings.json")],
         };
     };
-    for (const caching of ["on", "off"] as const) {
-        expect(written(caching)).toEqual({
-            models: [OPUS, HAIKU].map((id) => [id, piModelName(id, caching)]),
-            enabled: [OPUS, HAIKU].map((id) => `amazon-bedrock/${id}`),
-        });
+    // The daemon's child Pi calls the stage-1 model, so the arm's own Pi keeps the two files of
+    // a run that registers none, byte for byte.
+    for (const promptCaching of ["on", "off"] as const) {
+        const registered = written({ promptCaching, reviewerStage1Model: HAIKU });
+        expect(registered.models).toEqual([OPUS]);
+        expect(registered.enabled).toEqual([`amazon-bedrock/${OPUS}`]);
+        expect(registered.files).toEqual(written({ promptCaching }).files);
     }
+    // A side model is listed once, after the agent model.
+    const side = written({ sideModel: HAIKU, reviewerStage1Model: HAIKU });
+    expect(side.models).toEqual([OPUS, HAIKU]);
 });
 
 const PI_AI = join(

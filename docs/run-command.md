@@ -166,10 +166,9 @@ also carry these optional sections and fields:
   daemon's memory reviewer; its value is a bare Bedrock model id
   (`global.anthropic.claude-haiku-5-5`, without a provider prefix). The run
   records the section in its manifest (`side_models`, null without one; a
-  resume compares it), hands the stage-1 model to every arm's host stack
+  resume compares it) and hands the stage-1 model to every arm's host stack
   (`reviewerStage1Model`, which an arm with the reviewer writes into its
-  Eidnara configuration), and lists it in Pi's `models.json` and enabled
-  models beside the agent and side models (`docs/hosts.md`). Under
+  Eidnara configuration, `docs/hosts.md`). Under
   `prompt_caching: "on"` the model must have rates in the table the run
   records: `global.anthropic.claude-haiku-5-5` selects the `v3` table,
   which prices each call at its model's rates, and Claude Opus 5.5 through

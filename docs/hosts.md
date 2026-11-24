@@ -75,8 +75,8 @@ model is the one the arm's history summarizer uses, and it is the review
 model, which writes a proposal for a review stage 1 flagged. The stage-1
 model is the one the registration names under
 `side_models.memory_reviewer_stage1`, which the run records in its
-manifest's `side_models` and reads from there for the arm's configuration,
-every arm's Pi model list, and the arm's capability check. A registration
+manifest's `side_models` and reads from there for the arm's configuration
+and the arm's capability check. A registration
 that runs the arm must name it (`docs/run-command.md`), and the W5
 registrations name `global.anthropic.claude-haiku-5-5`. The configuration
 functions and the capability check take the registered model as an
@@ -674,10 +674,10 @@ prefix lives. A stage-1 system prompt is about 1,040 tokens; recorded
 `eval/w9` requests on Claude Haiku 5.5 read 1,042 tokens from the cache,
 and stage-2 requests on Claude Opus 5.5 wrote and then read 975.
 
-The arm's own Pi lists the run's registered stage-1 model beside the agent
-model and the side model (`piModels`), under the same display-name rule
-(`piModelName`), so a caller in the arm's Pi that uses that model places
-Pi's cache points for it as for the others.
+The arm's own Pi lists the agent model and the side model (`piModels`),
+the models its own callers use. The registered stage-1 model is called by
+the daemon's child Pi alone, so an arm's Pi configuration is the same with
+and without a registered stage-1 model.
 
 OpenCode 1.18.22 places its own cache points for a model whose id holds
 `anthropic` or `claude`: one after the system prompt and one on each of

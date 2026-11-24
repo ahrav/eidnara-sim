@@ -225,14 +225,12 @@ export const payloadManifest = (checkout: string) =>
     join(checkout, "packages/host-linux-x64-gnu/payload-manifest.json");
 
 /**
- * The models an arm's Pi lists in `models.json` and enables: the agent model, the side model of
- * Eidnara's own calls, and the registered stage-1 model of the memory reviewer, each once.
+ * The models an arm's Pi lists in `models.json` and enables: the agent model and the side model
+ * of Eidnara's own calls in that Pi, each once. The memory reviewer's stage-1 model is called by
+ * the daemon's child Pi alone, which runs with a private home and Pi's built-in model list.
  */
-export function piModels(
-    ctx: Pick<HostContext, "model" | "sideModel" | "reviewerStage1Model">,
-): string[] {
-    const side = [ctx.sideModel, ctx.reviewerStage1Model].filter((m): m is string => !!m);
-    return [...new Set([ctx.model, ...side])];
+export function piModels(ctx: Pick<HostContext, "model" | "sideModel">): string[] {
+    return [...new Set([ctx.model, ...(ctx.sideModel ? [ctx.sideModel] : [])])];
 }
 
 /**
