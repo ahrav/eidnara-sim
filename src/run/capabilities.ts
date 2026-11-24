@@ -1455,12 +1455,12 @@ export function readStatements(kernelPath: string): StatementObservation {
         // dispute is an admission decision on the memory the record approves and leaves the
         // record live; the daemon keeps a disputed memory out of the block, so a statement whose
         // every live memory is disputed owes none either.
-        for (const { p, retired: gone, disputed: contested } of rows) {
+        for (const { p, retired: gone, disputed } of rows) {
             if (gone) {
                 retired++;
                 continue;
             }
-            if (contested) {
+            if (disputed) {
                 disputedStatements++;
                 continue;
             }
