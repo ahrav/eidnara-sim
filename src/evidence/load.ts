@@ -23,7 +23,16 @@ import {
     rebuildRequest,
 } from "../proxy/requests";
 import { CallLog, type HeldCall } from "../run/calllog";
-import type { ArmObservation, SearchFallbackBound } from "../run/capabilities";
+import {
+    type ArmObservation,
+    observeReviewer,
+    REVIEWER_COMPONENTS,
+    type ReviewerObservation,
+    type ReviewerStatusObservation,
+    readDaemonStatus,
+    readStatements,
+    type SearchFallbackBound,
+} from "../run/capabilities";
 import { type Entry, eachLine, readJournal, readJsonl } from "../run/journal";
 import { scenarioHash } from "../scenario/compile";
 import { admittedArms, loadPrereg, loadQualification } from "../scenario/inputs";
@@ -69,6 +78,8 @@ export interface ArmProfileView {
     role?: string;
     /** Absent in manifests recorded before arms declared source capture. */
     source_capture?: boolean;
+    /** Set on an arm that writes the memory reviewer switch. */
+    memory_reviewer?: boolean;
 }
 
 export interface ToolRun {
@@ -135,6 +146,45 @@ export interface ArmData {
      * unread).
      */
     search: FusedSearch | null;
+    /**
+     * The memory reviewer as the arm's artefacts show it; absent on arm data built without the
+     * arm's directory.
+     */
+    reviewer?: ReviewerEvidence;
+}
+
+/**
+ * What an arm's artefacts show of the memory reviewer, read by one rule on every arm: its log
+ * lines, settle steps, and gateway calls (`observeReviewer`), the activation states of the
+ * daemon's status readings, and the final store's failed-command records and disputed objects;
+ * each of the last three is null where its file is absent or unreadable.
+ */
+export interface ReviewerEvidence extends ReviewerObservation {
+    /** Whether the arm's profile sets the reviewer switch; null for a profile the run records none of. */
+    switch: boolean | null;
+    status: ReviewerStatusObservation | null;
+    failed_commands: { live: number; retired: number } | null;
+    disputed: { live: number; retired: number } | null;
+}
+
+/** The reviewer evidence of the arm directory `root`, with the arm's call counts by component. */
+export function reviewerEvidence(
+    root: string,
+    profile: ArmProfileView | null,
+    components: Readonly<Record<string, number>>,
+): ReviewerEvidence {
+    const resources = join(root, "resources.jsonl");
+    const status = lstatSync(resources, { throwIfNoEntry: false })?.isFile()
+        ? (readDaemonStatus(resources).memory_reviewer ?? null)
+        : null;
+    const statements = readStatements(join(root, "final-store", "kernel.sqlite"));
+    return {
+        switch: profile === null ? null : profile.memory_reviewer === true,
+        ...observeReviewer(root, components),
+        status,
+        failed_commands: statements?.failed_commands ?? null,
+        disputed: statements?.disputed ?? null,
+    };
 }
 
 export interface FusedSearch {
@@ -692,6 +742,15 @@ export function loadRun(dir: string): RunData {
     } catch (caught) {
         callLog.close();
         throw caught;
+    }
+    for (const [arm, data] of arms) {
+        const components: Record<string, number> = {};
+        for (const c of callLog.calls) {
+            if (c.arm !== arm || !(REVIEWER_COMPONENTS as readonly string[]).includes(c.component))
+                continue;
+            components[c.component] = (components[c.component] ?? 0) + 1;
+        }
+        data.reviewer = reviewerEvidence(join(dir, arm), data.profile, components);
     }
     return {
         dir,

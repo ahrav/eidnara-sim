@@ -496,6 +496,7 @@ export class HostDriver implements ArmDriver {
                     (read) => ({ ...read, error: null }),
                     (caught: unknown) => ({
                         process_memory: null,
+                        memory_reviewer: null,
                         search: null,
                         error: String(caught).slice(0, 500),
                     }),

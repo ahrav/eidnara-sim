@@ -477,15 +477,15 @@ export class DaemonStack {
 
     /**
      * Reads the daemon's own status over an observational route (harness `cli`, Eidnara
-     * `OBSERVATIONAL_HARNESS`): the `process_memory` block of the Context module's `status`
-     * answer and, with `lifecycle`, the record state, admission, and `progress` block of
+     * `OBSERVATIONAL_HARNESS`): the `process_memory` block and the memory reviewer's activation
+     * state of the Context module's `status` answer and, with `lifecycle`, the record state, admission, and `progress` block of
      * `search.lifecycle.status`. The route stays open between reads, so a read binds and tears
      * down no session. A failed read closes the connection, and the next read opens a new one.
      */
     async status(
         lifecycle: boolean,
         timeoutMs = 10_000,
-    ): Promise<Pick<DaemonStatusReading, "process_memory" | "search">> {
+    ): Promise<Pick<DaemonStatusReading, "process_memory" | "memory_reviewer" | "search">> {
         const identity = {
             project_root: this.ctx.root,
             harness: "cli",
@@ -523,6 +523,7 @@ export class DaemonStack {
                 : null;
             return {
                 process_memory: processMemoryBlock(memory),
+                memory_reviewer: reviewerBlock(status?.memory_reviewer),
                 search: answer?.kind === "status" ? lifecycleReading(answer) : null,
             };
         } catch (caught) {
@@ -631,6 +632,19 @@ export function processMemoryBlock(m: unknown): Record<string, unknown> | null {
     return nullable.every((k) => nullableUint(m[k]) !== undefined) &&
         totals.every((k) => uint(m[k]) !== null)
         ? m
+        : null;
+}
+
+/**
+ * The `memory_reviewer` block of the Context module's `status` answer as a sample records it: its
+ * `activation_state` alone, a short name such as `open` or `missing` (Eidnara
+ * `memory_reviewer/lifecycle.rs` `ActivationState`). Any other value is no block.
+ */
+export function reviewerBlock(m: unknown): { activation_state: string } | null {
+    if (!isRecord(m)) return null;
+    const state = m.activation_state;
+    return typeof state === "string" && /^[a-z_]{1,40}$/.test(state)
+        ? { activation_state: state }
         : null;
 }
 

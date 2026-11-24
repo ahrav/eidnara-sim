@@ -32,6 +32,7 @@ import {
     readPiAnswers,
     readStore,
     requestRef,
+    reviewerEvidence,
     type StoreObject,
 } from "./load";
 import { armAnswers, armComparison, renderEvidence } from "./report";
@@ -1405,6 +1406,20 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     expect(row.stages.map((s) => s.status)).toEqual(["ok", "ok", "ok", "ok", "ok", "failed"]);
     expect(existsSync(join(out, "run", "evidence-sessions.jsonl"))).toBe(true);
     expect(readFileSync(join(out, "evidence.md"), "utf8")).toBe(report);
+    // The reviewer's counts are written per arm, and the report renders the same record.
+    const reviewer = JSON.parse(readFileSync(join(out, "run", "evidence-reviewer.json"), "utf8"));
+    expect(reviewer.schema).toBe("sim-evidence-reviewer/v1");
+    expect(Object.keys(reviewer.arms)).toEqual(["eidnara"]);
+    expect(reviewer.arms.eidnara).toMatchObject({
+        switch: false,
+        log: { selections: 0, stage1_failed: 0, gate_closed: 0 },
+        drains: { calls: 0 },
+        calls: { memory_reviewer_stage1: 0, memory_reviewer_stage2: 0 },
+        status: null,
+    });
+    expect(report).toContain(
+        "| run | eidnara | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | no reading |",
+    );
     expect(report).toContain("| run | eidnara | q-1 | P1 | fail |");
     // The loaded records hold each request's digest and length; the log supplies the part ids.
     const loaded = loadRun(dir);
@@ -1534,7 +1549,7 @@ test("the report counts a fused arm's degraded search answers from its capabilit
     const rows = (report: string) => {
         const lines = report.split("\n");
         const at = lines.indexOf("### Search route answers");
-        return lines.slice(at + 6, lines.indexOf("### Context health", at) - 1);
+        return lines.slice(at + 6, lines.indexOf("### Memory reviewer", at) - 1);
     };
     const results = (legacy_scan: string[], fused = 42) => ({ legacy_scan, fused, errored: 2 });
     expect(
@@ -1828,4 +1843,104 @@ describe("the statements of a <project-memory> block", () => {
             "no model request in the source window carried the literal",
         );
     });
+});
+
+test("the report's reviewer section renders each arm's log, settle steps, gateway calls, and status", () => {
+    const root = mkdtempSync(join(tmpdir(), "sim-evidence-reviewer-"));
+    try {
+        const arm = join(root, "eidnara-reviewer");
+        mkdirSync(arm);
+        const haiku = "amazon-bedrock/global.anthropic.claude-haiku-5-5";
+        // The daemon's own lines (Eidnara eval/w9 `memory_reviewer/`).
+        writeFileSync(
+            join(arm, "daemon.log"),
+            [
+                "daemon: memory_reviewer enqueued job=1e272ec4862b8c69 trigger=later_statement later=1 source=1",
+                "daemon: memory_reviewer enqueued job=171284c95cbd3587 trigger=current_work later=2 source=1",
+                'daemon: memory_reviewer selected 2 of 5 memories for review: {"contested": 0, "current_work": 1, "later_message": 0, "later_statement": 1}; 0 wait for a pending proposal',
+                `daemon: memory_reviewer stage 1 job=1e272ec4862b8c69 decider=chat_model model=${haiku} request=80f14b8005030580 decision=flagged changes=yes relation=replaces work_ended=no strongest=ref-3 later=1`,
+                "daemon: memory_reviewer stage 1 job=171284c95cbd3587 decider=none model=none request=none decision=keep changes=none relation=none work_ended=none strongest=none later=0",
+                "daemon: memory_reviewer applied a proposal: job=1e272ec4862b8c69 contested",
+                "",
+            ].join("\n"),
+        );
+        writeFileSync(
+            join(arm, "review-drain.jsonl"),
+            `${JSON.stringify({ session: "s-1", started_wall_ms: 1_000, wall_ms: 3_500, settled: 2, error: null })}\n${JSON.stringify({ session: "s-2", started_wall_ms: 9_000, wall_ms: 9_500, settled: null, error: "review drain failed: Error: boom" })}\n`,
+        );
+        const reading = (state: string) =>
+            JSON.stringify({
+                pid: 7,
+                daemon_status: {
+                    pid: 7,
+                    start: "1",
+                    process_memory: null,
+                    memory_reviewer: { activation_state: state },
+                    search: null,
+                    error: null,
+                },
+            });
+        writeFileSync(join(arm, "resources.jsonl"), `${reading("unknown")}\n${reading("open")}\n`);
+        const seen = reviewerEvidence(
+            arm,
+            { plugin: true, memory_reviewer: true },
+            {
+                memory_reviewer_stage1: 1,
+                memory_reviewer_stage2: 1,
+            },
+        );
+        expect(seen).toMatchObject({
+            switch: true,
+            log: { selections: 1, applied: { contested: 1 } },
+            drains: {
+                calls: 2,
+                settled_runs: 2,
+                total_wall_ms: 3_000,
+                max_wall_ms: 2_500,
+                errors: 1,
+            },
+            calls: { memory_reviewer_stage1: 1, memory_reviewer_stage2: 1 },
+            status: { readings: 2, open: 1, last: "open" },
+            // The arm directory holds no final store.
+            failed_commands: null,
+            disputed: null,
+        });
+        const run = (name: string, armName: string, reviewer: ArmData["reviewer"]) => {
+            const r = build({ arm: armName });
+            (r.arms.get(armName) as ArmData).reviewer = reviewer;
+            return { name, run: r, probes: [], sessions: [] };
+        };
+        const quiet = reviewerEvidence(join(root, "absent"), { plugin: true }, {});
+        const withStore = {
+            ...quiet,
+            failed_commands: { live: 2, retired: 1 },
+            disputed: { live: 0, retired: 0 },
+        };
+        const report = renderEvidence([
+            run("A", "eidnara-reviewer", seen),
+            run("B", "eidnara", withStore),
+            // An arm without a daemon and without a sign of the reviewer has no row.
+            run("C", "host", reviewerEvidence(join(root, "absent"), { plugin: false }, {})),
+            // A gateway call of a reviewer component shows on any arm.
+            run(
+                "D",
+                "host",
+                reviewerEvidence(
+                    join(root, "absent"),
+                    { plugin: false },
+                    {
+                        memory_reviewer_stage1: 3,
+                    },
+                ),
+            ),
+        ]).split("\n");
+        const at = report.indexOf("### Memory reviewer");
+        expect(report.slice(at + 6, report.indexOf("### Context health", at) - 1)).toEqual([
+            `| A | eidnara-reviewer | on | current_work 1, later_statement 1 | 1 | chat_model: 0 keep, 1 flagged (${haiku}); none: 1 keep, 0 flagged (none) | 0 | 0 | contested 1 | 0 left for a reader, 0 unapplied | 0 | 2 steps, 2 runs settled, 3.0 s in all, 2.5 s the longest, 1 with an error | memory_reviewer_stage1 1, memory_reviewer_stage2 1 | open in 1 of 2 readings, last open | unread | unread |`,
+            "| B | eidnara | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | no reading | 2 live, 1 retired | 0 live, 0 retired |",
+            "| D | host | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | memory_reviewer_stage1 3 | no reading | unread | unread |",
+        ]);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
 });

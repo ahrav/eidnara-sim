@@ -2670,6 +2670,7 @@ async function runArms(
             build,
             caching,
             qualificationOf(o)?.search_fallback ?? null,
+            stage1Model,
         );
         const { mismatches } = record;
         writeAtomic(join(o.out, arm, "capabilities.json"), `${JSON.stringify(record, null, 2)}\n`);
