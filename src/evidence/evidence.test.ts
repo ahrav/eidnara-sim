@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
     existsSync,
+    linkSync,
     mkdirSync,
     mkdtempSync,
     readdirSync,
@@ -32,19 +33,24 @@ import {
     readPiAnswers,
     readStore,
     requestRef,
+    reviewerEvidence,
     type StoreObject,
 } from "./load";
 import { armAnswers, armComparison, renderEvidence } from "./report";
 import {
+    blockMarks,
     bodyText,
     carriesLiteral,
     findGroups,
     injectedBlocks,
+    PROJECT_MEMORY_NOTE,
     type ProbeEvidence,
     partText,
     probeEvidence,
     runEvidence,
     searchRoute,
+    statementContext,
+    statementText,
 } from "./stages";
 
 const user = (text: string) => ({ role: "user", content: [{ text }] });
@@ -1292,7 +1298,38 @@ test("evidence-run reads a run directory and writes only under --out", () => {
         join(dir, "journal.jsonl"),
         journal.map((e) => `${JSON.stringify(e)}\n`).join(""),
     );
-    writeFileSync(join(dir, "calls.jsonl"), r.calls.map((c) => `${JSON.stringify(c)}\n`).join(""));
+    // The reviewer made one stage-1 call on this arm; a record of another arm label is no call of it.
+    const reviewerCall = (seq: number, arm: string): CallRecord => ({
+        ...(r.calls[0] as CallRecord),
+        seq,
+        arm,
+        turn: null,
+        component: "memory_reviewer_stage1",
+        model: "global.anthropic.claude-haiku-5-5",
+        request: undefined,
+    });
+    const recorded = [
+        ...r.calls,
+        reviewerCall(r.calls.length, "eidnara"),
+        reviewerCall(r.calls.length + 1, "eidnara~aa"),
+    ];
+    writeFileSync(join(dir, "calls.jsonl"), recorded.map((c) => `${JSON.stringify(c)}\n`).join(""));
+    // The arm's reviewer artefacts: one log line of each kind the report counts a review by, and
+    // one settle step.
+    const haiku = "amazon-bedrock/global.anthropic.claude-haiku-5-5";
+    writeFileSync(
+        join(dir, "eidnara", "daemon.log"),
+        [
+            "daemon: memory_reviewer enqueued job=1e272ec4862b8c69 trigger=later_statement later=1 source=1",
+            `daemon: memory_reviewer stage 1 job=1e272ec4862b8c69 decider=chat_model model=${haiku} request=80f14b8005030580 decision=flagged changes=yes relation=replaces work_ended=no strongest=ref-3 later=1`,
+            "daemon: memory_reviewer applied a proposal: job=1e272ec4862b8c69 disputed",
+            "",
+        ].join("\n"),
+    );
+    writeFileSync(
+        join(dir, "eidnara", "review-drain.jsonl"),
+        `${JSON.stringify({ session: "s-2", started_wall_ms: 1_000, wall_ms: 3_500, settled: 2, error: null })}\n`,
+    );
     writeFileSync(
         join(dir, "requests.jsonl"),
         [...((r.parts as Map<string, RequestPart> | null) ?? [])]
@@ -1401,17 +1438,54 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     expect(row.stages.map((s) => s.status)).toEqual(["ok", "ok", "ok", "ok", "ok", "failed"]);
     expect(existsSync(join(out, "run", "evidence-sessions.jsonl"))).toBe(true);
     expect(readFileSync(join(out, "evidence.md"), "utf8")).toBe(report);
+    // The reviewer's counts are written per arm, and the report renders the same record.
+    const reviewer = JSON.parse(readFileSync(join(out, "run", "evidence-reviewer.json"), "utf8"));
+    expect(reviewer.schema).toBe("sim-evidence-reviewer/v1");
+    expect(Object.keys(reviewer.arms)).toEqual(["eidnara"]);
+    // The counts come from the arm's own directory and from the arm's own call records.
+    expect(reviewer.arms.eidnara).toMatchObject({
+        switch: false,
+        log: {
+            enqueued: { later_statement: 1 },
+            selections: 0,
+            stage1: { chat_model: { keep: 0, flagged: 1, models: [haiku] } },
+            stage1_failed: 0,
+            applied: { disputed: 1 },
+            gate_closed: 0,
+        },
+        drains: { calls: 1, settled_runs: 2, total_wall_ms: 2_500, errors: 0 },
+        calls: { memory_reviewer_stage1: 1, memory_reviewer_stage2: 0 },
+        status: null,
+    });
+    expect(report).toContain(
+        `| run | eidnara | off | later_statement 1 | 0 | chat_model: 0 keep, 1 flagged (${haiku}) | 0 | 0 | 0 | disputed 1 | 0 left for a reader, 0 unapplied | 0 | 1 steps, 2 runs settled, 2.5 s in all, 2.5 s the longest, 0 with an error | memory_reviewer_stage1 1 | no reading |`,
+    );
     expect(report).toContain("| run | eidnara | q-1 | P1 | fail |");
     // The loaded records hold each request's digest and length; the log supplies the part ids.
     const loaded = loadRun(dir);
     expect(loaded.calls.map((c) => c.request && Object.keys(c.request))).toEqual(
-        r.calls.map((c) => c.request && ["sha256", "bytes"]),
+        recorded.map((c) => c.request && ["sha256", "bytes"]),
     );
     expect(loaded.calls.map((c) => requestRef(loaded, c) as unknown)).toEqual(
-        r.calls.map((c) => c.request ?? null),
+        recorded.map((c) => c.request ?? null),
     );
     loaded.callLog?.close();
     if (loaded.parts instanceof RequestPartLog) loaded.parts.close();
+    // A reviewer artefact with a second name is refused, and the load leaves no log open.
+    const second = join(root, "daemon.log.second-name");
+    linkSync(join(dir, "eidnara", "daemon.log"), second);
+    const open = () => readdirSync("/proc/self/fd").length;
+    const held = open();
+    expect(() => loadRun(dir)).toThrow(/daemon\.log is not a single-link regular file/);
+    expect(open()).toBe(held);
+    rmSync(second);
+    // A `resources.jsonl` that is a link is refused as well; an absent one reads as no status.
+    const linked = join(dir, "eidnara", "resources.jsonl");
+    writeFileSync(join(root, "resources.elsewhere"), "");
+    symlinkSync(join(root, "resources.elsewhere"), linked);
+    expect(() => loadRun(dir)).toThrow(/resources\.jsonl cannot be read as evidence/);
+    expect(open()).toBe(held);
+    rmSync(linked);
     expect(loadRun(dir).arms.get("eidnara")?.objects?.length).toBe(2);
     // A fused arm's search answers and registered bound come from its capability record, and
     // the profile the manifest pins decides whether the arm declares the fused route.
@@ -1530,7 +1604,7 @@ test("the report counts a fused arm's degraded search answers from its capabilit
     const rows = (report: string) => {
         const lines = report.split("\n");
         const at = lines.indexOf("### Search route answers");
-        return lines.slice(at + 6, lines.indexOf("### Context health", at) - 1);
+        return lines.slice(at + 6, lines.indexOf("### Memory reviewer", at) - 1);
     };
     const results = (legacy_scan: string[], fused = 42) => ({ legacy_scan, fused, errored: 2 });
     expect(
@@ -1578,5 +1652,385 @@ test("a descriptor whose creation or retirement commit the log lacks leaves the 
         expect(readStore(dir).descriptors).toBeNull();
     } finally {
         rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+describe("the statements of a <project-memory> block", () => {
+    // The strings below are the product's own (Eidnara eval/w9: `memory_render.rs`,
+    // `named_files.rs`, `canonical_memory.rs`).
+    const NAMED_FILES_NOTE =
+        "Files of this project that a message of the user named in an earlier session and the agent then read or named in a command it ran, most used first. Paths are relative to the project root, and each file existed when this block was composed. This memory holds none of their content: open a file for what it says. A line here ends with when the file last changed: its last commit's time or, marked on disk, its modification time, which a checkout also sets. A User stated line below that ends with a time in square brackets was recorded then, at or after the user made it. A statement made after a file's last change is newer than that file, and a file committed after a statement was recorded is newer than the statement in the lines changed since then.";
+    const CURRENT_WORK_NOTE =
+        "Work the user left open in earlier sessions, newest first, which no later statement of the user ended. It sets no standing rule and may be finished already: check the repository before resuming it.";
+    const NAMED_FILES = [
+        `<NAMED_FILES note="${NAMED_FILES_NOTE}">`,
+        "docs/deploy.md (the agent used it in 2 earlier sessions, last on 2026-03-01; last changed 2026-03-01T09:30Z)",
+        "src/limits.rs (the agent used it in 1 earlier session, last on 2026-03-02; last changed 2026-03-02T11:30Z on disk)",
+        "tools/gen.sh (the agent used it in 1 earlier session, last on 2026-03-02; last changed at a time the read history does not show)",
+        "</NAMED_FILES>",
+    ];
+    const DATED = "mem_a: User stated: The retry limit is 45. [2026-03-01T09:30Z]";
+    const REPLACED =
+        "mem_b: User stated: The pool size is 500. (stated 2026-04-09; it replaces a value recorded 2026-03-30 that the user had not stated)";
+    const CONTESTED =
+        'mem_c: User stated: The timeout is 300. (stated 2026-03-01; contested 2026-03-30 by mem_d: "The timeout is now 750 after the change.")';
+    const WORK = [
+        `<CURRENT_WORK note="${CURRENT_WORK_NOTE}">`,
+        "mem_e: User stated: Next, move TAG_X into the retry module. [2026-03-02T11:30Z]",
+        "</CURRENT_WORK>",
+    ];
+    const block = (lines: string[]) =>
+        `<project-memory>\n${lines.join("\n")}\n${PROJECT_MEMORY_NOTE}\n</project-memory>`;
+    const bodyOf = (text: string) => injectedBlocks(text)[0]?.body as string;
+    const facts = (...lines: string[]) => ["<CONFIG_VALUES>", ...lines, "</CONFIG_VALUES>"];
+    const W9 = block([...NAMED_FILES, ...facts(DATED, REPLACED, CONTESTED), ...WORK]);
+
+    /** The evidence of a probe whose turn carries `text` in its system prompt, on a memory arm. */
+    const probed = (text: string, present: string[][], stale: string[] = []) => {
+        const probe = SCENARIO.probes[0] as EvidenceScenario["probes"][number];
+        const scenario = {
+            ...SCENARIO,
+            probes: [
+                { ...probe, ground_truth: { expect: "apply", present, stale, sources: ["e-0"] } },
+            ],
+        };
+        const turn = { body: { system: [{ text }], messages: [user("Add the error path.")] } };
+        return evidence(build({ calls: [turn], scenario }));
+    };
+    const delivery = (p: ProbeEvidence) => stage(p, "delivery");
+
+    test("the element of named files and the closing sentence hold no statement", () => {
+        const body = bodyOf(
+            block([...NAMED_FILES, ...facts("mem_a: User stated: The retry limit is 45.")]),
+        );
+        expect(statementText(body)).toBe(
+            "\n<CONFIG_VALUES>\nmem_a: User stated: The retry limit is 45.\n</CONFIG_VALUES>\n",
+        );
+        // The rows' minutes and days carry digits a literal reader takes for values.
+        for (const literal of ["30", "09", "11", "2026", "2", "1"]) {
+            expect([literal, carriesLiteral(body, literal)]).toEqual([literal, true]);
+            expect([literal, carriesLiteral(statementText(body), literal)]).toEqual([
+                literal,
+                false,
+            ]);
+        }
+        const p = probed(
+            block([...NAMED_FILES, ...facts("mem_a: User stated: The retry limit is 45.")]),
+            [["30"]],
+        );
+        expect(delivery(p)).toMatchObject({
+            status: "failed",
+            reason: "no probe-turn request carried 30",
+        });
+        expect(stage(p, "retrieval")).toMatchObject({ status: "failed" });
+        // The same rows hold no stale value either.
+        const stale = probed(
+            block([...NAMED_FILES, ...facts("mem_a: User stated: The retry limit is 45.")]),
+            [["45"]],
+            ["30", "2026"],
+        );
+        expect(delivery(stale)).toMatchObject({ status: "ok", detail: { stale_in_context: [] } });
+        // A rank counts the lines of the block's statement text: the statement is line 8 of the
+        // whole body and line 3 once the element of named files is removed, as on a build without it.
+        expect(body.split("\n").findIndex((line) => line.includes("45")) + 1).toBe(8);
+        expect(stage(stale, "retrieval")).toMatchObject({
+            status: "ok",
+            detail: { ranks: [{ source: "<project-memory>", line: 3 }] },
+        });
+    });
+
+    test("a statement delivers its literal, and the minute it was recorded delivers none", () => {
+        const body = bodyOf(block(facts(DATED)));
+        expect(statementText(body)).toBe(
+            "\n<CONFIG_VALUES>\nmem_a: User stated: The retry limit is 45.\n</CONFIG_VALUES>\n",
+        );
+        const p = probed(block(facts(DATED)), [["45"]], ["30", "09", "2026"]);
+        expect(delivery(p)).toMatchObject({ status: "ok", detail: { stale_in_context: [] } });
+        expect(stage(p, "retrieval")).toMatchObject({
+            status: "ok",
+            detail: { ranks: [{ source: "<project-memory>", line: 3 }] },
+        });
+        for (const fromMinute of ["30", "09", "01", "03", "2026"]) {
+            expect([
+                fromMinute,
+                delivery(probed(block(facts(DATED)), [[fromMinute]]))?.status,
+            ]).toEqual([fromMinute, "failed"]);
+        }
+        // A minute counts at its line's end alone: the same text inside a statement stands.
+        const inside = "mem_f: User stated: The window [2026-03-01T09:30Z] opens the deploy.";
+        expect(statementText(inside)).toBe(inside);
+        // A continuation line carries the minute of a statement of several lines.
+        expect(
+            statementText("mem_g: User stated: The limit\n  is 45. [2026-03-01T09:30Z]\nmem_h: x"),
+        ).toBe("mem_g: User stated: The limit\n  is 45.\nmem_h: x");
+    });
+
+    test("a replacement mark leaves the live statement: delivered, counted, and neither contested nor stale", () => {
+        const body = bodyOf(block(facts(REPLACED)));
+        expect(statementText(body)).toBe(
+            "\n<CONFIG_VALUES>\nmem_b: User stated: The pool size is 500.\n</CONFIG_VALUES>\n",
+        );
+        expect(blockMarks(body)).toEqual({ closing: true, named_files: false, replaced: true });
+        // The days of the mark are no value: 30 and 09 stand in them alone.
+        const p = probed(block(facts(REPLACED)), [["500"]], ["30", "09", "2026"]);
+        expect(delivery(p)).toMatchObject({ status: "ok", detail: { stale_in_context: [] } });
+        expect(p.attributed.cause).toBe("application");
+        // A day the commit log lacks reads `unknown date` on either side.
+        for (const [stated, recorded] of [
+            ["unknown date", "2026-03-30"],
+            ["2026-04-09", "unknown date"],
+            ["unknown date", "unknown date"],
+        ]) {
+            const line = `mem_b: User stated: The pool size is 500. (stated ${stated}; it replaces a value recorded ${recorded} that the user had not stated)`;
+            expect(statementText(line)).toBe("mem_b: User stated: The pool size is 500.");
+            expect(blockMarks(line).replaced).toBe(true);
+        }
+    });
+
+    test("a contested mark keeps its statement and its excerpt readable and loses its days", () => {
+        const body = bodyOf(block(facts(CONTESTED)));
+        expect(statementText(body)).toBe(
+            '\n<CONFIG_VALUES>\nmem_c: User stated: The timeout is 300. (stated; contested by mem_d: "The timeout is now 750 after the change.")\n</CONFIG_VALUES>\n',
+        );
+        expect(blockMarks(body).replaced).toBe(false);
+        // The statement holds the superseded value and the excerpt the current one.
+        const p = probed(block(facts(CONTESTED)), [["750"]], ["300", "30", "2026"]);
+        expect(delivery(p)).toMatchObject({ status: "ok", detail: { stale_in_context: ["300"] } });
+        expect(delivery(probed(block(facts(CONTESTED)), [["300"]]))?.status).toBe("ok");
+        expect(delivery(probed(block(facts(CONTESTED)), [["mem_d"]]))?.status).toBe("ok");
+        const unknown = 'S. (stated unknown date; contested unknown date by mem_b: "x")';
+        expect(statementText(unknown)).toBe('S. (stated; contested by mem_b: "x")');
+    });
+
+    test("a statement counts wherever it sits: a category element, the element of work in progress, a marked line", () => {
+        const p = probed(W9, [["45"], ["TAG_X"], ["500"], ["750"]], ["30", "09", "11", "2026"]);
+        expect(delivery(p)).toMatchObject({ status: "ok", detail: { stale_in_context: [] } });
+        expect(stage(p, "retrieval")?.status).toBe("ok");
+        // The readers that count statements keep the whole body.
+        expect(bodyOf(W9)).toContain("<NAMED_FILES note=");
+        expect(bodyOf(W9)).toContain(PROJECT_MEMORY_NOTE);
+        expect(blockMarks(bodyOf(W9))).toEqual({
+            closing: true,
+            named_files: true,
+            replaced: true,
+        });
+        expect(statementText(bodyOf(W9))).toBe(
+            [
+                "",
+                "<CONFIG_VALUES>",
+                "mem_a: User stated: The retry limit is 45.",
+                "mem_b: User stated: The pool size is 500.",
+                'mem_c: User stated: The timeout is 300. (stated; contested by mem_d: "The timeout is now 750 after the change.")',
+                "</CONFIG_VALUES>",
+                `<CURRENT_WORK note="${CURRENT_WORK_NOTE}">`,
+                "mem_e: User stated: Next, move TAG_X into the retry module.",
+                "</CURRENT_WORK>",
+                "",
+            ].join("\n"),
+        );
+        // Reading a block twice changes nothing more, and the text around a block stands.
+        const around = `before 09:30Z\n${W9}\nafter [2026-03-01T09:30Z]`;
+        const read = statementContext(around);
+        expect(statementContext(read)).toBe(read);
+        expect(read.startsWith("before 09:30Z\n<project-memory>\n<CONFIG_VALUES>")).toBe(true);
+        expect(read.endsWith("</CURRENT_WORK>\n</project-memory>\nafter [2026-03-01T09:30Z]")).toBe(
+            true,
+        );
+    });
+
+    test("a block of a build without the marks comes back byte for byte", () => {
+        // A block as eval/w4 renders it: categories, then the element of work in progress.
+        const w4 = [
+            "<project-memory>",
+            "<PROJECT_RULES>",
+            "mem_1: User stated: Error strings use TAG_X, not TAG_OLD.",
+            "mem_2: The deploy runs at 09:30Z on 2026-03-01 [see docs/deploy.md]",
+            "mem_3: User stated: Keep the limit at 300 (stated in the review; it replaces nothing)",
+            "</PROJECT_RULES>",
+            `<CURRENT_WORK note="${CURRENT_WORK_NOTE}">`,
+            "mem_4: User stated: Next, add the retry test.",
+            "</CURRENT_WORK>",
+            "</project-memory>",
+        ].join("\n");
+        const body = bodyOf(w4);
+        expect(statementText(body)).toBe(body);
+        expect(statementContext(w4)).toBe(w4);
+        expect(blockMarks(body)).toEqual({ closing: false, named_files: false, replaced: false });
+        // The closing sentence counts as the block's last line alone.
+        const quoted = `<PROJECT_RULES>\nmem_5: ${PROJECT_MEMORY_NOTE}\n</PROJECT_RULES>\n`;
+        expect(statementText(quoted)).toBe(quoted);
+        expect(blockMarks(quoted).closing).toBe(false);
+        // Text with no block is the same string.
+        const plain =
+            'Read 09:30Z [2026-03-01T09:30Z]\nUser stated: x (stated 2026-03-01; contested 2026-03-02 by m: "y")';
+        expect(statementContext(plain)).toBe(plain);
+    });
+
+    test("the source window reads a block by its statements too", () => {
+        // The source's value 30 reached no request of the window; a block's minute holds the digits.
+        const probe = SCENARIO.probes[0] as EvidenceScenario["probes"][number];
+        const scenario = {
+            ...SCENARIO,
+            probes: [
+                {
+                    ...probe,
+                    ground_truth: {
+                        expect: "apply",
+                        present: [["30"]],
+                        stale: [],
+                        sources: ["e-0"],
+                    },
+                },
+            ],
+        };
+        const dated = {
+            session: "s-1",
+            turn: "e-2",
+            body: { system: [{ text: block(facts(DATED)) }], messages: [user("Read notes/n.md")] },
+        };
+        const p = evidence(build({ calls: [dated, searchTurn("nothing")], scenario }));
+        expect(stage(p, "source")).toMatchObject({
+            status: "failed",
+            reason: "no model request in the source window carried the literal",
+        });
+        const stated = {
+            ...dated,
+            body: {
+                system: [{ text: block(facts("mem_a: User stated: The retry limit is 30.")) }],
+                messages: [user("Read notes/n.md")],
+            },
+        };
+        const seen = evidence(build({ calls: [stated, searchTurn("nothing")], scenario }));
+        expect(stage(seen, "source")?.reason).not.toBe(
+            "no model request in the source window carried the literal",
+        );
+    });
+});
+
+test("the report's reviewer section renders each arm's log, settle steps, gateway calls, and status", () => {
+    const root = mkdtempSync(join(tmpdir(), "sim-evidence-reviewer-"));
+    try {
+        const arm = join(root, "eidnara-reviewer");
+        mkdirSync(arm);
+        const haiku = "amazon-bedrock/global.anthropic.claude-haiku-5-5";
+        // The daemon's own lines (Eidnara eval/w9 `memory_reviewer/`).
+        writeFileSync(
+            join(arm, "daemon.log"),
+            [
+                "daemon: memory_reviewer enqueued job=1e272ec4862b8c69 trigger=later_statement later=1 source=1",
+                "daemon: memory_reviewer enqueued job=171284c95cbd3587 trigger=current_work later=2 source=1",
+                'daemon: memory_reviewer selected 2 of 5 memories for review: {"contested": 0, "current_work": 1, "later_message": 0, "later_statement": 1}; 0 wait for a pending proposal',
+                `daemon: memory_reviewer stage 1 job=1e272ec4862b8c69 decider=chat_model model=${haiku} request=80f14b8005030580 decision=flagged changes=yes relation=replaces work_ended=no strongest=ref-3 later=1`,
+                "daemon: memory_reviewer stage 1 job=171284c95cbd3587 decider=none model=none request=none decision=keep changes=none relation=none work_ended=none strongest=none later=0",
+                "daemon: memory_reviewer applied a proposal: job=1e272ec4862b8c69 contested",
+                `daemon: memory_reviewer stage 1 request ended without an answer: job=dbf9bc4ef617824b decider=chat_model model=${haiku} terminal_not_recorded the execution cutoff has passed`,
+                "daemon: memory_reviewer run ended without settlement: fenced",
+                "",
+            ].join("\n"),
+        );
+        writeFileSync(
+            join(arm, "review-drain.jsonl"),
+            [
+                { session: "s-1", started_wall_ms: 1_000, wall_ms: 3_500, settled: 2, error: null },
+                {
+                    session: "s-2",
+                    started_wall_ms: 9_000,
+                    wall_ms: 9_500,
+                    settled: null,
+                    error: "review drain unanswered after 500 ms",
+                },
+                // The drain of s-2 answered 6 s after its step began.
+                {
+                    session: "s-2",
+                    started_wall_ms: 9_000,
+                    wall_ms: 15_000,
+                    settled: 1,
+                    error: null,
+                    late: true,
+                },
+            ]
+                .map((line) => `${JSON.stringify(line)}\n`)
+                .join(""),
+        );
+        const reading = (state: string) =>
+            JSON.stringify({
+                pid: 7,
+                daemon_status: {
+                    pid: 7,
+                    start: "1",
+                    process_memory: null,
+                    memory_reviewer: { activation_state: state },
+                    search: null,
+                    error: null,
+                },
+            });
+        writeFileSync(join(arm, "resources.jsonl"), `${reading("unknown")}\n${reading("open")}\n`);
+        const seen = reviewerEvidence(
+            arm,
+            { plugin: true, memory_reviewer: true },
+            {
+                memory_reviewer_stage1: 1,
+                memory_reviewer_stage2: 1,
+            },
+        );
+        expect(seen).toMatchObject({
+            switch: true,
+            log: {
+                selections: 1,
+                applied: { contested: 1 },
+                stage1_failed: 1,
+                unsettled: { fenced: 1 },
+            },
+            drains: {
+                calls: 2,
+                late_answers: 1,
+                settled_runs: 3,
+                total_wall_ms: 3_000,
+                max_wall_ms: 6_000,
+                errors: 1,
+            },
+            calls: { memory_reviewer_stage1: 1, memory_reviewer_stage2: 1 },
+            status: { readings: 2, open: 1, last: "open" },
+            // The arm directory holds no final store.
+            failed_commands: null,
+            disputed: null,
+        });
+        const run = (name: string, armName: string, reviewer: ArmData["reviewer"]) => {
+            const r = build({ arm: armName });
+            (r.arms.get(armName) as ArmData).reviewer = reviewer;
+            return { name, run: r, probes: [], sessions: [] };
+        };
+        const quiet = reviewerEvidence(join(root, "absent"), { plugin: true }, {});
+        const withStore = {
+            ...quiet,
+            failed_commands: { live: 2, retired: 1 },
+            disputed: { live: 0, retired: 0 },
+        };
+        const report = renderEvidence([
+            run("A", "eidnara-reviewer", seen),
+            run("B", "eidnara", withStore),
+            // An arm without a daemon and without a sign of the reviewer has no row.
+            run("C", "host", reviewerEvidence(join(root, "absent"), { plugin: false }, {})),
+            // A gateway call of a reviewer component shows on any arm.
+            run(
+                "D",
+                "host",
+                reviewerEvidence(
+                    join(root, "absent"),
+                    { plugin: false },
+                    {
+                        memory_reviewer_stage1: 3,
+                    },
+                ),
+            ),
+        ]).split("\n");
+        const at = report.indexOf("### Memory reviewer");
+        expect(report.slice(at + 6, report.indexOf("### Context health", at) - 1)).toEqual([
+            `| A | eidnara-reviewer | on | current_work 1, later_statement 1 | 1 | chat_model: 0 keep, 1 flagged (${haiku}); none: 1 keep, 0 flagged (none) | 1 | fenced 1 | 0 | contested 1 | 0 left for a reader, 0 unapplied | 0 | 2 steps, 3 runs settled, 3.0 s in all, 6.0 s the longest, 1 with an error, 1 drains answered after their step | memory_reviewer_stage1 1, memory_reviewer_stage2 1 | open in 1 of 2 readings, last open | unread | unread |`,
+            "| B | eidnara | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | no reading | 2 live, 1 retired | 0 live, 0 retired |",
+            "| D | host | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | memory_reviewer_stage1 3 | no reading | unread | unread |",
+        ]);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
     }
 });

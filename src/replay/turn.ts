@@ -30,6 +30,8 @@ export interface TurnSpec {
     models: string[];
     contextLimit: number;
     sideModel: string | null;
+    /** The source run's registered reviewer stage-1 model; absent or null when it registers none. */
+    reviewerStage1Model?: string | null;
     /** The source run's prompt-caching condition, so the replayed requests carry its cache points. */
     promptCaching: PromptCaching;
     /** The background cache-point layout of the build the source run bound. */
@@ -180,6 +182,7 @@ export async function runTurn(spec: TurnSpec, seams: TurnSeams = {}): Promise<Tu
         models: spec.models,
         contextLimit: spec.contextLimit,
         ...(spec.sideModel ? { sideModel: spec.sideModel } : {}),
+        ...(spec.reviewerStage1Model ? { reviewerStage1Model: spec.reviewerStage1Model } : {}),
         promptCaching: spec.promptCaching,
         turnDeadlineMs: spec.turnDeadlineMs,
         transcriptPaths: spec.transcriptPaths,

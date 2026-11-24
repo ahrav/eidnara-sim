@@ -43,10 +43,13 @@ import {
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import {
     buildRefusal,
+    isSideModels,
     promptCachingOf,
     type Qualification,
     qualificationHash,
     qualificationSeed,
+    type SideModels,
+    sideModelsOf,
 } from "../prereg/qualification";
 import type { Preregistration, Tier } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
@@ -249,8 +252,14 @@ export interface Manifest {
      */
     prompt_caching?: PromptCaching;
     /**
+     * The side models the run's qualification registers, by role (`side_models`); null for a
+     * tier run and a registration that names none, as a manifest from before the field reads. A
+     * resume must present the same.
+     */
+    side_models?: SideModels | null;
+    /**
      * The rates the cost panel prices this run's calls at, fixed when the run starts:
-     * `priceTableFor` the run's prompt-caching condition.
+     * `priceTableFor` the run's prompt-caching condition and side models.
      */
     price_table: PriceTable;
     preflight: Preflight;
@@ -330,6 +339,7 @@ export function requirePlainArtifacts(out: string, arms: readonly string[]): voi
         join("hostbin", arm, `opencode.${process.pid}`),
         join(arm, "resources.jsonl"),
         join(arm, "daemon.log"),
+        join(arm, "review-drain.jsonl"),
         join(arm, "store.img"),
         join(arm, "transcripts.json"),
         join(arm, "clock", "offset"),
@@ -552,6 +562,9 @@ function manifestProblems(m: Manifest, compiledEvents: number): string[] {
     if (m.prompt_caching !== undefined && !PROMPT_CACHING.includes(m.prompt_caching)) {
         problems.push(`prompt_caching ${m.prompt_caching} is neither on nor off`);
     }
+    if (m.side_models != null && !isSideModels(m.side_models)) {
+        problems.push("side_models is not a model name per registered role");
+    }
     return problems;
 }
 
@@ -595,6 +608,7 @@ export function requireFreshArmRoots(out: string, arms: readonly string[]): void
         "s",
         "store.img",
         "daemon.log",
+        "review-drain.jsonl",
         "transcripts.json",
         "resources.jsonl",
         "state.json",
@@ -1504,7 +1518,11 @@ export interface ArmConfig {
  * The configuration each arm runs, as the host stack writes it for the side model the first
  * session uses; a `model_switch` moves later sessions' side model when no side model is fixed.
  */
-export function armConfigs(order: readonly string[], sideModel: string): Record<string, ArmConfig> {
+export function armConfigs(
+    order: readonly string[],
+    sideModel: string,
+    reviewerStage1Model: string | undefined,
+): Record<string, ArmConfig> {
     return Object.fromEntries(
         order.map((label) => {
             const profile = armProfile(label);
@@ -1514,9 +1532,16 @@ export function armConfigs(order: readonly string[], sideModel: string): Record<
                 {
                     profile,
                     eidnara_config: profile.plugin
-                        ? eidnaraUserConfig("<connection file>", sideModel, arm)
+                        ? eidnaraUserConfig(
+                              "<connection file>",
+                              sideModel,
+                              arm,
+                              reviewerStage1Model,
+                          )
                         : null,
-                    daemon_config: profile.daemon ? fixtureDaemonConfig(sideModel, arm) : null,
+                    daemon_config: profile.daemon
+                        ? fixtureDaemonConfig(sideModel, arm, reviewerStage1Model)
+                        : null,
                 },
             ];
         }),
@@ -1544,6 +1569,35 @@ export function requireMechanisms(
     if (faults.some((f) => f.type === "model_switch") && models.length < 2) {
         throw new HarnessFailure("a model_switch fault needs two distinct --models");
     }
+}
+
+/**
+ * The price table a run of these models records: `priceTableFor` its caching condition and its
+ * registered side models. A caching-on run prices each call at its model's rates, so its table
+ * holds the rates of every model the run names (the agent models, the side model, and the
+ * registered side models); a run that names any other model is refused.
+ */
+export function runPriceTable(run: {
+    prompt_caching: PromptCaching;
+    models: readonly string[];
+    side_model: string | null;
+    side_models: SideModels | null;
+}): PriceTable {
+    const table = priceTableFor(run.prompt_caching, run.side_models);
+    const named = [
+        ...run.models,
+        ...(run.side_model ? [run.side_model] : []),
+        ...Object.values(run.side_models ?? {}),
+    ];
+    const unpriced = [...new Set(named)].filter(
+        (m) => run.prompt_caching === "on" && !pricedByCachedTable(m, run.side_models),
+    );
+    if (unpriced.length > 0) {
+        throw new HarnessFailure(
+            `prompt caching on prices calls at ${table.version}, which holds no rates for ${unpriced.join(", ")}`,
+        );
+    }
+    return table;
 }
 
 /** Returns the run's manifest and this invocation's preflight result. */
@@ -1585,6 +1639,7 @@ export async function loadManifest(
         qualification: qualificationRef(o),
         wall_budget_ms: requireWallBudget(o.wallBudgetMs) ?? null,
         prompt_caching: promptCachingOf(qualificationOf(o)),
+        side_models: sideModelsOf(qualificationOf(o)),
     };
     /** Computed once the inputs it hashes exist: before the probe on a resume, after it on a first run. */
     const digests = () => ({
@@ -1666,12 +1721,14 @@ export async function loadManifest(
             turns_await_jobs: o.turnsAwaitJobs !== undefined,
             wall_budget_ms: o.wallBudgetMs !== undefined,
         };
-        // A manifest from before qualifications, wall budgets, or the caching condition names none.
+        // A manifest from before qualifications, wall budgets, the caching condition, or side
+        // models names none.
         const recorded = {
             ...manifest,
             qualification: manifest.qualification ?? null,
             wall_budget_ms: manifest.wall_budget_ms ?? null,
             prompt_caching: manifest.prompt_caching ?? "off",
+            side_models: manifest.side_models ?? null,
         };
         const differs = Object.entries(wanted).filter(
             ([k, v]) => given[k] !== false && !sameJson(recorded[k as keyof Manifest], v),
@@ -1684,7 +1741,11 @@ export async function loadManifest(
         const changed = Object.entries({
             ...current,
             tape_sha256: tapeDigests(manifest.tapes),
-            arms: armConfigs(manifest.order, manifest.side_model ?? manifest.models[0] ?? ""),
+            arms: armConfigs(
+                manifest.order,
+                manifest.side_model ?? manifest.models[0] ?? "",
+                manifest.side_models?.memory_reviewer_stage1,
+            ),
             eidnara_build: bind(manifest.order),
         })
             .filter(([k]) => k !== "sim_commit" && k !== "sim_worktree")
@@ -1735,15 +1796,7 @@ export async function loadManifest(
         return revision ? { manifest, checks, revision } : { manifest, checks };
     }
     requireMechanisms(wanted.fault_override ?? scenario.faults, wanted.models);
-    // A caching-on run prices every host call at one model's rates, so its models are that model.
-    const unpriced = [...wanted.models, ...(wanted.side_model ? [wanted.side_model] : [])].filter(
-        (m) => wanted.prompt_caching === "on" && !pricedByCachedTable(m),
-    );
-    if (unpriced.length > 0) {
-        throw new HarnessFailure(
-            `prompt caching on prices calls at ${priceTableFor("on").version}, which holds no rates for ${unpriced.join(", ")}`,
-        );
-    }
+    const table = runPriceTable(wanted);
     sources(
         wanted.tapes,
         wanted.events,
@@ -1756,11 +1809,15 @@ export async function loadManifest(
         schema: "sim-run-manifest/v3",
         ...wanted,
         ...digests(),
-        arms: armConfigs(wanted.order, wanted.side_model ?? wanted.models[0] ?? ""),
+        arms: armConfigs(
+            wanted.order,
+            wanted.side_model ?? wanted.models[0] ?? "",
+            wanted.side_models?.memory_reviewer_stage1,
+        ),
         eidnara_build: bind(wanted.order),
         tape_sha256: tapeDigests(wanted.tapes),
         base_wall_ms: Date.now(),
-        price_table: priceTableFor(wanted.prompt_caching),
+        price_table: table,
         preflight: checks,
     };
     writeAtomic(path, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -2227,6 +2284,9 @@ async function runArms(
     // The run's caching condition decides whether a record carries its cache gaps; a resume
     // rebuilds the last served receipt times from the log.
     const caching = manifest.prompt_caching ?? "off";
+    // The registered stage-1 model of the memory reviewer: every arm's host stack lists it, a
+    // reviewer arm names it in its configuration, and the arm's capability check reads it.
+    const stage1Model = manifest.side_models?.memory_reviewer_stage1;
     const cacheGaps = caching === "on" ? new CacheGaps() : null;
     /** Each arm's requests by component as this invocation's calls started, for the session-end check. */
     const liveCaching = new Map<string, Record<string, CachingCount>>();
@@ -2646,6 +2706,7 @@ async function runArms(
             build,
             caching,
             qualificationOf(o)?.search_fallback ?? null,
+            stage1Model,
         );
         const { mismatches } = record;
         writeAtomic(join(o.out, arm, "capabilities.json"), `${JSON.stringify(record, null, 2)}\n`);
@@ -2675,6 +2736,7 @@ async function runArms(
             models: manifest.models,
             contextLimit: manifest.context_limit,
             ...(manifest.side_model ? { sideModel: manifest.side_model } : {}),
+            ...(stage1Model ? { reviewerStage1Model: stage1Model } : {}),
             promptCaching: caching,
             turnDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
             transcriptPaths: hostRow.transcript_paths,
@@ -2875,6 +2937,7 @@ async function runArms(
                     }
                 }),
             supports: (f) => driver.supports(f),
+            settlesSessionEnds: () => driver.settlesSessionEnds(),
             reap: () => tracked(() => driver.reap()),
             finish: () =>
                 tracked(async () => {
@@ -2903,7 +2966,8 @@ async function runArms(
                     await driver.stop();
                 }
             },
-        };
+            // The scheduler reads the settle-step rule from this wrapper, so the forward is required.
+        } satisfies ArmDriver & Required<Pick<ArmDriver, "settlesSessionEnds">>;
     }
     await scheduler.run();
     handlersFailed();

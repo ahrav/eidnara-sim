@@ -1,0 +1,68 @@
+{
+    "schema": "sim-qualification/v1",
+    "id": "W5P",
+    "revision": 1,
+    "frozen": true,
+    "tier": "M",
+    "tier_preregistration_sha256": "d1b8c9694586ff9fe2c3b55b0f98fa2e564da270d2f19d3c9d8eb8181398cd06",
+    "corpus": "held-out",
+    "seeds": [
+        605
+    ],
+    "hosts": [
+        "pi"
+    ],
+    "arms": {
+        "run": [
+            "host",
+            "eidnara",
+            "eidnara-reviewer"
+        ],
+        "order_by_seed": [
+            [
+                "host",
+                "eidnara",
+                "eidnara-reviewer"
+            ]
+        ]
+    },
+    "contrasts": [
+        [
+            "eidnara",
+            "host"
+        ],
+        [
+            "eidnara-reviewer",
+            "eidnara"
+        ],
+        [
+            "eidnara-reviewer",
+            "host"
+        ]
+    ],
+    "controls": [
+        "wrong-project-lookup"
+    ],
+    "no_source_control": "host",
+    "prompt_caching": "on",
+    "builds": {
+        "current": {
+            "label": "eval/w9",
+            "commit": "4c293f1835960b8d60b55756933f196ecd12d007"
+        },
+        "reference": {
+            "label": "main-ea12bff2a",
+            "commit": "ea12bff2adb028d942d3b339de6dc74b605ab1ab"
+        },
+        "contrasts": [
+            [
+                "eidnara",
+                "eidnara"
+            ]
+        ]
+    },
+    "side_models": {
+        "memory_reviewer_stage1": "global.anthropic.claude-haiku-5-5"
+    },
+    "claim": "descriptive"
+}

@@ -44,6 +44,7 @@ import { readCallLog, SessionCalls } from "./run";
 import {
     type ArmDriver,
     type ArmHandle,
+    DeadlineOverrun,
     fatalCause,
     GATE_EXIT_MS,
     HarnessFailure,
@@ -8234,6 +8235,111 @@ describe("resume of a session_end its last turn's stop stranded", () => {
             ["e-000002", "failed(interrupted)"],
             ["e-999999", "ok"],
         ]);
+        expect(added.at(-1)?.kind).toBe("EndRun");
+    });
+
+    // A driver whose every `session_end` owes a step of its own, as the host driver's settle
+    // step on an arm that runs the memory reviewer.
+    const settling = (log: string[]): ArmDriver => ({
+        ...sessionDriver(log),
+        settlesSessionEnds: () => true,
+    });
+    const threeSessions = (): ScenarioEvent[] => [
+        ...twoSessions(),
+        { id: "e-200000", kind: "session_start", scenario_ms: 300_000, session: "s-0002" },
+        { id: "e-299999", kind: "session_end", scenario_ms: 420_000, session: "s-0002" },
+    ];
+    const resumeWith = async (events: ScenarioEvent[], path: string, driver: ArmDriver) => {
+        const journal = new Journal(path);
+        const n = journal.entries.length;
+        await new Scheduler({ ...options(events), journal, drivers: { a: driver } }).run();
+        journal.close();
+        return readJournal(path).slice(n);
+    };
+
+    test("on an arm whose driver settles every session end, a stranded session_end reopens its session and is delivered", async () => {
+        // The second `session_end` owes no transcript check, so only the settle step keeps it.
+        const events = threeSessions();
+        const log: string[] = [];
+        const added = await resumeWith(events, await stopAt(events, "e-100001"), settling(log));
+        expect(log).toEqual([
+            "resume:e-100000",
+            "session_end:e-199999",
+            "session_start:e-200000",
+            "session_end:e-299999",
+        ]);
+        const ends = added.filter((e) => e.kind === "Event");
+        expect(ends.map((e) => [e.event, e.outcome])).toEqual([
+            ["e-100001", "failed(interrupted)"],
+            ["e-199999", "ok"],
+            ["e-200000", "ok"],
+            ["e-299999", "ok"],
+        ]);
+        // The same journal on a driver without the step ends the session in the scheduler.
+        const plain: string[] = [];
+        await resume(events, await stopAt(events, "e-100001"), plain);
+        expect(plain.slice(0, 2)).toEqual(["resume:null", "session_start:e-200000"]);
+    });
+
+    test("a session_end the job deadline cut inside the driver's settle step is delivered again to a reopened session", async () => {
+        const events = threeSessions();
+        // The settle step's open-jobs wait rejects with the scheduler's job deadline.
+        const cutAt = async (id: string): Promise<string> => {
+            const path = join(dir(), "j.jsonl");
+            const driver = fakeDriver([], 0, (e) => {
+                if (e.id === id) throw new DeadlineOverrun("busy set held the clock past 5 ms");
+            });
+            await expect(
+                new Scheduler({
+                    ...options(events),
+                    journal: new Journal(path),
+                    drivers: { a: driver },
+                }).run(),
+            ).rejects.toThrow("busy set held the clock past 5 ms");
+            return path;
+        };
+        const path = await cutAt("e-199999");
+        const fatal = readJournal(path).find((e) => e.kind === "ItemState" && e.fatal === true);
+        expect(fatal).toMatchObject({ event: "e-199999", cause: "job-deadline" });
+        const log: string[] = [];
+        const added = await resumeWith(events, path, settling(log));
+        expect(log).toEqual([
+            "resume:e-100000",
+            "session_end:e-199999",
+            "session_start:e-200000",
+            "session_end:e-299999",
+        ]);
+        expect(added.map((e) => e.kind).slice(0, 3)).toEqual(["ResumeRun", "Recovered", "Event"]);
+        expect(added[1]).toMatchObject({ recovers: fatal?.seq, cause: "job-deadline" });
+        expect(added[2]).toMatchObject({ event: "e-199999", outcome: "ok" });
+        expect(added.some((e) => e.kind === "ItemState" && e.fatal === true)).toBe(false);
+        expect(added.at(-1)?.kind).toBe("EndRun");
+        // The sealed journal replays clean.
+        await new Scheduler({
+            ...options(events),
+            journal: new Journal(path),
+            drivers: { a: fakeDriver([]) },
+        }).run();
+        // A driver without the step has the same stop ended in the scheduler, with no delivery.
+        const plain: string[] = [];
+        const ended = await resume(events, await cutAt("e-199999"), plain);
+        expect(plain.slice(0, 2)).toEqual(["resume:null", "session_start:e-200000"]);
+        expect(ended.find((e) => e.kind === "Event")).toMatchObject({
+            event: "e-199999",
+            outcome: "failed(interrupted)",
+            cause: "job-deadline",
+        });
+    });
+
+    test("a session_end a stop left undelivered reopens its session on an arm whose driver settles every session end", async () => {
+        const events = threeSessions();
+        const log: string[] = [];
+        const added = await resumeWith(events, await stopAt(events, "e-199999"), settling(log));
+        expect(log.slice(0, 2)).toEqual(["resume:e-100000", "session_end:e-199999"]);
+        expect(added.find((e) => e.kind === "Event")).toMatchObject({
+            event: "e-199999",
+            outcome: "ok",
+        });
         expect(added.at(-1)?.kind).toBe("EndRun");
     });
 

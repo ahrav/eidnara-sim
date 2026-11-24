@@ -24,7 +24,7 @@ import type { Upstream } from "../proxy/gateway";
 import { RecordWriter } from "../proxy/records";
 import { RequestStore } from "../proxy/requests";
 import { projectCall } from "../run/callviews";
-import { PRICE_TABLE } from "../run/price";
+import { PRICE_TABLE, priceTableFor } from "../run/price";
 import { scenarioHash } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import { projectSources, REPLAY_MANIFEST, replayProbe } from "./replay";
@@ -533,6 +533,85 @@ describe("replayProbe on a fixture run", () => {
             system: [{ text: "Summarize." }],
             message: [text],
         });
+    });
+
+    test("a replayed turn hands the host the source run's stage-1 model and prices its reviewer call by model", async () => {
+        const haiku = "global.anthropic.claude-haiku-5-5";
+        const stage1 = JSON.parse(
+            readFileSync(join(ROOT, "tests/fixtures/reviewer/requests.json"), "utf8"),
+        ).stage1 as ConverseBody;
+        const handed: (string | undefined)[] = [];
+        /** A host whose turn sends one stage-1 reviewer request on Haiku before its agent request. */
+        class ReviewingHost extends TranscriptHost {
+            override async prompt(text: string): Promise<PromptResult> {
+                handed.push(this.ctx.reviewerStage1Model);
+                const r = await fetch(`${this.ctx.proxyHttp1}/model/${haiku}/converse`, {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify(stage1),
+                });
+                await r.text();
+                return super.prompt(text);
+            }
+        }
+        const reviewed = async (over: Record<string, unknown>) => {
+            const f = await sourceRun({ prompt_caching: "on", ...over });
+            const record = join(f.run, ARM, "capabilities.json");
+            const capabilities = JSON.parse(readFileSync(record, "utf8"));
+            writeFileSync(record, JSON.stringify({ ...capabilities, prompt_caching: "on" }));
+            const upstream = recordedModel(f.answers);
+            const { results } = await replay(f, "q-a", "a", {
+                repeats: 1,
+                turn: (spec: Parameters<typeof runTurn>[0]) =>
+                    runTurn(spec, {
+                        upstream,
+                        hostFactory: (ctx) => new ReviewingHost(ctx) as unknown as SimHost,
+                    }),
+            });
+            const sent = upstream.bodies.find(
+                (b) => b.system?.[0]?.text === stage1.system?.[0]?.text,
+            );
+            const [result] = results;
+            return {
+                system: sent?.system?.slice(1),
+                message: sent?.messages,
+                usd: Object.fromEntries((result?.cost ?? []).map((c) => [c.component, c.usd])),
+                total: result?.cost_usd,
+                turn: result?.cost_turn_usd,
+            };
+        };
+        const build = {
+            commit: "0".repeat(40),
+            label: "test",
+            capabilities: { "direct-host-fixture": { background_cache_points: "system" } },
+        };
+        // The recorded model answers every call with 100 input and 10 output tokens.
+        const atOpus = (100 * 4 + 10 * 20) / 1e6;
+        const atHaiku = (100 * 0.1 + 10 * 0.5) / 1e6;
+        const side_models = { memory_reviewer_stage1: haiku };
+        const v3 = await reviewed({
+            side_models,
+            price_table: priceTableFor("on", side_models),
+            eidnara_build: build,
+        });
+        expect(handed).toEqual([haiku]);
+        // The reviewer's request carries the system prompt's cache point, placed by the proxy.
+        expect(v3.system).toEqual([{ cachePoint: { type: "default" } }]);
+        expect(v3.message).toEqual(stage1.messages);
+        expect(v3.usd.memory_reviewer_stage1).toBeCloseTo(atHaiku, 15);
+        expect(v3.usd.agent).toBeCloseTo(atOpus, 15);
+        expect(v3.total).toBeCloseTo(atHaiku + atOpus, 15);
+        expect(v3.turn).toBeCloseTo(atHaiku + atOpus, 15);
+        // A source run that registers no side model hands the host none, and its v2 table prices
+        // the Haiku record at its one set of rates.
+        const v2 = await reviewed({ price_table: priceTableFor("on"), eidnara_build: build });
+        expect(handed).toEqual([haiku, undefined]);
+        expect(v2.usd).toEqual({ memory_reviewer_stage1: atOpus, agent: atOpus });
+        expect(v2.total).toBe(atOpus + atOpus);
+        // A source manifest whose side models are malformed is refused before any turn runs.
+        await expect(reviewed({ side_models: { memory_reviewer_stage1: "" } })).rejects.toThrow(
+            /manifest\.json holds no valid side_models/,
+        );
     });
 
     test("variant b puts the ground truth into the forwarded request and flips the failing item", async () => {

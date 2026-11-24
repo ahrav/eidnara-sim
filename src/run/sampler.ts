@@ -109,6 +109,12 @@ export interface DaemonStatusReading {
     pid: number;
     start: string | null;
     process_memory: Record<string, unknown> | null;
+    /**
+     * The `memory_reviewer` block of the `status` answer: the worker's activation state (`open`
+     * while a project under the review switch is under review). Absent on readings recorded
+     * before it was read, and null for an answer without the block.
+     */
+    memory_reviewer?: { activation_state: string } | null;
     search: {
         state: string | null;
         admission: string | null;

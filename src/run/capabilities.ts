@@ -11,8 +11,8 @@ import {
     readSync,
 } from "node:fs";
 import { join } from "node:path";
-import { bodyText, injectedBlocks, searchRoute } from "../evidence/stages";
-import { payloadManifest, processMemoryBlock, progressBlock } from "../hosts/arms";
+import { blockMarks, bodyText, injectedBlocks, searchRoute } from "../evidence/stages";
+import { payloadManifest, processMemoryBlock, progressBlock, reviewerBlock } from "../hosts/arms";
 import {
     type ArmProfile,
     AUDITED_BUILDS,
@@ -24,9 +24,10 @@ import {
     deliveryOf,
     FIXTURE_READER_LAG_COMMITS,
     type PromptCaching,
+    reviewsMemory,
 } from "../hosts/profiles";
 import type { ConverseBody } from "../proxy/classify";
-import { type CallRecord, HARNESS_COMPONENTS } from "../proxy/records";
+import { type CallRecord, HARNESS_COMPONENTS, REVIEWER_COMPONENTS } from "../proxy/records";
 import {
     bodyCachePoints,
     cachePointsOf,
@@ -42,6 +43,7 @@ export const EIDNARA_COMPONENTS = [
     "memory_capture",
     "memory_classifier",
     "context_researcher",
+    ...REVIEWER_COMPONENTS,
 ] as const;
 
 /** What an arm's run evidence shows it ran. */
@@ -91,6 +93,298 @@ export interface ArmObservation {
     daemon_status?: DaemonStatusObservation;
     /** The cache points and cache tokens of the arm's calls; absent on observations recorded before they were read. */
     prompt_caching?: CachingObservation;
+    /** The memory reviewer's log lines, drains, and gateway calls; absent on observations recorded before they were read. */
+    reviewer?: ReviewerObservation;
+}
+
+/** One stage-1 decider's decisions in the daemon's log, with the models its lines name. */
+export interface Stage1Count {
+    keep: number;
+    flagged: number;
+    /** A decision under any other name. */
+    other: number;
+    /** The distinct models the decider's lines name, at most eight, sorted. */
+    models: string[];
+}
+
+/**
+ * The memory reviewer's lines in `daemon.log` over every daemon generation (Eidnara
+ * `memory_reviewer/worker.rs`, `review_cycle.rs`, `coordinator.rs`), each counted by the form the
+ * daemon writes it in.
+ */
+export interface ReviewerLogObservation {
+    /** `enqueued job=` lines by trigger (`contested`, `current_work`, `later_statement`, `later_message`): one review job each. */
+    enqueued: Record<string, number>;
+    /** `selected <n> of <m> memories for review` lines: one selection pass each. */
+    selections: number;
+    /** `stage 1 job=` lines by decider (`chat_model`, `classifier`, and `none` for a decision the host made without a request). */
+    stage1: Record<string, Stage1Count>;
+    /** `stage 1 request ended without an answer` lines: one failed stage-1 request each. */
+    stage1_failed: number;
+    /** `review ended on a later reference the model was not shown` lines. */
+    unread_later: number;
+    /** `applied a proposal` lines by kind (`disputed`, `contested`, `standing`, `dropped`, `retired`, `revised`, `created`). */
+    applied: Record<string, number>;
+    /** `left a change proposal for a reader` lines. */
+    left_for_reader: number;
+    /** `left a published proposal unapplied` lines. */
+    unapplied: number;
+    /** `stage-1 default <model> failed its first request` lines. */
+    stage1_default_failed: number;
+    /** The lines that report reviews waiting: a project at its hold bound, a kept hold of a settled proposal, and a selection walk that resumes by cursor. */
+    waits: { hold_bound: number; kept_hold: number; selection_resumed: number };
+    /**
+     * `run ended without settlement: <reason>` lines by the reason's first word (Eidnara
+     * `memory_reviewer/worker.rs`; `fenced`, `unavailable`, `refused`, `supervisor`, `store`,
+     * `kernel`, `conflicting_content`, `binding_mismatch`): a run whose job stays for a later
+     * attempt. A clock advance between a stage-1 request's gateway reply and the daemon's record
+     * of the answer ends the run `fenced` (`docs/hosts.md`). Absent on observations recorded
+     * before it was read.
+     */
+    unsettled?: Record<string, number>;
+    /** `activation gate closed` lines, which a daemon with a reviewer host writes with the switch off too. */
+    gate_closed: number;
+    /** Every other line that opens `daemon: memory_reviewer`. */
+    other: number;
+}
+
+/** The settle step's records in `review-drain.jsonl` (`docs/hosts.md`). */
+export interface ReviewDrainObservation {
+    /** Settle steps: lines of the shape the driver writes, the `late` ones left out. */
+    calls: number;
+    /**
+     * `late` lines: the answer or the failure of a drain that its step recorded as unanswered.
+     * Absent on observations recorded before it was read.
+     */
+    late_answers?: number;
+    /** Lines of any other shape. */
+    unreadable: number;
+    /** The review runs the drains settled, summed over the steps and the late answers. */
+    settled_runs: number;
+    /** Wall time of the steps, summed. */
+    total_wall_ms: number;
+    /** The longest wall time of a step or of a drain a `late` line reports. */
+    max_wall_ms: number;
+    /** Steps and late answers that recorded an error, with the first three messages. */
+    errors: number;
+    first_errors: string[];
+}
+
+/** What an arm's artefacts show of the memory reviewer. */
+export interface ReviewerObservation {
+    log: ReviewerLogObservation;
+    drains: ReviewDrainObservation;
+    /** The arm's gateway calls of each of `REVIEWER_COMPONENTS`. */
+    calls: Record<string, number>;
+}
+
+/** The count of log lines that show a review ran: every counted form, a run that ended without settlement included, but the gate line and the unclassed ones. */
+export function reviewLines(log: ReviewerLogObservation): number {
+    const sum = (counts: Record<string, number>) =>
+        Object.values(counts).reduce((total, n) => total + n, 0);
+    const decisions = Object.values(log.stage1).reduce(
+        (total, c) => total + c.keep + c.flagged + c.other,
+        0,
+    );
+    return (
+        sum(log.enqueued) +
+        log.selections +
+        decisions +
+        log.stage1_failed +
+        log.unread_later +
+        sum(log.applied) +
+        log.left_for_reader +
+        log.unapplied +
+        log.stage1_default_failed +
+        sum(log.waits) +
+        sum(log.unsettled ?? {})
+    );
+}
+
+const REVIEWER_PREFIX = "daemon: memory_reviewer ";
+const STAGE1_DECISION =
+    /^stage 1 job=\S+ decider=(\S+) model=(\S+) request=\S+ decision=(\S+)(?: |$)/;
+const APPLIED_PROPOSAL = /^applied a proposal: job=\S+ (\S+)$/;
+const ENQUEUED_JOB = /^enqueued job=\S+ trigger=(\S+) later=\d+ source=\d+$/;
+const UNSETTLED_RUN = /^run ended without settlement: (\S+)/;
+/** The models one decider's tally keeps by name. */
+const STAGE1_MODELS = 8;
+
+/**
+ * Counts the memory reviewer's lines of `daemon.log`. `DaemonStack` appends every generation's
+ * output to the one file, so the counts cover the arm's whole run; an absent log counts nothing.
+ */
+export function readReviewerLog(path: string): ReviewerLogObservation {
+    // A trigger, a decider, and a kind are names read from the log, so the tallies have no inherited keys.
+    const tally = (...names: string[]): Record<string, number> =>
+        Object.assign(Object.create(null), Object.fromEntries(names.map((n) => [n, 0])));
+    const decider = (): Stage1Count => ({ keep: 0, flagged: 0, other: 0, models: [] });
+    const out: ReviewerLogObservation = {
+        enqueued: tally("contested", "current_work", "later_statement", "later_message"),
+        selections: 0,
+        stage1: Object.assign(Object.create(null), {
+            chat_model: decider(),
+            classifier: decider(),
+            none: decider(),
+        }),
+        stage1_failed: 0,
+        unread_later: 0,
+        applied: tally(
+            "disputed",
+            "contested",
+            "standing",
+            "dropped",
+            "retired",
+            "revised",
+            "created",
+        ),
+        left_for_reader: 0,
+        unapplied: 0,
+        stage1_default_failed: 0,
+        waits: { hold_bound: 0, kept_hold: 0, selection_resumed: 0 },
+        unsettled: tally(
+            "fenced",
+            "unavailable",
+            "refused",
+            "supervisor",
+            "store",
+            "kernel",
+            "conflicting_content",
+            "binding_mismatch",
+        ),
+        gate_closed: 0,
+        other: 0,
+    };
+    const ended = out.unsettled as Record<string, number>;
+    eachLine(path, (line) => {
+        if (!line.startsWith(REVIEWER_PREFIX)) return;
+        const rest = line.slice(REVIEWER_PREFIX.length);
+        const enqueued = ENQUEUED_JOB.exec(rest);
+        const decision = STAGE1_DECISION.exec(rest);
+        const applied = APPLIED_PROPOSAL.exec(rest);
+        const unsettled = UNSETTLED_RUN.exec(rest);
+        if (enqueued) {
+            const trigger = enqueued[1] as string;
+            out.enqueued[trigger] = (out.enqueued[trigger] ?? 0) + 1;
+        } else if (/^selected \d+ of \d+ memories for review: /.test(rest)) {
+            out.selections++;
+        } else if (decision) {
+            const [, by, model, made] = decision as unknown as [string, string, string, string];
+            const count = (out.stage1[by] ??= decider());
+            if (made === "keep") count.keep++;
+            else if (made === "flagged") count.flagged++;
+            else count.other++;
+            if (!count.models.includes(model) && count.models.length < STAGE1_MODELS) {
+                count.models.push(model);
+                count.models.sort();
+            }
+        } else if (rest.startsWith("stage 1 request ended without an answer: job=")) {
+            out.stage1_failed++;
+        } else if (
+            rest.startsWith("review ended on a later reference the model was not shown: job=")
+        ) {
+            out.unread_later++;
+        } else if (applied) {
+            const kind = applied[1] as string;
+            out.applied[kind] = (out.applied[kind] ?? 0) + 1;
+        } else if (rest.startsWith("left a change proposal for a reader: job=")) {
+            out.left_for_reader++;
+        } else if (rest.startsWith("left a published proposal unapplied: job=")) {
+            out.unapplied++;
+        } else if (/^stage-1 default \S+ failed its first request; /.test(rest)) {
+            out.stage1_default_failed++;
+        } else if (rest.startsWith("reviews of a project wait: ")) {
+            out.waits.hold_bound++;
+        } else if (rest.startsWith("kept the review hold of a settled proposal: ")) {
+            out.waits.kept_hold++;
+        } else if (
+            /^selection examines \d+ claim descriptors a pass and the store holds more; /.test(rest)
+        ) {
+            out.waits.selection_resumed++;
+        } else if (unsettled) {
+            const reason = unsettled[1] as string;
+            ended[reason] = (ended[reason] ?? 0) + 1;
+        } else if (rest.startsWith("activation gate closed: ")) {
+            out.gate_closed++;
+        } else {
+            out.other++;
+        }
+    });
+    return out;
+}
+
+/** Reads `review-drain.jsonl`, one settle step or one late answer per line; an absent file holds no call. */
+export function readReviewDrains(path: string): ReviewDrainObservation {
+    const out: ReviewDrainObservation = {
+        calls: 0,
+        late_answers: 0,
+        unreadable: 0,
+        settled_runs: 0,
+        total_wall_ms: 0,
+        max_wall_ms: 0,
+        errors: 0,
+        first_errors: [],
+    };
+    eachLine(path, (line) => {
+        if (line === "") return;
+        let record: {
+            started_wall_ms?: unknown;
+            wall_ms?: unknown;
+            settled?: unknown;
+            error?: unknown;
+            late?: unknown;
+        };
+        try {
+            record = JSON.parse(line);
+        } catch {
+            out.unreadable++;
+            return;
+        }
+        const started = count(record?.started_wall_ms);
+        const ended = count(record?.wall_ms);
+        const settled = record?.settled === null ? 0 : count(record?.settled);
+        const error = record?.error;
+        if (
+            started === null ||
+            ended === null ||
+            ended < started ||
+            settled === null ||
+            !(error === null || typeof error === "string") ||
+            !(record.late === undefined || record.late === true)
+        ) {
+            out.unreadable++;
+            return;
+        }
+        // A late line reports the drain of a step an earlier line already counts.
+        if (record.late === true) out.late_answers = (out.late_answers ?? 0) + 1;
+        else {
+            out.calls++;
+            out.total_wall_ms += ended - started;
+        }
+        out.settled_runs += settled;
+        out.max_wall_ms = Math.max(out.max_wall_ms, ended - started);
+        if (typeof error === "string") {
+            out.errors++;
+            if (out.first_errors.length < 3) out.first_errors.push(error.slice(0, 300));
+        }
+    });
+    return out;
+}
+
+/**
+ * The memory reviewer as an arm's artefacts show it: its lines in `<armDir>/daemon.log`, the
+ * settle steps in `<armDir>/review-drain.jsonl`, and the arm's gateway calls of the reviewer's
+ * two components out of `components`, its call counts by component.
+ */
+export function observeReviewer(
+    armDir: string,
+    components: Readonly<Record<string, number>>,
+): ReviewerObservation {
+    return {
+        log: readReviewerLog(join(armDir, "daemon.log")),
+        drains: readReviewDrains(join(armDir, "review-drain.jsonl")),
+        calls: Object.fromEntries(REVIEWER_COMPONENTS.map((c) => [c, components[c] ?? 0])),
+    };
 }
 
 /** One component's calls as the provider's cache saw them. */
@@ -152,14 +446,16 @@ export function noteRequest(
 }
 
 /**
- * The model calls the daemon runs itself. On Pi its model-execution backend starts a child `pi`
- * from the daemon's own Pi closure, with a private home and Pi's built-in model list, so the
- * model definition the arm writes (`piModelName`) stays outside it.
+ * The model calls the daemon runs itself: the summarizer, the classifier, the researcher, and the
+ * two stages of the memory reviewer. On Pi its model-execution backend starts a child `pi` from
+ * the daemon's own Pi closure, with a private home and Pi's built-in model list, so the model
+ * definition the arm writes (`piModelName`) stays outside it.
  */
 const DAEMON_CALLERS: readonly string[] = [
     "history_summarizer",
     "memory_classifier",
     "context_researcher",
+    ...REVIEWER_COMPONENTS,
 ];
 
 /**
@@ -255,9 +551,10 @@ export class CachingTally {
 }
 
 /**
- * The components whose every request the host's model client sends with cache points: the agent
- * loop and the Eidnara plugin's calls. Pi's own compaction is recorded and held to nothing, since
- * Pi 0.87 sends its compaction summary with cache retention `none` where 0.80.2 places the points.
+ * The components whose every request reaches the provider with cache points: the agent loop, the
+ * Eidnara plugin's calls, and the daemon's own calls, the memory reviewer's two stages among
+ * them. Pi's own compaction is recorded and held to nothing, since Pi 0.87 sends its compaction
+ * summary with cache retention `none` where 0.80.2 places the points.
  */
 const CACHED_CALLERS: readonly string[] = ["agent", ...EIDNARA_COMPONENTS];
 
@@ -347,6 +644,8 @@ export interface DaemonStatusObservation {
     max_rss_anon_bytes: number | null;
     /** The last `process_memory` block's C-heap release count, or null with none. */
     c_heap_releases: number | null;
+    /** The memory reviewer's activation state over the readings; absent on observations recorded before it was read. */
+    memory_reviewer?: ReviewerStatusObservation;
     search_progress: {
         /** Samples carrying a `progress` block. */
         samples: number;
@@ -363,12 +662,33 @@ export interface DaemonStatusObservation {
 }
 
 /**
+ * The `memory_reviewer` block of the daemon's status readings (`reviewerBlock`): the worker's
+ * activation state, which reads `open` while a project under the review switch is under review.
+ */
+export interface ReviewerStatusObservation {
+    /** Readings that carry the block. */
+    readings: number;
+    /** Of those, the readings whose state is `open`. */
+    open: number;
+    /** The readings by state. */
+    states: Record<string, number>;
+    /** The last reading's state, or null with none. */
+    last: string | null;
+    /**
+     * Whether the last reading comes from a daemon process that reported `open` in an earlier
+     * reading: a replacement daemon reads `missing` until a session binds its project again.
+     */
+    last_after_open: boolean;
+}
+
+/**
  * The committed user statements (`stm_*` decisions whose commit the log holds) in
- * `final-store/kernel.sqlite`. `sessions` and `unattributed` describe the live ones, which the
- * Kernel still serves as approved: the sessions their capture rationale names and the count of
- * those whose payload names none. A record retired during the run is left out for the whole
- * run, the sessions before its retirement included. Null when the store is absent, and an
- * `error` when its decisions cannot be read.
+ * `final-store/kernel.sqlite`. `sessions` and `unattributed` describe the live ones whose memory
+ * the daemon still serves in the block: the sessions their capture rationale names and the count
+ * of those whose payload names none. A record retired during the run, and a record whose memory
+ * was disputed during the run, is left out for the whole run, the sessions before the retirement
+ * or the dispute included. Null when the store is absent, and an `error` when its decisions
+ * cannot be read.
  */
 export type StatementObservation = {
     count: number;
@@ -379,6 +699,13 @@ export type StatementObservation = {
      * progress a later statement ended; absent on observations recorded before it was read.
      */
     retired?: number;
+    /**
+     * Of `count`, the live statement records whose memory is disputed: the record approves at
+     * least one live memory, and every live memory it approves has `disputed` as its latest own
+     * admission decision. The daemon leaves a disputed memory out of the block, so these records
+     * owe none. Absent on observations recorded before it was read.
+     */
+    disputed_statements?: number;
     /** Why the store's decisions could not be read, or null. */
     error: string | null;
     /**
@@ -400,6 +727,25 @@ export type StatementObservation = {
      * was read.
      */
     ended_work?: number;
+    /**
+     * The committed failed-command records: decisions of kind `TOOL_FAILURE` on a `tool_failure`
+     * lineage (Eidnara `memory_capture/failures.rs`), the live ones and those a later result of
+     * the command retired. Absent on observations recorded before it was read, and with a
+     * `counts_error`.
+     */
+    failed_commands?: { live: number; retired: number };
+    /**
+     * Why the failed-command records and the disputed objects could not be counted in a store
+     * whose statements were read; absent when they were counted. It decides no mismatch.
+     */
+    counts_error?: string;
+    /**
+     * The objects whose latest committed admission decision is `disputed` (the Kernel's
+     * `mark_disputed`), live and retired. The memory reviewer's `contest` mode writes the mark,
+     * and so does the agent's `eidnara_memory` dispute action on every build. Absent on
+     * observations recorded before it was read, and with a `counts_error`.
+     */
+    disputed?: { live: number; retired: number };
 } | null;
 
 /**
@@ -485,6 +831,15 @@ export interface DeliveryObservation {
     contested_blocks?: number;
     /** Agent requests whose `<project-memory>` block holds a `<CURRENT_WORK>` element; absent on observations recorded before it was read. */
     work_blocks?: number;
+    /** Agent requests whose `<project-memory>` block ends with the closing sentence; absent on observations recorded before it was read. */
+    closing_blocks?: number;
+    /** Agent requests whose `<project-memory>` block holds a `<NAMED_FILES>` element; absent on observations recorded before it was read. */
+    named_file_blocks?: number;
+    /**
+     * Agent requests whose `<project-memory>` block renders a statement marked as the replacement
+     * of an observation, with both days; absent on observations recorded before it was read.
+     */
+    replaced_blocks?: number;
     /** The keyed open items in the requests' rendered history; absent on observations recorded before it was read. */
     open_items?: OpenItemObservation;
 }
@@ -595,11 +950,15 @@ export function observeDelivery(
         uncovered_sessions: [],
         contested_blocks: 0,
         work_blocks: 0,
+        closing_blocks: 0,
+        named_file_blocks: 0,
+        replaced_blocks: 0,
         open_items: { blocks: 0, waiting_blocks: 0, stale_waiting_blocks: 0, stale_requests: [] },
     };
     const openItems = out.open_items as OpenItemObservation;
     let contestedBlocks = 0;
     let workBlocks = 0;
+    const marked = { closing: 0, named_files: 0, replaced: 0 };
     const delivered = new Set<string>();
     const index = (event: string | null) => eventIndex.get(event ?? "") ?? -1;
     const backgrounds = [...new Set(notes.map((n) => n.background))];
@@ -639,6 +998,10 @@ export function observeDelivery(
             agent.block = true;
             if (memory.some((b) => CONTESTED_LINE.test(b.body))) contestedBlocks++;
             if (memory.some((b) => WORK_ELEMENT.test(b.body))) workBlocks++;
+            const marks = memory.map((b) => blockMarks(b.body));
+            if (marks.some((m) => m.closing)) marked.closing++;
+            if (marks.some((m) => m.named_files)) marked.named_files++;
+            if (marks.some((m) => m.replaced)) marked.replaced++;
         }
         const items = openItemsOf(given);
         openItems.blocks += items.blocks;
@@ -682,6 +1045,9 @@ export function observeDelivery(
     out.memory_blocks = memoryBlocks;
     out.contested_blocks = contestedBlocks;
     out.work_blocks = workBlocks;
+    out.closing_blocks = marked.closing;
+    out.named_file_blocks = marked.named_files;
+    out.replaced_blocks = marked.replaced;
     out.sessions = new Set(agentCalls.map((c) => c.session)).size;
     const owed = owingRequests(agentCalls, lastCapture, lastCall, statementSessions, projectOf);
     out.memory_due = owed.length > 0;
@@ -998,9 +1364,69 @@ export function readDescriptors(
 }
 
 /**
+ * The standing of the object the enclosing query binds as `o`: the disposition of its latest own
+ * admission decision, the newest committed one that names it, from its creation on (Eidnara
+ * `kernel/src/admission.rs` `latest_own_decision_sql`, read here without its lineage clause).
+ */
+const LATEST_OWN_DISPOSITION = `(select a.disposition from admission_decisions a
+    where a.subject_object_id = o.object_id
+      and a.commit_seq in (select commit_seq from commit_log)
+      and a.commit_seq >= o.created_commit_seq
+    order by a.commit_seq desc, a.admission_decision_id desc
+    limit 1)`;
+
+/**
+ * The live memories the statement record the enclosing query binds as `d` approves: the subjects
+ * of the committed admission decisions that name the record as their approval
+ * (`approval_object_id`; capture writes one `approve` decision for the memory of a statement and
+ * one for each memory that later replaces it, Eidnara `memory_capture.rs`).
+ */
+const APPROVED_LIVE_MEMORIES = `admission_decisions ap
+    join object_registry o on o.object_id = ap.subject_object_id
+    where ap.approval_object_id = d.object_id
+      and ap.commit_seq in (select commit_seq from commit_log)
+      and o.created_commit_seq in (select commit_seq from commit_log)
+      and o.invalidated_commit_seq is null`;
+
+/**
+ * The failed-command records and the disputed objects of a final Kernel store. Neither count
+ * takes part in the statement check, so a store they cannot be read from leaves both out and
+ * names why in `counts_error`, and the statements read stands.
+ */
+function storeCounts(
+    db: Database,
+): Pick<NonNullable<StatementObservation>, "failed_commands" | "disputed" | "counts_error"> {
+    const pair = (sql: string) => {
+        const { n, live } = db.query(sql).get() as { n: number; live: number };
+        return { live, retired: n - live };
+    };
+    try {
+        return {
+            // A command's records share the lineage `tool_failure:<digest>`; the bare name is its first part.
+            failed_commands: pair(
+                `select count(*) as n, coalesce(sum(o.invalidated_commit_seq is null), 0) as live
+                 from decisions d join object_registry o on o.object_id = d.object_id
+                 where d.decision_kind = 'TOOL_FAILURE'
+                   and (o.source_id = 'tool_failure' or o.source_id glob 'tool_failure:*')
+                   and d.created_commit_seq in (select commit_seq from commit_log)`,
+            ),
+            disputed: pair(
+                `select count(*) as n, coalesce(sum(o.invalidated_commit_seq is null), 0) as live
+                 from object_registry o
+                 where o.created_commit_seq in (select commit_seq from commit_log)
+                   and ${LATEST_OWN_DISPOSITION} = 'disputed'`,
+            ),
+        };
+    } catch (caught) {
+        return { counts_error: (caught as Error).message };
+    }
+}
+
+/**
  * The accepted user statements of a final Kernel store: `stm_*` decisions, each naming its capture
  * session in the rationale of its JSON payload, with the live ones told apart from those an
- * invalidation retired. Null when the store is absent or unreadable.
+ * invalidation retired and from those whose memory is disputed. Null when the store is absent or
+ * unreadable.
  */
 export function readStatements(kernelPath: string): StatementObservation {
     if (!lstatSync(kernelPath, { throwIfNoEntry: false })?.isFile()) return null;
@@ -1009,21 +1435,33 @@ export function readStatements(kernelPath: string): StatementObservation {
         db = new Database(kernelPath, { readonly: true });
         const rows = db
             .query(
-                `select decision_payload as p,
-                        object_id in (select object_id from object_registry
-                                      where invalidated_commit_seq is not null) as retired
-                 from decisions
-                 where object_id glob 'stm_*'
-                   and created_commit_seq in (select commit_seq from commit_log)`,
+                `select d.decision_payload as p,
+                        d.object_id in (select object_id from object_registry
+                                        where invalidated_commit_seq is not null) as retired,
+                        (exists (select 1 from ${APPROVED_LIVE_MEMORIES})
+                         and not exists (select 1 from ${APPROVED_LIVE_MEMORIES}
+                                         and coalesce(${LATEST_OWN_DISPOSITION}, '') <> 'disputed')
+                        ) as disputed
+                 from decisions d
+                 where d.object_id glob 'stm_*'
+                   and d.created_commit_seq in (select commit_seq from commit_log)`,
             )
-            .all() as { p: Uint8Array | string; retired: number }[];
+            .all() as { p: Uint8Array | string; retired: number; disputed: number }[];
         const sessions = new Set<string>();
         let unattributed = 0;
         let retired = 0;
-        // A retired record approves nothing, so no later session owes its statement's block.
-        for (const { p, retired: gone } of rows) {
+        let disputedStatements = 0;
+        // A retired record approves nothing, so no later session owes its statement's block. A
+        // dispute is an admission decision on the memory the record approves and leaves the
+        // record live; the daemon keeps a disputed memory out of the block, so a statement whose
+        // every live memory is disputed owes none either.
+        for (const { p, retired: gone, disputed } of rows) {
             if (gone) {
                 retired++;
+                continue;
+            }
+            if (disputed) {
+                disputedStatements++;
                 continue;
             }
             const session = rationaleOf(p)?.session;
@@ -1061,9 +1499,11 @@ export function readStatements(kernelPath: string): StatementObservation {
             sessions: [...sessions].sort(),
             unattributed,
             retired,
+            disputed_statements: disputedStatements,
             error: null,
             lifetimes,
             ended_work: endedWork,
+            ...storeCounts(db),
             lineages: {
                 count: lineages.length,
                 largest: Math.max(0, ...lineages.map((l) => l.n)),
@@ -1138,8 +1578,9 @@ const count = (v: unknown): number | null =>
 
 /**
  * The daemon status readings in `resources.jsonl`: each sample of a live daemon, the
- * `process_memory` blocks, and the `progress` blocks of `search.lifecycle.status`, each counted
- * only in the shape Eidnara writes it (`processMemoryBlock`, `progressBlock`). A projection
+ * `process_memory` blocks, the memory reviewer's activation states, and the `progress` blocks of
+ * `search.lifecycle.status`, each counted only in the shape Eidnara writes it
+ * (`processMemoryBlock`, `reviewerBlock`, `progressBlock`). A projection
  * counts as served in a sample when its lifecycle record is Current, its admission is `admitted`,
  * and it trails the kernel tip by at most `FIXTURE_READER_LAG_COMMITS` commits.
  */
@@ -1151,6 +1592,13 @@ export function readDaemonStatus(path: string): DaemonStatusObservation {
         process_memory: 0,
         max_rss_anon_bytes: null,
         c_heap_releases: null,
+        memory_reviewer: {
+            readings: 0,
+            open: 0,
+            states: Object.create(null),
+            last: null,
+            last_after_open: false,
+        },
         search_progress: {
             samples: 0,
             served: 0,
@@ -1161,11 +1609,17 @@ export function readDaemonStatus(path: string): DaemonStatusObservation {
         },
     };
     const progress = out.search_progress;
+    const reviewer = out.memory_reviewer as ReviewerStatusObservation;
+    /** The daemon process of the latest `open` reading, as `<pid> <start>`. */
+    let opened: string | null = null;
     eachLine(path, (line) => {
         let sample: {
             pid?: unknown;
             daemon_status?: {
+                pid?: unknown;
+                start?: unknown;
                 error?: unknown;
+                memory_reviewer?: unknown;
                 process_memory?: Record<string, unknown> | null;
                 search?: {
                     state?: unknown;
@@ -1194,6 +1648,18 @@ export function readDaemonStatus(path: string): DaemonStatusObservation {
             const anon = count(memory.rss_anon_bytes);
             if (anon !== null) out.max_rss_anon_bytes = Math.max(out.max_rss_anon_bytes ?? 0, anon);
             out.c_heap_releases = count(memory.c_heap_releases) ?? out.c_heap_releases;
+        }
+        const state = reviewerBlock(reading.memory_reviewer)?.activation_state;
+        if (state !== undefined) {
+            const process = `${String(reading.pid)} ${String(reading.start)}`;
+            reviewer.readings++;
+            reviewer.states[state] = (reviewer.states[state] ?? 0) + 1;
+            reviewer.last = state;
+            if (state === "open") {
+                reviewer.open++;
+                opened = process;
+            }
+            reviewer.last_after_open = opened === process;
         }
         const search = sample.daemon_status?.search;
         const p = progressBlock(search?.progress);
@@ -1300,6 +1766,7 @@ export function observeArm(
         statements: readStatements(join(armRoot, "..", "final-store", "kernel.sqlite")),
         daemon_routes: readDaemonRoutes(join(armRoot, "..", "daemon.log")),
         daemon_status: readDaemonStatus(join(armRoot, "..", "resources.jsonl")),
+        reviewer: observeReviewer(join(armRoot, ".."), components),
     };
 }
 
@@ -1337,15 +1804,21 @@ export function bootMismatches(profile: ArmProfile, o: Pick<ArmObservation, "boo
  * against the capabilities the arm's daemon variant has on `build`, the audited build the run bound.
  * `fallback` is the bound the run's qualification registers for a fused arm's degraded search
  * answers (`search_fallback`); a run whose registration names none refuses every fallback answer.
+ * `reviewerStage1Model` is the stage-1 model the run registers for the memory reviewer.
  */
 export function armMismatches(
     o: ArmObservation,
     build: AuditedBuild = AUDITED_BUILDS[0],
     fallback: SearchFallbackBound | null = null,
+    reviewerStage1Model?: string,
 ): string[] {
     const profile = armProfile(o.arm);
     const caps = profile.daemon === null ? undefined : build.variants[profile.daemon];
-    const out = [...bootMismatches(profile, o), ...deliveryMismatches(profile, o.delivery ?? null)];
+    const out = [
+        ...bootMismatches(profile, o),
+        ...deliveryMismatches(profile, o.delivery ?? null),
+        ...reviewerMismatches(profile, o, caps, build.label, reviewerStage1Model),
+    ];
     const count = (component: string) => o.components[component] ?? 0;
     if (!profile.plugin) {
         for (const c of EIDNARA_COMPONENTS) {
@@ -1492,7 +1965,8 @@ function fallbackMismatches(
 /**
  * The arm's `capabilities.json`: its profile, the build the run bound (`eidnaraBuild`, as the
  * manifest records it), the run's prompt-caching condition, a fused arm's fallback answers under
- * the registered bound, what the evidence shows, and every difference between the two.
+ * the registered bound, what the evidence shows, and every difference between the two. A stage-1
+ * decision of the memory reviewer is held to `reviewerStage1Model`, the model the run registers.
  */
 export function capabilityRecord<B>(
     observed: ArmObservation,
@@ -1500,6 +1974,7 @@ export function capabilityRecord<B>(
     build: AuditedBuild | undefined,
     caching: PromptCaching,
     fallback: SearchFallbackBound | null,
+    reviewerStage1Model: string | undefined,
 ) {
     const profile = armProfile(observed.arm);
     return {
@@ -1517,10 +1992,87 @@ export function capabilityRecord<B>(
             : {}),
         observed,
         mismatches: [
-            ...armMismatches(observed, build, fallback),
+            ...armMismatches(observed, build, fallback, reviewerStage1Model),
             ...cachingMismatches(caching, observed.prompt_caching, backgroundOf(observed, build)),
         ],
     };
+}
+
+/**
+ * The memory reviewer's evidence against the arm's switch. On an arm without the switch, a log
+ * line that shows a review ran, a gateway call of a reviewer component, a settle step, and a
+ * status reading that reports the worker `open` each contradict the profile. On the arm with the
+ * switch, on a build that declares `memory_review`, the daemon's status must carry the reviewer's
+ * block and report `open`, the last reading of a daemon process that was under review must still
+ * report it, and every stage-1 decision of the chat model must name the registered stage-1 model.
+ * A replacement daemon reads `missing` until a session binds its project again, so a last reading
+ * of a process that never reported `open` stands.
+ */
+function reviewerMismatches(
+    profile: ArmProfile,
+    o: ArmObservation,
+    caps: DaemonCapabilities | undefined,
+    label: string,
+    stage1Model: string | undefined,
+): string[] {
+    const out: string[] = [];
+    const r = o.reviewer;
+    const status = o.daemon_status;
+    const state = status?.memory_reviewer;
+    const calls = REVIEWER_COMPONENTS.reduce((sum, c) => sum + (o.components[c] ?? 0), 0);
+    if (!reviewsMemory(profile)) {
+        const lines = r ? reviewLines(r.log) : 0;
+        if (lines > 0) {
+            out.push(
+                `daemon.log holds ${lines} memory reviewer lines of a review, but the arm leaves the reviewer switch off`,
+            );
+        }
+        // A host arm's reviewer call is reported with its other Eidnara calls.
+        if (calls > 0 && profile.plugin) {
+            out.push(
+                `${calls} ${REVIEWER_COMPONENTS.join(" and ")} calls in the proxy records, but the arm leaves the reviewer switch off`,
+            );
+        }
+        if (r && r.drains.calls + r.drains.unreadable > 0) {
+            out.push(
+                `review-drain.jsonl holds ${r.drains.calls + r.drains.unreadable} settle steps, which only an arm with the reviewer switch runs`,
+            );
+        }
+        if (state && state.open > 0) {
+            out.push(
+                `${state.open} daemon status readings report the memory reviewer open, but the arm leaves the reviewer switch off`,
+            );
+        }
+        return out;
+    }
+    const answered = (o.components.agent ?? 0) > 0;
+    if (caps?.memory_review && status && state && answered && status.readings > 0) {
+        if (state.readings === 0) {
+            out.push(
+                `none of ${status.readings} daemon status readings carries the memory_reviewer block, which ${label} declares with its memory review`,
+            );
+        } else if (state.open === 0) {
+            out.push(
+                `none of ${state.readings} daemon status readings reports the memory reviewer open (last state ${state.last}), but the arm sets the reviewer switch`,
+            );
+        } else if (state.last !== "open" && state.last_after_open) {
+            out.push(
+                `the last daemon status reading reports the memory reviewer ${state.last}, after the same daemon process reported it open`,
+            );
+        }
+    }
+    if (stage1Model === undefined) {
+        out.push("the arm sets the reviewer switch, and the run registers no stage-1 model");
+        return out;
+    }
+    const wanted = `amazon-bedrock/${stage1Model}`;
+    const others = (r?.log.stage1.chat_model?.models ?? []).filter((m) => m !== wanted);
+    if (others.length > 0) {
+        out.push(
+            `stage-1 decisions by the chat model name ${others.join(", ")}, but the run registers ${wanted} as the reviewer's stage-1 model`,
+        );
+    }
+    return out;
 }
 
 /**
@@ -1545,7 +2097,10 @@ function memoryMismatches(profile: ArmProfile, o: ArmObservation): string[] {
         out.push(`the final store's user statements cannot be read: ${o.statements.error}`);
     }
     const mode = deliveryOf(profile);
-    const statements = (o.statements?.count ?? 0) - (o.statements?.retired ?? 0);
+    const statements =
+        (o.statements?.count ?? 0) -
+        (o.statements?.retired ?? 0) -
+        (o.statements?.disputed_statements ?? 0);
     if (d.memory_due && mode === "automatic" && (d.due_blocks ?? d.memory_blocks) === 0) {
         out.push(
             `the final store holds ${statements} user statements captured before later sessions' agent requests, but none of those requests carried a <project-memory> block`,
@@ -1651,6 +2206,8 @@ export function fusedAnswerShare(search: ArmObservation["search"], unranked = 0)
  * Evidence that contradicts what the bound build's variant declares for the behaviours that
  * differ by build: the lineage of each statement record and the `decisions_approval_refused`
  * counter, the lifetime classes of captured facts, the `<CURRENT_WORK>` element and ended work,
+ * the block's closing sentence, its `<NAMED_FILES>` element, and its dated replacement mark,
+ * failed-command records in the final store,
  * contested statements in the block and in search results, waiting lines outside a history
  * block's newest summarized segment, the `process_memory` block in the daemon's status, and the
  * lifecycle progress block on the fused route.
@@ -1715,6 +2272,41 @@ function buildMismatches(
     if (!caps.current_work_delivery && workBlocks + endedWork > 0) {
         out.push(
             `${workBlocks} agent requests carry a <CURRENT_WORK> element in <project-memory> and ${endedWork} captured facts record the statement that ended them, which ${label} does not declare`,
+        );
+    }
+    const d = o.delivery;
+    const marks: Array<[keyof DaemonCapabilities, number, string]> = [
+        [
+            "block_closing_sentence",
+            d?.closing_blocks ?? 0,
+            "carry a <project-memory> block that ends with the closing sentence",
+        ],
+        [
+            "named_files",
+            d?.named_file_blocks ?? 0,
+            "carry a <NAMED_FILES> element in <project-memory>",
+        ],
+        [
+            "replaced_observation_date",
+            d?.replaced_blocks ?? 0,
+            "render a statement dated as the replacement of an observation",
+        ],
+    ];
+    for (const [capability, count, what] of marks) {
+        if (!caps[capability] && count > 0) {
+            out.push(`${count} agent requests ${what}, which ${label} does not declare`);
+        }
+    }
+    const blocks = d?.memory_blocks ?? 0;
+    if (caps.block_closing_sentence && blocks > 0 && d?.closing_blocks === 0) {
+        out.push(
+            `none of ${blocks} agent requests with a <project-memory> block carries the closing sentence, which ${label} declares for every delivered block`,
+        );
+    }
+    const failed = o.statements?.failed_commands;
+    if (!caps.failed_command_records && failed && failed.live + failed.retired > 0) {
+        out.push(
+            `the final store holds ${failed.live + failed.retired} failed-command records (${failed.live} live), which ${label} does not declare`,
         );
     }
     const contested = (o.delivery?.contested_blocks ?? 0) + (o.search?.contested ?? 0);

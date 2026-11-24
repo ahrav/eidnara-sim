@@ -1,7 +1,9 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PROJECT_MEMORY_NOTE } from "../evidence/stages";
 import { armProfile, DAEMON_VARIANTS } from "../hosts/profiles";
 import { qualificationHash } from "../prereg/qualification";
 import type { ConverseBody } from "../proxy/classify";
@@ -10,7 +12,12 @@ import { RequestStore, readRequestParts } from "../proxy/requests";
 import { compileScenario, type Scenario, scenarioInputMismatch } from "../scenario/compile";
 import { admittedArms, loadCompileInput, loadQualification } from "../scenario/inputs";
 import { hashEmbedder } from "../scenario/similarity";
-import { deliveryMismatches, type ExpectedNote, observeDelivery } from "./capabilities";
+import {
+    deliveryMismatches,
+    type ExpectedNote,
+    observeDelivery,
+    readStatements,
+} from "./capabilities";
 import { ORACLE_OPENING, oracleBackground } from "./oracle-note";
 import { armOrder, oracleBackgrounds } from "./run";
 
@@ -206,6 +213,47 @@ describe("delivery check", () => {
             stale_waiting_blocks: 1,
             stale_requests: [calls[6]?.seq as number],
         });
+    });
+
+    test("the closing sentence, the element of named files, and the replacement mark are counted by request", () => {
+        // The product's own strings (Eidnara eval/w9 `memory_render.rs`, `named_files.rs`, `canonical_memory.rs`).
+        const block = (lines: string[], closing = true) =>
+            `<project-memory>\n${lines.join("\n")}\n${closing ? `${PROJECT_MEMORY_NOTE}\n` : ""}</project-memory>`;
+        const files = [
+            '<NAMED_FILES note="Files of this project that a message of the user named in an earlier session and the agent then read or named in a command it ran, most used first.">',
+            "docs/deploy.md (the agent used it in 2 earlier sessions, last on 2026-03-01; last changed 2026-03-01T09:30Z)",
+            "</NAMED_FILES>",
+        ];
+        const dated = "mem_a: User stated: The retry limit is 45. [2026-03-01T09:30Z]";
+        const replaced =
+            "mem_b: User stated: The pool size is 500. (stated 2026-04-09; it replaces a value recorded unknown date that the user had not stated)";
+        const contested =
+            'mem_c: User stated: The limit is 300. (stated 2026-03-01; contested 2026-04-09 by mem_d: "Assistant reported: the file holds 500.")';
+        const calls = [
+            call("s-2", "e-1", `${block([...files, dated])}\nTask.`),
+            call("s-2", "e-2", `${block([replaced])}\nTask.`),
+            // One request counts once for each mark, however many of its lines carry it.
+            call("s-2", "e-2", `${block([...files, dated, replaced, replaced, contested])}\nTask.`),
+            // A block of an earlier build ends at its last element.
+            call("s-2", "e-2", `${block([contested], false)}\nTask.`),
+            // The marks count inside the block alone, and the element by its whole name.
+            call(
+                "s-2",
+                "e-3",
+                `${block(["<NAMED_FILES_INDEX>\nmem_e: a row\n</NAMED_FILES_INDEX>"], false)}\n${files.join("\n")}\n${replaced}\n${PROJECT_MEMORY_NOTE}\nTask.`,
+            ),
+        ];
+        const seen = observeDelivery(calls, parts(), [], order);
+        expect([
+            seen.memory_blocks,
+            seen.closing_blocks,
+            seen.named_file_blocks,
+            seen.replaced_blocks,
+            seen.contested_blocks,
+        ]).toEqual([5, 3, 2, 2, 2]);
+        // The replacement mark is no contest: a block holding it alone counts no contested statement.
+        const alone = observeDelivery([calls[1] as (typeof calls)[number]], parts(), [], order);
+        expect([alone.replaced_blocks, alone.contested_blocks]).toEqual([1, 0]);
     });
 
     test("a run with no owed note, or a note that reached no request of its turn, is invalid", () => {
@@ -414,6 +462,106 @@ describe("delivery check", () => {
         expect(observeDelivery([first, captured, later], parts(), [], order, []).memory_due).toBe(
             false,
         );
+    });
+
+    test("a statement whose memory is disputed owes no block, and a live statement beside it does", () => {
+        // A final Kernel store with the columns the statement reader takes. Capture writes a
+        // statement record (`stm_*`) and an `approve` admission decision on the memory that names
+        // the record as its approval; the reviewer's dispute is a `mark_disputed` admission
+        // decision on the memory, which leaves the record live.
+        const kernel = (name: string, disputed: string[], live: string[]) => {
+            const path = join(dir, `${name}.sqlite`);
+            const db = new Database(path);
+            db.run("create table commit_log(commit_seq integer primary key)");
+            db.run("insert into commit_log values (1), (2)");
+            db.run(
+                "create table object_registry(object_id text primary key, source_id text, created_commit_seq integer, invalidated_commit_seq integer)",
+            );
+            db.run(
+                "create table decisions(object_id text, decision_payload blob, created_commit_seq integer, decision_kind text)",
+            );
+            db.run(
+                "create table admission_decisions(admission_decision_id text primary key, subject_object_id text, approval_object_id text, disposition text, commit_seq integer)",
+            );
+            for (const session of [...disputed, ...live]) {
+                const payload = JSON.stringify({
+                    summary: "User stated: Use port 4321.",
+                    rationale: JSON.stringify({ session, memory: `mem_${session}` }),
+                });
+                db.run("insert into decisions values (?, ?, 1, 'adr_accepted')", [
+                    `stm_${session}`,
+                    new TextEncoder().encode(payload),
+                ]);
+                db.run("insert into object_registry values (?, ?, 1, null), (?, ?, 1, null)", [
+                    `stm_${session}`,
+                    `memory_capture_statement:${session}`,
+                    `mem_${session}`,
+                    "memory_capture",
+                ]);
+                db.run("insert into admission_decisions values (?, ?, ?, 'active', 1)", [
+                    `1:approve:${session}`,
+                    `mem_${session}`,
+                    `stm_${session}`,
+                ]);
+            }
+            for (const session of disputed) {
+                db.run("insert into admission_decisions values (?, ?, null, 'disputed', 2)", [
+                    `2:dispute:${session}`,
+                    `mem_${session}`,
+                ]);
+            }
+            db.close();
+            return path;
+        };
+        const capture = (session: string) => {
+            seq += 1;
+            return { seq, component: "memory_capture", session, turn: "e-1" } as ReturnType<
+                typeof call
+            >;
+        };
+        // Three sessions without a block; captures ran in the first two.
+        const calls = [
+            call("s-1", "e-1", "Use port 4321."),
+            capture("s-1"),
+            call("s-2", "e-2", "Which port?"),
+            capture("s-2"),
+            call("s-3", "e-3", "Which port now?"),
+        ];
+        const owed = (path: string) => {
+            const statements = readStatements(path);
+            const sessions = [
+                ...(statements?.sessions ?? []),
+                ...Array(statements?.unattributed ?? 0).fill(null),
+            ];
+            return {
+                read: [statements?.count, statements?.disputed_statements, statements?.error],
+                delivery: observeDelivery(calls, parts(), [], order, sessions),
+            };
+        };
+        // The one statement, captured in s-1, is disputed: no later session owes a block.
+        const alone = owed(kernel("alone", ["sim-s-1"], []));
+        expect(alone.read).toEqual([1, 1, null]);
+        expect(alone.delivery).toMatchObject({
+            memory_due: false,
+            due_sessions: 0,
+            uncovered_sessions: [],
+        });
+        // With a live statement captured in s-2 beside it, s-3 owes for that one, and s-2 owes
+        // nothing for the disputed one.
+        const beside = owed(kernel("beside", ["sim-s-1"], ["sim-s-2"]));
+        expect(beside.read).toEqual([2, 1, null]);
+        expect(beside.delivery).toMatchObject({
+            memory_due: true,
+            due_sessions: 1,
+            uncovered_sessions: ["s-3"],
+        });
+        // Both statements live: every later session owes.
+        const both = owed(kernel("both", [], ["sim-s-1", "sim-s-2"]));
+        expect(both.read).toEqual([2, 0, null]);
+        expect(both.delivery).toMatchObject({
+            due_sessions: 2,
+            uncovered_sessions: ["s-2", "s-3"],
+        });
     });
 
     test("a body that cannot be rebuilt leaves oracle and explicit-search delivery unproven", () => {

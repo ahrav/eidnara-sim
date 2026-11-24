@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { reviewerBlock } from "../hosts/arms";
 import {
     AUDITED_BUILDS,
     type AuditedBuild,
@@ -35,11 +36,16 @@ import {
     logLength,
     noteRequest,
     observeArm,
+    observeReviewer,
     openItemsOf,
     daemonCachePoints as placeFor,
+    type ReviewerStatusObservation,
     readDaemonStatus,
     readPluginLog,
+    readReviewDrains,
+    readReviewerLog,
     requireAuditedVariants,
+    reviewLines,
 } from "./capabilities";
 
 const dirs: string[] = [];
@@ -101,7 +107,10 @@ function captured(
     db.run("create table commit_log(commit_seq integer primary key)");
     db.run("insert into commit_log values (1), (7)");
     db.run(
-        "create table decisions(object_id text, decision_payload blob, created_commit_seq integer)",
+        "create table decisions(object_id text, decision_payload blob, created_commit_seq integer, decision_kind text not null default 'CONSTRAINTS')",
+    );
+    db.run(
+        "create table admission_decisions(admission_decision_id text primary key, subject_object_id text, event_kind text, disposition text, commit_seq integer, approval_object_id text)",
     );
     for (const [i, c] of classes.entries()) {
         db.run("insert into object_registry values (?, 'observation', ?, 1, ?, '')", [
@@ -309,6 +318,7 @@ test("a fused arm's fallback on a transient reason is a degraded answer under a 
             AUDITED_BUILDS[0],
             "off",
             registered,
+            undefined,
         );
     const one = record(bound);
     expect(one.mismatches).toEqual([]);
@@ -395,7 +405,7 @@ test("a fused arm's fallback on a transient reason is a degraded answer under a 
     const legacy = observeArm("eidnara", "pi", captured(armRoot([PI_ON, PASS], [LEGACY])), {
         agent: 1,
     });
-    const plain = capabilityRecord(legacy, null, AUDITED_BUILDS[0], "off", bound);
+    const plain = capabilityRecord(legacy, null, AUDITED_BUILDS[0], "off", bound, undefined);
     expect(plain.mismatches).toEqual([]);
     expect("search_fallback" in plain).toBe(false);
 });
@@ -411,9 +421,12 @@ test("delivery evidence must match the statements the final store holds", () => 
                 rationale: JSON.stringify({ session }),
             }),
         );
-    db.run("insert into decisions values ('stm_e', ?, 99)", [payload("sim-s-0002")]);
     db.run(
-        "insert into decisions values ('stm_a', ?, 1), ('stm_b', ?, 1), ('stm_c', ?, 7), ('mem_d', ?, 1)",
+        "insert into decisions (object_id, decision_payload, created_commit_seq) values ('stm_e', ?, 99)",
+        [payload("sim-s-0002")],
+    );
+    db.run(
+        "insert into decisions (object_id, decision_payload, created_commit_seq) values ('stm_a', ?, 1), ('stm_b', ?, 1), ('stm_c', ?, 7), ('mem_d', ?, 1)",
         [
             payload("sim-s-0001"),
             payload("sim-s-0001"),
@@ -429,12 +442,15 @@ test("delivery evidence must match the statements the final store holds", () => 
                 rationale: JSON.stringify({ session: "sim-s-0001", lifetime }),
             }),
         );
-    db.run("insert into decisions values ('mem_f', ?, 1), ('mem_g', ?, 99), ('mem_h', ?, 1)", [
-        classed("current_work"),
-        classed("lasting"),
-        // A class is counted under the name the store holds, whatever an object inherits.
-        classed("constructor"),
-    ]);
+    db.run(
+        "insert into decisions (object_id, decision_payload, created_commit_seq) values ('mem_f', ?, 1), ('mem_g', ?, 99), ('mem_h', ?, 1)",
+        [
+            classed("current_work"),
+            classed("lasting"),
+            // A class is counted under the name the store holds, whatever an object inherits.
+            classed("constructor"),
+        ],
+    );
     // The row that supersedes ended work records the statement that ended it; mem_j's commit is
     // absent, the ends of mem_k, mem_m, and mem_n are no record, and mem_l is another class.
     const ended = (lifetime: string, ended_by: unknown) =>
@@ -446,7 +462,7 @@ test("delivery evidence must match the statements the final store holds", () => 
         );
     const end = { memory: "mem_f", session: "sim-s-0002" };
     db.run(
-        "insert into decisions values ('mem_i', ?, 1), ('mem_j', ?, 99), ('mem_k', ?, 1), ('mem_l', ?, 1), ('mem_m', ?, 1), ('mem_n', ?, 1)",
+        "insert into decisions (object_id, decision_payload, created_commit_seq) values ('mem_i', ?, 1), ('mem_j', ?, 99), ('mem_k', ?, 1), ('mem_l', ?, 1), ('mem_m', ?, 1), ('mem_n', ?, 1)",
         [
             ended("current_work", end),
             ended("current_work", end),
@@ -466,11 +482,10 @@ test("delivery evidence must match the statements the final store holds", () => 
     // session is no capture session of a live statement. The Kernel serves by the invalidation
     // alone, so stm_s, whose invalidating commit the log lacks, is retired too, and so is stm_t,
     // whose payload names no session.
-    db.run("insert into decisions values ('stm_r', ?, 1), ('stm_s', ?, 1), ('stm_t', ?, 1)", [
-        payload("sim-s-0007"),
-        payload("sim-s-0003"),
-        new TextEncoder().encode("not json"),
-    ]);
+    db.run(
+        "insert into decisions (object_id, decision_payload, created_commit_seq) values ('stm_r', ?, 1), ('stm_s', ?, 1), ('stm_t', ?, 1)",
+        [payload("sim-s-0007"), payload("sim-s-0003"), new TextEncoder().encode("not json")],
+    );
     db.run(
         "insert into object_registry values ('stm_r', 'decision', 'user', 1, 7, ?), ('stm_s', 'decision', 'user', 1, 99, ?), ('stm_t', 'decision', 'user', 1, 7, ?)",
         [message("d"), message("e"), message("f")],
@@ -485,10 +500,13 @@ test("delivery evidence must match the statements the final store holds", () => 
         sessions: ["sim-s-0001"],
         unattributed: 1,
         retired: 3,
+        disputed_statements: 0,
         error: null,
         lifetimes: { current_work: 5, constructor: 1, request: 1 },
         ended_work: 1,
         lineages: { count: 5, largest: 2, per_message: 6 },
+        failed_commands: { live: 0, retired: 0 },
+        disputed: { live: 0, retired: 0 },
     });
     // The class outside the build's five is a mismatch of its own; the delivery cases below run without it.
     expect(armMismatches(observe("eidnara", {}))).toEqual([
@@ -906,6 +924,7 @@ test("daemon status readings are totalled from the resource samples", () => {
         process_memory: 3,
         max_rss_anon_bytes: 300,
         c_heap_releases: 3,
+        memory_reviewer: { readings: 0, open: 0, states: {}, last: null, last_after_open: false },
         search_progress: {
             samples: 4,
             served: 1,
@@ -933,6 +952,612 @@ test("daemon status readings are totalled from the resource samples", () => {
         search_progress: { samples: 4, rebuilds: { recorded: 2, completed: 1, renewed: 1 } },
     });
     expect(readDaemonStatus(join(dir, "absent.jsonl")).samples).toBe(0);
+});
+
+test("the memory reviewer's activation state is read from each daemon process's status readings", () => {
+    const path = join(tmp(), "resources.jsonl");
+    const reading = (pid: number, state: unknown) => ({
+        pid,
+        daemon_status: {
+            pid,
+            start: "100",
+            process_memory: null,
+            memory_reviewer: state === undefined ? undefined : { activation_state: state },
+            search: null,
+            error: null,
+        },
+    });
+    const write = (samples: unknown[]) =>
+        writeFileSync(path, `${samples.map((s) => JSON.stringify(s)).join("\n")}\n`);
+    const read = () => readDaemonStatus(path).memory_reviewer;
+    // The worker reads `unknown` before its first pass and `open` while a switched project is reviewed.
+    write([reading(7, "unknown"), reading(7, "open"), reading(7, "open")]);
+    expect(read()).toEqual({
+        readings: 3,
+        open: 2,
+        states: { unknown: 1, open: 2 },
+        last: "open",
+        last_after_open: true,
+    });
+    // The same process closing after it was open is told apart from a replacement that binds no project.
+    write([reading(7, "open"), reading(7, "unavailable")]);
+    expect(read()).toMatchObject({ open: 1, last: "unavailable", last_after_open: true });
+    write([reading(7, "open"), reading(8, "missing")]);
+    expect(read()).toMatchObject({ open: 1, last: "missing", last_after_open: false });
+    write([reading(7, "open"), reading(8, "missing"), reading(8, "open"), reading(8, "stale")]);
+    expect(read()).toMatchObject({ open: 2, last: "stale", last_after_open: true });
+    // A reading without the block, or with a state of another shape, carries none.
+    write([reading(7, undefined), reading(7, 5), reading(7, "Open now"), { pid: 7 }]);
+    expect(read()).toEqual({
+        readings: 0,
+        open: 0,
+        states: {},
+        last: null,
+        last_after_open: false,
+    });
+    // A state is a name read from the file, so the tally has no inherited keys.
+    write([reading(7, "constructor")]);
+    expect(read()?.states).toEqual({ constructor: 1 });
+    expect(reviewerBlock({ activation_state: "open", memory_reviewer_state: "ready" })).toEqual({
+        activation_state: "open",
+    });
+    expect(reviewerBlock(["open"])).toBeNull();
+});
+
+/** The daemon's own lines, as its format strings write them (Eidnara eval/w9 `memory_reviewer/`). */
+const REVIEW_LOG = [
+    "daemon: memory_reviewer activation gate closed: no activation record",
+    "daemon: memory_reviewer enqueued job=1e272ec4862b8c69 trigger=later_statement later=1 source=1",
+    "daemon: memory_reviewer enqueued job=27db22ce85452690 trigger=later_statement later=1 source=1",
+    "daemon: memory_reviewer enqueued job=171284c95cbd3587 trigger=current_work later=2 source=1",
+    "daemon: memory_reviewer enqueued job=88e03198394a9259 trigger=later_message later=1 source=1",
+    'daemon: memory_reviewer selected 4 of 11 memories for review: {"contested": 0, "current_work": 1, "later_message": 1, "later_statement": 2}; 0 wait for a pending proposal',
+    "daemon: memory_reviewer stage 1 job=1e272ec4862b8c69 decider=chat_model model=amazon-bedrock/global.anthropic.claude-haiku-5-5 request=80f14b8005030580 decision=keep changes=no relation=restates work_ended=no strongest=ref-3 later=1",
+    "daemon: memory_reviewer stage 1 job=27db22ce85452690 decider=chat_model model=amazon-bedrock/global.anthropic.claude-haiku-5-5 request=ab69b4cd529e6093 decision=flagged changes=yes relation=replaces work_ended=no strongest=ref-3 later=1",
+    "daemon: memory_reviewer stage 1 job=171284c95cbd3587 decider=none model=none request=none decision=keep changes=none relation=none work_ended=none strongest=none later=0",
+    "daemon: memory_reviewer stage 1 job=c68559ec1ea0e11b decider=classifier model=typesafe/jev-latest request=b010570b1fc04e4a decision=flagged changes=0.52 relation=replaces work_ended=0.02 strongest=ref-3 later=1",
+    "daemon: memory_reviewer stage 1 request ended without an answer: job=88e03198394a9259 decider=chat_model model=amazon-bedrock/global.anthropic.claude-haiku-5-5 send deadline",
+    "daemon: memory_reviewer review ended on a later reference the model was not shown: job=88e03198394a9259 refusal=source_unavailable",
+    "daemon: memory_reviewer applied a proposal: job=27db22ce85452690 contested",
+    "daemon: memory_reviewer applied a proposal: job=c68559ec1ea0e11b disputed",
+    "daemon: memory_reviewer applied a proposal: job=d7b3f227d1213b52 dropped",
+    "daemon: memory_reviewer applied a proposal: job=d7b3f227d1213b53 standing",
+    "daemon: memory_reviewer left a change proposal for a reader: job=d7b3f227d1213b54",
+    "daemon: memory_reviewer left a published proposal unapplied: job=d7b3f227d1213b55 the store is busy",
+    "daemon: memory_reviewer stage-1 default amazon-bedrock/global.anthropic.claude-haiku-5-5 failed its first request; stage 1 uses the review model until the daemon restarts. Set memory_reviewer.stage1_model to a small model the host serves.",
+    "daemon: memory_reviewer reviews of a project wait: 64 of its pending proposals and 64 on the host hold every review hold left; reviews resume when one is settled or its review window ends",
+    "daemon: memory_reviewer kept the review hold of a settled proposal: the store is busy",
+    "daemon: memory_reviewer selection examines 4096 claim descriptors a pass and the store holds more; each pass continues where the last one ended",
+    "daemon: memory_reviewer run ended without settlement: fenced",
+    "daemon: memory_reviewer run ended without settlement: fenced",
+    "daemon: memory_reviewer run ended without settlement: store database is locked",
+    "daemon: memory_reviewer selection for a switched project failed: kernel kernel operation exceeded its deadline",
+];
+
+test("the memory reviewer's log lines are counted by the form the daemon writes each in", () => {
+    const dir = tmp();
+    const path = join(dir, "daemon.log");
+    // Two daemon generations share the one log, each opening with its ready record.
+    const other = [
+        '{"status":"ready","pid":7}',
+        "daemon: history_summarizer claims session=sim-s-0001 outcome=accepted kept=3",
+        "direct_host_fixture: search route production, embedding model gte",
+        // A reviewer line counts from its line's start alone.
+        "note: daemon: memory_reviewer applied a proposal: job=aa disputed",
+    ];
+    writeFileSync(path, `${[...other, ...REVIEW_LOG, ...other, REVIEW_LOG[1]].join("\n")}\n`);
+    const haiku = "amazon-bedrock/global.anthropic.claude-haiku-5-5";
+    const log = readReviewerLog(path);
+    expect(log).toEqual({
+        enqueued: { contested: 0, current_work: 1, later_statement: 3, later_message: 1 },
+        selections: 1,
+        stage1: {
+            chat_model: { keep: 1, flagged: 1, other: 0, models: [haiku] },
+            classifier: { keep: 0, flagged: 1, other: 0, models: ["typesafe/jev-latest"] },
+            none: { keep: 1, flagged: 0, other: 0, models: ["none"] },
+        },
+        stage1_failed: 1,
+        unread_later: 1,
+        applied: {
+            disputed: 1,
+            contested: 1,
+            standing: 1,
+            dropped: 1,
+            retired: 0,
+            revised: 0,
+            created: 0,
+        },
+        left_for_reader: 1,
+        unapplied: 1,
+        stage1_default_failed: 1,
+        waits: { hold_bound: 1, kept_hold: 1, selection_resumed: 1 },
+        // A run that ended without settlement is counted by its reason's first word.
+        unsettled: {
+            fenced: 2,
+            unavailable: 0,
+            refused: 0,
+            supervisor: 0,
+            store: 1,
+            kernel: 0,
+            conflicting_content: 0,
+            binding_mismatch: 0,
+        },
+        gate_closed: 1,
+        other: 1,
+    });
+    // Every counted form but the gate line and the unclassed one shows a review ran.
+    expect(reviewLines(log)).toBe(REVIEW_LOG.length + 1 - 2);
+    // A name the daemon adds later is counted under itself, and a decider's models stay bounded.
+    const models = Array.from({ length: 10 }, (_, i) => `p/m${i}`);
+    writeFileSync(
+        path,
+        [
+            "daemon: memory_reviewer enqueued job=aa trigger=constructor later=1 source=1",
+            "daemon: memory_reviewer applied a proposal: job=aa merged",
+            "daemon: memory_reviewer run ended without settlement: constructor",
+            "daemon: memory_reviewer stage 1 job=aa decider=panel model=p/m request=bb decision=deferred later=1",
+            ...models.map(
+                (m) =>
+                    `daemon: memory_reviewer stage 1 job=aa decider=chat_model model=${m} request=bb decision=keep changes=no later=1`,
+            ),
+        ].join("\n"),
+    );
+    const later = readReviewerLog(path);
+    expect(Object.entries(later.enqueued).filter(([, n]) => n > 0)).toEqual([["constructor", 1]]);
+    expect(later.applied.merged).toBe(1);
+    expect(Object.entries(later.unsettled ?? {}).filter(([, n]) => n > 0)).toEqual([
+        ["constructor", 1],
+    ]);
+    expect(later.stage1.panel).toEqual({ keep: 0, flagged: 0, other: 1, models: ["p/m"] });
+    expect(later.stage1.chat_model).toEqual({
+        keep: 10,
+        flagged: 0,
+        other: 0,
+        models: models.slice(0, 8),
+    });
+    // An absent log counts nothing.
+    expect(reviewLines(readReviewerLog(join(dir, "absent.log")))).toBe(0);
+});
+
+test("the settle steps are totalled from review-drain.jsonl", () => {
+    const dir = tmp();
+    const path = join(dir, "review-drain.jsonl");
+    const lines = [
+        { session: "s-1", started_wall_ms: 1_000, wall_ms: 4_500, settled: 3, error: null },
+        { session: "s-2", started_wall_ms: 9_000, wall_ms: 9_200, settled: 0, error: null },
+        {
+            session: "s-3",
+            started_wall_ms: 20_000,
+            wall_ms: 325_000,
+            settled: null,
+            error: "review drain unanswered after 300000 ms",
+        },
+        {
+            session: "s-4",
+            started_wall_ms: 400_000,
+            wall_ms: 431_000,
+            settled: 2,
+            error: "source capture did not settle: Error: source capture never settled",
+        },
+        // The answer of the drain that s-3 recorded as unanswered: the drain ran 500 s.
+        {
+            session: "s-3",
+            started_wall_ms: 20_000,
+            wall_ms: 520_000,
+            settled: 7,
+            error: null,
+            late: true,
+        },
+    ].map((l) => JSON.stringify(l));
+    // A line of another shape is counted apart: an end before its start, a count that is no integer.
+    const odd = [
+        "not json",
+        JSON.stringify({ session: "s-5", started_wall_ms: 9, wall_ms: 3, settled: 1, error: null }),
+        JSON.stringify({
+            session: "s-6",
+            started_wall_ms: 1,
+            wall_ms: 3,
+            settled: 1.5,
+            error: null,
+        }),
+        JSON.stringify({ session: "s-7", started_wall_ms: 1, wall_ms: 3, settled: 1 }),
+        JSON.stringify({
+            session: "s-8",
+            started_wall_ms: 1,
+            wall_ms: 3,
+            settled: 1,
+            error: null,
+            late: "yes",
+        }),
+    ];
+    writeFileSync(path, `${[...lines, ...odd].join("\n")}\n`);
+    // A late line adds its runs and its duration and is no step of its own.
+    expect(readReviewDrains(path)).toEqual({
+        calls: 4,
+        late_answers: 1,
+        unreadable: 5,
+        settled_runs: 12,
+        total_wall_ms: 3_500 + 200 + 305_000 + 31_000,
+        max_wall_ms: 500_000,
+        errors: 2,
+        first_errors: [
+            "review drain unanswered after 300000 ms",
+            "source capture did not settle: Error: source capture never settled",
+        ],
+    });
+    expect(readReviewDrains(join(dir, "absent.jsonl"))).toMatchObject({ calls: 0, unreadable: 0 });
+    // The arm's observation joins the log, the settle steps, and the gateway's reviewer calls.
+    writeFileSync(join(dir, "daemon.log"), `${REVIEW_LOG.join("\n")}\n`);
+    const seen = observeReviewer(dir, {
+        agent: 9,
+        memory_reviewer_stage1: 4,
+        memory_reviewer_stage2: 1,
+    });
+    expect(seen.calls).toEqual({ memory_reviewer_stage1: 4, memory_reviewer_stage2: 1 });
+    expect(seen.drains.calls).toBe(4);
+    expect(seen.log.selections).toBe(1);
+    expect(observeReviewer(tmp(), { agent: 9 }).calls).toEqual({
+        memory_reviewer_stage1: 0,
+        memory_reviewer_stage2: 0,
+    });
+});
+
+test("a statement whose memory is disputed owes no later session a block", () => {
+    // The statement record stm_a approves the memory mem_a, as capture writes them (Eidnara
+    // `memory_capture.rs` `record_statement`): the record is a decision of its own, and the
+    // memory's `approve` admission decision names it as `approval_object_id`. A dispute is a
+    // `mark_disputed` admission decision on the memory and leaves the record live.
+    const build = (rows: (db: Database) => void) => {
+        const root = captured(armRoot([PI_ON, PASS]));
+        const db = new Database(join(root, "..", "final-store", "kernel.sqlite"));
+        db.run("insert into commit_log values (3), (5)");
+        rows(db);
+        db.close();
+        return root;
+    };
+    const statement = (db: Database, id: string, session: string, created = 1) => {
+        const payload = new TextEncoder().encode(
+            JSON.stringify({
+                summary: "User stated: Use tabs.",
+                rationale: JSON.stringify({ session, memory: `mem_${id}` }),
+            }),
+        );
+        db.run(
+            "insert into decisions (object_id, decision_payload, created_commit_seq) values (?, ?, ?)",
+            [`stm_${id}`, payload, created],
+        );
+        db.run("insert into object_registry values (?, 'decision', 'user', ?, null, ?)", [
+            `stm_${id}`,
+            created,
+            // Each statement sits on its own message's lineage; the ids here are hex digits.
+            `memory_capture_statement:${id.repeat(32)}`,
+        ]);
+    };
+    const memory = (
+        db: Database,
+        id: string,
+        approval: string,
+        created = 1,
+        invalidated: number | null = null,
+    ) => {
+        db.run("insert into object_registry values (?, 'decision', 'assistant', ?, ?, '')", [
+            id,
+            created,
+            invalidated,
+        ]);
+        db.run("insert into admission_decisions values (?, ?, 'approve', 'active', ?, ?)", [
+            `${created}:approve:${id}`,
+            id,
+            created,
+            approval,
+        ]);
+    };
+    const dispute = (db: Database, id: string, commit: number) =>
+        db.run(
+            "insert into admission_decisions values (?, ?, 'mark_disputed', 'disputed', ?, null)",
+            [`${commit}:dispute:${id}`, id, commit],
+        );
+    const read = (root: string) => observeArm("eidnara", "pi", root, {}).statements;
+
+    // One statement, disputed: mem_a was replaced by mem_a2 under the same approval (a contested
+    // mark rewrites the memory), and the reviewer disputed the live one.
+    const alone = build((db) => {
+        statement(db, "a", "sim-s-0001");
+        memory(db, "mem_a", "stm_a", 1, 3);
+        memory(db, "mem_a2", "stm_a", 3);
+        dispute(db, "mem_a2", 5);
+    });
+    expect(read(alone)).toMatchObject({
+        count: 1,
+        sessions: [],
+        unattributed: 0,
+        retired: 0,
+        disputed_statements: 1,
+        disputed: { live: 1, retired: 0 },
+        error: null,
+    });
+    // A disputed statement beside a live one: later sessions owe for the live one alone.
+    const beside = build((db) => {
+        statement(db, "a", "sim-s-0001");
+        memory(db, "mem_a", "stm_a");
+        dispute(db, "mem_a", 3);
+        statement(db, "b", "sim-s-0004");
+        memory(db, "mem_b", "stm_b");
+    });
+    expect(read(beside)).toMatchObject({
+        count: 2,
+        sessions: ["sim-s-0004"],
+        unattributed: 0,
+        disputed_statements: 1,
+    });
+    // A statement stays owed while a live memory it approves stands: stm_a's dispute was followed
+    // by an approval, stm_b's dispute names a commit the log lacks, stm_c approves a second live
+    // memory, stm_d's disputed memory is retired with another live one beside it, and stm_e
+    // approves no memory.
+    const standing = build((db) => {
+        statement(db, "a", "sim-s-0001");
+        memory(db, "mem_a", "stm_a");
+        dispute(db, "mem_a", 3);
+        db.run(
+            "insert into admission_decisions values ('5:approve:mem_a', 'mem_a', 'approve', 'active', 5, 'stm_a')",
+        );
+        statement(db, "b", "sim-s-0002");
+        memory(db, "mem_b", "stm_b");
+        dispute(db, "mem_b", 99);
+        statement(db, "c", "sim-s-0003");
+        memory(db, "mem_c", "stm_c");
+        dispute(db, "mem_c", 3);
+        memory(db, "mem_c2", "stm_c", 3);
+        statement(db, "d", "sim-s-0004");
+        memory(db, "mem_d", "stm_d", 1, 5);
+        dispute(db, "mem_d", 3);
+        memory(db, "mem_d2", "stm_d", 5);
+        statement(db, "e", "sim-s-0005");
+    });
+    expect(read(standing)).toMatchObject({
+        count: 5,
+        sessions: ["sim-s-0001", "sim-s-0002", "sim-s-0003", "sim-s-0004", "sim-s-0005"],
+        disputed_statements: 0,
+    });
+    // The mismatch counts the statements that owe a block: the live one, without the disputed one.
+    const seen = observeArm("eidnara", "pi", beside, { agent: 3, memory_capture: 1 });
+    seen.delivery = {
+        requests: 3,
+        unreadable: 0,
+        injected_blocks: 0,
+        notes: { expected: 0, delivered: 0, missing: [], misplaced: [] },
+        memory_blocks: 0,
+        sessions: 2,
+        memory_due: true,
+        due_blocks: 0,
+    };
+    expect(armMismatches(seen)).toEqual([
+        "the final store holds 1 user statements captured before later sessions' agent requests, but none of those requests carried a <project-memory> block",
+    ]);
+});
+
+test("failed-command records and disputed objects are counted in the final store, live and retired", () => {
+    const root = captured(armRoot([PI_ON, PASS]));
+    const db = new Database(join(root, "..", "final-store", "kernel.sqlite"));
+    db.run("insert into commit_log values (3), (5)");
+    const row = new TextEncoder().encode(JSON.stringify({ summary: "Command: make test" }));
+    // One command line's records share a lineage: a later failure superseded tf_a, and tf_b is live.
+    // tf_c sits on the bare lineage name; tf_d's commit the log lacks; tf_e is a memory of another
+    // category on the lineage; tf_f is a TOOL_FAILURE row of another lineage; tf_g's lineage only
+    // opens with the name.
+    const failures: Array<[string, string, string, number, number | null]> = [
+        ["tf_a", "TOOL_FAILURE", "tool_failure:0f3a", 1, 3],
+        ["tf_b", "TOOL_FAILURE", "tool_failure:0f3a", 3, null],
+        ["tf_c", "TOOL_FAILURE", "tool_failure", 5, null],
+        ["tf_d", "TOOL_FAILURE", "tool_failure:0f3a", 99, null],
+        ["tf_e", "CONSTRAINTS", "tool_failure:0f3a", 1, null],
+        ["tf_f", "TOOL_FAILURE", "memory_capture", 1, null],
+        ["tf_g", "TOOL_FAILURE", "tool_failures", 1, null],
+    ];
+    for (const [id, kind, lineage, created, invalidated] of failures) {
+        db.run(
+            "insert into decisions (object_id, decision_payload, created_commit_seq, decision_kind) values (?, ?, ?, ?)",
+            [id, row, created, kind],
+        );
+        db.run("insert into object_registry values (?, 'decision', 'memory', ?, ?, ?)", [
+            id,
+            created,
+            invalidated,
+            lineage,
+        ]);
+    }
+    // An object's standing is its newest committed admission decision from its creation on:
+    // mem_p is disputed and live, mem_q was disputed and later retired, mem_r's dispute was
+    // followed by an approval, mem_s's dispute names a commit the log lacks, and mem_t's
+    // dispute predates the object.
+    for (const [id, created, invalidated] of [
+        ["mem_p", 1, null],
+        ["mem_q", 1, 5],
+        ["mem_r", 1, null],
+        ["mem_s", 1, null],
+        ["mem_t", 5, null],
+    ] as const) {
+        db.run("insert into object_registry values (?, 'decision', 'memory', ?, ?, '')", [
+            id,
+            created,
+            invalidated,
+        ]);
+    }
+    db.run(
+        `insert into admission_decisions
+            (admission_decision_id, subject_object_id, event_kind, disposition, commit_seq) values
+            ('a1', 'mem_p', 'approve', 'approved', 1), ('a2', 'mem_p', 'mark_disputed', 'disputed', 3),
+            ('a3', 'mem_q', 'mark_disputed', 'disputed', 3),
+            ('a4', 'mem_r', 'mark_disputed', 'disputed', 3), ('a5', 'mem_r', 'approve', 'approved', 5),
+            ('a6', 'mem_s', 'approve', 'approved', 1), ('a7', 'mem_s', 'mark_disputed', 'disputed', 99),
+            ('a8', 'mem_t', 'mark_disputed', 'disputed', 3),
+            ('a9', null, 'mark_disputed', 'disputed', 5)`,
+    );
+    db.close();
+    const seen = observeArm("eidnara", "pi", root, { agent: 2, memory_capture: 1 });
+    expect(seen.statements).toMatchObject({
+        error: null,
+        failed_commands: { live: 2, retired: 1 },
+        disputed: { live: 1, retired: 1 },
+    });
+    // A failed-command record is the w9 build's; a disputed object is a count on every build,
+    // since the agent's memory tool files the mark on each.
+    const w9 = auditedBuild("eval/w9") as AuditedBuild;
+    expect(armMismatches(seen, w9)).toEqual([]);
+    for (const label of ["main-ea12bff2a", "eval/w4", "eval/w2b"]) {
+        expect(armMismatches(seen, auditedBuild(label) as AuditedBuild)).toEqual([
+            `the final store holds 3 failed-command records (2 live), which ${label} does not declare`,
+        ]);
+    }
+    const none = {
+        ...seen,
+        statements: { ...seen.statements, failed_commands: { live: 0, retired: 0 } },
+    };
+    expect(armMismatches(none as typeof seen, auditedBuild("eval/w4") as AuditedBuild)).toEqual([]);
+    expect(
+        armMismatches(
+            { ...seen, arm: "eidnara-reviewer" },
+            w9,
+            null,
+            "global.anthropic.claude-haiku-5-5",
+        ),
+    ).toEqual([]);
+    // A store the two counts cannot be read from keeps its statements read: the counts are left
+    // out with their own reason, and the statement check stands.
+    const store = new Database(join(root, "..", "final-store", "kernel.sqlite"));
+    store.run("alter table decisions drop column decision_kind");
+    store.run(
+        "insert into decisions (object_id, decision_payload, created_commit_seq) values ('stm_a', ?, 1)",
+        [new TextEncoder().encode(JSON.stringify({ rationale: '{"session":"sim-s-0001"}' }))],
+    );
+    store.run("insert into object_registry values ('stm_a', 'decision', 'user', 1, null, ?)", [
+        `memory_capture_statement:${"a".repeat(32)}`,
+    ]);
+    store.close();
+    const partial = observeArm("eidnara", "pi", root, { agent: 2, memory_capture: 1 });
+    expect(partial.statements).toMatchObject({
+        count: 1,
+        sessions: ["sim-s-0001"],
+        error: null,
+        counts_error: expect.stringContaining("decision_kind"),
+    });
+    expect(partial.statements).not.toHaveProperty("failed_commands");
+    expect(partial.statements).not.toHaveProperty("disputed");
+    partial.delivery = {
+        requests: 2,
+        unreadable: 0,
+        injected_blocks: 0,
+        notes: { expected: 0, delivered: 0, missing: [], misplaced: [] },
+        memory_blocks: 0,
+        sessions: 1,
+        memory_due: false,
+        due_blocks: 0,
+    };
+    expect(armMismatches(partial, w9)).toEqual([]);
+});
+
+test("reviewer evidence is held to the arm's switch, the daemon's status, and the registered stage-1 model", () => {
+    const w9 = auditedBuild("eval/w9") as AuditedBuild;
+    const root = captured(armRoot([PI_ON, PASS]));
+    daemonLog(root, []);
+    const quiet = observeArm("eidnara", "pi", root, { agent: 2, memory_capture: 1 });
+    expect(armMismatches(quiet, w9)).toEqual([]);
+    // The gate line and the worker's unclassed lines are no review: a daemon with a reviewer
+    // host writes them with the switch off.
+    appendFileSync(
+        join(root, "..", "daemon.log"),
+        `${REVIEW_LOG[0]}\n${REVIEW_LOG[REVIEW_LOG.length - 1]}\n`,
+    );
+    const idle = observeArm("eidnara", "pi", root, { agent: 2, memory_capture: 1 });
+    expect(idle.reviewer?.log).toMatchObject({ gate_closed: 1, other: 1 });
+    expect(armMismatches(idle, w9)).toEqual([]);
+    // On an arm without the switch, each sign of a review contradicts the profile.
+    appendFileSync(join(root, "..", "daemon.log"), `${REVIEW_LOG.slice(1, 8).join("\n")}\n`);
+    writeFileSync(
+        join(root, "..", "review-drain.jsonl"),
+        `${JSON.stringify({ session: "s-1", started_wall_ms: 1, wall_ms: 2, settled: 0, error: null })}\n`,
+    );
+    const components = {
+        agent: 2,
+        memory_capture: 1,
+        memory_reviewer_stage1: 3,
+        memory_reviewer_stage2: 1,
+    };
+    const reviewed = observeArm("eidnara", "pi", root, components);
+    const status = (memory_reviewer: ReviewerStatusObservation) => ({
+        ...(reviewed.daemon_status as NonNullable<typeof reviewed.daemon_status>),
+        readings: 8,
+        process_memory: 8,
+        memory_reviewer,
+    });
+    const open = { readings: 8, open: 8, states: { open: 8 }, last: "open", last_after_open: true };
+    const off = {
+        "daemon.log holds 7 memory reviewer lines of a review, but the arm leaves the reviewer switch off": true,
+    };
+    expect(armMismatches({ ...reviewed, daemon_status: status(open) }, w9)).toEqual([
+        ...Object.keys(off),
+        "4 memory_reviewer_stage1 and memory_reviewer_stage2 calls in the proxy records, but the arm leaves the reviewer switch off",
+        "review-drain.jsonl holds 1 settle steps, which only an arm with the reviewer switch runs",
+        "8 daemon status readings report the memory reviewer open, but the arm leaves the reviewer switch off",
+    ]);
+    // A host arm's reviewer call is reported once, with its other Eidnara calls.
+    const host = observeArm("host", "pi", armRoot([]), { agent: 2, memory_reviewer_stage1: 1 });
+    expect(armMismatches(host, w9)).toEqual(["1 memory_reviewer_stage1 calls on a host-only arm"]);
+    // The same evidence is the reviewer arm's own.
+    const arm = { ...reviewed, arm: "eidnara-reviewer" };
+    const haiku = "global.anthropic.claude-haiku-5-5";
+    const held = (o: typeof arm) => armMismatches(o, w9, null, haiku);
+    expect(held({ ...arm, daemon_status: status(open) })).toEqual([]);
+    // The check holds no model of its own: a reviewer arm of a run that registers none is a mismatch.
+    expect(armMismatches({ ...arm, daemon_status: status(open) }, w9)).toEqual([
+        "the arm sets the reviewer switch, and the run registers no stage-1 model",
+    ]);
+    // The status must carry the block and report open, and a process that was open must still be.
+    const closed = (last: string, last_after_open: boolean, opened = 3) => ({
+        readings: 8,
+        open: opened,
+        states: { open: opened, [last]: 8 - opened },
+        last,
+        last_after_open,
+    });
+    const none = { readings: 0, open: 0, states: {}, last: null, last_after_open: false };
+    expect(held({ ...arm, daemon_status: status(none) })).toEqual([
+        "none of 8 daemon status readings carries the memory_reviewer block, which eval/w9 declares with its memory review",
+    ]);
+    expect(held({ ...arm, daemon_status: status(closed("missing", false, 0)) })).toEqual([
+        "none of 8 daemon status readings reports the memory reviewer open (last state missing), but the arm sets the reviewer switch",
+    ]);
+    expect(held({ ...arm, daemon_status: status(closed("unavailable", true)) })).toEqual([
+        "the last daemon status reading reports the memory reviewer unavailable, after the same daemon process reported it open",
+    ]);
+    // A replacement daemon that bound no project reads missing; its reading stands.
+    expect(held({ ...arm, daemon_status: status(closed("missing", false)) })).toEqual([]);
+    // An arm whose status returned no reading, and an observation recorded before the state was read, are held to nothing.
+    const unread = { ...status(none), readings: 0 };
+    expect(held({ ...arm, daemon_status: unread })).toEqual([]);
+    const { memory_reviewer: _state, ...before } = status(none);
+    expect(held({ ...arm, daemon_status: before })).toEqual([]);
+    // A stage-1 decision of the chat model names the registered model.
+    const wanted = (model: string) =>
+        armMismatches({ ...arm, daemon_status: status(open) }, w9, null, model);
+    expect(wanted(haiku)).toEqual([]);
+    expect(wanted("global.anthropic.claude-sonnet-5-5")).toEqual([
+        "stage-1 decisions by the chat model name amazon-bedrock/global.anthropic.claude-haiku-5-5, but the run registers amazon-bedrock/global.anthropic.claude-sonnet-5-5 as the reviewer's stage-1 model",
+    ]);
+    // The capability record carries the reviewer observation and the same mismatches.
+    const record = capabilityRecord(
+        { ...arm, daemon_status: status(open) },
+        null,
+        w9,
+        "off",
+        null,
+        "global.anthropic.claude-sonnet-5-5",
+    );
+    expect(record.observed.reviewer?.calls).toEqual({
+        memory_reviewer_stage1: 3,
+        memory_reviewer_stage2: 1,
+    });
+    expect(record.mismatches).toEqual(wanted("global.anthropic.claude-sonnet-5-5"));
 });
 
 test("evidence is read against the capabilities of the build the run bound", () => {
@@ -1025,6 +1650,44 @@ test("evidence is read against the capabilities of the build the run bound", () 
     expect(armMismatches({ ...base, delivery: delivery(0, 1) }, current)).toEqual([
         `1 of 5 rendered history blocks hold a waiting line before a later summarized segment (first requests 41), but ${current.label} declares waiting lines in the newest segment alone`,
     ]);
+    // The closing sentence, the named files, and the dated replacement mark are the w9 build's.
+    const marked = (
+        closing_blocks: number,
+        named_file_blocks: number,
+        replaced_blocks: number,
+    ) => ({
+        ...delivery(0, 0),
+        memory_blocks: 4,
+        closing_blocks,
+        named_file_blocks,
+        replaced_blocks,
+    });
+    expect(armMismatches({ ...base, delivery: marked(4, 2, 1) }, current)).toEqual([]);
+    // A build with the sentence may show no named file and no replacement; it ends every block with the sentence.
+    expect(armMismatches({ ...base, delivery: marked(4, 0, 0) }, current)).toEqual([]);
+    expect(armMismatches({ ...base, delivery: marked(1, 0, 0) }, current)).toEqual([]);
+    expect(armMismatches({ ...base, delivery: marked(0, 2, 1) }, current)).toEqual([
+        `none of 4 agent requests with a <project-memory> block carries the closing sentence, which ${current.label} declares for every delivered block`,
+    ]);
+    expect(
+        armMismatches({ ...base, delivery: { ...marked(0, 0, 0), memory_blocks: 0 } }, current),
+    ).toEqual([]);
+    // An observation recorded before the sentence was counted is held to nothing.
+    const { closing_blocks: _uncounted, ...before } = marked(0, 0, 0);
+    expect(armMismatches({ ...base, delivery: before }, current)).toEqual([]);
+    const main = auditedBuild("main-ea12bff2a") as AuditedBuild;
+    const w4 = auditedBuild("eval/w4") as AuditedBuild;
+    for (const earlier of [main, w4, w3, w2b]) {
+        expect(armMismatches({ ...base, delivery: marked(0, 0, 0) }, earlier)).toEqual([]);
+        expect(armMismatches({ ...base, delivery: marked(4, 2, 1) }, earlier)).toEqual([
+            `4 agent requests carry a <project-memory> block that ends with the closing sentence, which ${earlier.label} does not declare`,
+            `2 agent requests carry a <NAMED_FILES> element in <project-memory>, which ${earlier.label} does not declare`,
+            `1 agent requests render a statement dated as the replacement of an observation, which ${earlier.label} does not declare`,
+        ]);
+        expect(armMismatches({ ...base, delivery: marked(0, 0, 3) }, earlier)).toEqual([
+            `3 agent requests render a statement dated as the replacement of an observation, which ${earlier.label} does not declare`,
+        ]);
+    }
     // The c8 renderer keeps a settled waiting line across segments, and renders no contest.
     expect(armMismatches({ ...reference, delivery: delivery(0, 1) }, c8)).toEqual([]);
     expect(armMismatches({ ...reference, delivery: delivery(2, 0) }, c8)).toEqual([
@@ -1232,7 +1895,7 @@ test("the capability record names the run's caching condition beside what the ar
         cache_write_tokens: 0,
     });
     observed.prompt_caching = { components: { agent: counts(0) } };
-    const off = capabilityRecord(observed, null, undefined, "off", null);
+    const off = capabilityRecord(observed, null, undefined, "off", null, undefined);
     expect(off).toMatchObject({
         profile: armProfile("host"),
         eidnara_build: null,
@@ -1240,16 +1903,16 @@ test("the capability record names the run's caching condition beside what the ar
         observed: { prompt_caching: { components: { agent: { with_cache_points: 0 } } } },
         mismatches: [],
     });
-    expect(capabilityRecord(observed, null, undefined, "on", null).mismatches).toEqual([
+    expect(capabilityRecord(observed, null, undefined, "on", null, undefined).mismatches).toEqual([
         "2 of 2 agent requests carry no cache point, but the run registers prompt caching on",
     ]);
     // One request with a cache point leaves the other one outside the condition.
     observed.prompt_caching = { components: { agent: counts(1) } };
-    expect(capabilityRecord(observed, null, undefined, "on", null).mismatches).toEqual([
+    expect(capabilityRecord(observed, null, undefined, "on", null, undefined).mismatches).toEqual([
         "1 of 2 agent requests carry no cache point, but the run registers prompt caching on",
     ]);
     observed.prompt_caching = { components: { agent: counts(2) } };
-    expect(capabilityRecord(observed, null, undefined, "on", null)).toMatchObject({
+    expect(capabilityRecord(observed, null, undefined, "on", null, undefined)).toMatchObject({
         prompt_caching: "on",
         mismatches: [],
     });
@@ -1365,6 +2028,77 @@ test("on a build whose hook keeps a background call's cache writes to the system
     }
 });
 
+test("a reviewer request gets the system prompt's cache point by the build's layout, and each stage is held to carry one", () => {
+    const sent = JSON.parse(
+        readFileSync(join(import.meta.dir, "../../tests/fixtures/reviewer/requests.json"), "utf8"),
+    ) as Record<"stage1" | "stage2", ConverseBody>;
+    const stages = [
+        ["memory_reviewer_stage1", sent.stage1],
+        ["memory_reviewer_stage2", sent.stage2],
+    ] as const;
+    for (const [component, host] of stages) {
+        // The daemon's child Pi sends the request with no cache point (`eval/w9` is a `system`
+        // build): the proxy places the one after the system text and leaves the message as sent.
+        const body = structuredClone(host);
+        expect(bodyCachePoints(body)).toBe(0);
+        expect(placeFor("system")(body, component)).toBe(1);
+        expect(body).toEqual({ ...host, system: [...(host.system ?? []), POINT] });
+        expect(placeFor("system")(body, component)).toBe(0);
+        // Under Pi's own layout the same request carries the message's point too.
+        const both = structuredClone(host);
+        expect(placeFor("system-and-message")(both, component)).toBe(2);
+        expect(both.messages?.[0]?.content.at(-1)).toEqual(POINT);
+    }
+    // The session-end count holds each stage to a cache point on every request.
+    const live: Record<string, CachingCount> = {};
+    noteRequest(live, "memory_reviewer_stage1", 1, 1);
+    noteRequest(live, "memory_reviewer_stage1", 0);
+    noteRequest(live, "memory_reviewer_stage2", 0);
+    expect(cachingMismatches("on", { components: live })).toEqual([
+        "1 of 2 memory_reviewer_stage1 requests carry no cache point, but the run registers prompt caching on",
+        "1 of 1 memory_reviewer_stage2 requests carry no cache point, but the run registers prompt caching on",
+    ]);
+    expect(cachingMismatches("off", { components: live })).toEqual([]);
+    // The arm-end tally reads the stored bodies: a point the proxy placed is counted as placed
+    // and stays out of the layout check, which reads the points a host sent itself.
+    const parts = new Map<string, RequestPart>([
+        ["sys+", { field: "system", value: [...(sent.stage1.system ?? []), POINT] }],
+        ["sys", { field: "system", value: sent.stage1.system }],
+        ["u", { field: "messages", value: sent.stage1.messages?.[0] }],
+    ]);
+    const tokens = { input_tokens: 458, cache_read_tokens: 1_042, cache_write_tokens: 0 };
+    const placed = { sha256: "x", bytes: 1, parts: ["sys+", "u"] };
+    const tally = new CachingTally(parts);
+    for (const [component] of stages) {
+        tally.add({ component, request: placed, ...tokens, cache_points_placed: 1 });
+    }
+    const layout = { layout: "system" as const, label: "eval/w9" };
+    expect(tally.observation().components).toMatchObject({
+        memory_reviewer_stage1: {
+            requests: 1,
+            with_cache_points: 1,
+            placed_by_proxy: 1,
+            cache_read_tokens: 1_042,
+        },
+        memory_reviewer_stage2: { requests: 1, with_cache_points: 1, placed_by_proxy: 1 },
+    });
+    expect(cachingMismatches("on", tally.observation(), layout)).toEqual([]);
+    const bare = { sha256: "y", bytes: 1, parts: ["sys", "u"] };
+    tally.add({ component: "memory_reviewer_stage2", request: bare, ...tokens });
+    expect(cachingMismatches("on", tally.observation(), layout)).toEqual([
+        "1 of 2 memory_reviewer_stage2 requests carry no cache point, but the run registers prompt caching on",
+    ]);
+});
+
+test("a reviewer call on an arm without the plugin is a mismatch, as every Eidnara component is", () => {
+    const empty = join(tmp(), "r");
+    mkdirSync(empty);
+    const calls = { agent: 4, memory_reviewer_stage1: 3, memory_reviewer_stage2: 1 };
+    const mismatches = armMismatches(observeArm("host", "pi", empty, calls));
+    expect(mismatches).toContain("3 memory_reviewer_stage1 calls on a host-only arm");
+    expect(mismatches).toContain("1 memory_reviewer_stage2 calls on a host-only arm");
+});
+
 test("a Pi arm's background requests show the cache-point layout its build declares", () => {
     const parts = new Map<string, RequestPart>([
         ["sys", { field: "system", value: [{ text: "s" }] }],
@@ -1478,13 +2212,13 @@ test("a Pi arm's background requests show the cache-point layout its build decla
     arm.prompt_caching = paired;
     const w3 = auditedBuild("eval/w3-all") as AuditedBuild;
     const w2b = auditedBuild("eval/w2b") as AuditedBuild;
-    expect(capabilityRecord(arm, null, w2b, "on", null).mismatches).toEqual([]);
-    expect(capabilityRecord(arm, null, w3, "on", null).mismatches).toEqual(
+    expect(capabilityRecord(arm, null, w2b, "on", null, undefined).mismatches).toEqual([]);
+    expect(capabilityRecord(arm, null, w3, "on", null, undefined).mismatches).toEqual(
         cachingMismatches("on", paired, { layout: "system", label: w3.label }),
     );
-    expect(capabilityRecord({ ...arm, host: "opencode" }, null, w3, "on", null).mismatches).toEqual(
-        armMismatches({ ...arm, host: "opencode" }, w3),
-    );
+    expect(
+        capabilityRecord({ ...arm, host: "opencode" }, null, w3, "on", null, undefined).mismatches,
+    ).toEqual(armMismatches({ ...arm, host: "opencode" }, w3));
 });
 
 test("the observation counts the requests whose cache points the proxy placed", () => {

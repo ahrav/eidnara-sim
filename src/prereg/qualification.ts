@@ -14,7 +14,10 @@ import {
     isArmName,
     PROMPT_CACHING,
     type PromptCaching,
+    reviewsMemory,
+    sameTreatment,
 } from "../hosts/profiles";
+import { pricedByCachedTable, priceTableFor } from "../run/price";
 import { canonicalJson, isCanonicalDecimal, sha256Hex } from "./canonical";
 import { HOSTS, type Preregistration, TIERS, type Tier } from "./schema";
 import {
@@ -49,6 +52,9 @@ export const QUALIFICATIONS = [
     "W4S",
     "W4SH",
     "W4P",
+    "W5S",
+    "W5SH",
+    "W5P",
 ] as const;
 /**
  * Control items a qualification adds to its scenarios. `wrong-project-lookup` asks each P8 lookup
@@ -66,6 +72,16 @@ export type QualificationControl = (typeof QUALIFICATION_CONTROLS)[number];
  * right answer withholds or leaves out what a source says, and the oracle note quotes it.
  */
 export const RANKING_GATE_ITEMS = ["P1", "P3", "P4:in", "P6:resume", "P8", "P12", "P13"] as const;
+
+/**
+ * The roles a registration may name a side model for. `memory_reviewer_stage1` is the model that
+ * decides stage 1 of the daemon's memory reviewer (`memory_reviewer.stage1_model`).
+ */
+export const SIDE_MODEL_ROLES = ["memory_reviewer_stage1"] as const;
+export type SideModelRole = (typeof SIDE_MODEL_ROLES)[number];
+/** A registration's side models: one bare Bedrock model id per role. */
+export type SideModels = Record<SideModelRole, string>;
+
 /** The delivery modes in the order the ranking gate expects their pass rates to hold. */
 const RANKED_DELIVERY = ["oracle-context", "automatic", "none"] as const;
 
@@ -82,7 +98,8 @@ export interface Qualification {
     /** `order_by_seed[i]` is the arm execution order for `seeds[i]`. */
     arms: { run: string[]; order_by_seed: string[][] };
     /**
-     * `[treatment, reference]` pairs of run arms whose delivery modes or search routes differ; empty
+     * `[treatment, reference]` pairs of run arms whose delivery modes, search routes, or reviewer
+     * switches differ (`sameTreatment`); empty
      * only when the registration runs one arm and `reference_runs` names its contrasts.
      */
     contrasts: string[][];
@@ -146,7 +163,8 @@ export interface Qualification {
      * The prompt-caching condition every arm of the registration runs under; `off` when absent.
      * Under `on` the run makes Pi place its Bedrock cache points for the measured model
      * (`piModelName`), refuses an arm with a host caller's request that carries none, records the
-     * cache gap of each call a host under test makes, and prices its calls at `CACHED_PRICE_TABLE`. OpenCode places its own
+     * cache gap of each call a host under test makes, and prices its calls at `CACHED_PRICE_TABLE`,
+     * or at `CACHED_SIDE_PRICE_TABLE` with a side model that table lists. OpenCode places its own
      * cache points for a Claude model under either value.
      */
     prompt_caching?: PromptCaching;
@@ -161,8 +179,20 @@ export interface Qualification {
      * section refuses every fallback answer on a fused arm.
      */
     search_fallback?: { max_degraded_share: string };
+    /**
+     * The models the registration's runs call beside the agent model and its side model, by role
+     * (`SIDE_MODEL_ROLES`), each a bare Bedrock model id. The run admits them, hands the stage-1
+     * model to the host stack, lists them in Pi's model list, records them in its manifest, and
+     * under prompt caching `on` prices their calls at their own rates (`priceTableFor`), so
+     * under `on` each is a model that table holds rates for.
+     */
+    side_models?: SideModels;
     claim: "descriptive";
 }
+
+/** The side models a registration's runs take; null for a tier run and a registration that names none. */
+export const sideModelsOf = (q: Pick<Qualification, "side_models"> | null): SideModels | null =>
+    q?.side_models ?? null;
 
 /** The prompt-caching condition a registration's runs take; a tier run and an unnamed one run `off`. */
 export const promptCachingOf = (q: Pick<Qualification, "prompt_caching"> | null): PromptCaching =>
@@ -194,6 +224,23 @@ const SHARE_BOUND = "expected a canonical decimal in (0, 1)";
  */
 export const isShareBound = (v: unknown): v is string =>
     isCanonicalDecimal(v) && v.startsWith("0.");
+
+/** A Bedrock model or inference-profile id as a request path names it, without a provider prefix. */
+const modelId = (v: unknown) =>
+    typeof v === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(v)
+        ? null
+        : "expected a Bedrock model id";
+
+/** Whether `value` names one model id per side-model role and no other key, as a run's manifest records them. */
+export function isSideModels(value: unknown): value is SideModels {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+    const roles: readonly string[] = SIDE_MODEL_ROLES;
+    const named = value as Record<string, unknown>;
+    return (
+        Object.keys(named).every((role) => roles.includes(role)) &&
+        roles.every((role) => modelId(named[role]) === null)
+    );
+}
 
 const commitHash = (v: unknown) =>
     typeof v === "string" && /^[0-9a-f]{40}$/.test(v) ? null : "expected a full commit hash";
@@ -248,6 +295,7 @@ const SECTIONS: Record<string, Shape> = {
                 : "expected an object of positive integer costs by arm",
     },
     search_fallback: { max_degraded_share: (v) => (isShareBound(v) ? null : SHARE_BOUND) },
+    side_models: Object.fromEntries(SIDE_MODEL_ROLES.map((role) => [role, modelId])),
 };
 
 /**
@@ -321,6 +369,11 @@ export function validateQualification(value: unknown, tier: Preregistration): st
             continue;
         }
         for (const gap of capabilityGaps(arm, builds?.current)) errors.push(`arms.run: ${gap}`);
+        if (reviewsMemory(armProfile(arm)) && q.side_models?.memory_reviewer_stage1 === undefined) {
+            errors.push(
+                `arms.run: ${arm} runs the memory reviewer, and side_models.memory_reviewer_stage1 names no stage-1 model`,
+            );
+        }
     }
     if (q.arms.order_by_seed.length !== q.seeds.length) {
         errors.push("arms.order_by_seed: needs one order per seed");
@@ -345,10 +398,7 @@ export function validateQualification(value: unknown, tier: Preregistration): st
             errors.push(`contrasts[${i}]: expected a [treatment, reference] pair`);
         } else if (!q.arms.run.includes(a) || !q.arms.run.includes(b)) {
             errors.push(`contrasts[${i}]: both arms must be run arms`);
-        } else if (
-            deliveryOf(armProfile(a)) === deliveryOf(armProfile(b)) &&
-            armProfile(a).search === armProfile(b).search
-        ) {
+        } else if (sameTreatment(armProfile(a), armProfile(b))) {
             errors.push(`contrasts[${i}]: ${a} and ${b} deliver and search the same way`);
         }
     });
@@ -443,7 +493,7 @@ export function buildRefusal(
 
 /**
  * The A/A, hold-out, no-source control, and ranking gate sections against the registration's
- * seeds and arms.
+ * seeds and arms, and its side models against the price table its caching condition selects.
  */
 function checkSections(q: Qualification, errors: string[]): void {
     const aa = q.aa_controls;
@@ -491,10 +541,7 @@ function checkSections(q: Qualification, errors: string[]): void {
             errors.push(`reference_runs.contrasts[${i}]: ${a} is not a run arm`);
         } else if (!isArmName(b)) {
             errors.push(`reference_runs.contrasts[${i}]: ${b} has no profile`);
-        } else if (
-            deliveryOf(armProfile(a)) === deliveryOf(armProfile(b)) &&
-            armProfile(a).search === armProfile(b).search
-        ) {
+        } else if (sameTreatment(armProfile(a), armProfile(b))) {
             errors.push(
                 `reference_runs.contrasts[${i}]: ${a} and ${b} deliver and search the same way`,
             );
@@ -518,6 +565,14 @@ function checkSections(q: Qualification, errors: string[]): void {
         for (const host of q.hosts.filter((h) => h !== "pi")) {
             errors.push(
                 `search_fallback: the bound is read from Pi transcripts; hosts lists ${host}`,
+            );
+        }
+    }
+    // A caching-on run prices each call at its model's rates, so the table holds each side model's.
+    for (const [role, model] of Object.entries(q.side_models ?? {})) {
+        if (promptCachingOf(q) === "on" && !pricedByCachedTable(model, q.side_models)) {
+            errors.push(
+                `side_models.${role}: prompt caching on prices calls at ${priceTableFor("on", q.side_models).version}, which holds no rates for ${model}`,
             );
         }
     }

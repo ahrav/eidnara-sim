@@ -1,0 +1,105 @@
+{
+    "schema": "sim-qualification/v1",
+    "id": "W5S",
+    "revision": 1,
+    "frozen": true,
+    "tier": "S",
+    "tier_preregistration_sha256": "2a9773e79ed87853d02a758ae1cadf817871fefd98e3577de2dada71e0858d5e",
+    "corpus": "diagnosed",
+    "fresh_seeds": true,
+    "seeds": [
+        104,
+        107,
+        109
+    ],
+    "hosts": [
+        "pi"
+    ],
+    "arms": {
+        "run": [
+            "host",
+            "eidnara",
+            "eidnara-reviewer"
+        ],
+        "order_by_seed": [
+            [
+                "host",
+                "eidnara",
+                "eidnara-reviewer"
+            ],
+            [
+                "eidnara-reviewer",
+                "host",
+                "eidnara"
+            ],
+            [
+                "eidnara",
+                "eidnara-reviewer",
+                "host"
+            ]
+        ]
+    },
+    "contrasts": [
+        [
+            "eidnara",
+            "host"
+        ],
+        [
+            "eidnara-reviewer",
+            "eidnara"
+        ],
+        [
+            "eidnara-reviewer",
+            "host"
+        ]
+    ],
+    "controls": [
+        "wrong-project-lookup"
+    ],
+    "no_source_control": "host",
+    "prompt_caching": "on",
+    "builds": {
+        "current": {
+            "label": "eval/w9",
+            "commit": "4c293f1835960b8d60b55756933f196ecd12d007"
+        },
+        "reference": {
+            "label": "main-ea12bff2a",
+            "commit": "ea12bff2adb028d942d3b339de6dc74b605ab1ab"
+        },
+        "contrasts": [
+            [
+                "eidnara",
+                "eidnara"
+            ]
+        ]
+    },
+    "side_models": {
+        "memory_reviewer_stage1": "global.anthropic.claude-haiku-5-5"
+    },
+    "analysis": {
+        "unit": "run",
+        "reference": {
+            "campaign": "w2-s4",
+            "level": "seed"
+        },
+        "harm_probes": [
+            "P2",
+            "P5",
+            "P9",
+            "P10",
+            "P11",
+            "P8-twin"
+        ],
+        "budget_usd": {
+            "low": 2000,
+            "high": 5000
+        },
+        "cost_per_arm_seed_usd": {
+            "host": 200,
+            "eidnara": 300,
+            "eidnara-reviewer": 320
+        }
+    },
+    "claim": "descriptive"
+}

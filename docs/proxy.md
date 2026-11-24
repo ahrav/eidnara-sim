@@ -64,9 +64,9 @@ rest. The writer refuses a record that lacks any field below.
 | `stripped` | Request fields the proxy removed, keyed by path; present only when it removed one |
 | `arrival` | The request's arrival ordinal within its proxy process, assigned at the first byte; a resume replays records by this ordinal, falling back to `started_wall_ms` then `seq` for records written before it existed |
 | `request` | The forwarded body: `sha256` of the JSON handed upstream (after `stripped` removals), its UTF-8 `bytes`, and `parts`, the ids of its stored parts in body order (see Request bodies); present on every classified call of a run that stores bodies |
-| `cache_points_placed` | Cache point blocks the proxy placed in the forwarded body before storing it, through `GatewayOptions.cachePoints`; present only when above 0. A caching-on run places cache points on a daemon-run call (`history_summarizer`, `memory_classifier`, `context_researcher`) whose body carries none: Pi's two, or the system prompt's alone on a build whose `background_cache_points` is `system` (`docs/hosts.md`, Prompt caching) |
+| `cache_points_placed` | Cache point blocks the proxy placed in the forwarded body before storing it, through `GatewayOptions.cachePoints`; present only when above 0. A caching-on run places cache points on a daemon-run call (`history_summarizer`, `memory_classifier`, `context_researcher`, `memory_reviewer_stage1`, `memory_reviewer_stage2`) whose body carries none: Pi's two, or the system prompt's alone on a build whose `background_cache_points` is `system` (`docs/hosts.md`, Prompt caching) |
 | `cache_gap` | On a run with prompt caching on (`docs/hosts.md`), for every call but the harness's own (`user-sim`, `judge`, and `rejected` records carry none): `ttl_ms`, the provider's default cache lifetime the gap is read against (300,000), and `session`, the scenario and wall time (`scenario_ms`, `wall_ms`) from the answer of the previous served call of the same arm, component, model, and session, whose conversation this call extends, to this call's answer; `null` for the first such call. A call's answer time is its receipt plus `first_byte_ms` on both clocks, so the backoff of the proxy's upstream retries falls on the call that waited; `first_byte_ms` also holds the delay of a `slow_stream` fault (2 s by default), which moves that call's answer time by as much; a call with no answer byte keeps its receipt. A call is served when the provider answered it with cache-read or cache-write tokens, the usage that shows it read or wrote the cache. The gap is read when the record is written, against the calls written before it, so when the later-answered of two overlapping calls of one key is written first, it measures from the call before both and the earlier-answered one records 0; an arm's agent calls run one at a time. A resume rebuilds the answer times from the call log. A session's first call reads only the tools and system prompt an earlier call wrote; which earlier call sent the same ones is read from the stored request parts, since Pi's system prompt names the session's workspace |
-| `origin_turn` | On a `memory_capture`, `memory_classifier`, or `history_summarizer` call: the session's preceding turn, when the call was received after the next turn began and before that turn's first agent answer was recorded; absent otherwise |
+| `origin_turn` | On a `memory_capture`, `memory_classifier`, `history_summarizer`, `memory_reviewer_stage1`, or `memory_reviewer_stage2` call: the session's preceding user turn, when the call was received outside a user turn (`turn` is null: between turns, or in a `session_end` event, where a reviewer arm's settle step runs) or after the next turn began and before that turn's first agent answer was recorded; absent otherwise |
 
 ## Request bodies
 
@@ -118,6 +118,24 @@ capture, memory classifier, context researcher, and history summarizer
 prompts, a tool-free summarization prompt as native compaction, a request
 offering the `bash` tool as the agent, and `other` for the rest. A request
 the gateway refuses is `rejected`.
+
+The two request kinds of Eidnara's memory reviewer are components of their
+own. Each is a system text and one user message, with no tools:
+
+| Component | System text | Last user message | Eidnara source |
+|---|---|---|---|
+| `memory_reviewer_stage1` | starts with `You screen one stored memory of a coding project.` | starts with `{"memory":`, the review state as one JSON object | `crates/daemon/src/memory_reviewer/stage_one.rs` (`system_text`, `state_json`) |
+| `memory_reviewer_stage2` | contains `Answer with exactly one JSON object {"v":1,"step":{...}}` | starts with `[ref-1 `, the marker of the reviewed memory | `crates/daemon/src/memory_reviewer/coordinator.rs` (`STEP_INSTRUCTIONS`, `push_labeled`) |
+
+A request is a reviewer's only when both its parts match. The rules run
+after the agent rule and the rules for the other Eidnara prompts, and
+before the summarizer and native-compaction rules: a reviewer request
+quotes stored memories and conversation messages, so a quoted
+`<new_messages>` or a system text that names a summary leaves it a
+reviewer request. Stage 1 runs on the registered stage-1 model and stage 2
+on the arm's side model, and the record's `model` names which
+(`docs/report.md`, Cost). `tests/fixtures/reviewer/requests.json` holds
+one request of each kind as the daemon's child Pi sends it.
 
 `GatewayOptions.observe` receives a `call_started` event with the component
 and the number of cache point blocks in the forwarded body (`cache_points`)

@@ -25,7 +25,13 @@ import { parentPid, processStart, stopOwnedTree } from "../run/procs";
 import type { DaemonStatusReading, SearchProgress } from "../run/sampler";
 import { FAKETIME_LIB, faketimeEnv } from "../run/timeinject";
 import { sandboxPath, toolbinDir, toolchainEnv } from "../run/toolchain";
-import { ARM_PROFILES, type ArmName, deliveryOf, type PromptCaching } from "./profiles";
+import {
+    ARM_PROFILES,
+    type ArmName,
+    deliveryOf,
+    type PromptCaching,
+    reviewsMemory,
+} from "./profiles";
 
 export type { ArmName };
 
@@ -98,6 +104,12 @@ export interface HostContext {
     sideModel?: string;
     /** The run's registered prompt-caching condition; `off` when absent. */
     promptCaching?: PromptCaching;
+    /**
+     * The model the run's registration names for stage 1 of the memory reviewer
+     * (`side_models.memory_reviewer_stage1`), as a bare Bedrock model id; a reviewer arm's
+     * configuration names it, and a reviewer arm of a run that registers none is refused.
+     */
+    reviewerStage1Model?: string;
     now?: () => number;
     /**
      * The host invokes `onTool` as it records a run; `drainTools` invokes it for the runs it
@@ -212,6 +224,11 @@ const modelRef = (model: string) => `amazon-bedrock/${model}`;
 export const payloadManifest = (checkout: string) =>
     join(checkout, "packages/host-linux-x64-gnu/payload-manifest.json");
 
+/**
+ * The models an arm's Pi lists in `models.json` and enables: the agent model and the side model
+ * of Eidnara's own calls in that Pi, each once. The memory reviewer's stage-1 model is called by
+ * the daemon's child Pi alone, which runs with a private home and Pi's built-in model list.
+ */
 export function piModels(ctx: Pick<HostContext, "model" | "sideModel">): string[] {
     return [...new Set([ctx.model, ...(ctx.sideModel ? [ctx.sideModel] : [])])];
 }
@@ -229,6 +246,29 @@ export const piModelName = (id: string, caching: PromptCaching): string =>
     caching === "on" ? `${id} (cache points as claude -4- models)` : id;
 
 /**
+ * The `memory_reviewer` object a reviewer arm writes in both user tiers, and nothing for every
+ * other arm: the switch, `contest` mode, the arm's side model as the review model (stage 2), and
+ * `stage1Model`, the model the run registers, as the stage-1 decider. A reviewer arm of a run
+ * that registers none is refused.
+ */
+const reviewerSwitch = (model: string, arm: ArmName, stage1Model: string | undefined) => {
+    if (!reviewsMemory(ARM_PROFILES[arm])) return {};
+    if (stage1Model === undefined) {
+        throw new Error(
+            `arm ${arm} runs the memory reviewer, and the run registers no stage-1 model`,
+        );
+    }
+    return {
+        memory_reviewer: {
+            enabled: true,
+            apply: "contest",
+            model: modelRef(model),
+            stage1_model: modelRef(stage1Model),
+        },
+    };
+};
+
+/**
  * The user-tier `eidnara.jsonc` an Eidnara arm writes. `compaction.enabled` is the arm's
  * `eidnara_compaction`; with it false the plugin keeps its knowledge layer (memory, injection,
  * notes, search) and leaves the context window to the host. An arm that delivers through explicit
@@ -238,6 +278,7 @@ export function eidnaraUserConfig(
     connectionFile: string,
     model: string,
     arm: ArmName,
+    reviewerStage1Model: string | undefined,
 ): Record<string, unknown> {
     return {
         enabled: true,
@@ -257,6 +298,7 @@ export function eidnaraUserConfig(
             git_commit_indexing: { enabled: false },
         },
         source_capture: { enabled: ARM_PROFILES[arm].source_capture },
+        ...reviewerSwitch(model, arm, reviewerStage1Model),
     };
 }
 
@@ -265,11 +307,28 @@ export function eidnaraUserConfig(
  * `source_capture.enabled` and `memory.auto_inject.enabled` are user-only, so the daemon reads
  * them here; the plugin's user tier carries the same values, as one user-tier file would.
  */
-export const fixtureDaemonConfig = (model: string, arm: ArmName): Record<string, unknown> => ({
+export const fixtureDaemonConfig = (
+    model: string,
+    arm: ArmName,
+    reviewerStage1Model: string | undefined,
+): Record<string, unknown> => ({
     history_summarizer: { module_model: modelRef(model) },
     memory: { auto_inject: { enabled: deliveryOf(ARM_PROFILES[arm]) === "automatic" } },
     source_capture: { enabled: ARM_PROFILES[arm].source_capture },
+    ...reviewerSwitch(model, arm, reviewerStage1Model),
 });
+
+/**
+ * The fixture control's timeout of one `review-drain` request: one hour. The fixture answers the
+ * requests of its control connection one at a time, in order, and its client ends on the reply
+ * to a request it stopped waiting for (Eidnara `hermetic-host.ts`, `FixtureControlClient`), so
+ * the request stays open until the drain answers. A drain ends at the first pass that settles
+ * nothing, and each review run ends within the reviewer's own request deadlines. One hour is
+ * twelve times the wait of a settle step (`REVIEW_DRAIN_MS` in `driver.ts`) and three times the
+ * job deadline of tiers S and M (1,200,000 ms), within which an unbroken chain of background
+ * calls stops the run.
+ */
+export const REVIEW_DRAIN_REQUEST_MS = 3_600_000;
 
 export interface DaemonContext {
     config: SimConfig;
@@ -282,6 +341,8 @@ export interface DaemonContext {
     model: string;
     /** The arm label the daemon serves; its base arm's profile sets the daemon config. */
     arm: string;
+    /** The run's registered stage-1 model of the memory reviewer, which a reviewer arm's daemon config names. */
+    reviewerStage1Model?: string;
 }
 
 export class DaemonStack {
@@ -336,7 +397,11 @@ export class DaemonStack {
             startTimeoutMs: 300_000,
             harnessRuntime,
             credentialSource: DUMMY_AWS,
-            daemonConfig: fixtureDaemonConfig(this.ctx.model, armBase(this.ctx.arm)),
+            daemonConfig: fixtureDaemonConfig(
+                this.ctx.model,
+                armBase(this.ctx.arm),
+                this.ctx.reviewerStage1Model,
+            ),
             ...(ARM_PROFILES[armBase(this.ctx.arm)].daemon === "direct-host-fixture-fused"
                 ? { productionSearchManifest: payloadManifest(config.eidnara_checkout) }
                 : {}),
@@ -405,6 +470,20 @@ export class DaemonStack {
         return await read.call(this.stack, timeoutMs);
     }
 
+    /**
+     * Runs the daemon's memory reviewer passes until one settles nothing, through the fixture's
+     * `review-drain` control, and resolves to the number of review runs that settled once the
+     * control answers. The control request's own timeout is `REVIEW_DRAIN_REQUEST_MS`. A build
+     * whose fixture control has no such request throws.
+     */
+    async reviewDrain(): Promise<number> {
+        const drain = this.stack?.reviewDrain;
+        if (typeof drain !== "function") {
+            throw new Error("the daemon's fixture control has no review drain");
+        }
+        return await drain.call(this.stack, REVIEW_DRAIN_REQUEST_MS);
+    }
+
     /** The session the status route binds; the daemon excludes a `cli` binding from every background view. */
     private static readonly STATUS_SESSION = "sim-status";
 
@@ -419,15 +498,15 @@ export class DaemonStack {
 
     /**
      * Reads the daemon's own status over an observational route (harness `cli`, Eidnara
-     * `OBSERVATIONAL_HARNESS`): the `process_memory` block of the Context module's `status`
-     * answer and, with `lifecycle`, the record state, admission, and `progress` block of
+     * `OBSERVATIONAL_HARNESS`): the `process_memory` block and the memory reviewer's activation
+     * state of the Context module's `status` answer and, with `lifecycle`, the record state, admission, and `progress` block of
      * `search.lifecycle.status`. The route stays open between reads, so a read binds and tears
      * down no session. A failed read closes the connection, and the next read opens a new one.
      */
     async status(
         lifecycle: boolean,
         timeoutMs = 10_000,
-    ): Promise<Pick<DaemonStatusReading, "process_memory" | "search">> {
+    ): Promise<Pick<DaemonStatusReading, "process_memory" | "memory_reviewer" | "search">> {
         const identity = {
             project_root: this.ctx.root,
             harness: "cli",
@@ -465,6 +544,7 @@ export class DaemonStack {
                 : null;
             return {
                 process_memory: processMemoryBlock(memory),
+                memory_reviewer: reviewerBlock(status?.memory_reviewer),
                 search: answer?.kind === "status" ? lifecycleReading(answer) : null,
             };
         } catch (caught) {
@@ -573,6 +653,19 @@ export function processMemoryBlock(m: unknown): Record<string, unknown> | null {
     return nullable.every((k) => nullableUint(m[k]) !== undefined) &&
         totals.every((k) => uint(m[k]) !== null)
         ? m
+        : null;
+}
+
+/**
+ * The `memory_reviewer` block of the Context module's `status` answer as a sample records it: its
+ * `activation_state` alone, a short name such as `open` or `missing` (Eidnara
+ * `memory_reviewer/lifecycle.rs` `ActivationState`). Any other value is no block.
+ */
+export function reviewerBlock(m: unknown): { activation_state: string } | null {
+    if (!isRecord(m)) return null;
+    const state = m.activation_state;
+    return typeof state === "string" && /^[a-z_]{1,40}$/.test(state)
+        ? { activation_state: state }
         : null;
 }
 
@@ -829,6 +922,7 @@ export class PiSimHost extends SimHost {
                 connectionFile,
                 this.ctx.sideModel ?? this.ctx.model,
                 this.ctx.arm,
+                this.ctx.reviewerStage1Model,
             );
             this.writeControlFile(join(dir, "eidnara.jsonc"), JSON.stringify(config, null, 2));
         }
@@ -1137,6 +1231,7 @@ export class OpencodeSimHost extends SimHost {
                       connection,
                       this.ctx.sideModel ?? this.ctx.model,
                       this.ctx.arm,
+                      this.ctx.reviewerStage1Model,
                   ),
                   userHostConnectionFile: connection,
               }

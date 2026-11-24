@@ -577,6 +577,23 @@ test("spend reads only complete call records, and starts over on a shrunk or rep
         0.2 + 1.6,
         9,
     );
+    // A record of a model the campaign names rates for takes them; every other record, and
+    // every record of a campaign that names none, takes `prices`.
+    const haiku = "global.anthropic.claude-haiku-5-5";
+    const byModel = {
+        [haiku]: { input: 0.1, output: 0.5, cache_read: 0.01, cache_write: 0.125 },
+    };
+    const stage1 = { input_tokens: 458, output_tokens: 250, cache_read_tokens: 1_042 };
+    const atDefault = (458 * 4 + 250 * 20 + 1_042 * 0.2) / 1e6;
+    expect(recordUsd({ ...stage1, model: haiku }, cached, byModel)).toBeCloseTo(
+        (458 * 0.1 + 1_042 * 0.01 + 250 * 0.5) / 1e6,
+        15,
+    );
+    for (const model of ["global.anthropic.claude-opus-5-5", "hasOwnProperty", 7, undefined]) {
+        expect(recordUsd({ ...stage1, model }, cached, byModel)).toBe(atDefault);
+    }
+    expect(recordUsd({ ...stage1, model: haiku }, cached)).toBe(atDefault);
+    expect(recordUsd({ ...stage1, model: haiku }, cached, {})).toBe(atDefault);
     // A file replaced by one whose first bytes differ is read from its start, even when it is
     // larger than the old offset and reuses the inode.
     const before = readSpend(path, noSpend(), C7_PRICES);
@@ -593,6 +610,31 @@ test("spend reads only complete call records, and starts over on a shrunk or rep
     // A complete line that is JSON but not an object is passed over, and later records count.
     writeFileSync(path, `null\n[1]\n${rec("agent", 0, 40_000)}\n`);
     expect(readSpend(path, noSpend(), C7_PRICES)).toMatchObject({ usd: 1, calls: 1 });
+    // The supervisor's spend prices each record by its model.
+    const modelled = (component: string, model: string) =>
+        JSON.stringify({ component, model, ...stage1 });
+    const lines = [
+        modelled("memory_reviewer_stage1", haiku),
+        modelled("memory_reviewer_stage2", "global.anthropic.claude-opus-5-5"),
+        modelled("user-sim", haiku),
+    ];
+    writeFileSync(path, `${lines.join("\n")}\n`);
+    const byRecord = readSpend(path, noSpend(), cached, byModel);
+    const atHaiku = recordUsd({ ...stage1, model: haiku }, cached, byModel);
+    expect(byRecord.by_component).toEqual({
+        memory_reviewer_stage1: atHaiku,
+        memory_reviewer_stage2: atDefault,
+        "user-sim": atHaiku,
+    });
+    expect(byRecord.usd).toBeCloseTo(2 * atHaiku + atDefault, 15);
+    // A campaign file without `model_prices` sums the same records at `prices` alone.
+    const plain = readSpend(path, noSpend(), cached);
+    expect(plain.usd).toBe(atDefault + atDefault + atDefault);
+    expect(plain.by_component).toEqual({
+        memory_reviewer_stage1: atDefault,
+        memory_reviewer_stage2: atDefault,
+        "user-sim": atDefault,
+    });
     // Only an absent file has spent nothing; a file that cannot be opened is an error.
     const linked = join(dir, "linked.jsonl");
     symlinkSync(path, linked);
@@ -626,6 +668,14 @@ test("a campaign file with a group larger than max_concurrent, bad prices, or a 
             prices: { "cache_read,cache_write": 1, input: 1, output: 1 },
         }),
     ).toThrow("prices needs");
+    // Rates by model id take the shape of `prices`, and a campaign that names none has none.
+    const byModel = { "global.anthropic.claude-haiku-5-5": hourly, m: custom };
+    expect(parseCampaign({ ...base, runs, model_prices: byModel }).model_prices).toEqual(byModel);
+    for (const bad of [[custom], { m: { input: 5 } }, { m: { ...custom, output: -1 } }, 5, null]) {
+        expect(() => parseCampaign({ ...base, runs, model_prices: bad })).toThrow(
+            "model_prices needs",
+        );
+    }
     expect(() => parseCampaign({ ...base, runs, spend_cap_usd: -1 })).toThrow(
         "spend_cap_usd is not a positive number",
     );
@@ -642,6 +692,7 @@ test("a campaign file with a group larger than max_concurrent, bad prices, or a 
     expect(parseCampaign({ ...base, runs })).toMatchObject({
         max_concurrent: null,
         prices: C7_PRICES,
+        model_prices: {},
         spend_cap_usd: null,
     });
 });

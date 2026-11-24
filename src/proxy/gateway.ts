@@ -23,7 +23,13 @@ import { Rng } from "../rng";
 import { COMPONENT_HEADER, type ConverseBody, classify } from "./classify";
 import { encodeError, encodeEvent, encodeException, wireJson } from "./eventstream";
 import { type FaultInjector, type Sink, sleep, writeFault } from "./inject";
-import { type CallRecord, type Component, RESPONSE_TEXT_LIMIT, type RecordWriter } from "./records";
+import {
+    type CallRecord,
+    type Component,
+    RESPONSE_TEXT_LIMIT,
+    REVIEWER_COMPONENTS,
+    type RecordWriter,
+} from "./records";
 import { bodyCachePoints, type RequestStore } from "./requests";
 
 export type UpstreamResponse =
@@ -169,6 +175,7 @@ export const BACKGROUND = new Set<string>([
     "memory_capture",
     "memory_classifier",
     "history_summarizer",
+    ...REVIEWER_COMPONENTS,
 ]);
 
 const CLAUDE_5_5 = /anthropic\.claude-(opus|sonnet|haiku)-5-5/;

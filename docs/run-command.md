@@ -130,7 +130,7 @@ also carry these optional sections and fields:
   run directory over the same seed, so both sides meet the same scenario
   under one registration hash. The builds differ, so a pair may name one
   arm twice (`["eidnara", "eidnara"]`); `contrasts` itself still pairs arms
-  that differ in delivery mode or search route. A run under such a
+  that differ in delivery mode, search route, or reviewer switch. A run under such a
   registration binds one of the two builds: `current` for any registered
   arm, or `reference` for the reference arms of `builds.contrasts` alone.
   `run-tier` refuses any other bound build, and a non-reference arm on the
@@ -150,13 +150,36 @@ also carry these optional sections and fields:
   with a host caller's request that carries none (at the end of the
   session that shows it, and again before `EndArm`), records the cache gap
   of each call a host under test makes, and prices its calls at the `v2`
-  table (`docs/hosts.md`, Prompt
-  caching; `docs/report.md`, Cost). The `v2` table holds the rates of one
-  model, so a caching-on run refuses a `--models` entry or a `--side-model`
-  other than Claude Opus 5.5 through the global inference profile. The
+  table, or at the `v3` table with a registered side model that table
+  lists (`docs/hosts.md`, Prompt
+  caching; `docs/report.md`, Cost). A caching-on run names only models its
+  table holds rates for, so it refuses a `--models` entry or a
+  `--side-model` other than Claude Opus 5.5 through the global inference
+  profile, the model of the default rates, or a registered side model with
+  rates of its own in `v3`. The
   field is part of the registration's hash.
   Every registration through W2S2H names none, so its hash, its requests,
   and its prices are what they were.
+- `side_models` (`memory_reviewer_stage1`): the models the registration's
+  runs call beside the agent model and `--side-model`, by role. The one
+  role is `memory_reviewer_stage1`, the model that decides stage 1 of the
+  daemon's memory reviewer; its value is a bare Bedrock model id
+  (`global.anthropic.claude-haiku-5-5`, without a provider prefix). The run
+  records the section in its manifest (`side_models`, null without one; a
+  resume compares it) and hands the stage-1 model to every arm's host stack
+  (`reviewerStage1Model`, which an arm with the reviewer writes into its
+  Eidnara configuration, `docs/hosts.md`). Under
+  `prompt_caching: "on"` the model must have rates in the table the run
+  records: `global.anthropic.claude-haiku-5-5` selects the `v3` table,
+  which prices each call at its model's rates, and Claude Opus 5.5 through
+  the global inference profile keeps `v2`; the validator refuses any other
+  id, an unknown role, and an id that is empty or carries a provider
+  prefix. Under `off` the `v1` table holds one set of rates for every
+  model. The section is part of the registration's hash when present.
+  W5S, W5SH, and W5P name `global.anthropic.claude-haiku-5-5`, the stage-1
+  model of their `eidnara-reviewer` arm. Every registration through W4P
+  names none, so its hash, its model list, and its price table are what
+  they were.
 - `search_fallback` (`max_degraded_share`): the bound on a fused-route
   arm's degraded search answers, a canonical decimal in (0, 1), read from
   its digits. A legacy-scan
@@ -169,8 +192,9 @@ also carry these optional sections and fields:
   results in Pi's transcripts, and the field is part of its hash. The share
   is compared with the bound in whole numbers, at the bound's registered
   digits. Every
-  registration through W4P names none, so its hash stands and each of its
-  fused arms is refused for any legacy-scan answer, as it ran. The rate
+  registration names none: each hash through W4P stands, each fused arm of
+  those registrations is refused for any legacy-scan answer, as it ran, and
+  W5S, W5SH, and W5P run arms of the legacy-scan route alone. The rate
   behind a bound of `0.1`: the fused arms of the W2S2, W3S, and W4S
   campaigns (15 runs with their held-out seeds) returned 536 answered
   `eidnara_search` results, 17 to 59 a run, 1 of them a transient fallback
@@ -308,6 +332,32 @@ event of the W3 retest over 590, 711, 587, 1,182, and 414 events.
 `--qualification W4P` (`prereg/W4P.json`, revision 1) is that retest's
 pilot: W3P's scenario and arms with W4S's build contrasts.
 
+`--qualification W5S` (`prereg/W5S.json`, revision 1) and
+`--qualification W5SH` (`prereg/W5SH.json`, revision 1) run the `eval/w9`
+build (`4c293f183`) against the main commit `main-ea12bff2a` with
+`prompt_caching: "on"`, tier S on Pi, with W4S's control, no-source
+control, and harm probes. The arms are `host`, `eidnara`, and
+`eidnara-reviewer`, with contrasts `eidnara` vs `host`, `eidnara-reviewer`
+vs `eidnara`, and `eidnara-reviewer` vs `host`, and the build contrast is
+`eidnara` on `eval/w9` against `eidnara` on `main-ea12bff2a`. Both name
+`global.anthropic.claude-haiku-5-5` as
+`side_models.memory_reviewer_stage1`, the stage-1 model the reviewer arm
+writes into its configuration. W5S runs W4S's diagnosed seeds 104 and 107
+again and adds seed 109; W5SH runs W4SH's held-out seed 614 again and adds
+seed 617, and reports apart from W5S. No campaign ran seeds 109 and 617
+before (`docs/scenario.md`). Every arm runs at the campaign's sim revision
+under the caching condition and grading revisions 10 to 15, `host` and the
+reference arm included. Each seed is four runs launched together: `host`,
+`eidnara`, and `eidnara-reviewer` on `eval/w9`, and `eidnara` on
+`main-ea12bff2a` through its own `config`. The budget is $2k to $5k for
+W5S's twelve runs and $1.5k to $4k for W5SH's eight at the `v3` table, from
+the recorded $0.19 per event of the W4 retest over 590, 711, 572, 1,182,
+and 557 events.
+
+`--qualification W5P` (`prereg/W5P.json`, revision 1) is that campaign's
+pilot: W4P's scenario (tier M, held-out seed 605, C8H's control) with
+W5S's arms, contrasts, build contrast, and side model.
+
 `--qualification PCH` (`prereg/PCH.json`, revision 1) is the prompt-caching
 pilot: tier M on Pi over C8H's held-out seed 605 with `host` and `eidnara`
 (host first), the contrast `eidnara` vs `host`, C8H's
@@ -326,8 +376,11 @@ diagnosed seeds (`docs/scenario.md`, Held-out corpus).
 The validator (`bun run prereg:validate`) refuses a stale tier digest, a seed
 outside the tier's seeds for a diagnosed registration or inside them for a
 held-out one, a host the tier does not run, an arm without a profile or with a capability
-gap, an order that is not a permutation of the run arms, and a contrast
-between arms of one delivery mode and one search route; an A/A seed outside `seeds` or a pair
+gap, an arm that runs the memory reviewer (`eidnara-reviewer`) in a
+registration that names no `side_models.memory_reviewer_stage1`, an order
+that is not a permutation of the run arms, and a contrast
+between arms of one delivery mode, one search route, and one reviewer
+switch; an A/A seed outside `seeds` or a pair
 that is not one run arm twice; a fresh-seed registration with a tier seed,
 or one over the held-out split; a replicate seed outside `seeds` or a
 replicate arm outside the run arms; an analysis plan whose budget's `low`
@@ -398,7 +451,7 @@ both trees are part of the run identity. Before taking the lease, every artifact
 replaces (`journal.jsonl`, `calls.jsonl`, `requests.jsonl`, the manifest, the scenario, the
 fault and preflight files, `tape.jsonl`, `pairing.jsonl`, `downstream.jsonl`, this process's staging names for the lease, the
 scenario, and the manifest, and each arm's `resources.jsonl`, clock offset,
-`state.json`, `daemon.log`, `store.img`, `transcripts.json`, and the snapshot
+`state.json`, `daemon.log`, `review-drain.jsonl`, `store.img`, `transcripts.json`, and the snapshot
 and store-check files (`snapshots.jsonl`, `tools.jsonl`, `commands.jsonl`,
 `store-check.json`, `memory.json`), `capabilities.json`, plus this
 process's staging names for the clock offset and `state.json`) must be absent
@@ -412,7 +465,7 @@ are checked the same way); a symlink, a hard link, or another
 file type there is refused. A run whose journal is still empty refuses an
 output directory that already holds call, fault, preflight, tape, pairing, or
 downstream evidence, a `toolbin`, `interception`, or `hostbin` directory, or
-an arm's payload (`r`, `s`, `store.img`, `daemon.log`, `transcripts.json`,
+an arm's payload (`r`, `s`, `store.img`, `daemon.log`, `review-drain.jsonl`, `transcripts.json`,
 `resources.jsonl`, `state.json`, `opencode.launch`, `snapshot.git`,
 `snapshot-state.json`, and the snapshot and store-check files), since a fresh run would extend or delete them; a
 `journal.jsonl` with bytes but no complete entry is refused rather than
@@ -481,14 +534,17 @@ toolchain wrappers are created exclusively after removing any planted name.
    it writes (`arms`, `docs/hosts.md`), the
    Bedrock region and profile name, base wall time, the prompt-caching
    condition the qualification registers (`prompt_caching`, `off` for a tier
-   run), the price table that condition selects (the version
-   and rates the report prices the run's calls at), and preflight result. The working-tree digest hashes an
+   run), the side models it registers (`side_models`, null for none), the
+   price table the condition and the side models select (the version
+   and rates the report prices the run's calls at, with rates by model
+   where the table holds them), and preflight result. The working-tree digest hashes an
    untracked symlink's target text.
    A later invocation refuses a manifest whose `schema` is not
    `sim-run-manifest/v3` or whose execution fields are out of range (an event
    count outside the compiled schedule, a non-positive context limit, an
    unnamed model, a non-integer seed, an unknown host, a price table without a
-   version or with a negative or non-finite rate), revalidates a saved
+   version or with a negative or non-finite rate, side models that name a
+   role outside the registered ones or no model for one), revalidates a saved
    fault override as on the first run, and refuses when any option it states differs from the manifest, when the manifest's arm order is not a non-empty subsequence
    of the seed's pre-registered arm order (with each A/A control right after
    its arm), when a resumed journal breaks the
@@ -606,8 +662,10 @@ On an arm with a daemon, each sample of a live daemon also carries
 sample, or null with none. The driver reads the status over one
 observational Context route per daemon generation (harness `cli`, session
 `sim-status`, which Eidnara excludes from every background view): the
-`process_memory` block of the module's `status` answer, and on a fused-route
-arm the lifecycle record state, the admission state, and the `progress`
+`process_memory` block of the module's `status` answer and the
+`activation_state` of its `memory_reviewer` block (`open` while the review
+worker found a project under the reviewer switch in its last passes), and
+on a fused-route arm the lifecycle record state, the admission state, and the `progress`
 block of `search.lifecycle.status` (`tip`, `checkpoint`, `lag_commits`,
 `rebuilds`, `blocked`). The route stays open between reads, so a read binds
 and tears down no session. Each sample starts the next read when none is in
@@ -720,7 +778,13 @@ field keeps every record. Every `poll_ms` the supervisor:
   input, output, cache-read, and cache-write tokens, and optionally
   `cache_write_1h` for 1-hour cache writes; c7's 5, 25, 0.5, and
   6.25 by default, charged to every component and model, so a campaign over
-  a caching-on registration names the `v2` rates of `docs/report.md`); a complete line
+  a caching-on registration names the `v2` rates of `docs/report.md`). An
+  optional `model_prices` object maps a model id to rates of the same
+  shape (`{"<model id>": {input, output, cache_read, cache_write,
+  cache_write_1h?}}`): a record whose `model` it lists is priced at those
+  rates, and every other record at `prices`, so a campaign over a
+  registration with a side model names that model's `v3` rates there. A
+  campaign file without `model_prices` prices every record at `prices`. A complete line
   that is not a JSON object counts for nothing. The supervisor reads each
   file from where the last poll stopped, and from its start after a restart
   or when the file shrank or was replaced (another inode, or first bytes

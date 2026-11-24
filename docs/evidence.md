@@ -5,8 +5,8 @@ probe of each arm from its source to the agent's answer and names one cause
 for every probe whose stages did not all hold. `src/evidence/` owns the
 stages, the attribution, the session health rows, and the report section. The
 script opens run artefacts for reading only. Without `--out` it writes
-`evidence.jsonl`, `evidence-sessions.jsonl`, and (for one run) `evidence.md`
-into the run directory; with `--out` it writes `<out>/<run name>/` per run and
+`evidence.jsonl`, `evidence-sessions.jsonl`, `evidence-reviewer.json`, and
+(for one run) `evidence.md` into the run directory; with `--out` it writes `<out>/<run name>/` per run and
 `<out>/evidence.md`, so a run another process still owns is never written.
 The request part log `requests.jsonl` is read on demand: one streaming pass
 checks every line and keeps each part's offset, and a body is rebuilt from
@@ -46,13 +46,53 @@ info level`, `log at INFO`, `warn-level logs`; `single-shot`, `single
 quota`, `traced`, or `an error` carries nothing. A retrieval hit's rank is
 the first line that carries the literal, or, when the wording wraps, the
 line where the match completes (found by bisection over line prefixes, so a
-wrapped match ahead of a one-line repeat ranks first). Any other literal is a generated identifier
+wrapped match ahead of a one-line repeat ranks first). A hit in a
+`<project-memory>` block ranks by the lines of the block's statement text
+(below): the lines left once the named files, the closing sentence, and the
+dates of the marks are removed, so a statement has the same rank on a build
+with the element of named files and on one without it. Any other literal is a generated identifier
 that the scenario uses as a stem (`OCHRE_IBIS_MAX`, `onYONDER_EGRET`), and
 it matches case-sensitively anywhere, so `AMBER_DINGO` is absent from
 `amber_dingo.ts`. A probe whose rule is to be applied (`expect` `apply` or
 `resume`) but whose ground truth names no literal reports `delivery` or
 `context` as `unobserved`, since nothing can show the rule reached it; any
 other probe with no literal reports `n/a`.
+
+### How each reader treats each mark of `<project-memory>`
+
+A `<project-memory>` block holds statements and, from `eval/w9` on, text
+that holds none. Two kinds of reader meet it, by one rule on every arm and
+build.
+
+The reader that counts statements and marks reads the whole body of the
+block (`injectedBlocks`): the delivery counts of the capability check
+(`observeDelivery`, `docs/hosts.md`). A statement counts wherever it sits:
+in a category element, in `<CURRENT_WORK>`, on a marked line, in a contest
+excerpt.
+
+The readers that search for a literal read the block by its statements
+(`statementText`; `statementContext` applies it to each block of a text and
+leaves every other part of the text as it is). These are the readers of
+the probe-turn context (the `retrieval` stage, whose list of injected
+blocks holds each `<project-memory>` block's statement text, the `delivery`
+stage, and the stale and forbidden values of the context) and the `source`
+stage's search of the window's requests. A day or a minute is digits beside `-`, `:`, or
+`T`, which the literal rule reads as a free-standing number, so `09:30Z`
+would deliver the literal `30`.
+
+| Part of the block | Product form | Literal readers | Counted as (capability check) |
+|---|---|---|---|
+| Named files | the element `<NAMED_FILES note="...">` with one row per file: `<path> (the agent used it in <n> earlier session(s), last on <day>; last changed <minute>)` | removed whole: a row is a path with a use count and times, and holds no statement | `delivery.named_file_blocks` |
+| Closing sentence | the block's last line, `The lines above are a partial record of this project's sessions: ...` | removed where it is the block's last line | `delivery.closing_blocks` |
+| Recorded minute | ` [YYYY-MM-DDTHH:MMZ]` at the end of a `User stated:` line | removed at a line's end; the statement before it is read as written | none of its own |
+| Replacement mark | `<statement> (stated <day>; it replaces a value recorded <day> that the user had not stated)` | the clause is removed whole, so the line reads as its statement: the live statement of the user, which is neither a superseded value nor a contested one | `delivery.replaced_blocks` |
+| Contested mark | `<statement> (stated <day>; contested <day> by <memory id>: "<excerpt>")`, written by capture or by the memory reviewer | the two days are removed; the statement, the contesting id, and the excerpt stay, so the statement can carry the superseded value and the excerpt the current one | `delivery.contested_blocks` |
+| Statement in a category element or in `<CURRENT_WORK>` | `<memory id>: <text>` | read as written | `delivery.work_blocks` for the element |
+
+A day reads `YYYY-MM-DD` or `unknown date`. A body that holds none of these
+parts comes back as the same string. The contested mark exists from
+`eval/w2` on, so a block of an earlier build with a contested line loses
+that line's two days for the literal readers and keeps every other byte.
 
 On an arm whose profile consents to source capture, the memory arm's
 `source` stage detail records `source_descriptors`: the Kernel source
@@ -192,6 +232,36 @@ answered results, the bound the run registered (`search_fallback`,
 `docs/hosts.md`), the persistent fallback reasons, and the errored
 results. A record written before the bound existed gives the same counts
 from its `observed.search`.
+
+The `### Memory reviewer` table has one row per run and arm that loads the
+Eidnara plugin, sets the reviewer switch, or shows a sign of the reviewer,
+read from the arm's artefacts by one rule (`reviewerEvidence`), so a run
+without a capability record has its row too:
+
+- the arm's switch, from the profile the manifest records;
+- the reviewer's lines in `<arm>/daemon.log` over every daemon generation
+  (`docs/hosts.md`, `reviewer.log`): review jobs enqueued by trigger,
+  selection passes, stage-1 decisions by decider with the models named,
+  failed stage-1 requests, runs that ended without settlement by reason
+  (`fenced` for a run a clock advance inside an open session ended,
+  `docs/hosts.md`), reviews ended on a later reference the model was not
+  shown, proposals applied by kind, proposals left for a reader and left
+  unapplied, and the lines that report reviews waiting;
+- the settle steps of `<arm>/review-drain.jsonl`: steps, runs settled, wall
+  time in all and the longest, lines with an error, and the drains that
+  answered after their step stopped waiting (`late` lines, `docs/hosts.md`);
+- the gateway's calls of `memory_reviewer_stage1` and
+  `memory_reviewer_stage2` in `calls.jsonl`;
+- the reviewer's activation state in the daemon status readings of
+  `<arm>/resources.jsonl`: the readings that report `open`, and the last
+  state;
+- the final store's failed-command records and disputed objects, live and
+  retired, or `unread` without a readable Kernel store.
+
+`evidence-reviewer.json` holds the same record per arm (`schema`
+`sim-evidence-reviewer/v1`, `arms`). An arm with the switch off shows no
+review; a disputed object there comes from the agent's own `eidnara_memory`
+dispute action.
 
 An arm of the manifest's order is a directory of the run: a plain name, or an
 A/A control label `<arm>~<tag>` that the run's tier registers as an

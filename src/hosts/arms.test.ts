@@ -21,6 +21,7 @@ import { processStart, running } from "../run/procs";
 import {
     type ArmName,
     DaemonStack,
+    eidnaraUserConfig,
     fixtureDaemonConfig,
     type HostContext,
     lifecycleReading,
@@ -33,6 +34,7 @@ import {
     processMemoryBlock,
     progressBlock,
 } from "./arms";
+import { ARM_PROFILES } from "./profiles";
 
 type Untyped = any;
 
@@ -1618,10 +1620,82 @@ test("each Pi arm writes the host and Eidnara compaction its profile declares", 
             auto_search: { enabled: hints },
             auto_inject: { enabled: hints },
         });
-        expect(fixtureDaemonConfig("m", arm as ArmName).memory).toEqual({
+        expect(fixtureDaemonConfig("m", arm as ArmName, "small").memory).toEqual({
             auto_inject: { enabled: hints },
         });
     }
+});
+
+test("the reviewer arm alone writes the memory_reviewer switch, in both user tiers, with the side model and the stage-1 model", () => {
+    const run = runDir();
+    const switched = (model: string, stage1: string) => ({
+        enabled: true,
+        apply: "contest",
+        model: `amazon-bedrock/${model}`,
+        stage1_model: `amazon-bedrock/${stage1}`,
+    });
+    for (const arm of Object.keys(ARM_PROFILES) as ArmName[]) {
+        const reviews = arm === "eidnara-reviewer";
+        // A registered stage-1 model reaches no arm without the switch.
+        const daemon = fixtureDaemonConfig("side", arm, "small");
+        const plugin = eidnaraUserConfig("c.json", "side", arm, "small");
+        expect([arm, Object.hasOwn(daemon, "memory_reviewer")]).toEqual([arm, reviews]);
+        expect([arm, Object.hasOwn(plugin, "memory_reviewer")]).toEqual([arm, reviews]);
+        // An arm without the switch is configured the same with no stage-1 model registered.
+        if (!reviews) {
+            expect(fixtureDaemonConfig("side", arm, undefined)).toEqual(daemon);
+            expect(eidnaraUserConfig("c.json", "side", arm, undefined)).toEqual(plugin);
+        }
+    }
+    // The reviewer arm names the stage-1 model the run registers, and a run that registers none
+    // is refused: the configuration holds no model of its own.
+    for (const config of [
+        () => fixtureDaemonConfig("side", "eidnara-reviewer", undefined),
+        () => eidnaraUserConfig("c.json", "side", "eidnara-reviewer", undefined),
+    ]) {
+        expect(config).toThrow(
+            "arm eidnara-reviewer runs the memory reviewer, and the run registers no stage-1 model",
+        );
+    }
+    // The object holds exactly the four keys, in the order the registration states them.
+    const daemon = fixtureDaemonConfig("side", "eidnara-reviewer", "small");
+    expect(JSON.stringify(daemon.memory_reviewer)).toBe(
+        '{"enabled":true,"apply":"contest","model":"amazon-bedrock/side","stage1_model":"amazon-bedrock/small"}',
+    );
+    expect(
+        eidnaraUserConfig("c.json", "side", "eidnara-reviewer", "small").memory_reviewer,
+    ).toEqual(switched("side", "small"));
+    // The rest of each tier is the eidnara arm's, byte for byte.
+    const { memory_reviewer: _daemonSwitch, ...daemonRest } = daemon;
+    expect(JSON.stringify(daemonRest)).toBe(
+        JSON.stringify(fixtureDaemonConfig("side", "eidnara", "small")),
+    );
+    const { memory_reviewer: _pluginSwitch, ...pluginRest } = eidnaraUserConfig(
+        "c.json",
+        "side",
+        "eidnara-reviewer",
+        "small",
+    );
+    expect(JSON.stringify(pluginRest)).toBe(
+        JSON.stringify(eidnaraUserConfig("c.json", "side", "eidnara", "small")),
+    );
+    // The Pi host writes the file with the side model as the review model and the run's stage-1 model.
+    const dir = join(run, "reviewer");
+    mkdirSync(dir);
+    const host = new PiSimHost({
+        ...context(dir),
+        arm: "eidnara-reviewer",
+        sideModel: "side",
+        reviewerStage1Model: "small",
+    });
+    (host as Untyped).writeConfigs(join(dir, "connection.json"));
+    const written = JSON.parse(
+        readFileSync(join(dir, "arm/home/config/eidnara/eidnara.jsonc"), "utf8"),
+    );
+    expect(written.memory_reviewer).toEqual(switched("side", "small"));
+    expect(written.history_summarizer).toEqual({ model: "amazon-bedrock/side" });
+    expect(written.source_capture).toEqual({ enabled: true });
+    expect(Object.hasOwn(written, "contradiction_candidates")).toBe(false);
 });
 
 test("the OpenCode knowledge-only arm turns host compaction on and Eidnara compaction off", async () => {
@@ -1693,6 +1767,31 @@ test("Pi's model definitions are today's bytes with caching off, and differ in t
     // Pi matches `-4-` in a name that names a Claude model, and no adaptive-thinking family.
     expect(piModelName(OPUS, "on")).toContain("-4-");
     expect(piModelName(OPUS, "on")).not.toMatch(/opus-4-|sonnet-4-|fable-5/);
+});
+
+test("an arm's Pi lists the agent and side models alone, whatever stage-1 model the run registers", () => {
+    const written = (extra: Partial<HostContext>) => {
+        const host = new PiSimHost({ ...context(runDir()), model: OPUS, ...extra });
+        (host as Untyped).writeConfigs(null);
+        const read = (file: string) => readFileSync(join(host.agentDir, file), "utf8");
+        const models = JSON.parse(read("models.json")).providers["amazon-bedrock"].models;
+        return {
+            models: (models as Untyped[]).map((m) => m.id),
+            enabled: JSON.parse(read("settings.json")).enabledModels,
+            files: [read("models.json"), read("settings.json")],
+        };
+    };
+    // The daemon's child Pi calls the stage-1 model, so the arm's own Pi keeps the two files of
+    // a run that registers none, byte for byte.
+    for (const promptCaching of ["on", "off"] as const) {
+        const registered = written({ promptCaching, reviewerStage1Model: HAIKU });
+        expect(registered.models).toEqual([OPUS]);
+        expect(registered.enabled).toEqual([`amazon-bedrock/${OPUS}`]);
+        expect(registered.files).toEqual(written({ promptCaching }).files);
+    }
+    // A side model is listed once, after the agent model.
+    const side = written({ sideModel: HAIKU, reviewerStage1Model: HAIKU });
+    expect(side.models).toEqual([OPUS, HAIKU]);
 });
 
 const PI_AI = join(

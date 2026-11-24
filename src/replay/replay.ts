@@ -230,7 +230,11 @@ export function currentIdentity(config: SimConfig, source: ProbeSource): Record<
     const sideModel = source.manifest.side_model ?? (source.manifest.models[0] as string);
     return {
         ...runIdentity(config, prereg, [source.project]),
-        arms: armConfigs([source.arm], sideModel),
+        arms: armConfigs(
+            [source.arm],
+            sideModel,
+            source.manifest.side_models?.memory_reviewer_stage1,
+        ),
         agent_model: config.agent_model,
     };
 }
@@ -813,11 +817,11 @@ function repeatResult(
     if (NOTE_VARIANTS.has(variant) && !turn.applications.some((a) => a.changed)) {
         failures.push(`${variant} changed no agent request`);
     }
-    const rates = source.manifest.price_table.rates;
-    const cost = componentCosts(turn.records, rates);
+    const table = source.manifest.price_table;
+    const cost = componentCosts(turn.records, table);
     const own = componentCosts(
         turn.records.filter((r) => r.turn === source.event.id),
-        rates,
+        table,
     );
     return {
         repeat: k,
@@ -862,11 +866,11 @@ function failedRepeat(
     const reason = caught instanceof Error ? caught.message : String(caught);
     const logged = join(repeatDir, "calls.jsonl");
     const records = existsSync(logged) ? readJsonl<CallRecord>(logged) : [];
-    const rates = source.manifest.price_table.rates;
-    const cost = componentCosts(records, rates);
+    const table = source.manifest.price_table;
+    const cost = componentCosts(records, table);
     const own = componentCosts(
         records.filter((r) => r.turn === source.event.id),
-        rates,
+        table,
     );
     return {
         repeat: k,
@@ -1079,6 +1083,7 @@ async function replayInto(
                 models: source.manifest.models,
                 contextLimit: source.manifest.context_limit,
                 sideModel: source.manifest.side_model,
+                reviewerStage1Model: source.manifest.side_models?.memory_reviewer_stage1 ?? null,
                 promptCaching: source.manifest.prompt_caching ?? "off",
                 backgroundCachePoints: backgroundCachePointsOf(source.manifest.eidnara_build),
                 turnDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,

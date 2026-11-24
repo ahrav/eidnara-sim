@@ -251,9 +251,11 @@ there needs `eval-manifest/v10`; no extension is made here.
 
 `manifest.prompt_caching` records the prompt-caching condition the run's
 qualification registers (`on` or `off`; a manifest without the field ran
-`off`), and `manifest.price_table` the rates that condition selects. The
+`off`), `manifest.side_models` the side models it registers by role (null
+for none), and `manifest.price_table` the rates the condition and the
+side models select, by model where the table holds them. The
 condition changes each request's cache points and the table its cost.
-Both lie in the manifest's execution digest, a registration gives all its
+All three lie in the manifest's execution digest, a registration gives all its
 runs one condition, and the tier report's identity carries the price
 table, so it pools only runs that share one.
 The claim boundary's first exclusion stands under either value: cache

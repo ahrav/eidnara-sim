@@ -609,6 +609,27 @@ seed 605.
 | W4SH | 615 | `be440cd2` | 414 | 0.3007 | 0.5548 |
 | W4P | 605 | `b4e8c56e` | 1983 | 0.3021 | 0.5913 |
 
+Qualifications W5S (`prereg/W5S.json`, revision 1, `deaa3f9c`, diagnosed
+split, fresh seeds) and W5SH (`prereg/W5SH.json`, revision 1, `4a6b613a`,
+held-out split) run the `eval/w9` build with prompt caching on. Seeds 104,
+107, and 614 are W4S's and W4SH's: their events, facts, and probes equal
+that retest's, and their hashes differ with the registration. Seed 109 is
+the lowest diagnosed S seed that no registration lists and no run used.
+Seed 617 is the lowest held-out seed that no registration lists, no run
+used, and tier S places: W4SH lists 615, and 616 refuses at tier S for
+612's reason. The rule read no outcome data, and no run of seed 109 or 617
+existed when it was applied. W5P (`prereg/W5P.json`, revision 1,
+`c475c1e0`) holds W4P's 1,983 events, facts, and probes for seed 605.
+
+| Registration | Seed | `scenario_hash` | Events | Largest BM25 ratio | Largest cosine |
+|---|---|---|---|---|---|
+| W5S | 104 | `35fd9147` | 590 | 0.2739 | 0.5181 |
+| W5S | 107 | `2fbf05c9` | 711 | 0.2751 | 0.5014 |
+| W5S | 109 | `40b8d792` | 572 | 0.2747 | 0.5003 |
+| W5SH | 614 | `dca781dc` | 1182 | 0.2982 | 0.5426 |
+| W5SH | 617 | `82be10a9` | 557 | 0.2974 | 0.5583 |
+| W5P | 605 | `3a337f7c` | 1983 | 0.3021 | 0.5913 |
+
 ## Known limits
 
 - A revised decision (P3) asks its task again in the workspace the agent

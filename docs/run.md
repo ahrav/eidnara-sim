@@ -331,7 +331,13 @@ this recovery holds the driver's refusal of a stranded `session_end`: a fatal
 `session_end` whose preceding event, its session's last user turn, has an
 `Event` `failed(interrupted)`. A resume takes that record up with a
 `Recovered` entry carrying `event-error` and then ends or delivers the
-`session_end` by the same rules; any other `event-error` stays refused. The interrupted items are excluded from recall and counted
+`session_end` by the same rules; any other `event-error` stays refused. On
+an arm whose driver settles every session end (`settlesSessionEnds`: the
+settle step of an arm that runs the memory reviewer, `docs/hosts.md`),
+every `session_end` owes that step. The resume ends none of them in the
+scheduler: it reopens the session of a pending `session_end` with a fresh
+host through the driver's `resume` and delivers the event, whether a stop
+stranded it, a recoverable stop cut it, or a kill left it undelivered. The interrupted items are excluded from recall and counted
 in dependability; `grade-run` reports them per arm (`interruptions`: the
 interrupted turns by cause, the recovered stops by cause, the unexpected
 daemon exits, which stay an Eidnara reliability finding, and any unresolved

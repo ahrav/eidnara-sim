@@ -1,6 +1,6 @@
-import { searchFallback } from "../run/capabilities";
+import { reviewLines, searchFallback } from "../run/capabilities";
 import type { SessionHealth } from "./health";
-import type { RunData } from "./load";
+import type { ReviewerEvidence, RunData } from "./load";
 import type { ProbeEvidence } from "./stages";
 
 export interface RunEvidence {
@@ -180,6 +180,105 @@ function searchRoutes(runs: RunEvidence[]): string[] {
     return out;
 }
 
+/** The non-zero counts of a tally as `name n`, in the tally's order, or `0` with none. */
+const counts = (tally: Readonly<Record<string, number>>): string =>
+    Object.entries(tally)
+        .filter(([, n]) => n > 0)
+        .map(([name, n]) => `${name} ${n}`)
+        .join(", ") || "0";
+
+/** One arm's reviewer evidence as the cells of its row in the report. */
+function reviewerCells(r: ReviewerEvidence): string[] {
+    const { log, drains, status } = r;
+    const stage1 = Object.entries(log.stage1)
+        .filter(([, c]) => c.keep + c.flagged + c.other > 0)
+        .map(([decider, c]) => {
+            const other = c.other > 0 ? `, ${c.other} other` : "";
+            return `${decider}: ${c.keep} keep, ${c.flagged} flagged${other} (${c.models.join(", ")})`;
+        });
+    const failed =
+        log.stage1_default_failed > 0
+            ? `${log.stage1_failed}; default failed ${log.stage1_default_failed}`
+            : String(log.stage1_failed);
+    const seconds = (ms: number) => (ms / 1000).toFixed(1);
+    const pair = (c: { live: number; retired: number } | null) =>
+        c === null ? "unread" : `${c.live} live, ${c.retired} retired`;
+    return [
+        r.switch === null ? "" : r.switch ? "on" : "off",
+        counts(log.enqueued),
+        String(log.selections),
+        stage1.join("; ") || "0",
+        failed,
+        counts(log.unsettled ?? {}),
+        String(log.unread_later),
+        counts(log.applied),
+        `${log.left_for_reader} left for a reader, ${log.unapplied} unapplied`,
+        counts(log.waits),
+        drains.calls + drains.unreadable === 0
+            ? "none"
+            : `${drains.calls} steps, ${drains.settled_runs} runs settled, ${seconds(drains.total_wall_ms)} s in all, ${seconds(drains.max_wall_ms)} s the longest, ${drains.errors} with an error${(drains.late_answers ?? 0) > 0 ? `, ${drains.late_answers} drains answered after their step` : ""}${drains.unreadable > 0 ? `, ${drains.unreadable} unreadable lines` : ""}`,
+        counts(r.calls),
+        status === null || status.readings === 0
+            ? "no reading"
+            : `open in ${status.open} of ${status.readings} readings, last ${status.last}`,
+        pair(r.failed_commands),
+        pair(r.disputed),
+    ];
+}
+
+/**
+ * The memory reviewer by run and arm, for every arm whose directory the run holds: the arm's
+ * switch beside what its daemon log, its settle steps, the gateway's records, the daemon's
+ * status readings, and its final store show.
+ */
+function memoryReviewer(runs: RunEvidence[]): string[] {
+    const head = [
+        "run",
+        "arm",
+        "switch",
+        "reviews enqueued",
+        "selection passes",
+        "stage-1 decisions",
+        "failed stage-1 requests",
+        "runs ended unsettled",
+        "ended on an unread reference",
+        "proposals applied",
+        "proposals left",
+        "waits",
+        "settle steps",
+        "gateway calls",
+        "status",
+        "failed-command records",
+        "disputed objects",
+    ];
+    const out = [
+        "",
+        "### Memory reviewer",
+        "",
+        "Per arm, read by one rule: the reviewer's lines in `daemon.log` over every daemon generation (review jobs enqueued by trigger, selection passes, stage-1 decisions by decider with the models named, failed stage-1 requests, runs that ended without settlement by reason, reviews ended on a later reference the model was not shown, proposals applied by kind, proposals left for a reader or left unapplied, and the lines that report reviews waiting), the settle steps of `review-drain.jsonl`, the gateway's calls of the reviewer's two components, the reviewer's activation state in the daemon's status readings, and the final store's failed-command records and disputed objects (`docs/hosts.md`). An arm with the switch off shows no review; a disputed object there comes from the agent's own `eidnara_memory` dispute.",
+        "",
+        row(head),
+        row(head.map(() => "---")),
+    ];
+    let any = false;
+    for (const r of runs) {
+        for (const [arm, data] of r.run.arms) {
+            if (!data.reviewer) continue;
+            // An arm without a daemon holds no log, no status, and no store: its row would be empty.
+            const shown =
+                data.reviewer.switch === true ||
+                data.profile?.plugin === true ||
+                reviewLines(data.reviewer.log) > 0 ||
+                Object.values(data.reviewer.calls).some((n) => n > 0);
+            if (!shown) continue;
+            any = true;
+            out.push(row([r.name, arm, ...reviewerCells(data.reviewer)]));
+        }
+    }
+    if (!any) out.push(row(["none", ...head.slice(1).map(() => "")]));
+    return out;
+}
+
 export function renderEvidence(runs: RunEvidence[]): string {
     const out: string[] = ["## Evidence path", ""];
     out.push(
@@ -245,6 +344,7 @@ export function renderEvidence(runs: RunEvidence[]): string {
         }
     }
     out.push(...searchRoutes(runs));
+    out.push(...memoryReviewer(runs));
     out.push(
         "",
         "### Context health",

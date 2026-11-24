@@ -1,6 +1,6 @@
 import { armBase } from "../hosts/arms";
 import { armProfile } from "../hosts/profiles";
-import { HARNESS_COMPONENTS } from "../proxy/records";
+import { HARNESS_COMPONENTS, REVIEWER_COMPONENTS } from "../proxy/records";
 import type { HeldCall } from "../run/calllog";
 import type { ArmLogs, RunLogs, Sample } from "./logs";
 
@@ -41,6 +41,7 @@ const PROGRESS = new Set([
     "memory_capture",
     "memory_classifier",
     "context_researcher",
+    ...REVIEWER_COMPONENTS,
 ]);
 export const INTERNAL_TEXT = [
     /<\/?history[_-]segments?\b/i,

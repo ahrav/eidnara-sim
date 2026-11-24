@@ -4,7 +4,8 @@ import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Rng } from "../rng";
-import { Gateway, type Upstream } from "./gateway";
+import type { ConverseBody } from "./classify";
+import { Gateway, type Scope, type Upstream } from "./gateway";
 import { FaultInjector } from "./inject";
 import { CacheGaps, RecordWriter, recordProblems } from "./records";
 import {
@@ -270,6 +271,117 @@ test("a background call names its origin turn; an agent call keeps the turn in s
     expect(bg?.origin_turn).toBe("e-1");
     expect(fg?.component).toBe("agent");
     expect(fg?.origin_turn).toBeUndefined();
+});
+
+test("a reviewer request is recorded under its stage, its model, and the turn it follows", async () => {
+    const bodies = JSON.parse(
+        readFileSync(join(import.meta.dir, "../../tests/fixtures/reviewer/requests.json"), "utf8"),
+    ) as Record<"stage1" | "stage2", ConverseBody>;
+    const dir = mkdtempSync(join(tmpdir(), "sim-requests-"));
+    const path = join(dir, "requests.jsonl");
+    const requests = new RequestStore(path);
+    const records = new RecordWriter(null);
+    const started: [string, number][] = [];
+    const gateway = new Gateway({
+        upstream: echo,
+        records,
+        injector: new FaultInjector([], new Rng(1), 1_000),
+        rng: new Rng(1),
+        clock: { scenarioMs: () => 0 },
+        // A reviewer pass that runs as the next turn begins follows the turn before it.
+        scope: () => ({ arm: "a", session: "s", turn: "e-2", origin: "e-1" }),
+        requests,
+        // The system prompt's point alone, as a caching-on run places it on a `system` build.
+        cachePoints: (body, component) =>
+            component.startsWith("memory_reviewer_") ? placePiCachePoints(body, false) : 0,
+        observe: (e) => {
+            started.push([e.component, e.cache_points]);
+        },
+    });
+    await gateway.start();
+    gateways.push(gateway);
+    const haiku = "global.anthropic.claude-haiku-5-5";
+    const opus = "global.anthropic.claude-opus-5-5";
+    for (const [model, body] of [
+        [haiku, bodies.stage1],
+        [opus, bodies.stage2],
+    ] as const) {
+        const response = await fetch(`${gateway.urls[0]}/model/${model}/converse`, {
+            method: "POST",
+            body: JSON.stringify(body),
+        });
+        await response.text();
+    }
+    await gateway.stop();
+    requests.close();
+    expect(started).toEqual([
+        ["memory_reviewer_stage1", 1],
+        ["memory_reviewer_stage2", 1],
+    ]);
+    const [first, second] = records.records;
+    expect(first).toMatchObject({
+        component: "memory_reviewer_stage1",
+        componentSource: "inferred",
+        model: haiku,
+        turn: "e-2",
+        origin_turn: "e-1",
+        cache_points_placed: 1,
+    });
+    expect(second).toMatchObject({
+        component: "memory_reviewer_stage2",
+        model: opus,
+        origin_turn: "e-1",
+        cache_points_placed: 1,
+    });
+    // The stored body is the host's with the one point after its system text.
+    const point = { cachePoint: { type: "default" } };
+    const parts = readRequestParts(path);
+    for (const [record, sent] of [
+        [first, bodies.stage1],
+        [second, bodies.stage2],
+    ] as const) {
+        expect(rebuildRequest(record?.request as never, parts)).toEqual({
+            ...sent,
+            system: [...(sent.system ?? []), point],
+        });
+        expect(recordProblems(record as object)).toEqual([]);
+    }
+});
+
+test("a reviewer request of a settle step names the ending session, no turn, and the session's last user turn", async () => {
+    const bodies = JSON.parse(
+        readFileSync(join(import.meta.dir, "../../tests/fixtures/reviewer/requests.json"), "utf8"),
+    ) as Record<"stage1" | "stage2", ConverseBody>;
+    const records = new RecordWriter(null);
+    // The scope a run holds inside a `session_end` event: the ending session, no turn, and the
+    // session's last user turn as the origin; a session without a user turn has no origin.
+    let scope: Scope = { arm: "eidnara-reviewer", session: "s-0003", turn: null, origin: "e-41" };
+    const gateway = new Gateway({
+        upstream: echo,
+        records,
+        injector: new FaultInjector([], new Rng(1), 1_000),
+        rng: new Rng(1),
+        clock: { scenarioMs: () => 0 },
+        scope: () => scope,
+    });
+    await gateway.start();
+    gateways.push(gateway);
+    const send = async (body: ConverseBody) => {
+        const response = await fetch(`${gateway.urls[0]}/model/m/converse`, {
+            method: "POST",
+            body: JSON.stringify(body),
+        });
+        await response.text();
+    };
+    await send(bodies.stage1);
+    await send(bodies.stage2);
+    scope = { ...scope, session: "s-0004", origin: null };
+    await send(bodies.stage1);
+    const drained = { arm: "eidnara-reviewer", session: "s-0003", turn: null, origin_turn: "e-41" };
+    expect(records.records[0]).toMatchObject({ ...drained, component: "memory_reviewer_stage1" });
+    expect(records.records[1]).toMatchObject({ ...drained, component: "memory_reviewer_stage2" });
+    expect(records.records[2]).toMatchObject({ session: "s-0004", turn: null });
+    expect(records.records[2]?.origin_turn).toBeUndefined();
 });
 
 test("a body with cache points is forwarded and stored whole, and a 1-hour write is recorded", async () => {
