@@ -130,7 +130,7 @@ also carry these optional sections and fields:
   run directory over the same seed, so both sides meet the same scenario
   under one registration hash. The builds differ, so a pair may name one
   arm twice (`["eidnara", "eidnara"]`); `contrasts` itself still pairs arms
-  that differ in delivery mode or search route. A run under such a
+  that differ in delivery mode, search route, or reviewer switch. A run under such a
   registration binds one of the two builds: `current` for any registered
   arm, or `reference` for the reference arms of `builds.contrasts` alone.
   `run-tier` refuses any other bound build, and a non-reference arm on the
@@ -326,8 +326,11 @@ diagnosed seeds (`docs/scenario.md`, Held-out corpus).
 The validator (`bun run prereg:validate`) refuses a stale tier digest, a seed
 outside the tier's seeds for a diagnosed registration or inside them for a
 held-out one, a host the tier does not run, an arm without a profile or with a capability
-gap, an order that is not a permutation of the run arms, and a contrast
-between arms of one delivery mode and one search route; an A/A seed outside `seeds` or a pair
+gap, an arm that runs the memory reviewer (`eidnara-reviewer`) in a
+registration that names no `side_models.memory_reviewer_stage1`, an order
+that is not a permutation of the run arms, and a contrast
+between arms of one delivery mode, one search route, and one reviewer
+switch; an A/A seed outside `seeds` or a pair
 that is not one run arm twice; a fresh-seed registration with a tier seed,
 or one over the held-out split; a replicate seed outside `seeds` or a
 replicate arm outside the run arms; an analysis plan whose budget's `low`
@@ -398,7 +401,7 @@ both trees are part of the run identity. Before taking the lease, every artifact
 replaces (`journal.jsonl`, `calls.jsonl`, `requests.jsonl`, the manifest, the scenario, the
 fault and preflight files, `tape.jsonl`, `pairing.jsonl`, `downstream.jsonl`, this process's staging names for the lease, the
 scenario, and the manifest, and each arm's `resources.jsonl`, clock offset,
-`state.json`, `daemon.log`, `store.img`, `transcripts.json`, and the snapshot
+`state.json`, `daemon.log`, `review-drain.jsonl`, `store.img`, `transcripts.json`, and the snapshot
 and store-check files (`snapshots.jsonl`, `tools.jsonl`, `commands.jsonl`,
 `store-check.json`, `memory.json`), `capabilities.json`, plus this
 process's staging names for the clock offset and `state.json`) must be absent
@@ -412,7 +415,7 @@ are checked the same way); a symlink, a hard link, or another
 file type there is refused. A run whose journal is still empty refuses an
 output directory that already holds call, fault, preflight, tape, pairing, or
 downstream evidence, a `toolbin`, `interception`, or `hostbin` directory, or
-an arm's payload (`r`, `s`, `store.img`, `daemon.log`, `transcripts.json`,
+an arm's payload (`r`, `s`, `store.img`, `daemon.log`, `review-drain.jsonl`, `transcripts.json`,
 `resources.jsonl`, `state.json`, `opencode.launch`, `snapshot.git`,
 `snapshot-state.json`, and the snapshot and store-check files), since a fresh run would extend or delete them; a
 `journal.jsonl` with bytes but no complete entry is refused rather than
@@ -606,8 +609,10 @@ On an arm with a daemon, each sample of a live daemon also carries
 sample, or null with none. The driver reads the status over one
 observational Context route per daemon generation (harness `cli`, session
 `sim-status`, which Eidnara excludes from every background view): the
-`process_memory` block of the module's `status` answer, and on a fused-route
-arm the lifecycle record state, the admission state, and the `progress`
+`process_memory` block of the module's `status` answer and the
+`activation_state` of its `memory_reviewer` block (`open` while the review
+worker found a project under the reviewer switch in its last passes), and
+on a fused-route arm the lifecycle record state, the admission state, and the `progress`
 block of `search.lifecycle.status` (`tip`, `checkpoint`, `lag_commits`,
 `rebuilds`, `blocked`). The route stays open between reads, so a read binds
 and tears down no session. Each sample starts the next read when none is in
