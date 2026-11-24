@@ -1025,6 +1025,44 @@ test("evidence is read against the capabilities of the build the run bound", () 
     expect(armMismatches({ ...base, delivery: delivery(0, 1) }, current)).toEqual([
         `1 of 5 rendered history blocks hold a waiting line before a later summarized segment (first requests 41), but ${current.label} declares waiting lines in the newest segment alone`,
     ]);
+    // The closing sentence, the named files, and the dated replacement mark are the w9 build's.
+    const marked = (
+        closing_blocks: number,
+        named_file_blocks: number,
+        replaced_blocks: number,
+    ) => ({
+        ...delivery(0, 0),
+        memory_blocks: 4,
+        closing_blocks,
+        named_file_blocks,
+        replaced_blocks,
+    });
+    expect(armMismatches({ ...base, delivery: marked(4, 2, 1) }, current)).toEqual([]);
+    // A build with the sentence may show no named file and no replacement; it ends every block with the sentence.
+    expect(armMismatches({ ...base, delivery: marked(4, 0, 0) }, current)).toEqual([]);
+    expect(armMismatches({ ...base, delivery: marked(1, 0, 0) }, current)).toEqual([]);
+    expect(armMismatches({ ...base, delivery: marked(0, 2, 1) }, current)).toEqual([
+        `none of 4 agent requests with a <project-memory> block carries the closing sentence, which ${current.label} declares for every delivered block`,
+    ]);
+    expect(
+        armMismatches({ ...base, delivery: { ...marked(0, 0, 0), memory_blocks: 0 } }, current),
+    ).toEqual([]);
+    // An observation recorded before the sentence was counted is held to nothing.
+    const { closing_blocks: _uncounted, ...before } = marked(0, 0, 0);
+    expect(armMismatches({ ...base, delivery: before }, current)).toEqual([]);
+    const main = auditedBuild("main-ea12bff2a") as AuditedBuild;
+    const w4 = auditedBuild("eval/w4") as AuditedBuild;
+    for (const earlier of [main, w4, w3, w2b]) {
+        expect(armMismatches({ ...base, delivery: marked(0, 0, 0) }, earlier)).toEqual([]);
+        expect(armMismatches({ ...base, delivery: marked(4, 2, 1) }, earlier)).toEqual([
+            `4 agent requests carry a <project-memory> block that ends with the closing sentence, which ${earlier.label} does not declare`,
+            `2 agent requests carry a <NAMED_FILES> element in <project-memory>, which ${earlier.label} does not declare`,
+            `1 agent requests render a statement dated as the replacement of an observation, which ${earlier.label} does not declare`,
+        ]);
+        expect(armMismatches({ ...base, delivery: marked(0, 0, 3) }, earlier)).toEqual([
+            `3 agent requests render a statement dated as the replacement of an observation, which ${earlier.label} does not declare`,
+        ]);
+    }
     // The c8 renderer keeps a settled waiting line across segments, and renders no contest.
     expect(armMismatches({ ...reference, delivery: delivery(0, 1) }, c8)).toEqual([]);
     expect(armMismatches({ ...reference, delivery: delivery(2, 0) }, c8)).toEqual([

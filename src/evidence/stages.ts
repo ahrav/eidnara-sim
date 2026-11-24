@@ -192,9 +192,81 @@ export function injectedBlocks(text: string): Array<{ tag: string; body: string 
     return [...text.matchAll(INJECTED)].map((m) => ({ tag: m[1] as string, body: m[2] as string }));
 }
 
+const escaped = (lit: string) => lit.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The sentence a delivered `<project-memory>` block ends with, on the line before its closing tag
+ * (Eidnara `memory_render.rs` `PROJECT_MEMORY_NOTE`).
+ */
+export const PROJECT_MEMORY_NOTE =
+    "The lines above are a partial record of this project's sessions: they hold what was said or recorded there, and conventions kept in the repository's files stay in those files.";
+
+/** A day as a mark writes it (Eidnara `canonical_memory.rs` `utc_day`). */
+const MARK_DAY = "(?:\\d{4}-\\d{2}-\\d{2}|unknown date)";
+/** The element that lists named files, whole: its rows are paths with use counts and times (Eidnara `named_files.rs` `delivered`). */
+const NAMED_FILES_ELEMENT = /<NAMED_FILES(?=[\s>])[^>]*>[\s\S]*?<\/NAMED_FILES>\n?/g;
+/** The closing sentence as the block's last line. */
+const CLOSING_LINE = new RegExp(`(?<=^|\\n)${escaped(PROJECT_MEMORY_NOTE)}\\s*$`);
+/** The clause a statement that replaced an observation ends with (Eidnara `canonical_memory.rs` `replaced_line`). */
+const REPLACED_CLAUSE = new RegExp(
+    ` \\(stated ${MARK_DAY}; it replaces a value recorded ${MARK_DAY} that the user had not stated\\)`,
+    "g",
+);
+/** The two days a contested mark opens with, before the contesting memory's id (Eidnara `canonical_memory.rs` `contested_line`). */
+const CONTESTED_DAYS = new RegExp(` \\(stated ${MARK_DAY}; contested ${MARK_DAY} by `, "g");
+/** The minute memory recorded a user statement, at its line's end (Eidnara `named_files.rs` `mark_recorded`). */
+const RECORDED_MINUTE = / \[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z\](?=\n|$)/g;
+
+/**
+ * What a `<project-memory>` body holds beside its statements: the closing sentence, the element
+ * of named files, and a statement marked as the replacement of an observation.
+ */
+export function blockMarks(body: string): {
+    closing: boolean;
+    named_files: boolean;
+    replaced: boolean;
+} {
+    return {
+        closing: CLOSING_LINE.test(body),
+        named_files: body.search(NAMED_FILES_ELEMENT) >= 0,
+        replaced: body.search(REPLACED_CLAUSE) >= 0,
+    };
+}
+
+/**
+ * The statements of a `<project-memory>` body: the body without the parts that hold no statement.
+ * The `<NAMED_FILES>` element and the closing sentence go whole. A replacement mark goes whole, so
+ * its line reads as the live statement it is. A contested mark keeps the contesting memory's id
+ * and its excerpt and loses its two days, and a line loses the recorded minute it ends with. Each
+ * of those is a day or a minute, whose digits a literal reader would take for a value. A body
+ * that holds none of these parts comes back as it is.
+ */
+export function statementText(body: string): string {
+    return body
+        .replace(NAMED_FILES_ELEMENT, "")
+        .replace(CLOSING_LINE, "")
+        .replace(REPLACED_CLAUSE, "")
+        .replace(CONTESTED_DAYS, " (stated; contested by ")
+        .replace(RECORDED_MINUTE, "");
+}
+
+const MEMORY_BLOCK = /(<project-memory\b[^>]*>)([\s\S]*?)(<\/project-memory>)/g;
+
+/**
+ * `text` with each `<project-memory>` block read through `statementText`: what the literal
+ * readers of a request search. Every other part of the text stands.
+ */
+export function statementContext(text: string): string {
+    if (!text.includes("<project-memory")) return text;
+    return text.replace(
+        MEMORY_BLOCK,
+        (_whole, open: string, body: string, close: string) =>
+            `${open}${statementText(body)}${close}`,
+    );
+}
+
 /** Quote-style and log-level words a P4 rule names, which ordinary prose also uses. */
 const RULE_WORDS = new Set(["single", "double", "trace", "debug", "info", "warn", "error"]);
-const escaped = (lit: string) => lit.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /**
  * Whether `text` carries the literal `lit` as a value, not as part of another word. A number
  * stands with no digit beside it. A quote-style or log-level word counts only inside its rule's
@@ -277,7 +349,7 @@ class PartTexts {
         }
         const found = part();
         if (!found) return null;
-        const text = partText(found);
+        const text = statementContext(partText(found));
         this.texts.set(id, text);
         this.chars += text.length;
         for (const [old, t] of this.texts) {
@@ -342,7 +414,7 @@ function body(ctx: Context, c: HeldCall): ConverseBody | null {
 
 /**
  * Whether the call's recorded body carries one of the group's alternatives, as `findGroups` over
- * its `bodyText` finds it. The body is rebuilt once to check its digest; the search then runs over
+ * its `bodyText` finds it, a `<project-memory>` block read by its statements (`statementContext`). The body is rebuilt once to check its digest; the search then runs over
  * each part's text in turn, since the lines `bodyText` joins never let a single-line alternative
  * span two parts, so no whole-body text is held. An alternative with a newline is searched in the
  * rebuilt body's text.
@@ -362,7 +434,7 @@ function carries(ctx: Context, c: HeldCall, group: string[]): boolean {
         // Rule wording can span two parts, so a rule word is searched in the rebuilt body.
         if (alt.includes("\n") || RULE_WORDS.has(alt.toLowerCase())) {
             const b = rebuildRequest(ref, parts);
-            return b !== null && carriesLiteral(bodyText(b), alt);
+            return b !== null && carriesLiteral(statementContext(bodyText(b)), alt);
         }
         return ref.parts.some((id) => {
             const t = ctx.partTexts.get(id, () => parts.get(id));
@@ -476,10 +548,12 @@ export function probeEvidence(
     const bodiesKept =
         run.parts !== null && turnCalls.length > 0 && turnCalls.every((c) => body(ctx, c) !== null);
 
-    // Probe-turn context: what every agent request of the turn carried, the probe text aside.
+    // Probe-turn context: what every agent request of the turn carried, the probe text aside. A
+    // `<project-memory>` block is read by its statements, so the days and minutes of its marks
+    // and its list of named files deliver no literal and hold no stale one.
     const turnTexts = turnCalls.map((c) => {
         const b = body(ctx, c);
-        return { c, t: b ? contextText(b) : null };
+        return { c, t: b ? statementContext(contextText(b)) : null };
     });
     // Delivery needs one model request that carried every group at once.
     const whole = turnTexts.find(

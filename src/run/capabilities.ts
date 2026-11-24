@@ -11,7 +11,7 @@ import {
     readSync,
 } from "node:fs";
 import { join } from "node:path";
-import { bodyText, injectedBlocks, searchRoute } from "../evidence/stages";
+import { blockMarks, bodyText, injectedBlocks, searchRoute } from "../evidence/stages";
 import { payloadManifest, processMemoryBlock, progressBlock } from "../hosts/arms";
 import {
     type ArmProfile,
@@ -485,6 +485,15 @@ export interface DeliveryObservation {
     contested_blocks?: number;
     /** Agent requests whose `<project-memory>` block holds a `<CURRENT_WORK>` element; absent on observations recorded before it was read. */
     work_blocks?: number;
+    /** Agent requests whose `<project-memory>` block ends with the closing sentence; absent on observations recorded before it was read. */
+    closing_blocks?: number;
+    /** Agent requests whose `<project-memory>` block holds a `<NAMED_FILES>` element; absent on observations recorded before it was read. */
+    named_file_blocks?: number;
+    /**
+     * Agent requests whose `<project-memory>` block renders a statement marked as the replacement
+     * of an observation, with both days; absent on observations recorded before it was read.
+     */
+    replaced_blocks?: number;
     /** The keyed open items in the requests' rendered history; absent on observations recorded before it was read. */
     open_items?: OpenItemObservation;
 }
@@ -595,11 +604,15 @@ export function observeDelivery(
         uncovered_sessions: [],
         contested_blocks: 0,
         work_blocks: 0,
+        closing_blocks: 0,
+        named_file_blocks: 0,
+        replaced_blocks: 0,
         open_items: { blocks: 0, waiting_blocks: 0, stale_waiting_blocks: 0, stale_requests: [] },
     };
     const openItems = out.open_items as OpenItemObservation;
     let contestedBlocks = 0;
     let workBlocks = 0;
+    const marked = { closing: 0, named_files: 0, replaced: 0 };
     const delivered = new Set<string>();
     const index = (event: string | null) => eventIndex.get(event ?? "") ?? -1;
     const backgrounds = [...new Set(notes.map((n) => n.background))];
@@ -639,6 +652,10 @@ export function observeDelivery(
             agent.block = true;
             if (memory.some((b) => CONTESTED_LINE.test(b.body))) contestedBlocks++;
             if (memory.some((b) => WORK_ELEMENT.test(b.body))) workBlocks++;
+            const marks = memory.map((b) => blockMarks(b.body));
+            if (marks.some((m) => m.closing)) marked.closing++;
+            if (marks.some((m) => m.named_files)) marked.named_files++;
+            if (marks.some((m) => m.replaced)) marked.replaced++;
         }
         const items = openItemsOf(given);
         openItems.blocks += items.blocks;
@@ -682,6 +699,9 @@ export function observeDelivery(
     out.memory_blocks = memoryBlocks;
     out.contested_blocks = contestedBlocks;
     out.work_blocks = workBlocks;
+    out.closing_blocks = marked.closing;
+    out.named_file_blocks = marked.named_files;
+    out.replaced_blocks = marked.replaced;
     out.sessions = new Set(agentCalls.map((c) => c.session)).size;
     const owed = owingRequests(agentCalls, lastCapture, lastCall, statementSessions, projectOf);
     out.memory_due = owed.length > 0;
@@ -1651,6 +1671,7 @@ export function fusedAnswerShare(search: ArmObservation["search"], unranked = 0)
  * Evidence that contradicts what the bound build's variant declares for the behaviours that
  * differ by build: the lineage of each statement record and the `decisions_approval_refused`
  * counter, the lifetime classes of captured facts, the `<CURRENT_WORK>` element and ended work,
+ * the block's closing sentence, its `<NAMED_FILES>` element, and its dated replacement mark,
  * contested statements in the block and in search results, waiting lines outside a history
  * block's newest summarized segment, the `process_memory` block in the daemon's status, and the
  * lifecycle progress block on the fused route.
@@ -1715,6 +1736,35 @@ function buildMismatches(
     if (!caps.current_work_delivery && workBlocks + endedWork > 0) {
         out.push(
             `${workBlocks} agent requests carry a <CURRENT_WORK> element in <project-memory> and ${endedWork} captured facts record the statement that ended them, which ${label} does not declare`,
+        );
+    }
+    const d = o.delivery;
+    const marks: Array<[keyof DaemonCapabilities, number, string]> = [
+        [
+            "block_closing_sentence",
+            d?.closing_blocks ?? 0,
+            "carry a <project-memory> block that ends with the closing sentence",
+        ],
+        [
+            "named_files",
+            d?.named_file_blocks ?? 0,
+            "carry a <NAMED_FILES> element in <project-memory>",
+        ],
+        [
+            "replaced_observation_date",
+            d?.replaced_blocks ?? 0,
+            "render a statement dated as the replacement of an observation",
+        ],
+    ];
+    for (const [capability, count, what] of marks) {
+        if (!caps[capability] && count > 0) {
+            out.push(`${count} agent requests ${what}, which ${label} does not declare`);
+        }
+    }
+    const blocks = d?.memory_blocks ?? 0;
+    if (caps.block_closing_sentence && blocks > 0 && d?.closing_blocks === 0) {
+        out.push(
+            `none of ${blocks} agent requests with a <project-memory> block carries the closing sentence, which ${label} declares for every delivered block`,
         );
     }
     const contested = (o.delivery?.contested_blocks ?? 0) + (o.search?.contested ?? 0);

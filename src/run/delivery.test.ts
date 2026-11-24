@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PROJECT_MEMORY_NOTE } from "../evidence/stages";
 import { armProfile, DAEMON_VARIANTS } from "../hosts/profiles";
 import { qualificationHash } from "../prereg/qualification";
 import type { ConverseBody } from "../proxy/classify";
@@ -206,6 +207,47 @@ describe("delivery check", () => {
             stale_waiting_blocks: 1,
             stale_requests: [calls[6]?.seq as number],
         });
+    });
+
+    test("the closing sentence, the element of named files, and the replacement mark are counted by request", () => {
+        // The product's own strings (Eidnara eval/w9 `memory_render.rs`, `named_files.rs`, `canonical_memory.rs`).
+        const block = (lines: string[], closing = true) =>
+            `<project-memory>\n${lines.join("\n")}\n${closing ? `${PROJECT_MEMORY_NOTE}\n` : ""}</project-memory>`;
+        const files = [
+            '<NAMED_FILES note="Files of this project that a message of the user named in an earlier session and the agent then read or named in a command it ran, most used first.">',
+            "docs/deploy.md (the agent used it in 2 earlier sessions, last on 2026-03-01; last changed 2026-03-01T09:30Z)",
+            "</NAMED_FILES>",
+        ];
+        const dated = "mem_a: User stated: The retry limit is 45. [2026-03-01T09:30Z]";
+        const replaced =
+            "mem_b: User stated: The pool size is 500. (stated 2026-04-09; it replaces a value recorded unknown date that the user had not stated)";
+        const contested =
+            'mem_c: User stated: The limit is 300. (stated 2026-03-01; contested 2026-04-09 by mem_d: "Assistant reported: the file holds 500.")';
+        const calls = [
+            call("s-2", "e-1", `${block([...files, dated])}\nTask.`),
+            call("s-2", "e-2", `${block([replaced])}\nTask.`),
+            // One request counts once for each mark, however many of its lines carry it.
+            call("s-2", "e-2", `${block([...files, dated, replaced, replaced, contested])}\nTask.`),
+            // A block of an earlier build ends at its last element.
+            call("s-2", "e-2", `${block([contested], false)}\nTask.`),
+            // The marks count inside the block alone, and the element by its whole name.
+            call(
+                "s-2",
+                "e-3",
+                `${block(["<NAMED_FILES_INDEX>\nmem_e: a row\n</NAMED_FILES_INDEX>"], false)}\n${files.join("\n")}\n${replaced}\n${PROJECT_MEMORY_NOTE}\nTask.`,
+            ),
+        ];
+        const seen = observeDelivery(calls, parts(), [], order);
+        expect([
+            seen.memory_blocks,
+            seen.closing_blocks,
+            seen.named_file_blocks,
+            seen.replaced_blocks,
+            seen.contested_blocks,
+        ]).toEqual([5, 3, 2, 2, 2]);
+        // The replacement mark is no contest: a block holding it alone counts no contested statement.
+        const alone = observeDelivery([calls[1] as (typeof calls)[number]], parts(), [], order);
+        expect([alone.replaced_blocks, alone.contested_blocks]).toEqual([1, 0]);
     });
 
     test("a run with no owed note, or a note that reached no request of its turn, is invalid", () => {
