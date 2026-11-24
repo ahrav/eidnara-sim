@@ -178,21 +178,33 @@ handling therefore runs a settle step after the host session closed
 (`settleReviews` in `src/hosts/driver.ts`):
 
 1. it waits for the open background jobs (`settle`, the scheduler's
-   `quiesceJobs`, the wait a probe turn uses), so the session's capture and
-   summarizer calls have ended;
-2. it waits up to 30 s for source capture to settle
-   (`DaemonStack.sourceCapture`, the fixture's `source-capture-report`
-   control), so the later statement and the later message a review reads
-   are published;
-3. it calls the fixture's `review-drain` control through
+   `quiesceJobs`, the wait a probe turn uses): 1,000 ms, then until the
+   busy set holds no job, then until 1,000 ms pass with no job started or
+   ended. The jobs are the requests and model calls in flight, the
+   session's memory-capture and summarizer calls among them, and
+   `daemon-cpu-<arm>-<n>`, which stays open while the daemon's CPU
+   fraction is above the busy bound;
+2. it calls the fixture's `review-drain` control through
    `DaemonStack.reviewDrain` and waits up to 300,000 ms (`REVIEW_DRAIN_MS`)
    for the answer. The daemon runs review passes until one settles nothing
    and answers with the number of runs settled.
 
+The drain is the step's one request to the fixture control. The daemon
+starts a source capture job for each context transform, when the
+transform's answer goes to the plugin and so before the agent's model
+request, and the job publishes the transform's messages within 5 s
+(`CAPTURE_BUDGET` in `crates/daemon/src/source_capture.rs`; 29 ms at most
+over the 129 jobs of the S5 pilot's reviewer arm). The session's last job
+therefore has that model request, the 2,000 ms post-turn hold, the host's
+close, and the open-jobs wait to publish in; in the pilot's six sessions
+the drain went out 6.6 s or more after the last agent request. A message
+source capture publishes after the drain's last pass comes up for review
+in the worker's own next pass, which starts at most 30 s of real time
+after the worker's last one and can run inside the next session.
+
 Each step appends one line to `<arm>/review-drain.jsonl`: `session`,
 `started_wall_ms`, `wall_ms`, `settled` (the runs settled, or `null`), and
-`error` (or `null`). A capture that does not settle is recorded and the
-drain still runs. A drain that fails or whose build has no `review-drain`
+`error` (or `null`). A drain that fails or whose build has no `review-drain`
 control is recorded with its error, and the session end returns. A daemon
 that is gone at the session end gets no control request and its line says
 so. A resume that delivers a `session_end` again appends a second line for
@@ -212,8 +224,8 @@ and M, within which an unbroken chain of background calls stops the run),
 and the driver sends that daemon process no other control request while
 the drain is unanswered:
 
-- the next settle step waits up to 300,000 ms for the drain, then runs its
-  own capture wait and drain; when the drain is still unanswered, the
+- the next settle step waits up to 300,000 ms for the drain, then sends
+  its own drain; when the drain is still unanswered, the
   step's line names it (`the review drain of session <id> is unanswered
   after <n> ms, and the fixture control takes one request at a time`) and
   the step sends no request;

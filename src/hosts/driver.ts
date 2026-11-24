@@ -102,7 +102,7 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm
     /**
      * Awaited after a probe turn and before its snapshot, so background calls the turn started
      * are on record, and at a session's end on an arm that runs the memory reviewer, before its
-     * source capture settles and its reviewer drains.
+     * reviewer drains.
      */
     settle?: () => Promise<void>;
     /** Entries a walk of a workspace `.git` visits at most; the default is `GIT_DIR_ENTRY_CAP`. */
@@ -194,7 +194,10 @@ export function combineCaptureGenerations(generations: readonly CaptureGeneratio
  */
 export const REVIEW_DRAIN_MS = 300_000;
 
-/** How long past its own timeout a control request may stay unanswered before the driver stops waiting. */
+/**
+ * How long a stop waits, after the daemon stopped, for the failure of a review drain the control
+ * had yet to answer to reach the record.
+ */
 const CONTROL_GRACE_MS = 5_000;
 
 /**
@@ -209,7 +212,7 @@ export interface ReviewDrainRecord {
     wall_ms: number;
     /** The review runs the drain settled, or null when it returned none. */
     settled: number | null;
-    /** Why the open jobs or source capture did not settle or the drain returned no count, or null. */
+    /** Why the open jobs did not settle or the drain returned no count, or null. */
     error: string | null;
     /**
      * Set on the line a drain's answer appends after its step stopped waiting for it:
@@ -220,9 +223,6 @@ export interface ReviewDrainRecord {
 
 /** The longest a daemon fault waits for the dying generation's counters before its kill. */
 const FAULT_READ_MS = 250;
-
-/** The longest the settle step waits for source capture to settle. */
-const CAPTURE_SETTLE_MS = 30_000;
 
 /** A stop's bound on the read: the 30 s settle wait and one more control request. */
 const STOP_READ_MS = 35_000;
@@ -1422,12 +1422,12 @@ export class HostDriver implements ArmDriver {
 
     /**
      * The settle step of an arm that runs the memory reviewer, at each session end after the host
-     * session closed: the open background jobs end (`settle`), source capture settles, and the
-     * fixture drains the reviewer's worker, which runs review passes until one settles nothing,
-     * so the reviews of the session's last messages end before the scheduler moves scenario time
-     * to the next session. Each call appends one `ReviewDrainRecord` to `review-drain.jsonl`. A
-     * capture that does not settle and a drain that fails are recorded with their error, and the
-     * session end returns. A `settle` that rejects (the scheduler's job deadline) is recorded
+     * session closed: the open background jobs end (`settle`), and the fixture drains the
+     * reviewer's worker, which runs review passes until one settles nothing, so the reviews of
+     * the session's published messages end before the scheduler moves scenario time to the next
+     * session. The drain is the step's one request to the fixture control. Each call appends one
+     * `ReviewDrainRecord` to `review-drain.jsonl`. A drain that fails is recorded with its error,
+     * and the session end returns. A `settle` that rejects (the scheduler's job deadline) is recorded
      * and rethrown, which stops the run; the resume reopens the session and delivers the
      * `session_end` again (`settlesSessionEnds`). The step waits `REVIEW_DRAIN_MS` for its drain; a drain that passes
      * the wait is recorded as unanswered, the session end returns, and the drain stays the
@@ -1442,13 +1442,6 @@ export class HostDriver implements ArmDriver {
         const errors: string[] = [];
         let settled: number | null = null;
         const daemon = this.daemon;
-        // A control request that outlives its own timeout by the grace has no reply.
-        const answered = async <T>(request: Promise<T>, ms: number): Promise<T> => {
-            const bound = ms + Math.min(CONTROL_GRACE_MS, ms);
-            const reply = await withDeadline(request, bound);
-            if (reply === null) throw new Error(`no reply in ${bound} ms`);
-            return reply;
-        };
         const drainMs = this.o.reviewDrainMs ?? REVIEW_DRAIN_MS;
         if (!daemon || daemonGone) {
             errors.push("the daemon is not running");
@@ -1465,11 +1458,6 @@ export class HostDriver implements ArmDriver {
             if (busy !== null) {
                 errors.push(busy);
             } else {
-                try {
-                    await answered(daemon.sourceCapture(CAPTURE_SETTLE_MS), CAPTURE_SETTLE_MS);
-                } catch (caught) {
-                    errors.push(`source capture did not settle: ${String(caught).slice(0, 500)}`);
-                }
                 const request = drainReply(daemon);
                 const reply = await withDeadline(request, drainMs);
                 if (reply === null) {

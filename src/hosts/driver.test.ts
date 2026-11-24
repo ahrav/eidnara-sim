@@ -1026,16 +1026,16 @@ touch ${escaped}
         return made;
     };
 
-    test("the reviewer arm settles jobs, then source capture, then drains the reviewer at each session end", async () => {
+    test("the reviewer arm settles jobs, then drains the reviewer at each session end", async () => {
         const calls: string[] = [];
         const { driver, armDir, hosts } = ending("eidnara-reviewer", reviewing(calls), calls);
         const before = Date.now();
         expect(await driver.event(ev("session_end", { id: "e-1", session: "s-0001" }))).toEqual({});
-        // The host session closed before the step. The step waits 300,000 ms for its drain and
-        // leaves the control request's timeout to the stack.
+        // The host session closed before the step. The drain is the step's one control request;
+        // the step waits 300,000 ms for it and leaves the request's timeout to the stack.
         expect((driver.host as unknown as FakeHost).closed).toBe(1);
         expect(hosts).toEqual([]);
-        expect(calls).toEqual(["settle", "capture:30000", "drain:undefined"]);
+        expect(calls).toEqual(["settle", "drain:undefined"]);
         expect(REVIEW_DRAIN_MS).toBe(300_000);
         const [first] = drains(armDir);
         expect(first).toEqual({
@@ -1055,7 +1055,7 @@ touch ${escaped}
             ["s-0002", 3, null],
             ["s-0002", 3, null],
         ]);
-        expect(calls).toHaveLength(9);
+        expect(calls).toHaveLength(6);
     });
 
     test("an arm without the reviewer switch runs no settle step and writes no drain record", async () => {
@@ -1083,7 +1083,7 @@ touch ${escaped}
                 error: "review drain failed: Error: fixture control rejected: memory_reviewer_unavailable",
             },
         ]);
-        expect(calls).toEqual(["settle", "capture:30000", "drain:undefined"]);
+        expect(calls).toEqual(["settle", "drain:undefined"]);
         // A count outside the non-negative integers is no count.
         const odd = ending("eidnara-reviewer", reviewing([], -1), []);
         await odd.driver.event(ev("session_end"));
@@ -1123,7 +1123,7 @@ touch ${escaped}
         expect(driver.settlesSessionEnds()).toBe(true);
         stuck = false;
         expect(await driver.event(end)).toEqual({});
-        expect(calls.slice(1)).toEqual(["settle", "capture:30000", "drain:undefined"]);
+        expect(calls.slice(1)).toEqual(["settle", "drain:undefined"]);
         expect(drains(armDir).map((d) => [d.session, d.settled, d.error === null])).toEqual([
             ["s-0003", null, false],
             ["s-0003", 3, true],
@@ -1237,14 +1237,12 @@ touch ${escaped}
         ]);
         // The control request outlasts the step's wait, so the fixture's answer finds it pending.
         const drain = `review-drain ${REVIEW_DRAIN_REQUEST_MS}`;
-        const captured = ["send source-capture-report 5000", "answer source-capture-report"];
-        expect(model.log).toEqual([...captured, `send ${drain}`]);
+        expect(model.log).toEqual([`send ${drain}`]);
         expect(REVIEW_DRAIN_REQUEST_MS).toBe(3_600_000);
-        // The next step sends nothing until the drain has answered; then it captures and drains.
+        // The next step sends nothing until the drain has answered; then it drains.
         expect(await driver.event(ev("session_end", { session: "s-0002" }))).toEqual({});
-        expect(model.log.slice(3)).toEqual([
+        expect(model.log.slice(1)).toEqual([
             "answer review-drain",
-            ...captured,
             `send ${drain}`,
             "answer review-drain",
         ]);
@@ -1262,8 +1260,12 @@ touch ${escaped}
         expect((late?.wall_ms ?? 0) - (late?.started_wall_ms ?? 0)).toBeGreaterThanOrEqual(150);
         expect(second).toMatchObject({ session: "s-0002", settled: 4, error: null });
         expect(second?.started_wall_ms).toBeLessThan(late?.wall_ms as number);
-        // The generation's counters are read at the finish.
+        // The generation's counters are read at the finish, the control's one capture request.
         await driver.finish();
+        expect(model.log.slice(4)).toEqual([
+            "send source-capture-report 5000",
+            "answer source-capture-report",
+        ]);
         expect(captureRecord(armDir)).toMatchObject({
             counters: { admitted: 2, completed: 2 },
             error: null,
@@ -1277,10 +1279,10 @@ touch ${escaped}
             reviewDrainMs: 40,
         });
         await driver.event(ev("session_end", { session: "s-0001" }));
-        expect(model.log).toHaveLength(3);
+        expect(model.log).toHaveLength(1);
         await driver.finish();
         // The counter read went out after the drain's answer, and both lines are on record.
-        expect(model.log.slice(3)).toEqual([
+        expect(model.log.slice(1)).toEqual([
             "answer review-drain",
             "send source-capture-report 5000",
             "answer source-capture-report",
@@ -1302,7 +1304,7 @@ touch ${escaped}
         });
         await driver.event(ev("session_end", { session: "s-0001" }));
         expect(await driver.event(ev("session_end", { session: "s-0002" }))).toEqual({});
-        expect(model.log).toHaveLength(3);
+        expect(model.log).toHaveLength(1);
         expect(drains(armDir)[1]).toEqual({
             session: "s-0002",
             started_wall_ms: expect.any(Number),
@@ -1318,7 +1320,7 @@ touch ${escaped}
         daemon.crash = async () => model.close();
         daemon.restart = async () => undefined;
         await driver.fault(episode("daemon_restart"));
-        expect(model.log).toHaveLength(3);
+        expect(model.log).toHaveLength(1);
         expect(captureRecord(armDir).generations[0]).toMatchObject({
             ended: "fault f-daemon_restart",
             counters: null,
@@ -1338,7 +1340,7 @@ touch ${escaped}
         });
     });
 
-    test("a build without the review-drain control, a capture that does not settle, and a daemon that is gone are recorded", async () => {
+    test("a build without the review-drain control and a daemon that is gone are recorded", async () => {
         // A build whose hermetic stack has no review drain: the control exists for capture alone.
         const stack = new DaemonStack({ arm: "eidnara-reviewer" } as DaemonContext);
         (stack as unknown as { stack: unknown }).stack = {
@@ -1351,23 +1353,8 @@ touch ${escaped}
             settled: null,
             error: "review drain failed: Error: the daemon's fixture control has no review drain",
         });
-        // Capture that does not settle is recorded, and the drain still runs.
-        const calls: string[] = [];
-        const unsettled = Object.assign(reviewing(calls, 2), {
-            sourceCapture: async () => {
-                calls.push("capture");
-                throw new Error("source capture never settled");
-            },
-        });
-        const busy = ending("eidnara-reviewer", unsettled, calls);
-        expect(await busy.driver.event(ev("session_end"))).toEqual({});
-        expect(calls).toEqual(["settle", "capture", "drain:undefined"]);
-        expect(drains(busy.armDir)[0]).toMatchObject({
-            settled: 2,
-            error: "source capture did not settle: Error: source capture never settled",
-        });
         // A daemon that is gone gets no control request; its exit is reported once.
-        calls.length = 0;
+        const calls: string[] = [];
         const gone = reviewing(calls);
         const dead = ending("eidnara-reviewer", gone, calls);
         (dead.driver.host as unknown as FakeHost).onClose = () => {
