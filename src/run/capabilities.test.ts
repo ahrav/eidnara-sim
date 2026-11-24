@@ -1027,6 +1027,8 @@ const REVIEW_LOG = [
     "daemon: memory_reviewer kept the review hold of a settled proposal: the store is busy",
     "daemon: memory_reviewer selection examines 4096 claim descriptors a pass and the store holds more; each pass continues where the last one ended",
     "daemon: memory_reviewer run ended without settlement: fenced",
+    "daemon: memory_reviewer run ended without settlement: fenced",
+    "daemon: memory_reviewer run ended without settlement: store database is locked",
     "daemon: memory_reviewer selection for a switched project failed: kernel kernel operation exceeded its deadline",
 ];
 
@@ -1067,11 +1069,22 @@ test("the memory reviewer's log lines are counted by the form the daemon writes 
         unapplied: 1,
         stage1_default_failed: 1,
         waits: { hold_bound: 1, kept_hold: 1, selection_resumed: 1 },
+        // A run that ended without settlement is counted by its reason's first word.
+        unsettled: {
+            fenced: 2,
+            unavailable: 0,
+            refused: 0,
+            supervisor: 0,
+            store: 1,
+            kernel: 0,
+            conflicting_content: 0,
+            binding_mismatch: 0,
+        },
         gate_closed: 1,
-        other: 2,
+        other: 1,
     });
-    // Every counted form but the gate line and the unclassed ones shows a review ran.
-    expect(reviewLines(log)).toBe(REVIEW_LOG.length + 1 - 3);
+    // Every counted form but the gate line and the unclassed one shows a review ran.
+    expect(reviewLines(log)).toBe(REVIEW_LOG.length + 1 - 2);
     // A name the daemon adds later is counted under itself, and a decider's models stay bounded.
     const models = Array.from({ length: 10 }, (_, i) => `p/m${i}`);
     writeFileSync(
@@ -1079,6 +1092,7 @@ test("the memory reviewer's log lines are counted by the form the daemon writes 
         [
             "daemon: memory_reviewer enqueued job=aa trigger=constructor later=1 source=1",
             "daemon: memory_reviewer applied a proposal: job=aa merged",
+            "daemon: memory_reviewer run ended without settlement: constructor",
             "daemon: memory_reviewer stage 1 job=aa decider=panel model=p/m request=bb decision=deferred later=1",
             ...models.map(
                 (m) =>
@@ -1089,6 +1103,9 @@ test("the memory reviewer's log lines are counted by the form the daemon writes 
     const later = readReviewerLog(path);
     expect(Object.entries(later.enqueued).filter(([, n]) => n > 0)).toEqual([["constructor", 1]]);
     expect(later.applied.merged).toBe(1);
+    expect(Object.entries(later.unsettled ?? {}).filter(([, n]) => n > 0)).toEqual([
+        ["constructor", 1],
+    ]);
     expect(later.stage1.panel).toEqual({ keep: 0, flagged: 0, other: 1, models: ["p/m"] });
     expect(later.stage1.chat_model).toEqual({
         keep: 10,

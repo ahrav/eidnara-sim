@@ -139,6 +139,15 @@ export interface ReviewerLogObservation {
     stage1_default_failed: number;
     /** The lines that report reviews waiting: a project at its hold bound, a kept hold of a settled proposal, and a selection walk that resumes by cursor. */
     waits: { hold_bound: number; kept_hold: number; selection_resumed: number };
+    /**
+     * `run ended without settlement: <reason>` lines by the reason's first word (Eidnara
+     * `memory_reviewer/worker.rs`; `fenced`, `unavailable`, `refused`, `supervisor`, `store`,
+     * `kernel`, `conflicting_content`, `binding_mismatch`): a run whose job stays for a later
+     * attempt. A clock advance between a stage-1 request's gateway reply and the daemon's record
+     * of the answer ends the run `fenced` (`docs/hosts.md`). Absent on observations recorded
+     * before it was read.
+     */
+    unsettled?: Record<string, number>;
     /** `activation gate closed` lines, which a daemon with a reviewer host writes with the switch off too. */
     gate_closed: number;
     /** Every other line that opens `daemon: memory_reviewer`. */
@@ -175,7 +184,7 @@ export interface ReviewerObservation {
     calls: Record<string, number>;
 }
 
-/** The count of log lines that show a review ran: every counted form but the gate line and the unclassed ones. */
+/** The count of log lines that show a review ran: every counted form, a run that ended without settlement included, but the gate line and the unclassed ones. */
 export function reviewLines(log: ReviewerLogObservation): number {
     const sum = (counts: Record<string, number>) =>
         Object.values(counts).reduce((total, n) => total + n, 0);
@@ -193,7 +202,8 @@ export function reviewLines(log: ReviewerLogObservation): number {
         log.left_for_reader +
         log.unapplied +
         log.stage1_default_failed +
-        sum(log.waits)
+        sum(log.waits) +
+        sum(log.unsettled ?? {})
     );
 }
 
@@ -202,6 +212,7 @@ const STAGE1_DECISION =
     /^stage 1 job=\S+ decider=(\S+) model=(\S+) request=\S+ decision=(\S+)(?: |$)/;
 const APPLIED_PROPOSAL = /^applied a proposal: job=\S+ (\S+)$/;
 const ENQUEUED_JOB = /^enqueued job=\S+ trigger=(\S+) later=\d+ source=\d+$/;
+const UNSETTLED_RUN = /^run ended without settlement: (\S+)/;
 /** The models one decider's tally keeps by name. */
 const STAGE1_MODELS = 8;
 
@@ -237,15 +248,27 @@ export function readReviewerLog(path: string): ReviewerLogObservation {
         unapplied: 0,
         stage1_default_failed: 0,
         waits: { hold_bound: 0, kept_hold: 0, selection_resumed: 0 },
+        unsettled: tally(
+            "fenced",
+            "unavailable",
+            "refused",
+            "supervisor",
+            "store",
+            "kernel",
+            "conflicting_content",
+            "binding_mismatch",
+        ),
         gate_closed: 0,
         other: 0,
     };
+    const ended = out.unsettled as Record<string, number>;
     eachLine(path, (line) => {
         if (!line.startsWith(REVIEWER_PREFIX)) return;
         const rest = line.slice(REVIEWER_PREFIX.length);
         const enqueued = ENQUEUED_JOB.exec(rest);
         const decision = STAGE1_DECISION.exec(rest);
         const applied = APPLIED_PROPOSAL.exec(rest);
+        const unsettled = UNSETTLED_RUN.exec(rest);
         if (enqueued) {
             const trigger = enqueued[1] as string;
             out.enqueued[trigger] = (out.enqueued[trigger] ?? 0) + 1;
@@ -284,6 +307,9 @@ export function readReviewerLog(path: string): ReviewerLogObservation {
             /^selection examines \d+ claim descriptors a pass and the store holds more; /.test(rest)
         ) {
             out.waits.selection_resumed++;
+        } else if (unsettled) {
+            const reason = unsettled[1] as string;
+            ended[reason] = (ended[reason] ?? 0) + 1;
         } else if (rest.startsWith("activation gate closed: ")) {
             out.gate_closed++;
         } else {

@@ -237,9 +237,11 @@ without a capability record has its row too:
 - the reviewer's lines in `<arm>/daemon.log` over every daemon generation
   (`docs/hosts.md`, `reviewer.log`): review jobs enqueued by trigger,
   selection passes, stage-1 decisions by decider with the models named,
-  failed stage-1 requests, reviews ended on a later reference the model was
-  not shown, proposals applied by kind, proposals left for a reader and
-  left unapplied, and the lines that report reviews waiting;
+  failed stage-1 requests, runs that ended without settlement by reason
+  (`fenced` for a run a clock advance inside an open session ended,
+  `docs/hosts.md`), reviews ended on a later reference the model was not
+  shown, proposals applied by kind, proposals left for a reader and left
+  unapplied, and the lines that report reviews waiting;
 - the settle steps of `<arm>/review-drain.jsonl`: steps, runs settled, wall
   time in all and the longest, lines with an error, and the drains that
   answered after their step stopped waiting (`late` lines, `docs/hosts.md`);

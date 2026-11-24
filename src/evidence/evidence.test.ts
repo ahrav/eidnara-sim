@@ -1418,7 +1418,7 @@ test("evidence-run reads a run directory and writes only under --out", () => {
         status: null,
     });
     expect(report).toContain(
-        "| run | eidnara | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | no reading |",
+        "| run | eidnara | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | no reading |",
     );
     expect(report).toContain("| run | eidnara | q-1 | P1 | fail |");
     // The loaded records hold each request's digest and length; the log supplies the part ids.
@@ -1861,6 +1861,8 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
                 `daemon: memory_reviewer stage 1 job=1e272ec4862b8c69 decider=chat_model model=${haiku} request=80f14b8005030580 decision=flagged changes=yes relation=replaces work_ended=no strongest=ref-3 later=1`,
                 "daemon: memory_reviewer stage 1 job=171284c95cbd3587 decider=none model=none request=none decision=keep changes=none relation=none work_ended=none strongest=none later=0",
                 "daemon: memory_reviewer applied a proposal: job=1e272ec4862b8c69 contested",
+                `daemon: memory_reviewer stage 1 request ended without an answer: job=dbf9bc4ef617824b decider=chat_model model=${haiku} terminal_not_recorded the execution cutoff has passed`,
+                "daemon: memory_reviewer run ended without settlement: fenced",
                 "",
             ].join("\n"),
         );
@@ -1911,7 +1913,12 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
         );
         expect(seen).toMatchObject({
             switch: true,
-            log: { selections: 1, applied: { contested: 1 } },
+            log: {
+                selections: 1,
+                applied: { contested: 1 },
+                stage1_failed: 1,
+                unsettled: { fenced: 1 },
+            },
             drains: {
                 calls: 2,
                 late_answers: 1,
@@ -1957,9 +1964,9 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
         ]).split("\n");
         const at = report.indexOf("### Memory reviewer");
         expect(report.slice(at + 6, report.indexOf("### Context health", at) - 1)).toEqual([
-            `| A | eidnara-reviewer | on | current_work 1, later_statement 1 | 1 | chat_model: 0 keep, 1 flagged (${haiku}); none: 1 keep, 0 flagged (none) | 0 | 0 | contested 1 | 0 left for a reader, 0 unapplied | 0 | 2 steps, 3 runs settled, 3.0 s in all, 6.0 s the longest, 1 with an error, 1 drains answered after their step | memory_reviewer_stage1 1, memory_reviewer_stage2 1 | open in 1 of 2 readings, last open | unread | unread |`,
-            "| B | eidnara | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | no reading | 2 live, 1 retired | 0 live, 0 retired |",
-            "| D | host | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | memory_reviewer_stage1 3 | no reading | unread | unread |",
+            `| A | eidnara-reviewer | on | current_work 1, later_statement 1 | 1 | chat_model: 0 keep, 1 flagged (${haiku}); none: 1 keep, 0 flagged (none) | 1 | fenced 1 | 0 | contested 1 | 0 left for a reader, 0 unapplied | 0 | 2 steps, 3 runs settled, 3.0 s in all, 6.0 s the longest, 1 with an error, 1 drains answered after their step | memory_reviewer_stage1 1, memory_reviewer_stage2 1 | open in 1 of 2 readings, last open | unread | unread |`,
+            "| B | eidnara | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | no reading | 2 live, 1 retired | 0 live, 0 retired |",
+            "| D | host | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | memory_reviewer_stage1 3 | no reading | unread | unread |",
         ]);
     } finally {
         rmSync(root, { recursive: true, force: true });

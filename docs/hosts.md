@@ -270,8 +270,34 @@ real time:
 | Queue lifetime of a review job | 1 day | scenario time | the drain runs every ready job before the jump to the next session; the largest jump between sessions of S4 seed 104 was 13.2 hours |
 | Worker idle interval | 30 s | real time | the drain replaces the wait between sessions |
 | Pause of a project's reviews after a failed stage-1 request | 60 s, and 2 s before the run's next attempt | real time | a provider failure delays reviews in real time, past a drain |
-| Deadlines of one attempt and of one run | 30 s and 120 s | real time for an attempt; a run's lease is also read on the daemon's wall clock | a drain ends every run before the clock jumps |
+| Deadlines of one attempt and of one run | 30 s and 120 s | real time for an attempt; a run's execution cutoff and its lease are also read on the daemon's wall clock | a drain ends every run before the clock jumps to the next session; a jump between two turns of an open session can end a run in flight (below) |
 | Life of an `open` activation state without a new pass | 300 s | real time | the worker's passes renew it while the daemon runs |
+
+A clock advance between two turns of an open session can end a review run
+that is between its gateway reply and the daemon's record of it. A user
+turn in an open session waits only for the clock, and the scheduler moves
+scenario time to the turn's scheduled time once no job holds it; a reviewer
+call holds its jobs while its request is in flight at the gateway, and its
+jobs end with the response. The daemon reads a run's execution cutoff on its
+wall clock, which is scenario time
+(`crates/daemon/src/memory_reviewer/coordinator.rs`,
+`crates/memory-store/src/memory_reviewer_ledger.rs`). An advance that lands
+after the gateway answered a stage-1 request and before the daemon recorded
+the answer moves the daemon's wall clock past the cutoff. The daemon then
+writes `daemon: memory_reviewer stage 1 request ended without an answer:
+job=<id> decider=chat_model model=<model> terminal_not_recorded the
+execution cutoff has passed` and `daemon: memory_reviewer run ended without
+settlement: fenced` (`crates/daemon/src/memory_reviewer/worker.rs`, the two
+`run ended without settlement: {error}` lines of the switched pass and the
+recorded pass). The answered request is discarded, the job has spent one of
+its four attempts (`MEMORY_REVIEWER_MAX_ATTEMPTS`), and the project's
+reviews pause 60 s of real time (`FAILURE_COOLDOWN`), which moves later
+reviews past the next turns. The pilot `V605-reviewer` shows 2 such runs in
+182 stage-1 requests, all 182 answered with status 200 at the gateway. The
+run accepts the loss and reports it: the log reader counts `run ended
+without settlement: <reason>` lines by the reason's first word
+(`reviewer.log.unsettled`, below), apart from the failed stage-1 requests,
+which also count a provider failure.
 
 ### Oracle note
 
@@ -1018,9 +1044,14 @@ complete evidence only when the two agree:
     proposal unapplied` lines; the `stage-1 default <model> failed its
     first request` line; and the lines that report reviews waiting (a
     project at its hold bound, a kept hold of a settled proposal, a
-    selection walk that resumes by cursor). The `activation gate closed`
-    line and every other line that opens `daemon: memory_reviewer` are
-    counted apart (`gate_closed`, `other`) and show no review: a daemon
+    selection walk that resumes by cursor); and `run ended without
+    settlement: <reason>` lines by the reason's first word (`unsettled`:
+    `fenced`, `unavailable`, `refused`, `supervisor`, `store`, `kernel`,
+    `conflicting_content`, `binding_mismatch`), each a run whose job stays
+    for a later attempt (a clock advance inside an open session ends a run
+    `fenced`, Memory reviewer settle step above). The `activation gate
+    closed` line and every other line that opens `daemon: memory_reviewer`
+    are counted apart (`gate_closed`, `other`) and show no review: a daemon
     with a reviewer host writes the gate line with the switch off.
     Reviews are the `enqueued` lines, requests the `chat_model` and
     `classifier` decisions, and changes written the `applied` lines of
