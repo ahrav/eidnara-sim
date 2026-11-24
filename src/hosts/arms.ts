@@ -473,15 +473,15 @@ export class DaemonStack {
     /**
      * Runs the daemon's memory reviewer passes until one settles nothing, through the fixture's
      * `review-drain` control, and resolves to the number of review runs that settled once the
-     * control answers. `timeoutMs` is the control request's own timeout. A build whose fixture
-     * control has no such request throws.
+     * control answers. The control request's own timeout is `REVIEW_DRAIN_REQUEST_MS`. A build
+     * whose fixture control has no such request throws.
      */
-    async reviewDrain(timeoutMs = REVIEW_DRAIN_REQUEST_MS): Promise<number> {
+    async reviewDrain(): Promise<number> {
         const drain = this.stack?.reviewDrain;
         if (typeof drain !== "function") {
             throw new Error("the daemon's fixture control has no review drain");
         }
-        return await drain.call(this.stack, timeoutMs);
+        return await drain.call(this.stack, REVIEW_DRAIN_REQUEST_MS);
     }
 
     /** The session the status route binds; the daemon excludes a `cli` binding from every background view. */

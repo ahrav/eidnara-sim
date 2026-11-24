@@ -999,8 +999,8 @@ touch ${escaped}
                 calls.push(`capture:${ms}`);
                 return { admitted: 2, completed: 2 };
             },
-            reviewDrain: async (ms?: number) => {
-                calls.push(`drain:${ms}`);
+            reviewDrain: async () => {
+                calls.push("drain");
                 if (settled === "silent") return new Promise<number>(() => undefined);
                 if (settled instanceof Error) throw settled;
                 return settled;
@@ -1035,7 +1035,7 @@ touch ${escaped}
         // the step waits 300,000 ms for it and leaves the request's timeout to the stack.
         expect((driver.host as unknown as FakeHost).closed).toBe(1);
         expect(hosts).toEqual([]);
-        expect(calls).toEqual(["settle", "drain:undefined"]);
+        expect(calls).toEqual(["settle", "drain"]);
         expect(REVIEW_DRAIN_MS).toBe(300_000);
         const [first] = drains(armDir);
         expect(first).toEqual({
@@ -1083,7 +1083,7 @@ touch ${escaped}
                 error: "review drain failed: Error: fixture control rejected: memory_reviewer_unavailable",
             },
         ]);
-        expect(calls).toEqual(["settle", "drain:undefined"]);
+        expect(calls).toEqual(["settle", "drain"]);
         // A count outside the non-negative integers is no count.
         const odd = ending("eidnara-reviewer", reviewing([], -1), []);
         await odd.driver.event(ev("session_end"));
@@ -1123,7 +1123,7 @@ touch ${escaped}
         expect(driver.settlesSessionEnds()).toBe(true);
         stuck = false;
         expect(await driver.event(end)).toEqual({});
-        expect(calls.slice(1)).toEqual(["settle", "drain:undefined"]);
+        expect(calls.slice(1)).toEqual(["settle", "drain"]);
         expect(drains(armDir).map((d) => [d.session, d.settled, d.error === null])).toEqual([
             ["s-0003", null, false],
             ["s-0003", 3, true],
