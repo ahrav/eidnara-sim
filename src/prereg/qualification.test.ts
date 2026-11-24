@@ -630,6 +630,29 @@ test("the registrations before side models keep their digests and name none", ()
     }
 });
 
+test("the W5 registrations name the reviewer's stage-1 model, and every other registration names no side model", () => {
+    const digests: Record<string, string> = {
+        W5S: "deaa3f9ce91ca9e655de6953fa6b9c3c6293981c2c593629880c7e1723c36df9",
+        W5SH: "4a6b613a64c37f88695ee0a531a3a4604f29ba2328e8d89d16e3a605a321c4e8",
+        W5P: "c475c1e07c6cf33924061b0204f419f580f2b115cef900bc25acb2d19d5f36af",
+    };
+    const stage1 = { memory_reviewer_stage1: "global.anthropic.claude-haiku-5-5" };
+    for (const id of QUALIFICATIONS) {
+        const q = loadQualification(id);
+        if (id in digests) {
+            expect(qualificationHash(q)).toBe(digests[id] as string);
+            expect(sideModelsOf(q)).toEqual(stage1);
+            expect(reviewerStage1Model(q)).toBe(stage1.memory_reviewer_stage1);
+            // The side model is part of the digest: the registration without it hashes apart.
+            const { side_models: _stage1, ...without } = q;
+            expect(qualificationHash(without)).not.toBe(digests[id] as string);
+        } else {
+            expect(sideModelsOf(q)).toBeNull();
+        }
+    }
+    expect(QUALIFICATIONS.filter((id) => id in digests)).toEqual(["W5S", "W5SH", "W5P"]);
+});
+
 test("a registration names the bound on a fused arm's degraded search answers", () => {
     const w4s = loadQualification("W4S");
     const bounded = (value: unknown, patch: (q: Record<string, unknown>) => void = () => {}) => {
@@ -691,6 +714,9 @@ test("the registrations before the search-fallback bound keep their digests and 
         W4S: "a1d70476c52db713110036025553181b88bc5af28b979cfd00a75bffce29c99e",
         W4SH: "f376dbfe9314ab576e9562a7949dc94c6a1988eac36efeb550dd12cca407f34b",
         W4P: "fe96e65a39ab0f2e11200f595bee56cbb96a07c7b792a5d7046df3b1ed4e7db7",
+        W5S: "deaa3f9ce91ca9e655de6953fa6b9c3c6293981c2c593629880c7e1723c36df9",
+        W5SH: "4a6b613a64c37f88695ee0a531a3a4604f29ba2328e8d89d16e3a605a321c4e8",
+        W5P: "c475c1e07c6cf33924061b0204f419f580f2b115cef900bc25acb2d19d5f36af",
     };
     for (const [id, digest] of Object.entries(digests)) {
         expect(qualificationHash(loadQualification(id))).toBe(digest);
@@ -850,6 +876,95 @@ test("W4P runs the retest's three arms on C8H's held-out seed 605 with prompt ca
     expect(w4p.contrasts).toEqual(w3p.contrasts);
     expect(w4p.builds).toEqual(w4s.builds);
     expect(w4p.no_source_control).toBe("host");
+});
+
+test("W5S and W5SH run the w9 build against main ea12bff2a with the reviewer arm, on W4's seeds and one fresh seed each", () => {
+    const S = loadPrereg("S");
+    const listed = (ids: readonly string[]) => ids.flatMap((id) => loadQualification(id).seeds);
+    const w5s = loadQualification("W5S");
+    const w5sh = loadQualification("W5SH");
+    const arms = ["host", "eidnara", "eidnara-reviewer"];
+    const w9 = auditedBuild("eval/w9");
+    const main = auditedBuild("main-ea12bff2a");
+    if (!w9 || !main) throw new Error("the w9 build and the main commit are registered");
+    expect(w9.commit).toBe("4c293f1835960b8d60b55756933f196ecd12d007");
+    expect(main.commit).toBe("ea12bff2adb028d942d3b339de6dc74b605ab1ab");
+    for (const [retest, earlier] of [
+        [w5s, loadQualification("W4S")],
+        [w5sh, loadQualification("W4SH")],
+    ] as const) {
+        expect(validateQualification(retest, S)).toEqual([]);
+        expect([retest.tier, retest.hosts, promptCachingOf(retest)]).toEqual(["S", ["pi"], "on"]);
+        expect(retest.corpus).toBe(earlier.corpus);
+        expect(retest.arms.run).toEqual(arms);
+        expect(retest.contrasts).toEqual([
+            ["eidnara", "host"],
+            ["eidnara-reviewer", "eidnara"],
+            ["eidnara-reviewer", "host"],
+        ]);
+        expect(retest.controls).toEqual(earlier.controls);
+        expect(retest.no_source_control).toBe(earlier.no_source_control);
+        expect(retest.analysis?.harm_probes).toEqual(earlier.analysis?.harm_probes);
+        // The earlier campaign its contrasts are also read against is the W4 retest.
+        expect(retest.analysis?.reference).toEqual({ campaign: "w2-s4", level: "seed" });
+        // The w9 build is the treatment and the main commit the reference, which runs `eidnara`.
+        expect(retest.builds).toEqual({
+            current: { label: "eval/w9", commit: w9.commit },
+            reference: { label: "main-ea12bff2a", commit: main.commit },
+            contrasts: [["eidnara", "eidnara"]],
+        });
+        expect(referenceBuildArms(retest)).toEqual(["eidnara"]);
+        expect(buildRefusal(retest, w9, arms)).toBeNull();
+        expect(buildRefusal(retest, main, ["eidnara"])).toBeNull();
+        expect(buildRefusal(retest, main, ["eidnara-reviewer"])).not.toBeNull();
+        // The reviewer's stage-1 model is registered, and the search-fallback bound is absent.
+        expect(retest.side_models).toEqual({
+            memory_reviewer_stage1: "global.anthropic.claude-haiku-5-5",
+        });
+        expect(retest.search_fallback).toBeUndefined();
+        // Every seed's order holds the three arms once, and the orders differ by seed.
+        expect(retest.arms.order_by_seed).toHaveLength(retest.seeds.length);
+        for (const order of retest.arms.order_by_seed) {
+            expect([...order].sort()).toEqual([...arms].sort());
+        }
+        expect(new Set(retest.arms.order_by_seed.map((o) => o.join())).size).toBe(
+            retest.seeds.length,
+        );
+    }
+    expect(w5s.corpus).toBe("diagnosed");
+    expect(w5s.fresh_seeds).toBe(true);
+    expect(w5s.seeds).toEqual([104, 107, 109]);
+    expect(w5sh.corpus).toBe("held-out");
+    expect(w5sh.seeds).toEqual([614, 617]);
+    // Each registration adds one seed that no registration before W5S lists.
+    const earlier = listed(QUALIFICATIONS.slice(0, QUALIFICATIONS.indexOf("W5S")));
+    const used = [...S.seeds, ...earlier, ...(loadQualification("Q").holdout?.seeds ?? [])];
+    expect(w5s.seeds.filter((s) => !used.includes(s))).toEqual([109]);
+    expect(w5sh.seeds.filter((s) => !used.includes(s))).toEqual([617]);
+});
+
+test("W5P runs W5S's arms, builds and side model on W4P's held-out seed 605", () => {
+    const w5p = loadQualification("W5P");
+    const w4p = loadQualification("W4P");
+    const w5s = loadQualification("W5S");
+    expect(validateQualification(w5p, loadPrereg("M"))).toEqual([]);
+    expect(promptCachingOf(w5p)).toBe("on");
+    // The pilot's scenario: W4P's tier, split, seed, and control decide its items.
+    expect([w5p.tier, w5p.corpus, w5p.seeds, w5p.controls]).toEqual([
+        w4p.tier,
+        w4p.corpus,
+        w4p.seeds,
+        w4p.controls,
+    ]);
+    expect([w5p.tier, w5p.corpus, w5p.seeds]).toEqual(["M", "held-out", [605]]);
+    expect(w5p.hosts).toEqual(["pi"]);
+    expect(w5p.arms.run).toEqual(w5s.arms.run);
+    expect(w5p.arms.order_by_seed).toEqual([["host", "eidnara", "eidnara-reviewer"]]);
+    expect(w5p.contrasts).toEqual(w5s.contrasts);
+    expect(w5p.builds).toEqual(w5s.builds);
+    expect(w5p.side_models).toEqual(w5s.side_models);
+    expect(w5p.search_fallback).toBeUndefined();
+    expect(w5p.no_source_control).toBe("host");
 });
 
 test("a reviewer arm is contrasted with the eidnara arm beside a build contrast, and needs a registered stage-1 model", () => {

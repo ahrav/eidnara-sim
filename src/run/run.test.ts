@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
-import { DAEMON_VARIANTS, W2_VARIANTS } from "../hosts/profiles";
+import { type ArmProfile, DAEMON_VARIANTS, W2_VARIANTS } from "../hosts/profiles";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import { preregistrationHash } from "../prereg/validate";
 import { Rng } from "../rng";
@@ -24,6 +24,7 @@ import { backgroundCachePointsOf } from "./capabilities";
 import type { Entry } from "./journal";
 import type { Preflight } from "./preflight";
 import {
+    armConfigs,
     armOrder,
     bindEidnaraBuild,
     corpusIdentity,
@@ -932,6 +933,138 @@ describe("run inputs", () => {
         // The side models are part of the execution digest the journal's Preflight entries bind.
         expect(manifestIdentity(manifest)).not.toBe(
             manifestIdentity({ ...manifest, side_models: stage1 }),
+        );
+    });
+
+    test("a W5P run records the registered stage-1 model, its rates, and the reviewer arm's switch", async () => {
+        const checks: Preflight = {
+            launcher: "/launcher",
+            time_injection: [],
+            distortions: [],
+            hosts: [{ host: "pi", version: "0.80.2", transcript_paths: [] }],
+            upgrade: [],
+            toolchain: [],
+        };
+        const out = dir();
+        const opus = "global.anthropic.claude-opus-5-5";
+        const haiku = "global.anthropic.claude-haiku-5-5";
+        const o: RunOptions = {
+            config: { ...config, agent_model: opus },
+            tier: "M",
+            seed: 605,
+            host: "pi",
+            out,
+            qualification: "W5P",
+        };
+        const scenario = writeScenario(out, scenarioBody(605, "M"));
+        // The table holds the agent model's rates and Haiku's, so any other model is refused unwritten.
+        const sonnet = "global.anthropic.claude-sonnet-5-5";
+        await expect(
+            loadManifest({ ...o, models: [opus, sonnet] }, scenario, checks),
+        ).rejects.toThrow(
+            `prices calls at v3-opus-5-5-haiku-5-5-global-2026-11, which holds no rates for ${sonnet}`,
+        );
+        expect(existsSync(join(out, "manifest.json"))).toBe(false);
+        const { manifest } = await loadManifest(o, scenario, checks);
+        expect(manifest.qualification?.id).toBe("W5P");
+        expect(manifest.order).toEqual(["host", "eidnara", "eidnara-reviewer"]);
+        expect(manifest.prompt_caching).toBe("on");
+        expect(manifest.side_models).toEqual({ memory_reviewer_stage1: haiku });
+        expect(manifest.price_table).toEqual({
+            version: "v3-opus-5-5-haiku-5-5-global-2026-11",
+            rates: { input: 4, output: 20, cache_read: 0.2, cache_write: 5, cache_write_1h: 8 },
+            models: {
+                [haiku]: {
+                    input: 0.1,
+                    output: 0.5,
+                    cache_read: 0.01,
+                    cache_write: 0.125,
+                    cache_write_1h: 0.2,
+                },
+            },
+        });
+        // The reviewer arm's two user tiers hold the switch: contest mode, the arm's side model
+        // as the review model, and the registered stage-1 model.
+        const reviewer = {
+            enabled: true,
+            apply: "contest",
+            model: `amazon-bedrock/${opus}`,
+            stage1_model: `amazon-bedrock/${haiku}`,
+        };
+        const { arms } = manifest;
+        expect(arms["eidnara-reviewer"]?.eidnara_config?.memory_reviewer).toEqual(reviewer);
+        expect(arms["eidnara-reviewer"]?.daemon_config?.memory_reviewer).toEqual(reviewer);
+        // The eidnara arm's configuration is the one a registration without side models records.
+        const side = { model: `amazon-bedrock/${opus}` };
+        expect(arms.eidnara).toEqual({
+            profile: {
+                role: "fallback-search",
+                daemon: "direct-host-fixture",
+                plugin: true,
+                eidnara_compaction: true,
+                host_compaction: false,
+                search: "legacy-scan",
+                source_capture: true,
+                requires: {
+                    side_calls: "proxy",
+                    user_statement_delivery: true,
+                    source_capture: true,
+                },
+            },
+            eidnara_config: {
+                enabled: true,
+                host: { connection_file: "<connection file>" },
+                compaction: { enabled: true },
+                execute_threshold_percentage: 65,
+                protected_tags: 20,
+                history_budget_percentage: 0.15,
+                history_summarizer: side,
+                context_researcher: side,
+                memory: {
+                    enabled: true,
+                    auto_promote: true,
+                    auto_capture: true,
+                    auto_search: { enabled: true },
+                    auto_inject: { enabled: true },
+                    git_commit_indexing: { enabled: false },
+                },
+                source_capture: { enabled: true },
+            },
+            daemon_config: {
+                history_summarizer: { module_model: side.model },
+                memory: { auto_inject: { enabled: true } },
+                source_capture: { enabled: true },
+            },
+        });
+        // The reviewer arm is the eidnara arm plus the switch, in the profile and in both tiers.
+        expect(arms["eidnara-reviewer"]?.profile).toEqual({
+            ...arms.eidnara?.profile,
+            memory_reviewer: true,
+            requires: {
+                ...arms.eidnara?.profile.requires,
+                memory_reviewer: true,
+                memory_review: true,
+            },
+        } as ArmProfile);
+        for (const tier of ["eidnara_config", "daemon_config"] as const) {
+            expect(arms["eidnara-reviewer"]?.[tier]).toEqual({
+                ...arms.eidnara?.[tier],
+                memory_reviewer: reviewer,
+            });
+        }
+        expect(arms.host).toEqual(armConfigs(["host"], opus).host as (typeof arms)[string]);
+        // A resume recomputes the arms from the registration and finds the manifest's.
+        await expect(loadManifest(o, scenario, checks)).resolves.toMatchObject({
+            manifest: { side_models: { memory_reviewer_stage1: haiku } },
+        });
+        // A manifest whose reviewer arm names another stage-1 model is a changed configuration.
+        const path = join(out, "manifest.json");
+        const other = structuredClone(manifest);
+        const tier = other.arms["eidnara-reviewer"]?.daemon_config as Record<string, unknown>;
+        tier.memory_reviewer = { ...reviewer, stage1_model: `amazon-bedrock/${opus}` };
+        writeFileSync(path, JSON.stringify(other));
+        await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
+            /inputs changed since the run started: arms/,
         );
     });
 
