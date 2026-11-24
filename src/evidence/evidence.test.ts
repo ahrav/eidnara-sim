@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
     existsSync,
+    linkSync,
     mkdirSync,
     mkdtempSync,
     readdirSync,
@@ -1470,6 +1471,14 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     );
     loaded.callLog?.close();
     if (loaded.parts instanceof RequestPartLog) loaded.parts.close();
+    // A reviewer artefact with a second name is refused, and the load leaves no log open.
+    const second = join(root, "daemon.log.second-name");
+    linkSync(join(dir, "eidnara", "daemon.log"), second);
+    const open = () => readdirSync("/proc/self/fd").length;
+    const held = open();
+    expect(() => loadRun(dir)).toThrow(/daemon\.log is not a single-link regular file/);
+    expect(open()).toBe(held);
+    rmSync(second);
     expect(loadRun(dir).arms.get("eidnara")?.objects?.length).toBe(2);
     // A fused arm's search answers and registered bound come from its capability record, and
     // the profile the manifest pins decides whether the arm declares the fused route.

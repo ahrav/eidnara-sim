@@ -155,8 +155,10 @@ export interface ArmData {
 /**
  * What an arm's artefacts show of the memory reviewer, read by one rule on every arm: its log
  * lines, settle steps, and gateway calls (`observeReviewer`), the activation states of the
- * daemon's status readings, and the final store's failed-command records and disputed objects;
- * each of the last three is null where its file is absent or unreadable.
+ * daemon's status readings, and the final store's failed-command records and disputed objects.
+ * The status is null without `resources.jsonl`, and the two store counts are null where the
+ * store is absent or cannot be read. A log, a drain record, or a resource file that is a link or
+ * has a second name is refused (`eachLine`).
  */
 export interface ReviewerEvidence extends ReviewerObservation {
     /** Whether the arm's profile sets the reviewer switch; null for a profile the run records none of. */
@@ -742,14 +744,24 @@ export function loadRun(dir: string): RunData {
         callLog.close();
         throw caught;
     }
-    for (const [arm, data] of arms) {
-        const components: Record<string, number> = {};
+    try {
+        // The reviewer's gateway calls by arm, from one pass over the call log.
+        const reviewerCalls = new Map<string, Record<string, number>>();
         for (const c of callLog.calls) {
-            if (c.arm !== arm || !(REVIEWER_COMPONENTS as readonly string[]).includes(c.component))
-                continue;
-            components[c.component] = (components[c.component] ?? 0) + 1;
+            if (!(REVIEWER_COMPONENTS as readonly string[]).includes(c.component)) continue;
+            const counts = reviewerCalls.get(c.arm) ?? {};
+            counts[c.component] = (counts[c.component] ?? 0) + 1;
+            reviewerCalls.set(c.arm, counts);
         }
-        data.reviewer = reviewerEvidence(join(dir, arm), data.profile, components);
+        for (const [arm, data] of arms) {
+            const counts = reviewerCalls.get(arm) ?? {};
+            data.reviewer = reviewerEvidence(join(dir, arm), data.profile, counts);
+        }
+    } catch (caught) {
+        // A reviewer artefact that is a link or has a second name is refused; the two open logs close first.
+        callLog.close();
+        parts?.close();
+        throw caught;
     }
     return {
         dir,
