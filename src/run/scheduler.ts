@@ -56,8 +56,9 @@ export interface ArmDriver {
     /**
      * Called when the arm's clock is about to advance `skipMs` onto `next`, with the busy set
      * empty. Returns the step the arm owes before that advance (the settle step of an arm that
-     * runs the memory reviewer, for an advance of the review worker's idle interval or more), or
-     * null when the advance owes none. The scheduler awaits a returned step, then waits for the
+     * runs the memory reviewer, once its advances since the last step sum to the review worker's
+     * idle interval or more), or null when the advance owes none. The scheduler awaits a
+     * returned step, then waits for the
      * busy set again, which holds the jobs the step started, and advances the clock from where
      * that wait left it. An advance that owes no step follows the call in the same tick.
      */

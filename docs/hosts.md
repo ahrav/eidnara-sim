@@ -93,8 +93,9 @@ so it runs on `eval/w9` and is refused on every earlier build, whose
 fixture installs no reviewer host. A contrast pairs two arms that differ in
 delivery mode, search route, or reviewer switch (`sameTreatment`), so
 `eidnara-reviewer` against `eidnara` is one. The settle step this arm runs
-at each session end and before each clock advance of 30 s or more is
-described under "Memory reviewer settle step".
+at each session end and before each clock advance that brings the time
+skipped since its last step to 30 s or more is described under "Memory
+reviewer settle step".
 
 Source capture is on for `eidnara`, `eidnara-cf`, `eidnara-hybrid`,
 `eidnara-search`, and `eidnara-reviewer` (`source_capture` in the profile)
@@ -282,8 +283,9 @@ turn's first agent answer is still to come (`docs/proxy.md`).
 
 #### The step before a clock advance
 
-The same arm runs the step before every clock advance of 30,000 ms of
-scenario time or more (`REVIEWER_IDLE_INTERVAL_MS` in `src/hosts/driver.ts`,
+The same arm runs the step before every clock advance that brings the
+scenario time its advances have skipped since its last settle step to
+30,000 ms or more (`REVIEWER_IDLE_INTERVAL_MS` in `src/hosts/driver.ts`,
 the worker's `IDLE_INTERVAL` in
 `crates/daemon/src/memory_reviewer/worker.rs`), between sessions and
 between two turns of an open session. The reason is the freshness rule of
@@ -313,23 +315,31 @@ searches of the arms without the switch answered with results. With real
 idle time of the skipped length the worker's pass comes first, every 30 s.
 An advance of 30 s or more skips idle time in which the worker would have
 run a pass, so the step runs before it. A shorter advance ages an
-unconsumed commit by under 30 s, and the worker's own next pass follows
-within 30 s of real time, so one such advance keeps the commit under 60 s
-old; several of them inside one idle interval of the worker add up.
+unconsumed commit by under 30 s, and several of them inside one idle
+interval of the worker add up, so the driver sums them: it keeps the
+scenario time the arm's advances have skipped since its last settle step
+of either kind (a session end's or an advance's, whatever the step's
+outcome) or since the daemon's last start or restart, and the step runs
+before the advance that brings that sum to 30 s or more. The advances
+between two steps therefore age an unconsumed commit by under 30 s in
+all, and the worker's own next pass follows within 30 s of real time, so
+the commit stays under 60 s old.
 
 The scheduler asks the arm's driver before each advance (`beforeAdvance` in
 `src/run/scheduler.ts`, with the scenario time the advance skips and the
 event it lands on), once the wait for the event has found the busy set
 empty. The host driver answers with the step for an arm that runs the
-memory reviewer and an advance of 30,000 ms or more (`settlesAdvance`), and
-with `null` otherwise, and an advance answered with `null` follows in the
-same tick. Every advance of an arm without the switch takes that path, so
-the reviewer arm alone is given this settle time. The step is the one a
+memory reviewer and an advance that brings the summed skip to 30,000 ms or
+more (`settlesAdvance`), and with `null` otherwise, and an advance answered
+with `null` follows in the same tick. Every advance of an arm without the
+switch takes that path and the driver keeps no sum for it, so the reviewer
+arm alone is given this settle time. The step is the one a
 session end runs: the open-jobs wait, the wait for an earlier drain the
 control has yet to answer, the drain through `DaemonStack.reviewDrain`, and
 one line in `review-drain.jsonl`, with `before` `advance`, `next_event`
 (the event the clock advances onto), `skip_ms` (the scenario time the
-advance skips, as the scheduler asked), and `session` (the session of that
+advance skips, as the scheduler asked), `skipped_since_settle_ms` (the
+summed skip, this advance included), and `session` (the session of that
 event). Before an advance the step sends two drains (`ADVANCE_DRAINS`), the
 second once the first has answered, inside the step's one wait of 300,000
 ms, and `settled` is the sum of the runs both settled; the reason is the
@@ -398,15 +408,16 @@ real time:
 | Review hold of a pending or disputed proposal | 7 days | scenario time | the scenario spans about 3 days, so a hold stays for the run |
 | Retention of captured messages, the evidence a review reads | 30 days | scenario time | every source stays readable |
 | Queue lifetime of a review job | 1 day | scenario time | the drain runs every ready job before the jump to the next session; the largest jump between sessions of S4 seed 104 was 13.2 hours |
-| Worker idle interval | 30 s | real time | the drain replaces the wait between sessions and before every other clock advance of 30 s or more |
-| Age at which a consumer's oldest unconsumed commit makes a memory read `stale` | 60 s | scenario time | a clock advance ages every unconsumed commit by its length; the step before an advance of 30 s or more runs the worker's catch-up first |
+| Worker idle interval | 30 s | real time | the drain replaces the wait between sessions and before every other clock advance that brings the summed skip to 30 s or more |
+| Age at which a consumer's oldest unconsumed commit makes a memory read `stale` | 60 s | scenario time | a clock advance ages every unconsumed commit by its length; the step before an advance that brings the summed skip to 30 s or more runs the worker's catch-up first |
 | Pause of a project's reviews after a failed stage-1 request | 60 s, and 2 s before the run's next attempt | real time | a provider failure delays reviews in real time, past a drain |
-| Deadlines of one attempt and of one run | 30 s and 120 s | real time for an attempt; a run's execution cutoff and its lease are also read on the daemon's wall clock | a drain ends every run before the clock jumps to the next session and before every other jump of 30 s or more; a jump of under 30 s between two turns of an open session can end a run in flight (below) |
+| Deadlines of one attempt and of one run | 30 s and 120 s | real time for an attempt; a run's execution cutoff and its lease are also read on the daemon's wall clock | a drain ends every run before the clock jumps to the next session and before every other jump that brings the summed skip to 30 s or more; a jump that leaves the sum under 30 s between two turns of an open session can end a run in flight (below) |
 | Life of an `open` activation state without a new pass | 300 s | real time | the worker's passes renew it while the daemon runs |
 
-A clock advance of under 30 s between two turns of an open session can end
-a review run that is between its gateway reply and the daemon's record of
-it; before an advance of 30 s or more the settle step's drain waits for the
+A clock advance that leaves the summed skip under 30 s between two turns
+of an open session can end a review run that is between its gateway reply
+and the daemon's record of it; before an advance that owes the step the
+settle step's drain waits for the
 worker's pass in flight (a pass holds the worker's `serial` lock, which the
 drain's first pass takes next), so that run ends before the jump. A user
 turn in an open session waits only for the clock, and the scheduler moves

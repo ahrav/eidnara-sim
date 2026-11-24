@@ -203,9 +203,9 @@ const CONTROL_GRACE_MS = 5_000;
 /**
  * The idle interval of the daemon's review worker (Eidnara
  * `crates/daemon/src/memory_reviewer/worker.rs`, `IDLE_INTERVAL`, 30 s of monotonic time): the
- * worker runs a pass at least this often while the daemon is up. A clock advance of this length
- * or more skips idle time in which the worker would have run a pass, so the arm that runs the
- * memory reviewer settles before it (`settlesAdvance`).
+ * worker runs a pass at least this often while the daemon is up. Clock advances that sum to this
+ * length or more skip idle time in which the worker would have run a pass, so the arm that runs
+ * the memory reviewer settles before the advance that brings the sum there (`settlesAdvance`).
  */
 export const REVIEWER_IDLE_INTERVAL_MS = 30_000;
 
@@ -237,6 +237,11 @@ export interface ReviewDrainRecord {
     next_event?: string;
     /** On an `advance` line, the scenario time the advance skips. */
     skip_ms?: number;
+    /**
+     * On an `advance` line, the scenario time the arm's advances have skipped since its last
+     * settle step of either kind or its daemon's last start, this advance included.
+     */
+    skipped_since_settle_ms?: number;
     /** Wall time at which the step began, before the open-jobs wait. */
     started_wall_ms: number;
     /** Wall time at which the step ended, or, on a `late` line, at which the drain answered. */
@@ -494,6 +499,12 @@ export class HostDriver implements ArmDriver {
     private settledFaults = new Map<string, number>();
     /** A daemon restart in progress; the turn it interrupts ends after it and fails with it. */
     private restarting: Promise<unknown> = Promise.resolve();
+    /**
+     * On the arm that runs the memory reviewer, the scenario time its clock advances have skipped
+     * since its last settle step of either kind or its daemon's last start: idle time the worker
+     * has yet to run a pass for. It stays 0 on every other arm.
+     */
+    private skippedSinceSettleMs = 0;
 
     constructor(private readonly o: DriverOptions) {
         this.snapshots = new SnapshotRecorder(
@@ -596,9 +607,11 @@ export class HostDriver implements ArmDriver {
         return this.daemonId?.pid !== pid || this.daemonId.start === start;
     }
 
+    /** Records the daemon a start or restart left running. Its worker's idle time starts at 0. */
     private noteDaemon(): void {
         const pid = this.daemonPid();
         this.daemonId = pid === null ? null : { pid, start: this.procStart(pid) };
+        this.skippedSinceSettleMs = 0;
     }
 
     private procStart(pid: number): string | null {
@@ -1447,8 +1460,9 @@ export class HostDriver implements ArmDriver {
 
     /**
      * The settle step of an arm that runs the memory reviewer, at each session end after the host
-     * session closed and before each clock advance of `REVIEWER_IDLE_INTERVAL_MS` or more
-     * (`beforeAdvance`): the open background jobs end (`settle`), and the fixture drains the
+     * session closed and before each clock advance that brings the time skipped since the last
+     * step to `REVIEWER_IDLE_INTERVAL_MS` or more (`beforeAdvance`): the open background jobs
+     * end (`settle`), and the fixture drains the
      * reviewer's worker, which runs review passes until one settles nothing, so the reviews of
      * the published messages end, and the worker's claim catch-up runs, before the scheduler moves
      * scenario time. The step sends `drains` drains, each once the one before it answered (one at
@@ -1471,6 +1485,8 @@ export class HostDriver implements ArmDriver {
         drains = 1,
     ): Promise<void> {
         if (!reviewsMemory(armProfile(this.o.arm))) return;
+        // The drain runs the worker's pass, so the skipped idle time counts from this step.
+        this.skippedSinceSettleMs = 0;
         const step: DrainStep = { ...at, started_wall_ms: Date.now() };
         const errors: string[] = [];
         let settled: number | null = null;
@@ -1521,28 +1537,41 @@ export class HostDriver implements ArmDriver {
 
     /**
      * Whether a clock advance of `skipMs` owes the settle step: the arm runs the memory reviewer
-     * and the advance skips at least the worker's idle interval, the idle time in which the
-     * worker would have run a pass.
+     * and the scenario time its advances have skipped since its last settle step, this advance
+     * included, reaches the worker's idle interval, the idle time in which the worker would have
+     * run a pass. Several short advances therefore owe a step together, before they add up to
+     * the age at which a memory read turns `stale`.
      */
     settlesAdvance(skipMs: number): boolean {
-        return reviewsMemory(armProfile(this.o.arm)) && skipMs >= REVIEWER_IDLE_INTERVAL_MS;
+        return (
+            reviewsMemory(armProfile(this.o.arm)) &&
+            this.skippedSinceSettleMs + skipMs >= REVIEWER_IDLE_INTERVAL_MS
+        );
     }
 
     /**
      * The settle step before the scheduler advances the arm's clock `skipMs` onto `next`, or
-     * null when the advance owes none (`settlesAdvance`). The step sends `ADVANCE_DRAINS`
-     * drains, and its line carries `before` `advance`, `next` as `next_event`, and `skipMs` as
-     * `skip_ms`. A daemon that is gone gets no control request and the line says so; the next
-     * event reports the exit.
+     * null when the advance owes none (`settlesAdvance`); the reviewer arm then adds `skipMs` to
+     * the time skipped since its last step. The step sends `ADVANCE_DRAINS` drains, and its line
+     * carries `before` `advance`, `next` as `next_event`, `skipMs` as `skip_ms`, and the time
+     * skipped since the last step, `skipMs` included, as `skipped_since_settle_ms`. A daemon
+     * that is gone gets no control request and the line says so; the next event reports the
+     * exit.
      */
     beforeAdvance(skipMs: number, next: ScenarioEvent): Promise<void> | null {
-        if (!this.settlesAdvance(skipMs)) return null;
+        if (!reviewsMemory(armProfile(this.o.arm))) return null;
+        const skipped = this.skippedSinceSettleMs + skipMs;
+        if (!this.settlesAdvance(skipMs)) {
+            this.skippedSinceSettleMs = skipped;
+            return null;
+        }
         return this.settleReviews(
             {
                 session: String(next.session),
                 before: "advance",
                 next_event: next.id,
                 skip_ms: skipMs,
+                skipped_since_settle_ms: skipped,
             },
             !this.daemonAlive(),
             ADVANCE_DRAINS,

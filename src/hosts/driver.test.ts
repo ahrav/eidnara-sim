@@ -1066,8 +1066,9 @@ touch ${escaped}
             const daemon = arm === "host" ? null : reviewing(calls);
             const { driver, armDir } = ending(arm, daemon, calls);
             expect(await driver.event(ev("session_end", { id: "e-1" }))).toEqual({});
-            // A clock advance of any length owes such an arm no step: the driver starts no call.
-            for (const skipMs of [REVIEWER_IDLE_INTERVAL_MS, 86_400_000]) {
+            // A clock advance of any length, after any sequence of them, owes such an arm no
+            // step: the driver starts no call.
+            for (const skipMs of [20_000, 20_000, 20_000, REVIEWER_IDLE_INTERVAL_MS, 86_400_000]) {
                 expect([arm, driver.settlesAdvance(skipMs)]).toEqual([arm, false]);
                 expect([arm, driver.beforeAdvance(skipMs, ev("user_turn"))]).toEqual([arm, null]);
             }
@@ -1088,6 +1089,7 @@ touch ${escaped}
         expect(existsSync(join(armDir, "review-drain.jsonl"))).toBe(false);
         // The interval itself owes one, and the session stays open through it. The step drains
         // twice, so the second drain's pass consumes what the first one's catch-up published.
+        // Its line carries the skip of the shorter advance before it in the sum.
         expect(driver.settlesAdvance(30_000)).toBe(true);
         await driver.beforeAdvance(30_000, next);
         expect(calls).toEqual(["settle", "drain", "drain"]);
@@ -1098,6 +1100,7 @@ touch ${escaped}
                 before: "advance",
                 next_event: "e-7",
                 skip_ms: 30_000,
+                skipped_since_settle_ms: 59_999,
                 started_wall_ms: expect.any(Number),
                 wall_ms: expect.any(Number),
                 settled: 6,
@@ -1119,6 +1122,59 @@ touch ${escaped}
         expect(exits).toEqual([]);
     });
 
+    test("three advances of 20 s run one step, at the second, and the sum restarts after it", async () => {
+        const calls: string[] = [];
+        const { driver, armDir } = ending("eidnara-reviewer", reviewing(calls), calls);
+        const next = ev("user_turn", { id: "e-7", session: "s-0004" });
+        const sums = () => drains(armDir).map((d) => [d.skip_ms, d.skipped_since_settle_ms]);
+        expect(driver.settlesAdvance(20_000)).toBe(false);
+        expect(driver.beforeAdvance(20_000, next)).toBeNull();
+        expect(calls).toEqual([]);
+        // The second advance brings the skipped time to 40 s, past the worker's interval.
+        expect(driver.settlesAdvance(20_000)).toBe(true);
+        await driver.beforeAdvance(20_000, next);
+        expect(calls).toEqual(["settle", "drain", "drain"]);
+        expect(sums()).toEqual([[20_000, 40_000]]);
+        // The third counts from the step, so it starts a sum of its own.
+        expect(driver.settlesAdvance(20_000)).toBe(false);
+        expect(driver.beforeAdvance(20_000, next)).toBeNull();
+        expect(calls).toHaveLength(3);
+        // A sum of 29,999 ms owes no step yet, and the millisecond that completes the interval does.
+        expect(driver.beforeAdvance(9_999, next)).toBeNull();
+        expect(calls).toHaveLength(3);
+        await driver.beforeAdvance(1, next);
+        expect(calls).toHaveLength(6);
+        expect(sums()).toEqual([
+            [20_000, 40_000],
+            [1, 30_000],
+        ]);
+    });
+
+    test("a session end's step and a daemon restart each restart the sum of skipped advances", async () => {
+        const calls: string[] = [];
+        const { driver, armDir } = ending("eidnara-reviewer", reviewing(calls), calls);
+        const next = ev("session_start", { id: "e-9", session: "s-0005" });
+        // 20 s skipped, then the session end's step: the next 20 s start from 0.
+        expect(driver.beforeAdvance(20_000, next)).toBeNull();
+        await driver.event(ev("session_end", { id: "e-8", session: "s-0004" }));
+        expect(calls).toEqual(["settle", "drain"]);
+        expect(driver.settlesAdvance(20_000)).toBe(false);
+        expect(driver.beforeAdvance(20_000, next)).toBeNull();
+        // The replacement daemon's worker starts its interval at the restart, whose one
+        // request is the read of the dying generation's counters.
+        await driver.fault(episode("daemon_restart"));
+        expect(driver.settlesAdvance(20_000)).toBe(false);
+        expect(driver.beforeAdvance(20_000, next)).toBeNull();
+        expect(calls).toEqual(["settle", "drain", "capture:0"]);
+        await driver.beforeAdvance(20_000, next);
+        expect(calls.slice(3)).toEqual(["settle", "drain", "drain"]);
+        const lines = drains(armDir).map((d) => [d.before, d.skip_ms, d.skipped_since_settle_ms]);
+        expect(lines).toEqual([
+            ["session_end", undefined, undefined],
+            ["advance", 20_000, 40_000],
+        ]);
+    });
+
     test("a drain that fails, a daemon that is gone, and a settle that rejects before a clock advance are recorded as at a session end", async () => {
         const next = ev("user_turn", { id: "e-7", session: "s-0004" });
         const line = {
@@ -1126,6 +1182,7 @@ touch ${escaped}
             before: "advance" as const,
             next_event: "e-7",
             skip_ms: 45_000,
+            skipped_since_settle_ms: 45_000,
         };
         // A failed drain resolves the step with no second drain sent, so the scheduler goes on
         // to the advance.
@@ -1196,6 +1253,7 @@ touch ${escaped}
                 before: "advance",
                 next_event: "e-7",
                 skip_ms: 60_000,
+                skipped_since_settle_ms: 60_000,
                 started_wall_ms: expect.any(Number),
                 wall_ms: expect.any(Number),
                 settled: 4,

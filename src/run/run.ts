@@ -2938,13 +2938,15 @@ async function runArms(
                 }),
             supports: (f) => driver.supports(f),
             settlesSessionEnds: () => driver.settlesSessionEnds(),
-            // The rule is read ahead of the call, so an advance that owes no step starts no call.
+            // The rule is read ahead of the call, so an advance that owes no step starts no
+            // tracked call: the driver adds its skip to the time skipped since the last step
+            // and answers null.
             beforeAdvance: (skipMs, next) =>
                 driver.settlesAdvance(skipMs)
                     ? tracked(async () => {
                           await driver.beforeAdvance(skipMs, next);
                       })
-                    : null,
+                    : driver.beforeAdvance(skipMs, next),
             reap: () => tracked(() => driver.reap()),
             finish: () =>
                 tracked(async () => {
