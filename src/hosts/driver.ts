@@ -1312,12 +1312,12 @@ export class HostDriver implements ArmDriver {
     /**
      * The settle step of an arm that runs the memory reviewer, at each session end after the host
      * session closed: the open background jobs end (`settle`), source capture settles, and the
-     * fixture drains the reviewer's worker, which runs review passes until one settles nothing.
-     * The reviews of the session's last messages so end before the scheduler moves scenario time
+     * fixture drains the reviewer's worker, which runs review passes until one settles nothing,
+     * so the reviews of the session's last messages end before the scheduler moves scenario time
      * to the next session. Each call appends one `ReviewDrainRecord` to `review-drain.jsonl`. A
      * capture that does not settle, a drain that fails, and a drain that passes its bound
-     * (`REVIEW_DRAIN_MS`) are recorded with their error and the session end returns; the worker keeps running in the
-     * daemon. Every other arm skips the step and writes no file.
+     * (`REVIEW_DRAIN_MS`) are recorded with their error and the session end returns; the worker
+     * keeps running in the daemon. Every other arm skips the step and writes no file.
      */
     private async settleReviews(e: ScenarioEvent, daemonGone: boolean): Promise<void> {
         if (!reviewsMemory(armProfile(this.o.arm))) return;
