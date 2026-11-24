@@ -46,7 +46,11 @@ info level`, `log at INFO`, `warn-level logs`; `single-shot`, `single
 quota`, `traced`, or `an error` carries nothing. A retrieval hit's rank is
 the first line that carries the literal, or, when the wording wraps, the
 line where the match completes (found by bisection over line prefixes, so a
-wrapped match ahead of a one-line repeat ranks first). Any other literal is a generated identifier
+wrapped match ahead of a one-line repeat ranks first). A hit in a
+`<project-memory>` block ranks by the lines of the block's statement text
+(below): the lines left once the named files, the closing sentence, and the
+dates of the marks are removed, so a statement has the same rank on a build
+with the element of named files and on one without it. Any other literal is a generated identifier
 that the scenario uses as a stem (`OCHRE_IBIS_MAX`, `onYONDER_EGRET`), and
 it matches case-sensitively anywhere, so `AMBER_DINGO` is absent from
 `amber_dingo.ts`. A probe whose rule is to be applied (`expect` `apply` or
@@ -60,18 +64,19 @@ A `<project-memory>` block holds statements and, from `eval/w9` on, text
 that holds none. Two kinds of reader meet it, by one rule on every arm and
 build.
 
-The readers that count statements and marks read the whole body of the
-block (`injectedBlocks`): the retrieval stage's list of injected blocks,
-and the delivery counts of the capability check (`docs/hosts.md`). A
-statement counts wherever it sits: in a category element, in
-`<CURRENT_WORK>`, on a marked line, in a contest excerpt.
+The reader that counts statements and marks reads the whole body of the
+block (`injectedBlocks`): the delivery counts of the capability check
+(`observeDelivery`, `docs/hosts.md`). A statement counts wherever it sits:
+in a category element, in `<CURRENT_WORK>`, on a marked line, in a contest
+excerpt.
 
 The readers that search for a literal read the block by its statements
 (`statementText`; `statementContext` applies it to each block of a text and
 leaves every other part of the text as it is). These are the readers of
-the probe-turn context (the `retrieval` and `delivery` stages, and the
-stale and forbidden values of the context) and the `source` stage's search
-of the window's requests. A day or a minute is digits beside `-`, `:`, or
+the probe-turn context (the `retrieval` stage, whose list of injected
+blocks holds each `<project-memory>` block's statement text, the `delivery`
+stage, and the stale and forbidden values of the context) and the `source`
+stage's search of the window's requests. A day or a minute is digits beside `-`, `:`, or
 `T`, which the literal rule reads as a free-standing number, so `09:30Z`
 would deliver the literal `30`.
 

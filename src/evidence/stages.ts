@@ -550,7 +550,9 @@ export function probeEvidence(
 
     // Probe-turn context: what every agent request of the turn carried, the probe text aside. A
     // `<project-memory>` block is read by its statements, so the days and minutes of its marks
-    // and its list of named files deliver no literal and hold no stale one.
+    // and its list of named files deliver no literal and hold no stale one. The retrieval stage
+    // lists its injected blocks from this text, so a `<project-memory>` rank is a line of the
+    // block's statement text.
     const turnTexts = turnCalls.map((c) => {
         const b = body(ctx, c);
         return { c, t: b ? statementContext(contextText(b)) : null };

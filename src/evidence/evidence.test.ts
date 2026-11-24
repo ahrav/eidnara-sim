@@ -1714,6 +1714,13 @@ describe("the statements of a <project-memory> block", () => {
             ["30", "2026"],
         );
         expect(delivery(stale)).toMatchObject({ status: "ok", detail: { stale_in_context: [] } });
+        // A rank counts the lines of the block's statement text: the statement is line 8 of the
+        // whole body and line 3 once the element of named files is removed, as on a build without it.
+        expect(body.split("\n").findIndex((line) => line.includes("45")) + 1).toBe(8);
+        expect(stage(stale, "retrieval")).toMatchObject({
+            status: "ok",
+            detail: { ranks: [{ source: "<project-memory>", line: 3 }] },
+        });
     });
 
     test("a statement delivers its literal, and the minute it was recorded delivers none", () => {
