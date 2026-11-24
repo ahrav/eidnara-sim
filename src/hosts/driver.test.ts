@@ -1305,7 +1305,7 @@ touch ${escaped}
     test("a finish waits the drain request's full bound for an unanswered drain, and a stop waits 30 s", async () => {
         // The drain outlasts its step's wait by 60 ms. Each counter read's drain wait is recorded
         // and then run at one 30,000th, so the stop's is 1 ms and the finish's 120 ms.
-        const held = async (end: (driver: HostDriver) => Promise<void>) => {
+        const held = async (end: (driver: HostDriver) => Promise<unknown>) => {
             const model = control([100]);
             const made = ending("eidnara-reviewer", stackOver(model), [], { reviewDrainMs: 40 });
             await made.driver.event(ev("session_end", { session: "s-0001" }));
