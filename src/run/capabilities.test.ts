@@ -1288,11 +1288,9 @@ test("reviewer evidence is held to the arm's switch, the daemon's status, and th
         "review-drain.jsonl holds 1 settle steps, which only an arm with the reviewer switch runs",
         "8 daemon status readings report the memory reviewer open, but the arm leaves the reviewer switch off",
     ]);
-    // A host arm is held to the same rule for the gateway's reviewer calls.
+    // A host arm's reviewer call is reported once, with its other Eidnara calls.
     const host = observeArm("host", "pi", armRoot([]), { agent: 2, memory_reviewer_stage1: 1 });
-    expect(armMismatches(host, w9)).toEqual([
-        "1 memory_reviewer_stage1 and memory_reviewer_stage2 calls in the proxy records, but the arm leaves the reviewer switch off",
-    ]);
+    expect(armMismatches(host, w9)).toEqual(["1 memory_reviewer_stage1 calls on a host-only arm"]);
     // The same evidence is the reviewer arm's own.
     const arm = { ...reviewed, arm: "eidnara-reviewer" };
     expect(armMismatches({ ...arm, daemon_status: status(open) }, w9)).toEqual([]);

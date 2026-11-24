@@ -993,8 +993,10 @@ complete evidence only when the two agree:
     (`REVIEWER_COMPONENTS`).
   - An arm without the reviewer switch is a mismatch when its log holds a
     line that shows a review ran, when the proxy records hold a call of a
-    reviewer component, when `review-drain.jsonl` holds a step, and when a
-    status reading reports `open`. The arm with the switch, on a build that
+    reviewer component (reported once: on a host-only arm with its other
+    Eidnara component calls, on an arm with the plugin as the reviewer's),
+    when `review-drain.jsonl` holds a step, and when a status reading
+    reports `open`. The arm with the switch, on a build that
     declares `memory_review`, having answered agent calls with at least one
     status reading, is a mismatch when no reading carries the
     `memory_reviewer` block, when no reading reports `open`, and when the
