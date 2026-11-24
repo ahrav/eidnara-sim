@@ -74,10 +74,13 @@ into the daemon's user tier (`fixtureDaemonConfig`) and the plugin's
 model is the one the arm's history summarizer uses, and it is the review
 model, which writes a proposal for a review stage 1 flagged. The stage-1
 model is the one the registration names under
-`side_models.memory_reviewer_stage1` (`reviewerStage1Model` in
-`src/prereg/qualification.ts`), and `REVIEWER_STAGE1_MODEL`
-(`global.anthropic.claude-haiku-5-5`) when the run passes none; a
-registration that runs the arm must name it. The daemon reads the five
+`side_models.memory_reviewer_stage1`, which the run records in its
+manifest's `side_models` and reads from there for the arm's configuration,
+every arm's Pi model list, and the arm's capability check. A registration
+that runs the arm must name it (`docs/run-command.md`), and the W5
+registrations name `global.anthropic.claude-haiku-5-5`; the configuration
+functions name the same id (`REVIEWER_STAGE1_MODEL`) for a caller that
+passes none. The daemon reads the five
 `memory_reviewer` keys from its user tier alone (`crates/daemon/src/config.rs`),
 at every pass of its review worker, and the plugin's schema admits the
 object in the user tier and drops it from a project tier. The enabled
@@ -205,10 +208,15 @@ that event and before the next event's clock jump. A `session_end` opens no
 turn, so scenario time stands still during the step except while a job is
 open: each reviewer request holds its request and call jobs, and scenario
 time runs at wall speed for as long as one is in flight. The gateway
-attributes a request by the scope the run holds at its arrival, so a
-drain's call records in `calls.jsonl` carry the ending session, `turn`
-`null`, and, on a component the gateway lists as background work, the
-session's last user turn as `origin_turn`.
+attributes a request by the scope the run holds at its arrival, and it
+lists the reviewer's two components as background work (`BACKGROUND` in
+`src/proxy/gateway.ts`), so a step's `memory_reviewer_stage1` and
+`memory_reviewer_stage2` records in `calls.jsonl` carry the ending session
+as `session`, `turn` `null`, and the session's last user turn as
+`origin_turn`; in a session that held no user turn they carry no
+`origin_turn`. A request of the worker's own pass during a turn carries
+that turn as `turn`, with the turn before it as `origin_turn` while the
+turn's first agent answer is still to come (`docs/proxy.md`).
 
 The daemon runs under the interposer with real monotonic clocks
 (`docs/time.md`), so its wall clock is scenario time and its timers are

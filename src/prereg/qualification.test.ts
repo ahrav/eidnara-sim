@@ -922,6 +922,11 @@ test("W5S and W5SH run the w9 build against main ea12bff2a with the reviewer arm
             memory_reviewer_stage1: "global.anthropic.claude-haiku-5-5",
         });
         expect(retest.search_fallback).toBeUndefined();
+        // The registration without its side model is refused for the reviewer arm alone.
+        const { side_models: _stage1, ...unnamed } = retest;
+        expect(validateQualification(unnamed, S)).toEqual([
+            "arms.run: eidnara-reviewer runs the memory reviewer, and side_models.memory_reviewer_stage1 names no stage-1 model",
+        ]);
         // Every seed's order holds the three arms once, and the orders differ by seed.
         expect(retest.arms.order_by_seed).toHaveLength(retest.seeds.length);
         for (const order of retest.arms.order_by_seed) {

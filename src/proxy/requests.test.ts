@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Rng } from "../rng";
 import type { ConverseBody } from "./classify";
-import { Gateway, type Upstream } from "./gateway";
+import { Gateway, type Scope, type Upstream } from "./gateway";
 import { FaultInjector } from "./inject";
 import { CacheGaps, RecordWriter, recordProblems } from "./records";
 import {
@@ -346,6 +346,42 @@ test("a reviewer request is recorded under its stage, its model, and the turn it
         });
         expect(recordProblems(record as object)).toEqual([]);
     }
+});
+
+test("a reviewer request of a settle step names the ending session, no turn, and the session's last user turn", async () => {
+    const bodies = JSON.parse(
+        readFileSync(join(import.meta.dir, "../../tests/fixtures/reviewer/requests.json"), "utf8"),
+    ) as Record<"stage1" | "stage2", ConverseBody>;
+    const records = new RecordWriter(null);
+    // The scope a run holds inside a `session_end` event: the ending session, no turn, and the
+    // session's last user turn as the origin; a session without a user turn has no origin.
+    let scope: Scope = { arm: "eidnara-reviewer", session: "s-0003", turn: null, origin: "e-41" };
+    const gateway = new Gateway({
+        upstream: echo,
+        records,
+        injector: new FaultInjector([], new Rng(1), 1_000),
+        rng: new Rng(1),
+        clock: { scenarioMs: () => 0 },
+        scope: () => scope,
+    });
+    await gateway.start();
+    gateways.push(gateway);
+    const send = async (body: ConverseBody) => {
+        const response = await fetch(`${gateway.urls[0]}/model/m/converse`, {
+            method: "POST",
+            body: JSON.stringify(body),
+        });
+        await response.text();
+    };
+    await send(bodies.stage1);
+    await send(bodies.stage2);
+    scope = { ...scope, session: "s-0004", origin: null };
+    await send(bodies.stage1);
+    const drained = { arm: "eidnara-reviewer", session: "s-0003", turn: null, origin_turn: "e-41" };
+    expect(records.records[0]).toMatchObject({ ...drained, component: "memory_reviewer_stage1" });
+    expect(records.records[1]).toMatchObject({ ...drained, component: "memory_reviewer_stage2" });
+    expect(records.records[2]).toMatchObject({ session: "s-0004", turn: null });
+    expect(records.records[2]?.origin_turn).toBeUndefined();
 });
 
 test("a body with cache points is forwarded and stored whole, and a 1-hour write is recorded", async () => {

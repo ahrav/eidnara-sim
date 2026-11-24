@@ -1053,7 +1053,7 @@ describe("run inputs", () => {
             });
         }
         expect(arms.host).toEqual(armConfigs(["host"], opus).host as (typeof arms)[string]);
-        // A resume recomputes the arms from the registration and finds the manifest's.
+        // A resume recomputes the arms from the manifest's side models and finds them as recorded.
         await expect(loadManifest(o, scenario, checks)).resolves.toMatchObject({
             manifest: { side_models: { memory_reviewer_stage1: haiku } },
         });

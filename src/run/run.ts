@@ -48,7 +48,6 @@ import {
     type Qualification,
     qualificationHash,
     qualificationSeed,
-    reviewerStage1Model,
     type SideModels,
     sideModelsOf,
 } from "../prereg/qualification";
@@ -1745,7 +1744,7 @@ export async function loadManifest(
             arms: armConfigs(
                 manifest.order,
                 manifest.side_model ?? manifest.models[0] ?? "",
-                reviewerStage1Model(qualificationOf(o)),
+                manifest.side_models?.memory_reviewer_stage1,
             ),
             eidnara_build: bind(manifest.order),
         })
@@ -1813,7 +1812,7 @@ export async function loadManifest(
         arms: armConfigs(
             wanted.order,
             wanted.side_model ?? wanted.models[0] ?? "",
-            reviewerStage1Model(qualificationOf(o)),
+            wanted.side_models?.memory_reviewer_stage1,
         ),
         eidnara_build: bind(wanted.order),
         tape_sha256: tapeDigests(wanted.tapes),
