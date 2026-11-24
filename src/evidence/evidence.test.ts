@@ -1479,6 +1479,13 @@ test("evidence-run reads a run directory and writes only under --out", () => {
     expect(() => loadRun(dir)).toThrow(/daemon\.log is not a single-link regular file/);
     expect(open()).toBe(held);
     rmSync(second);
+    // A `resources.jsonl` that is a link is refused as well; an absent one reads as no status.
+    const linked = join(dir, "eidnara", "resources.jsonl");
+    writeFileSync(join(root, "resources.elsewhere"), "");
+    symlinkSync(join(root, "resources.elsewhere"), linked);
+    expect(() => loadRun(dir)).toThrow(/resources\.jsonl cannot be read as evidence/);
+    expect(open()).toBe(held);
+    rmSync(linked);
     expect(loadRun(dir).arms.get("eidnara")?.objects?.length).toBe(2);
     // A fused arm's search answers and registered bound come from its capability record, and
     // the profile the manifest pins decides whether the arm declares the fused route.

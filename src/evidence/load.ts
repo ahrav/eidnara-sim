@@ -175,7 +175,8 @@ export function reviewerEvidence(
     components: Readonly<Record<string, number>>,
 ): ReviewerEvidence {
     const resources = join(root, "resources.jsonl");
-    const status = lstatSync(resources, { throwIfNoEntry: false })?.isFile()
+    // An entry of any kind goes to the reader, which refuses a link and a non-regular file.
+    const status = lstatSync(resources, { throwIfNoEntry: false })
         ? (readDaemonStatus(resources).memory_reviewer ?? null)
         : null;
     const statements = readStatements(join(root, "final-store", "kernel.sqlite"));
