@@ -1432,7 +1432,9 @@ export class HostDriver implements ArmDriver {
      * so the reviews of the session's last messages end before the scheduler moves scenario time
      * to the next session. Each call appends one `ReviewDrainRecord` to `review-drain.jsonl`. A
      * capture that does not settle and a drain that fails are recorded with their error, and the
-     * session end returns. The step waits `REVIEW_DRAIN_MS` for its drain; a drain that passes
+     * session end returns. A `settle` that rejects (the scheduler's job deadline) is recorded
+     * and rethrown, which stops the run; the resume reopens the session and delivers the
+     * `session_end` again (`settlesSessionEnds`). The step waits `REVIEW_DRAIN_MS` for its drain; a drain that passes
      * the wait is recorded as unanswered, the session end returns, and the drain stays the
      * control's one open request (`holdDrain`) while the worker keeps running in the daemon. A
      * step that finds an earlier drain unanswered waits `REVIEW_DRAIN_MS` for it and, when it
@@ -1456,7 +1458,14 @@ export class HostDriver implements ArmDriver {
         if (!daemon || daemonGone) {
             errors.push("the daemon is not running");
         } else {
-            await this.o.settle?.();
+            try {
+                await this.o.settle?.();
+            } catch (caught) {
+                // The scheduler's job deadline stops the run here; the step's line is on record first.
+                const error = `open jobs did not settle: ${String(caught).slice(0, 500)}`;
+                this.appendDrain({ ...step, wall_ms: Date.now(), settled: null, error });
+                throw caught;
+            }
             const busy = await this.controlBusy(daemon, drainMs);
             if (busy !== null) {
                 errors.push(busy);
@@ -1483,6 +1492,11 @@ export class HostDriver implements ArmDriver {
             settled,
             error: errors.length > 0 ? errors.join("; ") : null,
         });
+    }
+
+    /** Every `session_end` of an arm that runs the memory reviewer owes the settle step. */
+    settlesSessionEnds(): boolean {
+        return reviewsMemory(armProfile(this.o.arm));
     }
 
     /** Reports a daemon that is gone, and returns whether it did. */

@@ -31,7 +31,7 @@ import { diffPaths } from "../grade/text";
 import { readJsonl } from "../run/journal";
 import { sandboxAvailable, writeLauncher } from "../run/launcher";
 import { processStart, running } from "../run/procs";
-import { HarnessFailure, type ScenarioEvent } from "../run/scheduler";
+import { DeadlineOverrun, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import { type FaultType, SEAMS } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
 import {
@@ -1091,6 +1091,46 @@ touch ${escaped}
             settled: null,
             error: "review drain failed: Error: the drain returned -1",
         });
+    });
+
+    test("a settle that rejects is recorded before it stops the session end, and the session end delivered again runs the step", async () => {
+        const calls: string[] = [];
+        // The scheduler's job deadline, as `quiesceJobs` raises it.
+        const overrun = new DeadlineOverrun(
+            "background jobs kept the quiet window open past 1200000 ms",
+        );
+        let stuck = true;
+        const settle = async () => {
+            calls.push("settle");
+            if (stuck) throw overrun;
+        };
+        const { driver, armDir } = ending("eidnara-reviewer", reviewing(calls), calls, { settle });
+        const end = ev("session_end", { session: "s-0003" });
+        // The rejection stops the event as it stops a probe turn, with no control request sent.
+        await expect(driver.event(end)).rejects.toBe(overrun);
+        expect(calls).toEqual(["settle"]);
+        expect(drains(armDir)).toEqual([
+            {
+                session: "s-0003",
+                started_wall_ms: expect.any(Number),
+                wall_ms: expect.any(Number),
+                settled: null,
+                error: "open jobs did not settle: Error: background jobs kept the quiet window open past 1200000 ms",
+            },
+        ]);
+        // The driver tells the scheduler that each of its session ends owes the step, so a
+        // resume delivers this one again; the step then runs and appends the session's next line.
+        expect(driver.settlesSessionEnds()).toBe(true);
+        stuck = false;
+        expect(await driver.event(end)).toEqual({});
+        expect(calls.slice(1)).toEqual(["settle", "capture:30000", "drain:undefined"]);
+        expect(drains(armDir).map((d) => [d.session, d.settled, d.error === null])).toEqual([
+            ["s-0003", null, false],
+            ["s-0003", 3, true],
+        ]);
+        // An arm without the reviewer switch owes no step, so the scheduler ends its cut session end.
+        expect(ending("eidnara", reviewing([]), []).driver.settlesSessionEnds()).toBe(false);
+        expect(ending("host", null, []).driver.settlesSessionEnds()).toBe(false);
     });
 
     /**

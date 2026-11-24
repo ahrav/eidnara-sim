@@ -2937,6 +2937,7 @@ async function runArms(
                     }
                 }),
             supports: (f) => driver.supports(f),
+            settlesSessionEnds: () => driver.settlesSessionEnds(),
             reap: () => tracked(() => driver.reap()),
             finish: () =>
                 tracked(async () => {

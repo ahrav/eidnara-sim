@@ -47,6 +47,12 @@ export interface ArmDriver {
     resume?(open: ScenarioEvent | null, interrupted?: readonly string[]): Promise<void>;
     /** Stops what a killed harness left running, before any fault is armed again. */
     reap?(): Promise<void>;
+    /**
+     * Whether every `session_end` of the arm owes a step only the driver's `session_end` runs
+     * (the settle step of an arm that runs the memory reviewer). A resume then reopens the
+     * session of a pending `session_end` with a fresh host and delivers the event.
+     */
+    settlesSessionEnds?(): boolean;
     /** Whether the driver has a mechanism for the fault; a run refuses an unsupported one before it starts. */
     supports?(f: FaultEpisode): boolean;
     event(e: ScenarioEvent): Promise<TurnOutcome>;
@@ -620,6 +626,9 @@ export class Scheduler {
                     // session left to close. It ends interrupted at its turn in `step`, unless it
                     // owes work only the driver's `session_end` runs; then the resume reopens the
                     // session with a fresh host, as after any interrupted turn, and delivers it.
+                    // On an arm whose every `session_end` owes the driver's settle step, the
+                    // resume reopens the session of any pending `session_end`: a stranded one,
+                    // one a recoverable stop cut, and one a kill left undelivered.
                     const strand =
                         next?.kind === "session_end"
                             ? this.strandedCause(
@@ -628,7 +637,8 @@ export class Scheduler {
                               )
                             : null;
                     const reopen =
-                        next !== undefined && strand !== null && !this.endable(next, mine);
+                        next?.kind === "session_end" &&
+                        (strand !== null ? !this.endable(next, mine) : this.settlesEnds());
                     this.stranded =
                         next !== undefined && strand !== null && !reopen
                             ? { event: next.id, cause: strand }
@@ -1575,13 +1585,21 @@ export class Scheduler {
         return this.strandedCause(end, before) !== null;
     }
 
+    /** Whether every `session_end` of the running arm owes a step only its driver runs. */
+    private settlesEnds(): boolean {
+        return this.arm !== null && this.o.drivers[this.arm]?.settlesSessionEnds?.() === true;
+    }
+
     /**
      * Whether a resume can end the cut `session_end` `end` without the driver. The driver's
      * `session_end` alone runs the transcript check, at the arm's first session end and at the
      * first one after a host upgrade, and ends a session's store fill and second client; such a
-     * session end is delivered again, which the resumed driver refuses.
+     * session end is delivered again, which the resumed driver refuses. On an arm whose driver
+     * settles every session end (`settlesSessionEnds`), every `session_end` is delivered again,
+     * to a session the resume reopens.
      */
     private endable(end: ScenarioEvent, mine: Entry[]): boolean {
+        if (this.settlesEnds()) return false;
         const kindOf = (id: unknown) => this.o.events.find((x) => x.id === id)?.kind;
         const ends = mine.filter(
             (e) => e.kind === "Event" && e.outcome === "ok" && kindOf(e.event) === "session_end",

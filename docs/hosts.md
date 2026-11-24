@@ -228,7 +228,17 @@ is killed, which closes the control), the driver appends a line with
 answer as `wall_ms`, and the drain's `settled` or `error`, so
 `wall_ms - started_wall_ms` of a `late` line is how long the drain ran.
 A `settle` that passes the scheduler's job deadline stops the run as it
-does on a probe turn. Every other arm runs no step and writes no file. A
+does on a probe turn (`job-deadline`, a recoverable stop); the step's line
+is appended first, with `error` `open jobs did not settle: <the deadline's
+message>` and no control request sent. A resume delivers a pending
+`session_end` of such an arm through the driver, to a session it reopens
+with a fresh host (`settlesSessionEnds`, `docs/run.md`): the reopened
+session binds the project on the replacement daemon, whose reviewer lists
+bound projects, so the step's drain runs the project's reviews. This holds
+for a `session_end` its last turn's stop stranded, one a recoverable stop
+cut (the job deadline above, a host teardown, a daemon exit found at the
+session end), and one a kill left undelivered. Every other arm runs no
+step and writes no file. A
 pass settles nothing while a project's reviews wait out the 60 s after a
 failed stage-1 request or its review holds are at their bound, so a drain
 that meets either returns with reviews still queued, which the worker runs
