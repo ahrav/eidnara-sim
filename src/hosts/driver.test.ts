@@ -1302,6 +1302,56 @@ touch ${escaped}
         ]);
     });
 
+    test("a finish waits the drain request's full bound for an unanswered drain, and a stop waits 30 s", async () => {
+        // The drain outlasts its step's wait by 60 ms. Each counter read's drain wait is recorded
+        // and then run at one 30,000th, so the stop's is 1 ms and the finish's 120 ms.
+        const held = async (end: (driver: HostDriver) => Promise<void>) => {
+            const model = control([100]);
+            const made = ending("eidnara-reviewer", stackOver(model), [], { reviewDrainMs: 40 });
+            await made.driver.event(ev("session_end", { session: "s-0001" }));
+            type Busy = { controlBusy(daemon: DaemonStack, ms: number): Promise<string | null> };
+            const inner = made.driver as unknown as Busy;
+            const wait = inner.controlBusy.bind(inner);
+            const waits: number[] = [];
+            inner.controlBusy = (daemon, ms) => {
+                waits.push(ms);
+                return wait(daemon, ms / 30_000);
+            };
+            await end(made.driver);
+            return { waits, log: model.log.slice(1), record: captureRecord(made.armDir) };
+        };
+        // A stop leaves the arm to a resume: the drain is unanswered after its wait, so the
+        // generation stays unread and the control gets no request.
+        const stopped = await held((driver) => driver.stop());
+        expect(stopped.waits).toEqual([30_000]);
+        expect(stopped.log).toEqual([]);
+        expect(stopped.record.generations).toMatchObject([
+            {
+                ended: "stop",
+                counters: null,
+                error: expect.stringMatching(
+                    /^Error: the review drain of session s-0001 is unanswered/,
+                ),
+            },
+        ]);
+        // A finish waits as long as the drain's control request stays open, so the drain answers
+        // and the counters are read.
+        const finished = await held((driver) => driver.finish());
+        expect(finished.waits).toEqual([REVIEW_DRAIN_REQUEST_MS]);
+        expect(finished.log).toEqual([
+            "answer review-drain",
+            "send source-capture-report 5000",
+            "answer source-capture-report",
+        ]);
+        expect(finished.record.generations).toMatchObject([
+            {
+                ended: "finish",
+                counters: { admitted: 2, completed: 2 },
+                error: null,
+            },
+        ]);
+    });
+
     test("a drain still unanswered after the next step's wait gets no second request, and its failure is recorded when the daemon stops", async () => {
         const model = control([60_000]);
         const { driver, armDir } = ending("eidnara-reviewer", stackOver(model), [], {
