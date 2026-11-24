@@ -12,6 +12,7 @@ export type ArmName =
     | "eidnara-cf"
     | "eidnara-hybrid"
     | "eidnara-search"
+    | "eidnara-reviewer"
     | "host-oracle";
 
 /**
@@ -1076,11 +1077,31 @@ export interface ArmProfile {
     delivery?: Delivery;
     /** Eidnara's user-only `source_capture.enabled` consent key, written to the daemon and plugin user tiers. */
     source_capture: boolean;
+    /**
+     * Set on the arm that writes Eidnara's user-only `memory_reviewer` switch to the daemon and
+     * plugin user tiers, in `contest` mode with the arm's side model as the review model and the
+     * run's registered stage-1 model. The switch also turns on the daemon's
+     * contradiction-candidate pass. Absent on the arms that predate it, which write no such key,
+     * so their recorded profiles stand.
+     */
+    memory_reviewer?: true;
 }
+
+/** Whether the arm writes the `memory_reviewer` switch. */
+export const reviewsMemory = (profile: ArmProfile): boolean => profile.memory_reviewer === true;
 
 /** An arm's delivery mode: its declared one, or automatic with the plugin and none without. */
 export const deliveryOf = (profile: ArmProfile): Delivery =>
     profile.delivery ?? (profile.plugin ? "automatic" : "none");
+
+/**
+ * Whether two arms run one treatment: the same delivery mode, the same search route, and the
+ * same reviewer switch. A contrast pairs arms that differ in at least one.
+ */
+export const sameTreatment = (a: ArmProfile, b: ArmProfile): boolean =>
+    deliveryOf(a) === deliveryOf(b) &&
+    a.search === b.search &&
+    reviewsMemory(a) === reviewsMemory(b);
 
 const PROXIED = { side_calls: "proxy" } as const;
 /** What the c8 comparison arms need beyond the proxy: the build's user-statement delivery. */
@@ -1154,6 +1175,23 @@ export const ARM_PROFILES: Record<ArmName, ArmProfile> = {
         source_capture: true,
         requires: { ...C8_EIDNARA, memory_injection: "switchable", source_capture: true },
         delivery: "explicit-search",
+    },
+    // The eidnara arm with the memory reviewer switched on, which the fixture's reviewer host runs.
+    "eidnara-reviewer": {
+        role: "fallback-search",
+        daemon: "direct-host-fixture",
+        plugin: true,
+        eidnara_compaction: true,
+        host_compaction: false,
+        search: "legacy-scan",
+        source_capture: true,
+        memory_reviewer: true,
+        requires: {
+            ...C8_EIDNARA,
+            source_capture: true,
+            memory_reviewer: true,
+            memory_review: true,
+        },
     },
     // The upper-bound control: the host alone, given each probe's source text in its prompt.
     "host-oracle": {

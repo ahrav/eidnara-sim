@@ -14,6 +14,8 @@ import {
     isArmName,
     PROMPT_CACHING,
     type PromptCaching,
+    reviewsMemory,
+    sameTreatment,
 } from "../hosts/profiles";
 import { canonicalJson, isCanonicalDecimal, sha256Hex } from "./canonical";
 import { HOSTS, type Preregistration, TIERS, type Tier } from "./schema";
@@ -82,7 +84,8 @@ export interface Qualification {
     /** `order_by_seed[i]` is the arm execution order for `seeds[i]`. */
     arms: { run: string[]; order_by_seed: string[][] };
     /**
-     * `[treatment, reference]` pairs of run arms whose delivery modes or search routes differ; empty
+     * `[treatment, reference]` pairs of run arms whose delivery modes, search routes, or reviewer
+     * switches differ (`sameTreatment`); empty
      * only when the registration runs one arm and `reference_runs` names its contrasts.
      */
     contrasts: string[][];
@@ -321,6 +324,11 @@ export function validateQualification(value: unknown, tier: Preregistration): st
             continue;
         }
         for (const gap of capabilityGaps(arm, builds?.current)) errors.push(`arms.run: ${gap}`);
+        if (reviewsMemory(armProfile(arm)) && reviewerStage1Model(q) === undefined) {
+            errors.push(
+                `arms.run: ${arm} runs the memory reviewer, and side_models.memory_reviewer_stage1 names no stage-1 model`,
+            );
+        }
     }
     if (q.arms.order_by_seed.length !== q.seeds.length) {
         errors.push("arms.order_by_seed: needs one order per seed");
@@ -345,14 +353,23 @@ export function validateQualification(value: unknown, tier: Preregistration): st
             errors.push(`contrasts[${i}]: expected a [treatment, reference] pair`);
         } else if (!q.arms.run.includes(a) || !q.arms.run.includes(b)) {
             errors.push(`contrasts[${i}]: both arms must be run arms`);
-        } else if (
-            deliveryOf(armProfile(a)) === deliveryOf(armProfile(b)) &&
-            armProfile(a).search === armProfile(b).search
-        ) {
+        } else if (sameTreatment(armProfile(a), armProfile(b))) {
             errors.push(`contrasts[${i}]: ${a} and ${b} deliver and search the same way`);
         }
     });
     return errors;
+}
+
+/**
+ * The stage-1 model a registration names for the memory reviewer, under
+ * `side_models.memory_reviewer_stage1`; undefined for a registration that names none. The run
+ * hands it to a reviewer arm's configuration and to the arm's capability check.
+ */
+export function reviewerStage1Model(q: unknown): string | undefined {
+    const models = (q as { side_models?: unknown } | null | undefined)?.side_models;
+    const named = (models as { memory_reviewer_stage1?: unknown } | null | undefined)
+        ?.memory_reviewer_stage1;
+    return typeof named === "string" && named !== "" ? named : undefined;
 }
 
 /**
@@ -491,10 +508,7 @@ function checkSections(q: Qualification, errors: string[]): void {
             errors.push(`reference_runs.contrasts[${i}]: ${a} is not a run arm`);
         } else if (!isArmName(b)) {
             errors.push(`reference_runs.contrasts[${i}]: ${b} has no profile`);
-        } else if (
-            deliveryOf(armProfile(a)) === deliveryOf(armProfile(b)) &&
-            armProfile(a).search === armProfile(b).search
-        ) {
+        } else if (sameTreatment(armProfile(a), armProfile(b))) {
             errors.push(
                 `reference_runs.contrasts[${i}]: ${a} and ${b} deliver and search the same way`,
             );

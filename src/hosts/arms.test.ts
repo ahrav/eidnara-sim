@@ -21,6 +21,7 @@ import { processStart, running } from "../run/procs";
 import {
     type ArmName,
     DaemonStack,
+    eidnaraUserConfig,
     fixtureDaemonConfig,
     type HostContext,
     lifecycleReading,
@@ -32,7 +33,9 @@ import {
     piModelName,
     processMemoryBlock,
     progressBlock,
+    REVIEWER_STAGE1_MODEL,
 } from "./arms";
+import { ARM_PROFILES } from "./profiles";
 
 type Untyped = any;
 
@@ -1622,6 +1625,71 @@ test("each Pi arm writes the host and Eidnara compaction its profile declares", 
             auto_inject: { enabled: hints },
         });
     }
+});
+
+test("the reviewer arm alone writes the memory_reviewer switch, in both user tiers, with the side model and the stage-1 model", () => {
+    const run = runDir();
+    const switched = (model: string, stage1: string) => ({
+        enabled: true,
+        apply: "contest",
+        model: `amazon-bedrock/${model}`,
+        stage1_model: `amazon-bedrock/${stage1}`,
+    });
+    const haiku = "global.anthropic.claude-haiku-5-5";
+    expect(REVIEWER_STAGE1_MODEL).toBe(haiku);
+    for (const arm of Object.keys(ARM_PROFILES) as ArmName[]) {
+        const reviews = arm === "eidnara-reviewer";
+        const daemon = fixtureDaemonConfig("side", arm);
+        const plugin = eidnaraUserConfig("c.json", "side", arm);
+        expect([arm, Object.hasOwn(daemon, "memory_reviewer")]).toEqual([arm, reviews]);
+        expect([arm, Object.hasOwn(plugin, "memory_reviewer")]).toEqual([arm, reviews]);
+        // A registered stage-1 model reaches no arm without the switch.
+        expect(Object.hasOwn(fixtureDaemonConfig("side", arm, "small"), "memory_reviewer")).toBe(
+            reviews,
+        );
+    }
+    // The object holds exactly the four keys, in the order the registration states them.
+    const daemon = fixtureDaemonConfig("side", "eidnara-reviewer");
+    expect(JSON.stringify(daemon.memory_reviewer)).toBe(
+        `{"enabled":true,"apply":"contest","model":"amazon-bedrock/side","stage1_model":"amazon-bedrock/${haiku}"}`,
+    );
+    expect(eidnaraUserConfig("c.json", "side", "eidnara-reviewer").memory_reviewer).toEqual(
+        switched("side", haiku),
+    );
+    expect(fixtureDaemonConfig("side", "eidnara-reviewer", "small").memory_reviewer).toEqual(
+        switched("side", "small"),
+    );
+    expect(
+        eidnaraUserConfig("c.json", "side", "eidnara-reviewer", "small").memory_reviewer,
+    ).toEqual(switched("side", "small"));
+    // The rest of each tier is the eidnara arm's, byte for byte.
+    const { memory_reviewer: _daemonSwitch, ...daemonRest } = daemon;
+    expect(JSON.stringify(daemonRest)).toBe(JSON.stringify(fixtureDaemonConfig("side", "eidnara")));
+    const { memory_reviewer: _pluginSwitch, ...pluginRest } = eidnaraUserConfig(
+        "c.json",
+        "side",
+        "eidnara-reviewer",
+    );
+    expect(JSON.stringify(pluginRest)).toBe(
+        JSON.stringify(eidnaraUserConfig("c.json", "side", "eidnara")),
+    );
+    // The Pi host writes the file with the side model as the review model and the run's stage-1 model.
+    const dir = join(run, "reviewer");
+    mkdirSync(dir);
+    const host = new PiSimHost({
+        ...context(dir),
+        arm: "eidnara-reviewer",
+        sideModel: "side",
+        reviewerStage1Model: "small",
+    });
+    (host as Untyped).writeConfigs(join(dir, "connection.json"));
+    const written = JSON.parse(
+        readFileSync(join(dir, "arm/home/config/eidnara/eidnara.jsonc"), "utf8"),
+    );
+    expect(written.memory_reviewer).toEqual(switched("side", "small"));
+    expect(written.history_summarizer).toEqual({ model: "amazon-bedrock/side" });
+    expect(written.source_capture).toEqual({ enabled: true });
+    expect(Object.hasOwn(written, "contradiction_candidates")).toBe(false);
 });
 
 test("the OpenCode knowledge-only arm turns host compaction on and Eidnara compaction off", async () => {

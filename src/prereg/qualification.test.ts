@@ -10,6 +10,7 @@ import {
     RANKING_GATE_ITEMS,
     referenceBuildArms,
     referenceErrors,
+    reviewerStage1Model,
     validateQualification,
 } from "./qualification";
 import { preregistrationHash } from "./validate";
@@ -767,4 +768,56 @@ test("W4P runs the retest's three arms on C8H's held-out seed 605 with prompt ca
     expect(w4p.contrasts).toEqual(w3p.contrasts);
     expect(w4p.builds).toEqual(w4s.builds);
     expect(w4p.no_source_control).toBe("host");
+});
+
+test("a reviewer arm is contrasted with the eidnara arm beside a build contrast, and needs a registered stage-1 model", () => {
+    // The W4 retest with the reviewer arm in the hybrid arm's place, on the w9 build against main.
+    const renamed = JSON.parse(
+        JSON.stringify(loadQualification("W4S")).replaceAll("eidnara-hybrid", "eidnara-reviewer"),
+    ) as Record<string, unknown>;
+    const w9 = auditedBuild("eval/w9");
+    const main = auditedBuild("main-ea12bff2a");
+    if (!w9 || !main) throw new Error("the w9 build and the main commit are registered");
+    const builds = (current: typeof w9, reference: typeof w9) => ({
+        current: { label: current.label, commit: current.commit },
+        reference: { label: reference.label, commit: reference.commit },
+        contrasts: [["eidnara", "eidnara"]],
+    });
+    renamed.builds = builds(w9, main);
+    expect(renamed.contrasts).toEqual([
+        ["eidnara", "host"],
+        ["eidnara-reviewer", "eidnara"],
+        ["eidnara-reviewer", "host"],
+    ]);
+    // Every arm contrast and the build contrast stand; the one refusal is the missing stage-1 model.
+    const missing =
+        "arms.run: eidnara-reviewer runs the memory reviewer, and side_models.memory_reviewer_stage1 names no stage-1 model";
+    expect(validateQualification(renamed, S)).toEqual([missing]);
+    // A registration whose arms all leave the switch off needs none.
+    expect(validateQualification(loadQualification("W4S"), S)).toEqual([]);
+    // On a current build whose fixture has no reviewer host the arm is refused for its gaps too.
+    const onMain = { ...renamed, builds: builds(main, auditedBuild("eval/w4") as typeof w9) };
+    const refused = validateQualification(onMain, S);
+    expect(refused).toHaveLength(3);
+    expect(refused[0]).toMatch(
+        /^arms\.run: eidnara-reviewer \(fallback-search\) needs memory_reviewer=true/,
+    );
+    expect(refused[1]).toMatch(
+        /^arms\.run: eidnara-reviewer \(fallback-search\) needs memory_review=true/,
+    );
+    expect(refused[2]).toBe(missing);
+    // The reviewer arm runs on the current build alone: the reference build runs the eidnara arm.
+    const retest = renamed as unknown as ReturnType<typeof loadQualification>;
+    expect(referenceBuildArms(retest)).toEqual(["eidnara"]);
+    expect(buildRefusal(retest, w9, ["host", "eidnara", "eidnara-reviewer"])).toBeNull();
+    expect(buildRefusal(retest, main, ["eidnara"])).toBeNull();
+    expect(buildRefusal(retest, main, ["eidnara-reviewer"])).not.toBeNull();
+    // The run reads the registered stage-1 model through one function.
+    const haiku = "global.anthropic.claude-haiku-5-5";
+    expect(reviewerStage1Model({ side_models: { memory_reviewer_stage1: haiku } })).toBe(haiku);
+    for (const none of [null, undefined, {}, { side_models: {} }, { side_models: null }]) {
+        expect(reviewerStage1Model(none)).toBeUndefined();
+    }
+    expect(reviewerStage1Model({ side_models: { memory_reviewer_stage1: "" } })).toBeUndefined();
+    expect(reviewerStage1Model({ side_models: { memory_reviewer_stage1: 5 } })).toBeUndefined();
 });

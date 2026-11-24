@@ -25,7 +25,13 @@ import { parentPid, processStart, stopOwnedTree } from "../run/procs";
 import type { DaemonStatusReading, SearchProgress } from "../run/sampler";
 import { FAKETIME_LIB, faketimeEnv } from "../run/timeinject";
 import { sandboxPath, toolbinDir, toolchainEnv } from "../run/toolchain";
-import { ARM_PROFILES, type ArmName, deliveryOf, type PromptCaching } from "./profiles";
+import {
+    ARM_PROFILES,
+    type ArmName,
+    deliveryOf,
+    type PromptCaching,
+    reviewsMemory,
+} from "./profiles";
 
 export type { ArmName };
 
@@ -98,6 +104,8 @@ export interface HostContext {
     sideModel?: string;
     /** The run's registered prompt-caching condition; `off` when absent. */
     promptCaching?: PromptCaching;
+    /** The run's registered stage-1 model of the memory reviewer; `REVIEWER_STAGE1_MODEL` when absent. */
+    reviewerStage1Model?: string;
     now?: () => number;
     /**
      * The host invokes `onTool` as it records a run; `drainTools` invokes it for the runs it
@@ -229,6 +237,29 @@ export const piModelName = (id: string, caching: PromptCaching): string =>
     caching === "on" ? `${id} (cache points as claude -4- models)` : id;
 
 /**
+ * The stage-1 model a reviewer arm names when the run passes none: the small model Eidnara derives
+ * from a Claude Opus review model.
+ */
+export const REVIEWER_STAGE1_MODEL = "global.anthropic.claude-haiku-5-5";
+
+/**
+ * The `memory_reviewer` object a reviewer arm writes in both user tiers, and nothing for every
+ * other arm: the switch, `contest` mode, the arm's side model as the review model (stage 2), and
+ * `stage1Model` as the stage-1 decider.
+ */
+const reviewerSwitch = (model: string, arm: ArmName, stage1Model: string) =>
+    reviewsMemory(ARM_PROFILES[arm])
+        ? {
+              memory_reviewer: {
+                  enabled: true,
+                  apply: "contest",
+                  model: modelRef(model),
+                  stage1_model: modelRef(stage1Model),
+              },
+          }
+        : {};
+
+/**
  * The user-tier `eidnara.jsonc` an Eidnara arm writes. `compaction.enabled` is the arm's
  * `eidnara_compaction`; with it false the plugin keeps its knowledge layer (memory, injection,
  * notes, search) and leaves the context window to the host. An arm that delivers through explicit
@@ -238,6 +269,7 @@ export function eidnaraUserConfig(
     connectionFile: string,
     model: string,
     arm: ArmName,
+    reviewerStage1Model: string = REVIEWER_STAGE1_MODEL,
 ): Record<string, unknown> {
     return {
         enabled: true,
@@ -257,6 +289,7 @@ export function eidnaraUserConfig(
             git_commit_indexing: { enabled: false },
         },
         source_capture: { enabled: ARM_PROFILES[arm].source_capture },
+        ...reviewerSwitch(model, arm, reviewerStage1Model),
     };
 }
 
@@ -265,10 +298,15 @@ export function eidnaraUserConfig(
  * `source_capture.enabled` and `memory.auto_inject.enabled` are user-only, so the daemon reads
  * them here; the plugin's user tier carries the same values, as one user-tier file would.
  */
-export const fixtureDaemonConfig = (model: string, arm: ArmName): Record<string, unknown> => ({
+export const fixtureDaemonConfig = (
+    model: string,
+    arm: ArmName,
+    reviewerStage1Model: string = REVIEWER_STAGE1_MODEL,
+): Record<string, unknown> => ({
     history_summarizer: { module_model: modelRef(model) },
     memory: { auto_inject: { enabled: deliveryOf(ARM_PROFILES[arm]) === "automatic" } },
     source_capture: { enabled: ARM_PROFILES[arm].source_capture },
+    ...reviewerSwitch(model, arm, reviewerStage1Model),
 });
 
 export interface DaemonContext {
@@ -282,6 +320,8 @@ export interface DaemonContext {
     model: string;
     /** The arm label the daemon serves; its base arm's profile sets the daemon config. */
     arm: string;
+    /** The run's registered stage-1 model of the memory reviewer; `REVIEWER_STAGE1_MODEL` when absent. */
+    reviewerStage1Model?: string;
 }
 
 export class DaemonStack {
@@ -336,7 +376,11 @@ export class DaemonStack {
             startTimeoutMs: 300_000,
             harnessRuntime,
             credentialSource: DUMMY_AWS,
-            daemonConfig: fixtureDaemonConfig(this.ctx.model, armBase(this.ctx.arm)),
+            daemonConfig: fixtureDaemonConfig(
+                this.ctx.model,
+                armBase(this.ctx.arm),
+                this.ctx.reviewerStage1Model,
+            ),
             ...(ARM_PROFILES[armBase(this.ctx.arm)].daemon === "direct-host-fixture-fused"
                 ? { productionSearchManifest: payloadManifest(config.eidnara_checkout) }
                 : {}),
@@ -829,6 +873,7 @@ export class PiSimHost extends SimHost {
                 connectionFile,
                 this.ctx.sideModel ?? this.ctx.model,
                 this.ctx.arm,
+                this.ctx.reviewerStage1Model,
             );
             this.writeControlFile(join(dir, "eidnara.jsonc"), JSON.stringify(config, null, 2));
         }
@@ -1137,6 +1182,7 @@ export class OpencodeSimHost extends SimHost {
                       connection,
                       this.ctx.sideModel ?? this.ctx.model,
                       this.ctx.arm,
+                      this.ctx.reviewerStage1Model,
                   ),
                   userHostConnectionFile: connection,
               }

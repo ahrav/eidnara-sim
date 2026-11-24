@@ -11,7 +11,9 @@ import {
     DAEMON_VARIANTS,
     deliveryOf,
     isArmName,
+    reviewsMemory,
     runsEidnara,
+    sameTreatment,
     W2_VARIANTS,
     W3_VARIANTS,
     W4_VARIANTS,
@@ -73,6 +75,7 @@ test("each delivery mode has its arm, and the oracle control runs no Eidnara", (
         "eidnara-cf": "automatic",
         "eidnara-hybrid": "automatic",
         "eidnara-search": "explicit-search",
+        "eidnara-reviewer": "automatic",
         "host-oracle": "oracle-context",
     });
     expect(ARM_PROFILES["host-oracle"]).toMatchObject({
@@ -87,6 +90,37 @@ test("each delivery mode has its arm, and the oracle control runs no Eidnara", (
     }
 });
 
+test("the reviewer arm is the eidnara arm with the reviewer switch, and runs on a build whose fixture has a reviewer host", () => {
+    const { memory_reviewer: reviewer, requires, ...arm } = ARM_PROFILES["eidnara-reviewer"];
+    const { requires: base, ...eidnara } = ARM_PROFILES.eidnara;
+    expect(reviewer).toBe(true);
+    expect(arm).toEqual(eidnara);
+    expect(requires).toEqual({ ...base, memory_reviewer: true, memory_review: true });
+    // The switch is the reviewer arm's alone; every earlier profile is recorded as it was.
+    for (const [name, profile] of Object.entries(ARM_PROFILES)) {
+        expect([name, reviewsMemory(profile)]).toEqual([name, name === "eidnara-reviewer"]);
+        expect([name, Object.hasOwn(profile, "memory_reviewer")]).toEqual([
+            name,
+            name === "eidnara-reviewer",
+        ]);
+    }
+    expect(capabilityGaps("eidnara-reviewer", auditedBuild("eval/w9"))).toEqual([]);
+    for (const earlier of ["main-ea12bff2a", "eval/w4", "eval/w3-all", "eval/w2b", "eval/c8"]) {
+        const gaps = capabilityGaps("eidnara-reviewer", auditedBuild(earlier));
+        expect([earlier, gaps.length]).toEqual([earlier, 2]);
+        expect(gaps[0]).toMatch(
+            /^eidnara-reviewer \(fallback-search\) needs memory_reviewer=true, but direct-host-fixture provides false: /,
+        );
+        expect(gaps[1]).toMatch(/needs memory_review=true, but direct-host-fixture provides false/);
+    }
+    // A contrast pairs two treatments: the reviewer switch tells the arm from the eidnara arm.
+    expect(sameTreatment(ARM_PROFILES["eidnara-reviewer"], ARM_PROFILES.eidnara)).toBe(false);
+    expect(sameTreatment(ARM_PROFILES["eidnara-cf"], ARM_PROFILES.eidnara)).toBe(true);
+    expect(sameTreatment(ARM_PROFILES["eidnara-hybrid"], ARM_PROFILES.eidnara)).toBe(false);
+    expect(sameTreatment(ARM_PROFILES["eidnara-search"], ARM_PROFILES.eidnara)).toBe(false);
+    expect(sameTreatment(ARM_PROFILES.host, ARM_PROFILES["host-oracle"])).toBe(false);
+});
+
 test("the oracle control is exempt from daemon and plugin evidence as the host arm is", () => {
     for (const label of ["host", "host~aa", "host-oracle"]) expect(runsEidnara(label)).toBe(false);
     for (const label of ["eidnara", "eidnara~aa", "eidnara-kl", "eidnara-x"]) {
@@ -98,7 +132,13 @@ test("source capture is consented on every arm the c8 comparison contrasts with 
     const capturing = Object.entries(ARM_PROFILES)
         .filter(([, p]) => p.source_capture)
         .map(([arm]) => arm);
-    expect(capturing).toEqual(["eidnara", "eidnara-cf", "eidnara-hybrid", "eidnara-search"]);
+    expect(capturing).toEqual([
+        "eidnara",
+        "eidnara-cf",
+        "eidnara-hybrid",
+        "eidnara-search",
+        "eidnara-reviewer",
+    ]);
     for (const arm of capturing) expect(armProfile(arm).requires.source_capture).toBe(true);
     for (const build of AUDITED_BUILDS) {
         for (const [variant, record] of Object.entries(build.variants)) {
