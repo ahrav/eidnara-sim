@@ -222,7 +222,7 @@ export const REVIEWER_IDLE_INTERVAL_MS = 30_000;
 const ADVANCE_DRAINS = 2;
 
 /** What a settle step ran before: the end of a session, or a clock advance. */
-export type SettleKind = "session_end" | "advance";
+type SettleKind = "session_end" | "advance";
 
 /**
  * One line of `<arm>/review-drain.jsonl`: a settle step on an arm that runs the memory reviewer,
@@ -931,7 +931,10 @@ export class HostDriver implements ArmDriver {
         const still = open();
         if (still === null) return null;
         const waited = Date.now() - still.step.started_wall_ms;
-        return `the review drain of session ${still.step.session} is unanswered after ${waited} ms, and the fixture control takes one request at a time`;
+        const sent = still.step.next_event
+            ? `sent before the advance onto ${still.step.next_event}`
+            : `of session ${still.step.session}`;
+        return `the review drain ${sent} is unanswered after ${waited} ms, and the fixture control takes one request at a time`;
     }
 
     /**

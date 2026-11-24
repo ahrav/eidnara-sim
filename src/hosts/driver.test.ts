@@ -1237,7 +1237,9 @@ touch ${escaped}
         expect(second).toMatchObject({
             before: "session_end",
             settled: null,
-            error: expect.stringMatching(/^the review drain of session s-0004 is unanswered after/),
+            error: expect.stringMatching(
+                /^the review drain sent before the advance onto e-7 is unanswered after/,
+            ),
         });
         expect(drains(armDir)).toHaveLength(2);
     });

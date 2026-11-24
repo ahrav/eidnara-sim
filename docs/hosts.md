@@ -231,8 +231,9 @@ the drain is unanswered:
   its own drain; when the drain is still unanswered, the
   step's line names it (`the review drain of session <id> is unanswered
   after <n> ms, and the fixture control takes one request at a time`,
-  with `<n>` counted from the start of the drain's own step) and the step
-  sends no request;
+  with `<n>` counted from the start of the drain's own step; the drain of
+  a step before a clock advance is named `the review drain sent before the
+  advance onto <event>`) and the step sends no request;
 - the read of the generation's `source_capture` counters waits for the
   drain first: at the arm's finish for as long as the drain's control
   request can stay open, since an unread finish fails the arm; at a stop
