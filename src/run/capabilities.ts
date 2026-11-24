@@ -160,8 +160,14 @@ export interface ReviewerLogObservation {
 
 /** The settle step's records in `review-drain.jsonl` (`docs/hosts.md`). */
 export interface ReviewDrainObservation {
-    /** Settle steps: lines of the shape the driver writes, the `late` ones left out. */
+    /** Settle steps of both kinds: lines of the shape the driver writes, the `late` ones left out. */
     calls: number;
+    /**
+     * `calls` by the step's kind: the steps at session ends (`before` `session_end`, and every
+     * line that carries no `before`) and the steps before clock advances (`before` `advance`).
+     * Absent on observations recorded before it was read, whose steps are all session ends'.
+     */
+    calls_by_kind?: { session_end: number; advance: number };
     /**
      * `late` lines: the answer or the failure of a drain that its step recorded as unanswered.
      * Absent on observations recorded before it was read.
@@ -336,8 +342,10 @@ export function readReviewerLog(path: string): ReviewerLogObservation {
 
 /** Reads `review-drain.jsonl`, one settle step or one late answer per line; an absent file holds no call. */
 export function readReviewDrains(path: string): ReviewDrainObservation {
+    const byKind = { session_end: 0, advance: 0 };
     const out: ReviewDrainObservation = {
         calls: 0,
+        calls_by_kind: byKind,
         late_answers: 0,
         unreadable: 0,
         settled_runs: 0,
@@ -354,6 +362,7 @@ export function readReviewDrains(path: string): ReviewDrainObservation {
             settled?: unknown;
             error?: unknown;
             late?: unknown;
+            before?: unknown;
         };
         try {
             record = JSON.parse(line);
@@ -365,13 +374,16 @@ export function readReviewDrains(path: string): ReviewDrainObservation {
         const ended = count(record?.wall_ms);
         const settled = record?.settled === null ? 0 : count(record?.settled);
         const error = record?.error;
+        // A line that carries no `before` is a session end's.
+        const kind = record?.before === undefined ? "session_end" : record.before;
         if (
             started === null ||
             ended === null ||
             ended < started ||
             settled === null ||
             !(error === null || typeof error === "string") ||
-            !(record.late === undefined || record.late === true)
+            !(record.late === undefined || record.late === true) ||
+            !(kind === "session_end" || kind === "advance")
         ) {
             out.unreadable++;
             return;
@@ -380,6 +392,7 @@ export function readReviewDrains(path: string): ReviewDrainObservation {
         if (record.late === true) out.late_answers = (out.late_answers ?? 0) + 1;
         else {
             out.calls++;
+            byKind[kind]++;
             out.total_wall_ms += ended - started;
         }
         out.settled_runs += settled;

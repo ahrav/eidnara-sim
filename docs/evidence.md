@@ -247,8 +247,9 @@ without a capability record has its row too:
   `docs/hosts.md`), reviews ended on a later reference the model was not
   shown, proposals applied by kind, proposals left for a reader and left
   unapplied, and the lines that report reviews waiting;
-- the settle steps of `<arm>/review-drain.jsonl`: steps, runs settled, wall
-  time in all and the longest, lines with an error, and the drains that
+- the settle steps of `<arm>/review-drain.jsonl`: steps, with those at
+  session ends and those before clock advances counted apart, runs settled,
+  wall time in all and the longest, lines with an error, and the drains that
   answered after their step stopped waiting (`late` lines, `docs/hosts.md`);
 - the times the daemon logged a project's reads turning to lagging behind a
   derived consumer (`reviewer.log.derived_lag`, `docs/hosts.md`), with the

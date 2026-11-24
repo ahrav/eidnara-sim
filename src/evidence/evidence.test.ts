@@ -1458,7 +1458,7 @@ test("evidence-run reads a run directory and writes only under --out", () => {
         status: null,
     });
     expect(report).toContain(
-        `| run | eidnara | off | later_statement 1 | 0 | chat_model: 0 keep, 1 flagged (${haiku}) | 0 | 0 | 0 | disputed 1 | 0 left for a reader, 0 unapplied | 0 | 1 steps, 2 runs settled, 2.5 s in all, 2.5 s the longest, 0 with an error | 0 | memory_reviewer_stage1 1 | no reading |`,
+        `| run | eidnara | off | later_statement 1 | 0 | chat_model: 0 keep, 1 flagged (${haiku}) | 0 | 0 | 0 | disputed 1 | 0 left for a reader, 0 unapplied | 0 | 1 steps (1 at session ends, 0 before clock advances), 2 runs settled, 2.5 s in all, 2.5 s the longest, 0 with an error | 0 | memory_reviewer_stage1 1 | no reading |`,
     );
     expect(report).toContain("| run | eidnara | q-1 | P1 | fail |");
     // The loaded records hold each request's digest and length; the log supplies the part ids.
@@ -1936,8 +1936,20 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
             join(arm, "review-drain.jsonl"),
             [
                 { session: "s-1", started_wall_ms: 1_000, wall_ms: 3_500, settled: 2, error: null },
+                // A step before a clock advance inside the second session.
                 {
                     session: "s-2",
+                    before: "advance",
+                    next_event: "e-000009",
+                    skip_ms: 90_000,
+                    started_wall_ms: 5_000,
+                    wall_ms: 7_000,
+                    settled: 0,
+                    error: null,
+                },
+                {
+                    session: "s-2",
+                    before: "session_end",
                     started_wall_ms: 9_000,
                     wall_ms: 9_500,
                     settled: null,
@@ -1948,6 +1960,7 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
                     session: "s-2",
                     started_wall_ms: 9_000,
                     wall_ms: 15_000,
+                    before: "session_end",
                     settled: 1,
                     error: null,
                     late: true,
@@ -1987,10 +2000,11 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
                 derived_lag: { lines: 2, max_age_ms: 543_732 },
             },
             drains: {
-                calls: 2,
+                calls: 3,
+                calls_by_kind: { session_end: 2, advance: 1 },
                 late_answers: 1,
                 settled_runs: 3,
-                total_wall_ms: 3_000,
+                total_wall_ms: 5_000,
                 max_wall_ms: 6_000,
                 errors: 1,
             },
@@ -2031,7 +2045,7 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
         ]).split("\n");
         const at = report.indexOf("### Memory reviewer");
         expect(report.slice(at + 6, report.indexOf("### Context health", at) - 1)).toEqual([
-            `| A | eidnara-reviewer | on | current_work 1, later_statement 1 | 1 | chat_model: 0 keep, 1 flagged (${haiku}); none: 1 keep, 0 flagged (none) | 1 | fenced 1 | 0 | contested 1 | 0 left for a reader, 0 unapplied | 0 | 2 steps, 3 runs settled, 3.0 s in all, 6.0 s the longest, 1 with an error, 1 drains answered after their step | 2, oldest unconsumed commit 543.7 s at most | memory_reviewer_stage1 1, memory_reviewer_stage2 1 | open in 1 of 2 readings, last open | unread | unread |`,
+            `| A | eidnara-reviewer | on | current_work 1, later_statement 1 | 1 | chat_model: 0 keep, 1 flagged (${haiku}); none: 1 keep, 0 flagged (none) | 1 | fenced 1 | 0 | contested 1 | 0 left for a reader, 0 unapplied | 0 | 3 steps (2 at session ends, 1 before clock advances), 3 runs settled, 5.0 s in all, 6.0 s the longest, 1 with an error, 1 drains answered after their step | 2, oldest unconsumed commit 543.7 s at most | memory_reviewer_stage1 1, memory_reviewer_stage2 1 | open in 1 of 2 readings, last open | unread | unread |`,
             "| B | eidnara | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | 0 | no reading | 2 live, 1 retired | 0 live, 0 retired |",
             "| D | host | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | memory_reviewer_stage1 3 | no reading | unread | unread |",
         ]);

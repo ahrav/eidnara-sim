@@ -1202,12 +1202,16 @@ complete evidence only when the two agree:
     Reviews are the `enqueued` lines, requests the `chat_model` and
     `classifier` decisions, and changes written the `applied` lines of
     kind `disputed`, `contested`, `retired`, and `revised`.
-  - `reviewer.drains` totals `review-drain.jsonl`: the settle steps
-    (`calls`), the `late` lines (`late_answers`: the answers of drains
+  - `reviewer.drains` totals `review-drain.jsonl`: the settle steps of
+    both kinds (`calls`) and the same count by kind (`calls_by_kind`:
+    `session_end`, which takes every line without a `before`, and
+    `advance`), the `late` lines (`late_answers`: the answers of drains
     their step recorded as unanswered), the runs settled over both, the
     steps' wall time in all, the longest wall time of a step or of a drain
     a `late` line reports, the lines with an error and the first three
-    messages, and the lines of another shape.
+    messages, and the lines of another shape, a line with another `before`
+    among them. A record written before the kinds were counted holds
+    `calls` alone, all of them session ends' steps.
   - `reviewer.calls` counts the arm's gateway calls of the reviewer's two
     components, `memory_reviewer_stage1` and `memory_reviewer_stage2`
     (`REVIEWER_COMPONENTS`).
