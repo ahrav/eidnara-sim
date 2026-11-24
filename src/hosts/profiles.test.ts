@@ -169,7 +169,7 @@ test("the registered builds are the w9 build, the main commit, the w4 and w3 bui
     const [w9, main, w4, w3, w2, first, c8] = AUDITED_BUILDS;
     if (!main || !w4 || !w3) throw new Error("the main, w4, and w3 builds are registered");
     expect(AUDITED_EIDNARA).toBe(w9.commit);
-    expect(w9.commit).toMatch(/^543e7d6af/);
+    expect(w9.commit).toBe("4c293f1835960b8d60b55756933f196ecd12d007");
     expect(w9.variants).toBe(DAEMON_VARIANTS);
     // The main commit and the w4 build share one table under their own labels.
     expect(main.commit).toBe("ea12bff2adb028d942d3b339de6dc74b605ab1ab");
