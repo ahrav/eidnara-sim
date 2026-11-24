@@ -40,6 +40,7 @@ import {
     releaseLease,
     takeLease,
 } from "./journal";
+import { checkJournal as checkSchedule } from "./journal-check";
 import { readCallLog, SessionCalls } from "./run";
 import {
     type ArmDriver,
@@ -8479,5 +8480,236 @@ describe("resume of a session_end its last turn's stop stranded", () => {
         });
         j.close();
         await expect(resume(events, path, [])).rejects.toThrow("run failed: event e-199999 failed");
+    });
+});
+
+describe("a step the driver owes before a clock advance", () => {
+    // Two turns 60 s apart and a session end 60 s on: two advances, one before `e-000002` and
+    // one before `e-999999`.
+    const events = fixtureEvents(2);
+    const options = { events, faults: [], settleMs: 0, jobPollMs: 5, order: ["a"] };
+    const schedule = { events: new Map(events.map((e) => [e.id, e.scenario_ms])) };
+    const clean = (path: string) => {
+        const report = checkSchedule(readJournal(path), schedule);
+        expect({
+            decreasing: report.decreasing_scenario_ms,
+            busy: report.advance_while_busy,
+            off: report.off_schedule_jumps,
+            origin: report.jump_origin_mismatch,
+            order: report.out_of_order_events,
+        }).toEqual({ decreasing: [], busy: [], off: [], origin: [], order: [] });
+    };
+
+    test("the advance waits for the step and for the jobs the step registered", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const calls: string[] = [];
+        const driver: FakeDriver = {
+            ...fakeDriver([]),
+            beforeAdvance: (skipMs, next) => {
+                calls.push(`${next.id} ${skipMs}`);
+                if (next.id !== "e-000002") return null;
+                // The step returns with a job of its own still open, as a drain's last
+                // reviewer call can be; the job ends 40 ms on.
+                return (async () => {
+                    await Bun.sleep(20);
+                    driver.arm().jobStart("review-1");
+                    setTimeout(() => driver.arm().jobEnd("review-1"), 40);
+                })();
+            },
+        };
+        await new Scheduler({ ...options, journal: j, drivers: { a: driver } }).run();
+        // Each advance asks once, with the gap still to skip and the event it lands on.
+        expect(calls).toEqual(["e-000002 60000", expect.stringMatching(/^e-999999 \d+$/)]);
+        const mine = j.entries.filter((e) => e.arm === "a");
+        const at = (kind: string, key: string, value: string) =>
+            mine.findIndex((e) => e.kind === kind && e[key] === value);
+        const jump = at("AdvanceClock", "next_event", "e-000002");
+        // The step's job is registered after the turn before it and ended before the jump.
+        expect(at("Event", "event", "e-000001")).toBeLessThan(at("RegisterJob", "job", "review-1"));
+        expect(at("EndJob", "job", "review-1")).toBeLessThan(jump);
+        // The job held the clock, so the jump starts where the job left it and still lands on the event.
+        const ended = mine[at("EndJob", "job", "review-1")] as Entry;
+        expect(ended.scenario_ms).toBeGreaterThanOrEqual(30);
+        expect(mine[jump]).toMatchObject({ from_ms: ended.scenario_ms, scenario_ms: 60_000 });
+        expect(mine.at(-1)?.kind).toBe("EndArm");
+        invariants(j.entries);
+        j.close();
+        clean(path);
+    });
+
+    test("a step whose jobs carry the clock to the event leaves no advance to journal", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const next: ScenarioEvent[] = [
+            { id: "e-100000", kind: "session_start", scenario_ms: 40, session: "s-0001" },
+            { id: "e-199999", kind: "session_end", scenario_ms: 40, session: "s-0001" },
+        ];
+        const short = [...fixtureEvents(1), ...next].map((e) =>
+            e.id === "e-999999" ? { ...e, scenario_ms: 0 } : e,
+        );
+        const driver: FakeDriver = {
+            ...fakeDriver([]),
+            beforeAdvance: async () => {
+                driver.arm().jobStart("review-1");
+                await Bun.sleep(80);
+                driver.arm().jobEnd("review-1");
+            },
+        };
+        await new Scheduler({
+            ...options,
+            events: short,
+            journal: j,
+            drivers: { a: driver },
+        }).run();
+        expect(j.entries.filter((e) => e.kind === "AdvanceClock")).toEqual([]);
+        const start = j.entries.find((e) => e.kind === "Event" && e.event === "e-100000");
+        expect(start?.scenario_ms).toBeGreaterThanOrEqual(40);
+        expect(j.entries.at(-1)?.kind).toBe("EndRun");
+    });
+
+    test("an advance that owes no step follows the driver's answer in the same tick", async () => {
+        const run = async (driver: ArmDriver, order: string[]) => {
+            const j = new Journal(join(dir(), "j.jsonl"));
+            await new Scheduler({
+                ...options,
+                journal: j,
+                drivers: { a: driver },
+                onClock: (_arm, ms) => {
+                    if (ms > 0) order.push(`advance ${ms}`);
+                    return undefined;
+                },
+            }).run();
+            return j.entries.map((e) => e.kind);
+        };
+        // The driver answers null, as the host driver does for an arm without the reviewer
+        // switch; a microtask it queues runs after the advance, so the scheduler awaited nothing.
+        const order: string[] = [];
+        const kinds = await run(
+            {
+                ...fakeDriver([]),
+                beforeAdvance: (_skipMs, next) => {
+                    order.push(`asked ${next.id}`);
+                    queueMicrotask(() => order.push(`microtask ${next.id}`));
+                    return null;
+                },
+            },
+            order,
+        );
+        expect(order).toEqual([
+            "asked e-000002",
+            "advance 60000",
+            "microtask e-000002",
+            "asked e-999999",
+            "advance 120000",
+            "microtask e-999999",
+        ]);
+        // A driver that owes a step is awaited, so its microtask runs first.
+        const awaited: string[] = [];
+        await run(
+            {
+                ...fakeDriver([]),
+                beforeAdvance: async (_skipMs, next) => {
+                    queueMicrotask(() => awaited.push(`microtask ${next.id}`));
+                },
+            },
+            awaited,
+        );
+        expect(awaited.slice(0, 2)).toEqual(["microtask e-000002", "advance 60000"]);
+        // The journal is the one a driver with no such method leaves.
+        expect(kinds).toEqual(await run(fakeDriver([]), []));
+    });
+
+    test("a stop inside the step leaves the advance unjournaled, and the resume runs the step again", async () => {
+        const path = join(dir(), "j.jsonl");
+        let reason: string | null = null;
+        const first: string[] = [];
+        const stopping: FakeDriver = {
+            ...fakeDriver([]),
+            beforeAdvance: async (skipMs, next) => {
+                first.push(`${next.id} ${skipMs}`);
+                // A reviewer call of the drain is in flight when the stop lands.
+                stopping.arm().jobStart("review-1");
+                await Bun.sleep(20);
+                reason = "SIGTERM";
+                throw new HarnessFailure("run stopping: SIGTERM");
+            },
+        };
+        await expect(
+            new Scheduler({
+                ...options,
+                journal: new Journal(path),
+                drivers: { a: stopping },
+                stopped: () => reason,
+            }).run(),
+        ).rejects.toThrow("run stopping: SIGTERM");
+        expect(first).toEqual(["e-000002 60000"]);
+        const cut = readJournal(path);
+        expect(cut.some((e) => e.kind === "AdvanceClock")).toBe(false);
+        expect(cut.some((e) => e.kind === "ItemState" && e.fatal === true)).toBe(false);
+        expect(cut.some((e) => e.kind === "Event" && e.event === "e-000002")).toBe(false);
+        // The resume closes the job the stop cut and reaches the same advance, which asks again.
+        const again: string[] = [];
+        const journal = new Journal(path);
+        const resumed: ArmDriver = {
+            ...fakeDriver([]),
+            resume: async () => undefined,
+            beforeAdvance: async (skipMs, next) => void again.push(`${next.id} ${skipMs}`),
+        };
+        await new Scheduler({ ...options, journal, drivers: { a: resumed } }).run();
+        journal.close();
+        expect(again).toEqual(["e-000002 60000", "e-999999 60000"]);
+        const added = readJournal(path).slice(cut.length);
+        expect(added.slice(0, 3).map((e) => [e.kind, e.job ?? e.next_event, e.outcome])).toEqual([
+            ["ResumeRun", undefined, undefined],
+            ["EndJob", "review-1", "failed(interrupted)"],
+            ["AdvanceClock", "e-000002", undefined],
+        ]);
+        expect(added[2]).toMatchObject({ from_ms: 0, scenario_ms: 60_000 });
+        expect(added.at(-1)?.kind).toBe("EndRun");
+        // The sealed journal replays clean for the scheduler's check and the journal checker.
+        await new Scheduler({
+            ...options,
+            journal: new Journal(path),
+            drivers: { a: fakeDriver([]) },
+        }).run();
+        clean(path);
+    });
+
+    test("a job deadline inside the step stops the run with the advance unjournaled", async () => {
+        const path = join(dir(), "j.jsonl");
+        const driver: FakeDriver = {
+            ...fakeDriver([]),
+            beforeAdvance: async () => {
+                driver.arm().jobStart("review-stuck");
+                await new Promise<void>(() => undefined);
+            },
+        };
+        await expect(
+            new Scheduler({
+                ...options,
+                journal: new Journal(path),
+                drivers: { a: driver },
+                idleLimitMs: 40,
+            }).run(),
+        ).rejects.toThrow("busy set held the clock past 40 ms: job:review-stuck");
+        const cut = readJournal(path);
+        expect(cut.some((e) => e.kind === "AdvanceClock")).toBe(false);
+        expect(cut.find((e) => e.kind === "ItemState" && e.fatal === true)).toMatchObject({
+            job: "review-stuck",
+            cause: "job-deadline",
+        });
+        // The resume takes the deadline as an interruption and runs the step again.
+        const again: string[] = [];
+        const journal = new Journal(path);
+        const resumed: ArmDriver = {
+            ...fakeDriver([]),
+            resume: async () => undefined,
+            beforeAdvance: async (_skipMs, next) => void again.push(next.id),
+        };
+        await new Scheduler({ ...options, journal, drivers: { a: resumed } }).run();
+        journal.close();
+        expect(again).toEqual(["e-000002", "e-999999"]);
+        expect(readJournal(path).at(-1)?.kind).toBe("EndRun");
+        clean(path);
     });
 });

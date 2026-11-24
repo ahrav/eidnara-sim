@@ -53,6 +53,15 @@ export interface ArmDriver {
      * session of a pending `session_end` with a fresh host and delivers the event.
      */
     settlesSessionEnds?(): boolean;
+    /**
+     * Called when the arm's clock is about to advance `skipMs` onto `next`, with the busy set
+     * empty. Returns the step the arm owes before that advance (the settle step of an arm that
+     * runs the memory reviewer, for an advance of the review worker's idle interval or more), or
+     * null when the advance owes none. The scheduler awaits a returned step, then waits for the
+     * busy set again, which holds the jobs the step started, and advances the clock from where
+     * that wait left it. An advance that owes no step follows the call in the same tick.
+     */
+    beforeAdvance?(skipMs: number, next: ScenarioEvent): Promise<void> | null;
     /** Whether the driver has a mechanism for the fault; a run refuses an unsupported one before it starts. */
     supports?(f: FaultEpisode): boolean;
     event(e: ScenarioEvent): Promise<TurnOutcome>;
@@ -1929,18 +1938,29 @@ export class Scheduler {
         // A turn the resume left open for delivery gives its hold back for the waits below,
         // which a quiet busy set ends, and takes it again where a turn begins.
         const reopened = this.reopened?.event === e.id ? this.reopened : null;
-        if (reopened) (this.clock as Clock).end(`turn:${e.id}`);
-        await this.awaitDue(e);
-        // A job that registered after the wait leaves the clock busy short of the schedule, so
-        // the wait runs again before the clock may jump.
-        for (;;) {
-            const clock = this.clock as Clock;
-            if (clock.busyIds().length === 0 || clock.now() >= e.scenario_ms) break;
-            await this.awaitDue(e);
-        }
-        this.checkStop();
-        this.outage = null;
         const clock = this.clock as Clock;
+        if (reopened) clock.end(`turn:${e.id}`);
+        const settled = async (): Promise<void> => {
+            await this.awaitDue(e);
+            // A job that registered after the wait leaves the clock busy short of the schedule,
+            // so the wait runs again before the clock may jump.
+            while (clock.busyIds().length > 0 && clock.now() < e.scenario_ms) {
+                await this.awaitDue(e);
+            }
+            this.checkStop();
+        };
+        await settled();
+        // A step the driver owes before this advance runs with the advance still unjournaled, so
+        // a stop inside it leaves the resume at this same point. The step's jobs hold the clock,
+        // so the wait runs again, and the advance covers what is left of the gap.
+        const skipMs = e.scenario_ms - clock.now();
+        const owed =
+            skipMs > 0 ? (driver.beforeAdvance?.(skipMs, structuredClone(e)) ?? null) : null;
+        if (owed !== null) {
+            await this.untilFatal(owed);
+            await settled();
+        }
+        this.outage = null;
         const sleep = this.sleepBefore(e);
         const arm = this.arm ?? "";
         const fromMs = clock.now();
