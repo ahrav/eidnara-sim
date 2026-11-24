@@ -1521,7 +1521,7 @@ export interface ArmConfig {
 export function armConfigs(
     order: readonly string[],
     sideModel: string,
-    reviewerStage1Model?: string,
+    reviewerStage1Model: string | undefined,
 ): Record<string, ArmConfig> {
     return Object.fromEntries(
         order.map((label) => {

@@ -318,6 +318,7 @@ test("a fused arm's fallback on a transient reason is a degraded answer under a 
             AUDITED_BUILDS[0],
             "off",
             registered,
+            undefined,
         );
     const one = record(bound);
     expect(one.mismatches).toEqual([]);
@@ -404,7 +405,7 @@ test("a fused arm's fallback on a transient reason is a degraded answer under a 
     const legacy = observeArm("eidnara", "pi", captured(armRoot([PI_ON, PASS], [LEGACY])), {
         agent: 1,
     });
-    const plain = capabilityRecord(legacy, null, AUDITED_BUILDS[0], "off", bound);
+    const plain = capabilityRecord(legacy, null, AUDITED_BUILDS[0], "off", bound, undefined);
     expect(plain.mismatches).toEqual([]);
     expect("search_fallback" in plain).toBe(false);
 });
@@ -1413,7 +1414,14 @@ test("failed-command records and disputed objects are counted in the final store
         statements: { ...seen.statements, failed_commands: { live: 0, retired: 0 } },
     };
     expect(armMismatches(none as typeof seen, auditedBuild("eval/w4") as AuditedBuild)).toEqual([]);
-    expect(armMismatches({ ...seen, arm: "eidnara-reviewer" }, w9)).toEqual([]);
+    expect(
+        armMismatches(
+            { ...seen, arm: "eidnara-reviewer" },
+            w9,
+            null,
+            "global.anthropic.claude-haiku-5-5",
+        ),
+    ).toEqual([]);
 });
 
 test("reviewer evidence is held to the arm's switch, the daemon's status, and the registered stage-1 model", () => {
@@ -1465,7 +1473,13 @@ test("reviewer evidence is held to the arm's switch, the daemon's status, and th
     expect(armMismatches(host, w9)).toEqual(["1 memory_reviewer_stage1 calls on a host-only arm"]);
     // The same evidence is the reviewer arm's own.
     const arm = { ...reviewed, arm: "eidnara-reviewer" };
-    expect(armMismatches({ ...arm, daemon_status: status(open) }, w9)).toEqual([]);
+    const haiku = "global.anthropic.claude-haiku-5-5";
+    const held = (o: typeof arm) => armMismatches(o, w9, null, haiku);
+    expect(held({ ...arm, daemon_status: status(open) })).toEqual([]);
+    // The check holds no model of its own: a reviewer arm of a run that registers none is a mismatch.
+    expect(armMismatches({ ...arm, daemon_status: status(open) }, w9)).toEqual([
+        "the arm sets the reviewer switch, and the run registers no stage-1 model",
+    ]);
     // The status must carry the block and report open, and a process that was open must still be.
     const closed = (last: string, last_after_open: boolean, opened = 3) => ({
         readings: 8,
@@ -1475,32 +1489,26 @@ test("reviewer evidence is held to the arm's switch, the daemon's status, and th
         last_after_open,
     });
     const none = { readings: 0, open: 0, states: {}, last: null, last_after_open: false };
-    expect(armMismatches({ ...arm, daemon_status: status(none) }, w9)).toEqual([
+    expect(held({ ...arm, daemon_status: status(none) })).toEqual([
         "none of 8 daemon status readings carries the memory_reviewer block, which eval/w9 declares with its memory review",
     ]);
-    expect(
-        armMismatches({ ...arm, daemon_status: status(closed("missing", false, 0)) }, w9),
-    ).toEqual([
+    expect(held({ ...arm, daemon_status: status(closed("missing", false, 0)) })).toEqual([
         "none of 8 daemon status readings reports the memory reviewer open (last state missing), but the arm sets the reviewer switch",
     ]);
-    expect(
-        armMismatches({ ...arm, daemon_status: status(closed("unavailable", true)) }, w9),
-    ).toEqual([
+    expect(held({ ...arm, daemon_status: status(closed("unavailable", true)) })).toEqual([
         "the last daemon status reading reports the memory reviewer unavailable, after the same daemon process reported it open",
     ]);
     // A replacement daemon that bound no project reads missing; its reading stands.
-    expect(armMismatches({ ...arm, daemon_status: status(closed("missing", false)) }, w9)).toEqual(
-        [],
-    );
+    expect(held({ ...arm, daemon_status: status(closed("missing", false)) })).toEqual([]);
     // An arm whose status returned no reading, and an observation recorded before the state was read, are held to nothing.
     const unread = { ...status(none), readings: 0 };
-    expect(armMismatches({ ...arm, daemon_status: unread }, w9)).toEqual([]);
+    expect(held({ ...arm, daemon_status: unread })).toEqual([]);
     const { memory_reviewer: _state, ...before } = status(none);
-    expect(armMismatches({ ...arm, daemon_status: before }, w9)).toEqual([]);
-    // A stage-1 decision of the chat model names the registered model, the default when the run names none.
+    expect(held({ ...arm, daemon_status: before })).toEqual([]);
+    // A stage-1 decision of the chat model names the registered model.
     const wanted = (model: string) =>
         armMismatches({ ...arm, daemon_status: status(open) }, w9, null, model);
-    expect(wanted("global.anthropic.claude-haiku-5-5")).toEqual([]);
+    expect(wanted(haiku)).toEqual([]);
     expect(wanted("global.anthropic.claude-sonnet-5-5")).toEqual([
         "stage-1 decisions by the chat model name amazon-bedrock/global.anthropic.claude-haiku-5-5, but the run registers amazon-bedrock/global.anthropic.claude-sonnet-5-5 as the reviewer's stage-1 model",
     ]);
@@ -1855,7 +1863,7 @@ test("the capability record names the run's caching condition beside what the ar
         cache_write_tokens: 0,
     });
     observed.prompt_caching = { components: { agent: counts(0) } };
-    const off = capabilityRecord(observed, null, undefined, "off", null);
+    const off = capabilityRecord(observed, null, undefined, "off", null, undefined);
     expect(off).toMatchObject({
         profile: armProfile("host"),
         eidnara_build: null,
@@ -1863,16 +1871,16 @@ test("the capability record names the run's caching condition beside what the ar
         observed: { prompt_caching: { components: { agent: { with_cache_points: 0 } } } },
         mismatches: [],
     });
-    expect(capabilityRecord(observed, null, undefined, "on", null).mismatches).toEqual([
+    expect(capabilityRecord(observed, null, undefined, "on", null, undefined).mismatches).toEqual([
         "2 of 2 agent requests carry no cache point, but the run registers prompt caching on",
     ]);
     // One request with a cache point leaves the other one outside the condition.
     observed.prompt_caching = { components: { agent: counts(1) } };
-    expect(capabilityRecord(observed, null, undefined, "on", null).mismatches).toEqual([
+    expect(capabilityRecord(observed, null, undefined, "on", null, undefined).mismatches).toEqual([
         "1 of 2 agent requests carry no cache point, but the run registers prompt caching on",
     ]);
     observed.prompt_caching = { components: { agent: counts(2) } };
-    expect(capabilityRecord(observed, null, undefined, "on", null)).toMatchObject({
+    expect(capabilityRecord(observed, null, undefined, "on", null, undefined)).toMatchObject({
         prompt_caching: "on",
         mismatches: [],
     });
@@ -2172,13 +2180,13 @@ test("a Pi arm's background requests show the cache-point layout its build decla
     arm.prompt_caching = paired;
     const w3 = auditedBuild("eval/w3-all") as AuditedBuild;
     const w2b = auditedBuild("eval/w2b") as AuditedBuild;
-    expect(capabilityRecord(arm, null, w2b, "on", null).mismatches).toEqual([]);
-    expect(capabilityRecord(arm, null, w3, "on", null).mismatches).toEqual(
+    expect(capabilityRecord(arm, null, w2b, "on", null, undefined).mismatches).toEqual([]);
+    expect(capabilityRecord(arm, null, w3, "on", null, undefined).mismatches).toEqual(
         cachingMismatches("on", paired, { layout: "system", label: w3.label }),
     );
-    expect(capabilityRecord({ ...arm, host: "opencode" }, null, w3, "on", null).mismatches).toEqual(
-        armMismatches({ ...arm, host: "opencode" }, w3),
-    );
+    expect(
+        capabilityRecord({ ...arm, host: "opencode" }, null, w3, "on", null, undefined).mismatches,
+    ).toEqual(armMismatches({ ...arm, host: "opencode" }, w3));
 });
 
 test("the observation counts the requests whose cache points the proxy placed", () => {

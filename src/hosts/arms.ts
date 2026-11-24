@@ -107,7 +107,7 @@ export interface HostContext {
     /**
      * The model the run's registration names for stage 1 of the memory reviewer
      * (`side_models.memory_reviewer_stage1`), as a bare Bedrock model id; a reviewer arm's
-     * configuration names `REVIEWER_STAGE1_MODEL` when the run registers none.
+     * configuration names it, and a reviewer arm of a run that registers none is refused.
      */
     reviewerStage1Model?: string;
     now?: () => number;
@@ -248,27 +248,27 @@ export const piModelName = (id: string, caching: PromptCaching): string =>
     caching === "on" ? `${id} (cache points as claude -4- models)` : id;
 
 /**
- * The stage-1 model a reviewer arm names when the run passes none: the small model Eidnara derives
- * from a Claude Opus review model.
- */
-export const REVIEWER_STAGE1_MODEL = "global.anthropic.claude-haiku-5-5";
-
-/**
  * The `memory_reviewer` object a reviewer arm writes in both user tiers, and nothing for every
  * other arm: the switch, `contest` mode, the arm's side model as the review model (stage 2), and
- * `stage1Model` as the stage-1 decider.
+ * `stage1Model`, the model the run registers, as the stage-1 decider. A reviewer arm of a run
+ * that registers none is refused.
  */
-const reviewerSwitch = (model: string, arm: ArmName, stage1Model: string) =>
-    reviewsMemory(ARM_PROFILES[arm])
-        ? {
-              memory_reviewer: {
-                  enabled: true,
-                  apply: "contest",
-                  model: modelRef(model),
-                  stage1_model: modelRef(stage1Model),
-              },
-          }
-        : {};
+const reviewerSwitch = (model: string, arm: ArmName, stage1Model: string | undefined) => {
+    if (!reviewsMemory(ARM_PROFILES[arm])) return {};
+    if (stage1Model === undefined) {
+        throw new Error(
+            `arm ${arm} runs the memory reviewer, and the run registers no stage-1 model`,
+        );
+    }
+    return {
+        memory_reviewer: {
+            enabled: true,
+            apply: "contest",
+            model: modelRef(model),
+            stage1_model: modelRef(stage1Model),
+        },
+    };
+};
 
 /**
  * The user-tier `eidnara.jsonc` an Eidnara arm writes. `compaction.enabled` is the arm's
@@ -280,7 +280,7 @@ export function eidnaraUserConfig(
     connectionFile: string,
     model: string,
     arm: ArmName,
-    reviewerStage1Model: string = REVIEWER_STAGE1_MODEL,
+    reviewerStage1Model: string | undefined,
 ): Record<string, unknown> {
     return {
         enabled: true,
@@ -312,7 +312,7 @@ export function eidnaraUserConfig(
 export const fixtureDaemonConfig = (
     model: string,
     arm: ArmName,
-    reviewerStage1Model: string = REVIEWER_STAGE1_MODEL,
+    reviewerStage1Model: string | undefined,
 ): Record<string, unknown> => ({
     history_summarizer: { module_model: modelRef(model) },
     memory: { auto_inject: { enabled: deliveryOf(ARM_PROFILES[arm]) === "automatic" } },
@@ -343,7 +343,7 @@ export interface DaemonContext {
     model: string;
     /** The arm label the daemon serves; its base arm's profile sets the daemon config. */
     arm: string;
-    /** The run's registered stage-1 model of the memory reviewer; `REVIEWER_STAGE1_MODEL` when absent. */
+    /** The run's registered stage-1 model of the memory reviewer, which a reviewer arm's daemon config names. */
     reviewerStage1Model?: string;
 }
 

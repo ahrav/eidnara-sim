@@ -16,7 +16,6 @@ import {
     payloadManifest,
     processMemoryBlock,
     progressBlock,
-    REVIEWER_STAGE1_MODEL,
     reviewerBlock,
 } from "../hosts/arms";
 import {
@@ -1795,7 +1794,7 @@ export function armMismatches(
     o: ArmObservation,
     build: AuditedBuild = AUDITED_BUILDS[0],
     fallback: SearchFallbackBound | null = null,
-    reviewerStage1Model: string = REVIEWER_STAGE1_MODEL,
+    reviewerStage1Model?: string,
 ): string[] {
     const profile = armProfile(o.arm);
     const caps = profile.daemon === null ? undefined : build.variants[profile.daemon];
@@ -1959,7 +1958,7 @@ export function capabilityRecord<B>(
     build: AuditedBuild | undefined,
     caching: PromptCaching,
     fallback: SearchFallbackBound | null,
-    reviewerStage1Model: string = REVIEWER_STAGE1_MODEL,
+    reviewerStage1Model: string | undefined,
 ) {
     const profile = armProfile(observed.arm);
     return {
@@ -1998,7 +1997,7 @@ function reviewerMismatches(
     o: ArmObservation,
     caps: DaemonCapabilities | undefined,
     label: string,
-    stage1Model: string,
+    stage1Model: string | undefined,
 ): string[] {
     const out: string[] = [];
     const r = o.reviewer;
@@ -2045,6 +2044,10 @@ function reviewerMismatches(
                 `the last daemon status reading reports the memory reviewer ${state.last}, after the same daemon process reported it open`,
             );
         }
+    }
+    if (stage1Model === undefined) {
+        out.push("the arm sets the reviewer switch, and the run registers no stage-1 model");
+        return out;
     }
     const wanted = `amazon-bedrock/${stage1Model}`;
     const others = (r?.log.stage1.chat_model?.models ?? []).filter((m) => m !== wanted);

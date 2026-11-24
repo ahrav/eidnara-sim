@@ -33,7 +33,6 @@ import {
     piModelName,
     processMemoryBlock,
     progressBlock,
-    REVIEWER_STAGE1_MODEL,
 } from "./arms";
 import { ARM_PROFILES } from "./profiles";
 
@@ -1621,7 +1620,7 @@ test("each Pi arm writes the host and Eidnara compaction its profile declares", 
             auto_search: { enabled: hints },
             auto_inject: { enabled: hints },
         });
-        expect(fixtureDaemonConfig("m", arm as ArmName).memory).toEqual({
+        expect(fixtureDaemonConfig("m", arm as ArmName, "small").memory).toEqual({
             auto_inject: { enabled: hints },
         });
     }
@@ -1635,43 +1634,50 @@ test("the reviewer arm alone writes the memory_reviewer switch, in both user tie
         model: `amazon-bedrock/${model}`,
         stage1_model: `amazon-bedrock/${stage1}`,
     });
-    const haiku = "global.anthropic.claude-haiku-5-5";
-    expect(REVIEWER_STAGE1_MODEL).toBe(haiku);
     for (const arm of Object.keys(ARM_PROFILES) as ArmName[]) {
         const reviews = arm === "eidnara-reviewer";
-        const daemon = fixtureDaemonConfig("side", arm);
-        const plugin = eidnaraUserConfig("c.json", "side", arm);
+        // A registered stage-1 model reaches no arm without the switch.
+        const daemon = fixtureDaemonConfig("side", arm, "small");
+        const plugin = eidnaraUserConfig("c.json", "side", arm, "small");
         expect([arm, Object.hasOwn(daemon, "memory_reviewer")]).toEqual([arm, reviews]);
         expect([arm, Object.hasOwn(plugin, "memory_reviewer")]).toEqual([arm, reviews]);
-        // A registered stage-1 model reaches no arm without the switch.
-        expect(Object.hasOwn(fixtureDaemonConfig("side", arm, "small"), "memory_reviewer")).toBe(
-            reviews,
+        // An arm without the switch is configured the same with no stage-1 model registered.
+        if (!reviews) {
+            expect(fixtureDaemonConfig("side", arm, undefined)).toEqual(daemon);
+            expect(eidnaraUserConfig("c.json", "side", arm, undefined)).toEqual(plugin);
+        }
+    }
+    // The reviewer arm names the stage-1 model the run registers, and a run that registers none
+    // is refused: the configuration holds no model of its own.
+    for (const config of [
+        () => fixtureDaemonConfig("side", "eidnara-reviewer", undefined),
+        () => eidnaraUserConfig("c.json", "side", "eidnara-reviewer", undefined),
+    ]) {
+        expect(config).toThrow(
+            "arm eidnara-reviewer runs the memory reviewer, and the run registers no stage-1 model",
         );
     }
     // The object holds exactly the four keys, in the order the registration states them.
-    const daemon = fixtureDaemonConfig("side", "eidnara-reviewer");
+    const daemon = fixtureDaemonConfig("side", "eidnara-reviewer", "small");
     expect(JSON.stringify(daemon.memory_reviewer)).toBe(
-        `{"enabled":true,"apply":"contest","model":"amazon-bedrock/side","stage1_model":"amazon-bedrock/${haiku}"}`,
-    );
-    expect(eidnaraUserConfig("c.json", "side", "eidnara-reviewer").memory_reviewer).toEqual(
-        switched("side", haiku),
-    );
-    expect(fixtureDaemonConfig("side", "eidnara-reviewer", "small").memory_reviewer).toEqual(
-        switched("side", "small"),
+        '{"enabled":true,"apply":"contest","model":"amazon-bedrock/side","stage1_model":"amazon-bedrock/small"}',
     );
     expect(
         eidnaraUserConfig("c.json", "side", "eidnara-reviewer", "small").memory_reviewer,
     ).toEqual(switched("side", "small"));
     // The rest of each tier is the eidnara arm's, byte for byte.
     const { memory_reviewer: _daemonSwitch, ...daemonRest } = daemon;
-    expect(JSON.stringify(daemonRest)).toBe(JSON.stringify(fixtureDaemonConfig("side", "eidnara")));
+    expect(JSON.stringify(daemonRest)).toBe(
+        JSON.stringify(fixtureDaemonConfig("side", "eidnara", "small")),
+    );
     const { memory_reviewer: _pluginSwitch, ...pluginRest } = eidnaraUserConfig(
         "c.json",
         "side",
         "eidnara-reviewer",
+        "small",
     );
     expect(JSON.stringify(pluginRest)).toBe(
-        JSON.stringify(eidnaraUserConfig("c.json", "side", "eidnara")),
+        JSON.stringify(eidnaraUserConfig("c.json", "side", "eidnara", "small")),
     );
     // The Pi host writes the file with the side model as the review model and the run's stage-1 model.
     const dir = join(run, "reviewer");

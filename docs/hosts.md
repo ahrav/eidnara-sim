@@ -78,9 +78,11 @@ model is the one the registration names under
 manifest's `side_models` and reads from there for the arm's configuration,
 every arm's Pi model list, and the arm's capability check. A registration
 that runs the arm must name it (`docs/run-command.md`), and the W5
-registrations name `global.anthropic.claude-haiku-5-5`; the configuration
-functions name the same id (`REVIEWER_STAGE1_MODEL`) for a caller that
-passes none. The daemon reads the five
+registrations name `global.anthropic.claude-haiku-5-5`. The configuration
+functions and the capability check take the registered model as an
+argument and hold no model of their own: a reviewer arm of a run that
+registers none is refused by `eidnaraUserConfig` and `fixtureDaemonConfig`
+and is a capability mismatch. The daemon reads the five
 `memory_reviewer` keys from its user tier alone (`crates/daemon/src/config.rs`),
 at every pass of its review worker, and the plugin's schema admits the
 object in the user tier and drops it from a project tier. The enabled
