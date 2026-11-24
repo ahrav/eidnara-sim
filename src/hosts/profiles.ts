@@ -84,6 +84,35 @@ export interface DaemonCapabilities {
      */
     current_work_delivery: boolean;
     /**
+     * Whether a delivered `<project-memory>` block ends, on the line before its closing tag, with
+     * the sentence that calls its lines a partial record of the project's sessions.
+     */
+    block_closing_sentence: boolean;
+    /**
+     * Whether `<project-memory>` opens with a `<NAMED_FILES>` element listing project files a
+     * message of the user named and the agent then used, each with the time it last changed, and
+     * a `User stated:` line of such a block ends with the minute memory recorded it, in square
+     * brackets.
+     */
+    named_files: boolean;
+    /**
+     * Whether a user statement that replaced an earlier observation renders with the day it was
+     * stated and the day the replaced value was recorded.
+     */
+    replaced_observation_date: boolean;
+    /**
+     * Whether the daemon records a failed command of a Pi session as a fact of category
+     * `TOOL_FAILURE` on a `tool_failure` lineage, served on explicit search alone.
+     */
+    failed_command_records: boolean;
+    /**
+     * Whether, under the user-tier `memory_reviewer.enabled` switch, the daemon's worker reviews
+     * stored memories in two stages through the host's model execution and writes `contested`
+     * marks and `disputed` labels. `memory_reviewer` says whether the variant installs the
+     * reviewer host the worker runs on.
+     */
+    memory_review: boolean;
+    /**
      * The cache points a background call (memory capture, a daemon-run call) carries under
      * prompt caching on for a model Pi recognises: one after the system prompt and one at the end
      * of its single user message (`system-and-message`, what Pi's client places), or the system
@@ -163,6 +192,20 @@ const W4_NOTES: VariantRecord["notes"] = {
     current_work_delivery:
         'crates/daemon/src/canonical_memory.rs gives a served capture memory whose rationale names lifetime current_work the category CURRENT_WORK, newest first by the commit that first recorded it, and crates/daemon/src/m0_compose.rs trim_block_to_budget admits those rows after the lasting rows within a quarter of memory.injection_budget_tokens; crates/daemon/src/memory_render.rs renders them last in `<CURRENT_WORK note="...">`; a later whole user statement that names such a row under replaces or also_replaces ends it: crates/daemon/src/memory_capture.rs rewrite_statement supersedes it with a labeled row whose rationale holds ended_by {memory, session}; packages/opencode-plugin/src/tools/eidnara-search/render.ts shows `lifetime=current_work state=live|ended` on a search result',
 };
+const W9_NOTES: VariantRecord["notes"] = {
+    block_closing_sentence:
+        "crates/daemon/src/memory_render.rs render_delivered_memory_block writes PROJECT_MEMORY_NOTE on the line before `</project-memory>` of every delivered block, and crates/daemon/src/m0_compose.rs composes the session's block through it and charges the frame (delivered_memory_frame) to the memory budget",
+    named_files:
+        'crates/daemon/src/named_files.rs records a project file that a message of the user named and a tool call of the same turn then used, and delivered() lists up to MAX_DELIVERED of them to other sessions as `<path> (the agent used it in <n> earlier session(s), last on <day>; last changed <minute>|<minute> on disk|at a time the read history does not show)`; crates/daemon/src/memory_render.rs renders them first, in `<NAMED_FILES note="...">`, without an object id; in a read that lists a file, mark_recorded appends ` [<minute>]` to each `User stated:` line no other mark rewrote (crates/daemon/src/canonical_memory.rs read_at_tip calls date_statements)',
+    replaced_observation_date:
+        "crates/daemon/src/memory_capture.rs records `replaces_observation` in the rationale of a user statement that replaced an observation, and crates/daemon/src/canonical_memory.rs replaced_line renders its line as `<statement> (stated <day>; it replaces a value recorded <day> that the user had not stated)`, a day the commit log lacks reading `unknown date`",
+    failed_command_records:
+        "crates/daemon/src/memory_capture/failures.rs writes one labeled row of category TOOL_FAILURE (FAILURE_CATEGORY, the row's decision_kind) for a tool result the harness marks as an error, on the source lineage `tool_failure:<digest of the command line>`, under the source-capture consent; a later marked result of the command supersedes the row and a later unmarked one rewrites it as resolved; the block renders positive categories only, so the row is served on explicit search",
+    memory_review:
+        "crates/daemon/src/config.rs reads the user-only keys /memory_reviewer/enabled, /model, /stage1_model, /apply, and /classifier, and an enabled switch sets source_capture_enabled and contradiction_candidates_enabled; crates/daemon/src/memory_reviewer/worker.rs switched_pass reviews the stored memories of a switched project every IDLE_INTERVAL (30 s) while idle: review_cycle.rs selects and enqueues jobs, coordinator.rs asks stage 1 (stage_one.rs, the small chat model) through the host's model execution and, for a flagged review, the review model for a proposal, and the worker applies it by the mode (`contest`: a `disputed` label through the Kernel's mark_disputed, or a `contested` mark on a user statement)",
+};
+const W9_FIXTURE_REVIEWER_NOTE =
+    "crates/daemon/examples/direct_host_fixture.rs builds its Handler with_memory_reviewer_host over its own model-execution supervisor, so the worker runs as under eidnara-host, and answers the control `review-drain` (ControlCommand::ReviewDrain, HandlerCore::drain_memory_reviewer), which packages/e2e-tests/src/rust-runner/hermetic-host.ts exposes as reviewDrain(timeoutMs)";
 const W2_FUSED_SEARCH_PROGRESS =
     "crates/daemon/src/search_lifecycle_wire.rs answers search.lifecycle.status with progress {tip, checkpoint, lag_commits, rebuilds, blocked}; crates/daemon/src/projection_gates.rs judge_lifecycle_work admits the lifecycle owner's own catch-up and rebuild of a family past the freshness limit, and the fixture's admission records (crates/daemon/examples/search_admission_records/records.rs) set that limit to READER_LAG_COMMITS = 1024 commits";
 /**
@@ -335,6 +378,169 @@ const W4_PROBES = [
     ),
     probe("current_work_delivery", "crates/daemon/src/m0_compose.rs", "fn trim_block_to_budget"),
 ];
+const NAMED_FILES = "crates/daemon/src/named_files.rs";
+const FAILURES = "crates/daemon/src/memory_capture/failures.rs";
+const REVIEW_WORKER = "crates/daemon/src/memory_reviewer/worker.rs";
+const REVIEW_CYCLE = "crates/daemon/src/memory_reviewer/review_cycle.rs";
+const REVIEW_STAGE_ONE = "crates/daemon/src/memory_reviewer/stage_one.rs";
+const REVIEW_COORDINATOR = "crates/daemon/src/memory_reviewer/coordinator.rs";
+/** The sources the w9 table reads beside the w4 table's. */
+const W9_SOURCES = [
+    NAMED_FILES,
+    FAILURES,
+    REVIEW_WORKER,
+    REVIEW_CYCLE,
+    REVIEW_STAGE_ONE,
+    REVIEW_COORDINATOR,
+];
+/**
+ * A build before the w9 changes: the block ends at its last element, lists no named file, dates
+ * no replaced observation, and the daemon records no failed command and reads no reviewer switch.
+ */
+const BEFORE_W9_PROBES = [
+    probe(
+        "block_closing_sentence",
+        "crates/daemon/src/m0_compose.rs",
+        "render_delivered_memory_block",
+        false,
+    ),
+    probe("named_files", "crates/daemon/src/lib.rs", "mod named_files", false),
+    probe("named_files", "crates/daemon/src/canonical_memory.rs", "named_files::", false),
+    probe(
+        "replaced_observation_date",
+        "crates/daemon/src/canonical_memory.rs",
+        "fn replaced_line",
+        false,
+    ),
+    probe(
+        "replaced_observation_date",
+        "crates/daemon/src/memory_capture.rs",
+        "replaces_observation",
+        false,
+    ),
+    probe("failed_command_records", "crates/daemon/src/memory_capture.rs", "mod failures", false),
+    probe("memory_review", "crates/daemon/src/config.rs", "/memory_reviewer/enabled", false),
+];
+/** The w9 build's readings of the same behaviours. */
+const W9_PROBES = [
+    probe(
+        "block_closing_sentence",
+        MEMORY_RENDER,
+        "pub\\(crate\\) const PROJECT_MEMORY_NOTE: &str = \"The lines above are a partial record of this project's sessions: they hold what was said or recorded there, and conventions kept in the repository's files stay in those files\\.\"",
+    ),
+    probe(
+        "block_closing_sentence",
+        MEMORY_RENDER,
+        'format!\\("\\{DELIVERED_OPEN\\}\\{elements\\}\\{PROJECT_MEMORY_NOTE\\}\\\\n\\{DELIVERED_CLOSE\\}"\\)',
+    ),
+    probe(
+        "block_closing_sentence",
+        "crates/daemon/src/m0_compose.rs",
+        "let project_memory = render_delivered_memory_block\\(selected_memories\\)",
+    ),
+    probe(
+        "named_files",
+        MEMORY_RENDER,
+        'pub\\(crate\\) const NAMED_FILES_SECTION: &str = "NAMED_FILES"',
+    ),
+    probe(
+        "named_files",
+        MEMORY_RENDER,
+        "pub\\(crate\\) const SECTIONS_BEFORE_FACTS: &\\[&str\\] = &\\[NAMED_FILES_SECTION\\]",
+    ),
+    probe("named_files", MEMORY_RENDER, "if memory\\.category != NAMED_FILES_SECTION"),
+    probe(
+        "named_files",
+        NAMED_FILES,
+        '"\\{path\\} \\(the agent used it in \\{\\} earlier session\\{\\}, last on \\{\\}\\{LAST_CHANGE_CLAUSE\\}\\{\\}\\)"',
+    ),
+    probe("named_files", NAMED_FILES, 'const LAST_CHANGE_CLAUSE: &str = "; last changed "'),
+    probe("named_files", NAMED_FILES, 'at\\.format\\("%Y-%m-%dT%H:%MZ"\\)'),
+    probe(
+        "named_files",
+        NAMED_FILES,
+        '\\.push_str\\(&format!\\(" \\[\\{\\}\\]", minute\\(\\*at_ms\\)\\)\\)',
+    ),
+    probe(
+        "named_files",
+        "crates/daemon/src/canonical_memory.rs",
+        "crate::named_files::date_statements\\(&store, &mut response, &statements\\)",
+    ),
+    probe(
+        "replaced_observation_date",
+        "crates/daemon/src/canonical_memory.rs",
+        '"\\{statement\\} \\(stated \\{\\}; it replaces a value recorded \\{\\} that the user had not stated\\)"',
+    ),
+    probe(
+        "replaced_observation_date",
+        "crates/daemon/src/canonical_memory.rs",
+        "crate::memory_capture::replaced_observation_commit\\(decision\\)",
+    ),
+    probe(
+        "replaced_observation_date",
+        "crates/daemon/src/memory_capture.rs",
+        'const REPLACES_OBSERVATION: &str = "replaces_observation"',
+    ),
+    probe("failed_command_records", "crates/daemon/src/memory_capture.rs", "\\nmod failures;\\n"),
+    probe(
+        "failed_command_records",
+        FAILURES,
+        'pub\\(crate\\) const FAILURE_SOURCE_ID: &str = "tool_failure"',
+    ),
+    probe(
+        "failed_command_records",
+        FAILURES,
+        'pub\\(crate\\) const FAILURE_CATEGORY: &str = "TOOL_FAILURE"',
+    ),
+    probe(
+        "failed_command_records",
+        FAILURES,
+        'format!\\("\\{FAILURE_SOURCE_ID\\}:\\{digest\\}"\\)',
+    ),
+    probe("failed_command_records", FAILURES, "decision_kind: FAILURE_CATEGORY\\.into\\(\\)"),
+    probe(
+        "memory_review",
+        "crates/daemon/src/config.rs",
+        'Self::MemoryReviewerEnabled => "/memory_reviewer/enabled"',
+    ),
+    probe(
+        "memory_review",
+        "crates/daemon/src/config.rs",
+        'Self::MemoryReviewerStage1Model => "/memory_reviewer/stage1_model"',
+    ),
+    probe(
+        "memory_review",
+        "crates/daemon/src/config.rs",
+        'Self::MemoryReviewerApply => "/memory_reviewer/apply"',
+    ),
+    probe("memory_review", REVIEW_WORKER, "async fn switched_pass\\("),
+    probe(
+        "memory_review",
+        REVIEW_WORKER,
+        "pub const IDLE_INTERVAL: Duration = Duration::from_secs\\(30\\)",
+    ),
+    probe("memory_review", REVIEW_WORKER, "pub async fn drain\\("),
+    probe(
+        "memory_review",
+        REVIEW_WORKER,
+        '"daemon: memory_reviewer applied a proposal: job=\\{\\} \\{\\}"',
+    ),
+    probe(
+        "memory_review",
+        REVIEW_CYCLE,
+        '"daemon: memory_reviewer enqueued job=\\{\\} trigger=\\{\\} later=\\{\\} source=\\{\\}"',
+    ),
+    probe(
+        "memory_review",
+        REVIEW_COORDINATOR,
+        '"daemon: memory_reviewer stage 1 job=\\{\\} decider=\\{\\} model=\\{\\} request=\\{\\} decision=\\{\\} \\{shown\\} later=\\{\\}"',
+    ),
+    probe(
+        "memory_review",
+        REVIEW_STAGE_ONE,
+        "pub const FAILURE_COOLDOWN: Duration = Duration::from_secs\\(60\\)",
+    ),
+];
 const PROMPT = "crates/daemon/testdata/history_summarizer-system-prompt.txt";
 const OPEN_ITEMS_SECTION = "## Open items: waiting, constraints, decided, lifted";
 /** The c8 build's readings of the behaviours the w2 rework changed. */
@@ -368,6 +574,7 @@ const C8_PROBES = [
     probe("process_memory", "crates/daemon/src/lib.rs", "pub mod process_memory", false),
     ...BEFORE_W3_PROBES,
     ...BEFORE_W4_PROBES,
+    ...BEFORE_W9_PROBES,
 ];
 /** The w2 build's readings of the same behaviours. */
 const W2_PROBES = [
@@ -424,6 +631,7 @@ const W2_PROBES = [
     ),
     ...BEFORE_W3_PROBES,
     ...BEFORE_W4_PROBES,
+    ...BEFORE_W9_PROBES,
 ];
 const SHARED_BEHAVIOURS = {
     memory_injection: "switchable",
@@ -434,6 +642,11 @@ const SHARED_BEHAVIOURS = {
     search_progress: false,
     statement_lifetime: false,
     current_work_delivery: false,
+    block_closing_sentence: false,
+    named_files: false,
+    replaced_observation_date: false,
+    failed_command_records: false,
+    memory_review: false,
     background_cache_points: "system-and-message",
 } as const;
 const C8_BEHAVIOURS = {
@@ -473,6 +686,16 @@ const FIXTURE_PROBES = [
         "settledSourceCapture",
     ),
     ...SHARED_PROBES,
+];
+/** The w9 fixture's reviewer host and the control that drains its worker. */
+const W9_FIXTURE_REVIEWER_PROBES = [
+    probe("memory_reviewer", FIXTURE, "\\.with_memory_reviewer_host\\(memory_reviewer_host\\)"),
+    probe("memory_reviewer", FIXTURE, "ControlCommand::ReviewDrain => core"),
+    probe(
+        "memory_reviewer",
+        "packages/e2e-tests/src/rust-runner/hermetic-host.ts",
+        "async reviewDrain\\(timeoutMs: number\\): Promise<number>",
+    ),
 ];
 /** The fixture and `eidnara-host` both limit glibc malloc to `C_HEAP_ARENAS` arenas before their runtime starts. */
 const arenaProbe = (file: string) =>
@@ -662,10 +885,11 @@ export const W3_VARIANTS = Object.fromEntries(
 ) as Record<DaemonVariant, VariantRecord>;
 
 /**
- * What each daemon variant of the current build (`eval/w4`) provides: the w3 build's table with
- * work in progress approved and served in its own element of `<project-memory>`.
+ * What each daemon variant of the `eval/w4` build and of the main commit `ea12bff2a` provides:
+ * the w3 build's table with work in progress approved and served in its own element of
+ * `<project-memory>`.
  */
-export const DAEMON_VARIANTS = Object.fromEntries(
+export const W4_VARIANTS = Object.fromEntries(
     Object.entries(W3_VARIANTS).map(([variant, record]): [string, VariantRecord] => [
         variant,
         {
@@ -676,6 +900,54 @@ export const DAEMON_VARIANTS = Object.fromEntries(
             notes: { ...record.notes, ...W4_NOTES },
         },
     ]),
+) as Record<DaemonVariant, VariantRecord>;
+
+/** The fixture's own reading of `memory_reviewer` on a build before w9: it installs no reviewer host. */
+const isFixtureWithoutReviewer = (p: SourceProbe) =>
+    p.capability === "memory_reviewer" && p.file === FIXTURE && !p.present;
+const W9_FIXTURE_EVIDENCE: Partial<Record<DaemonVariant, string>> = {
+    "direct-host-fixture":
+        "crates/daemon/examples/direct_host_fixture.rs started without --query-route keeps the legacy search route and links an 8-dimension deterministic embedding engine; it builds its Handler with a memory reviewer host over its own model execution; packages/e2e-tests/src/bedrock-peer/harness-runtime.ts points its closures at the proxy",
+    "direct-host-fixture-fused":
+        "crates/daemon/examples/direct_host_fixture.rs started with --query-route production --local-embeddings-manifest <payload-manifest.json> sets the production query route limits over the payload's gte-modernbert-base-f32 local embedding lane (payload_local_embeddings.rs), installs search admission from fixture records sized for a whole store (search_admission_records/records.rs), and logs `search route production, embedding model <model>` on stderr; it builds its Handler with a memory reviewer host over its own model execution; packages/e2e-tests/src/rust-runner/hermetic-host.ts passes both flags for productionSearchManifest, and harness-runtime.ts points its closures at the proxy",
+};
+
+/**
+ * What each daemon variant of the current build (`eval/w9`) provides: the w4 table with the
+ * block's closing sentence, the named files and recorded minutes, the dated replacement mark,
+ * failed-command records, and the memory review under the user-tier switch. Both fixture
+ * variants install a reviewer host, so the worker runs in the fixture as under `eidnara-host`.
+ */
+export const DAEMON_VARIANTS = Object.fromEntries(
+    Object.entries(W4_VARIANTS).map(([variant, record]): [string, VariantRecord] => {
+        const fixture = variant !== "production-payload";
+        return [
+            variant,
+            {
+                ...record,
+                block_closing_sentence: true,
+                named_files: true,
+                replaced_observation_date: true,
+                failed_command_records: true,
+                memory_review: true,
+                memory_reviewer: true,
+                evidence: W9_FIXTURE_EVIDENCE[variant as DaemonVariant] ?? record.evidence,
+                sources: [...record.sources, ...W9_SOURCES],
+                probes: [
+                    ...record.probes.filter(
+                        (p) => !BEFORE_W9_PROBES.includes(p) && !isFixtureWithoutReviewer(p),
+                    ),
+                    ...W9_PROBES,
+                    ...(fixture ? W9_FIXTURE_REVIEWER_PROBES : []),
+                ],
+                notes: {
+                    ...record.notes,
+                    ...W9_NOTES,
+                    ...(fixture ? { memory_reviewer: W9_FIXTURE_REVIEWER_NOTE } : {}),
+                },
+            },
+        ];
+    }),
 ) as Record<DaemonVariant, VariantRecord>;
 
 /**
@@ -719,9 +991,19 @@ const C8_BUILD: AuditedBuild = {
  */
 export const AUDITED_BUILDS: readonly [AuditedBuild, ...AuditedBuild[]] = [
     {
+        commit: "543e7d6af192b35f8fd77d54316571f22f45b6a0",
+        label: "eval/w9",
+        variants: DAEMON_VARIANTS,
+    },
+    {
+        commit: "ea12bff2adb028d942d3b339de6dc74b605ab1ab",
+        label: "main-ea12bff2a",
+        variants: W4_VARIANTS,
+    },
+    {
         commit: "6aabc77e16cb2765a4a59ccd5898688b787e8b69",
         label: "eval/w4",
-        variants: DAEMON_VARIANTS,
+        variants: W4_VARIANTS,
     },
     {
         commit: "a996cc46602659e6225fd850395e2e988048648e",

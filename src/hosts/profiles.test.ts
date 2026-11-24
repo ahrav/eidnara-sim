@@ -14,6 +14,7 @@ import {
     runsEidnara,
     W2_VARIANTS,
     W3_VARIANTS,
+    W4_VARIANTS,
 } from "./profiles";
 
 test("every pre-registered arm has a profile its daemon variant satisfies", () => {
@@ -113,21 +114,32 @@ test("source capture is consented on every arm the c8 comparison contrasts with 
     }
 });
 
-test("the registered builds are the w4 build, the w3 build, the two w2 builds, and the c8 reference with the legacy fixture", () => {
+test("the registered builds are the w9 build, the main commit, the w4 and w3 builds, the two w2 builds, and the c8 reference with the legacy fixture", () => {
     expect(AUDITED_BUILDS.map((b) => b.label)).toEqual([
+        "eval/w9",
+        "main-ea12bff2a",
         "eval/w4",
         "eval/w3-all",
         "eval/w2b",
         "eval/w2",
         "eval/c8",
     ]);
-    expect(new Set(AUDITED_BUILDS.map((b) => b.commit)).size).toBe(5);
+    expect(new Set(AUDITED_BUILDS.map((b) => b.commit)).size).toBe(7);
     for (const b of AUDITED_BUILDS) expect(b.commit).toMatch(/^[0-9a-f]{40}$/);
-    const [w4, w3, w2, first, c8] = AUDITED_BUILDS;
-    if (!w3) throw new Error("the w3 build is registered");
-    expect(AUDITED_EIDNARA).toBe(w4.commit);
-    expect(w4.variants).toBe(DAEMON_VARIANTS);
+    const [w9, main, w4, w3, w2, first, c8] = AUDITED_BUILDS;
+    if (!main || !w4 || !w3) throw new Error("the main, w4, and w3 builds are registered");
+    expect(AUDITED_EIDNARA).toBe(w9.commit);
+    expect(w9.commit).toMatch(/^543e7d6af/);
+    expect(w9.variants).toBe(DAEMON_VARIANTS);
+    // The main commit and the w4 build share one table under their own labels.
+    expect(main.commit).toBe("ea12bff2adb028d942d3b339de6dc74b605ab1ab");
+    expect(main.variants).toBe(W4_VARIANTS);
+    expect(w4.variants).toBe(W4_VARIANTS);
     expect(w3.variants).toBe(W3_VARIANTS);
+    expect(auditedBuild("eval/w9")).toBe(w9);
+    expect(auditedBuild(w9.commit)).toBe(w9);
+    expect(auditedBuild("main-ea12bff2a")).toBe(main);
+    expect(auditedBuild(main.commit)).toBe(main);
     expect(auditedBuild("eval/w4")).toBe(w4);
     expect(auditedBuild(w4.commit)).toBe(w4);
     // The two w2 builds stay registered under their own labels with one table.
@@ -140,8 +152,10 @@ test("the registered builds are the w4 build, the w3 build, the two w2 builds, a
     expect(auditedBuild(w3.commit)).toBe(w3);
     expect(auditedBuild("eval/c7")).toBeUndefined();
     expect(Object.keys(c8?.variants ?? {})).toEqual(["direct-host-fixture"]);
-    // The retests' arms: the three arms on the w4 and w3 builds, the reference arm on the w2b build.
+    // The retests' arms: the three arms on the w9, main, w4, and w3 builds, the reference arm on the w2b build.
     for (const arm of ["host", "eidnara", "eidnara-hybrid"]) {
+        expect(capabilityGaps(arm, w9)).toEqual([]);
+        expect(capabilityGaps(arm, main)).toEqual([]);
         expect(capabilityGaps(arm, w4)).toEqual([]);
         expect(capabilityGaps(arm, w3)).toEqual([]);
         expect(capabilityGaps(arm, w2)).toEqual([]);
@@ -162,6 +176,7 @@ test("the registered builds are the w4 build, the w3 build, the two w2 builds, a
     };
     expect(rework(w3)).toEqual(["per-message", true, true, false, true, false]);
     expect(rework(w4)).toEqual(rework(w3));
+    expect(rework(w9)).toEqual(rework(w3));
     expect(rework(w2 as typeof w3)).toEqual(rework(w3));
     expect(rework(c8 as typeof w3)).toEqual(["shared", false, false, true, false, false]);
     expect(w3.variants["direct-host-fixture-fused"]?.search_progress).toBe(true);
@@ -191,7 +206,7 @@ test("the registered builds are the w4 build, the w3 build, the two w2 builds, a
     // The w4 build differs from the w3 build in one capability, on every variant, and in nothing
     // else; its probes replace the earlier builds' two readings, and the renderer joins its sources.
     for (const [variant, record] of Object.entries(W3_VARIANTS)) {
-        const current = DAEMON_VARIANTS[variant as keyof typeof DAEMON_VARIANTS];
+        const current = W4_VARIANTS[variant as keyof typeof W4_VARIANTS];
         expect(capabilitiesOf(current)).toEqual({
             ...capabilitiesOf(record),
             current_work_delivery: true,
@@ -204,6 +219,75 @@ test("the registered builds are the w4 build, the w3 build, the two w2 builds, a
         expect(own(W2_VARIANTS[variant as keyof typeof W2_VARIANTS])).toEqual([false, false]);
         expect(current.sources).toEqual([...record.sources, "crates/daemon/src/memory_render.rs"]);
         expect(current.probes.length).toBe(record.probes.length + 4);
+    }
+    // The w9 build differs from the w4 table in five capabilities on every variant and in the
+    // reviewer host of the two fixture variants; its probes replace the earlier builds' readings.
+    const added = [
+        "block_closing_sentence",
+        "named_files",
+        "replaced_observation_date",
+        "failed_command_records",
+        "memory_review",
+    ] as const;
+    const absent = [false, false, false, false, false, false, false];
+    for (const [variant, record] of Object.entries(W4_VARIANTS)) {
+        const current = DAEMON_VARIANTS[variant as keyof typeof DAEMON_VARIANTS];
+        expect(capabilitiesOf(current)).toEqual({
+            ...capabilitiesOf(record),
+            block_closing_sentence: true,
+            named_files: true,
+            replaced_observation_date: true,
+            failed_command_records: true,
+            memory_review: true,
+            memory_reviewer: true,
+        });
+        const own = (r: typeof record) =>
+            r.probes
+                .filter((p) => (added as readonly string[]).includes(p.capability))
+                .map((p) => p.present);
+        expect(own(record)).toEqual(absent);
+        expect(own(current).length).toBeGreaterThan(absent.length);
+        expect(own(current).every(Boolean)).toBe(true);
+        for (const capability of added) {
+            expect(record[capability]).toBe(false);
+            // Each added capability has a reading on both sides and a note naming its source.
+            expect(record.probes.some((p) => p.capability === capability)).toBe(true);
+            expect(current.probes.some((p) => p.capability === capability)).toBe(true);
+            expect(current.notes?.[capability]).toMatch(/^crates\/daemon\/src\//);
+        }
+        const host = (r: typeof record) =>
+            r.probes.filter((p) => p.capability === "memory_reviewer").map((p) => p.present);
+        const fixture = variant !== "production-payload";
+        expect(record.memory_reviewer).toBe(!fixture);
+        expect(host(record)).toEqual(fixture ? [false] : [true]);
+        expect(host(current)).toEqual(fixture ? [true, true, true] : [true]);
+        expect(current.evidence.includes("without a memory reviewer host")).toBe(false);
+        expect(current.sources.slice(0, record.sources.length)).toEqual(record.sources);
+        expect(current.sources.slice(record.sources.length)).toEqual([
+            "crates/daemon/src/named_files.rs",
+            "crates/daemon/src/memory_capture/failures.rs",
+            "crates/daemon/src/memory_reviewer/worker.rs",
+            "crates/daemon/src/memory_reviewer/review_cycle.rs",
+            "crates/daemon/src/memory_reviewer/stage_one.rs",
+            "crates/daemon/src/memory_reviewer/coordinator.rs",
+        ]);
+    }
+    // Every earlier table reads the five as absent, the c8 reference included.
+    for (const earlier of [W3_VARIANTS, W2_VARIANTS, c8?.variants ?? {}]) {
+        for (const record of Object.values(earlier)) {
+            expect(added.map((capability) => record[capability])).toEqual([
+                false,
+                false,
+                false,
+                false,
+                false,
+            ]);
+            expect(
+                record.probes
+                    .filter((p) => (added as readonly string[]).includes(p.capability))
+                    .map((p) => p.present),
+            ).toEqual(absent);
+        }
     }
     const legacy = c8?.variants["direct-host-fixture"];
     expect([
