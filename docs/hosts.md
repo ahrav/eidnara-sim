@@ -311,34 +311,34 @@ reviewer arm answered it, after a clock advance of 1.5 minutes, while the
 searches of the arms without the switch answered with results. With real
 idle time of the skipped length the worker's pass comes first, every 30 s.
 An advance of 30 s or more skips idle time in which the worker would have
-run a pass, so the step runs before it; a shorter advance leaves the
-oldest unconsumed commit under 60 s old until the worker's own next pass.
+run a pass, so the step runs before it. A shorter advance ages an
+unconsumed commit by under 30 s, and the worker's own next pass follows
+within 30 s of real time, so one such advance keeps the commit under 60 s
+old; several of them inside one idle interval of the worker add up.
 
-The scheduler asks the arm's driver before each advance (`beforeAdvance`
-in `src/run/scheduler.ts`, with the scenario time the advance skips and
-the event it lands on), once the wait for the event has found the busy set
+The scheduler asks the arm's driver before each advance (`beforeAdvance` in
+`src/run/scheduler.ts`, with the scenario time the advance skips and the
+event it lands on), once the wait for the event has found the busy set
 empty. The host driver answers with the step for an arm that runs the
 memory reviewer and an advance of 30,000 ms or more (`settlesAdvance`), and
 with `null` otherwise, and an advance answered with `null` follows in the
 same tick. Every advance of an arm without the switch takes that path, so
 the reviewer arm alone is given this settle time. The step is the one a
-session end runs:
-the open-jobs wait, the wait for an earlier drain the control has yet to
-answer, the drain through `DaemonStack.reviewDrain`, and one line in
-`review-drain.jsonl`, with `before` `advance`, `next_event` (the event the
-clock advances onto), `skip_ms` (the scenario time the advance skips, as
-the scheduler asked), and `session` (the session of that event). Before an
-advance the step sends two drains (`ADVANCE_DRAINS`), the second once the
-first has answered, inside the step's one wait of 300,000 ms, and
-`settled` is the sum of the runs both settled; the reason is the worker's
-claim catch-up, below. After the step the scheduler waits for the busy
-set again, which holds the reviewer calls the drain started, and advances
-the clock from where that wait left it; when the drain's calls carried
-the clock to the event's time, the event starts there with the gap already
-spent. In the journal of the pilot
-`s5prefix/V104-reviewer` 16 of the reviewer arm's 17 advances skipped 30 s
-or more (14 before a user turn, one before an `apply_diff`, one before a
-`session_start`).
+session end runs: the open-jobs wait, the wait for an earlier drain the
+control has yet to answer, the drain through `DaemonStack.reviewDrain`, and
+one line in `review-drain.jsonl`, with `before` `advance`, `next_event`
+(the event the clock advances onto), `skip_ms` (the scenario time the
+advance skips, as the scheduler asked), and `session` (the session of that
+event). Before an advance the step sends two drains (`ADVANCE_DRAINS`), the
+second once the first has answered, inside the step's one wait of 300,000
+ms, and `settled` is the sum of the runs both settled; the reason is the
+worker's claim catch-up, below. After the step the scheduler waits for the
+busy set again, which holds the reviewer calls the drain started, and
+advances the clock from where that wait left it; when the drain's calls
+carried the clock to the event's time, the event starts there with the gap
+already spent. In the journal of the pilot `s5prefix/V104-reviewer` 16 of
+the reviewer arm's 17 advances skipped 30 s or more (14 before a user turn,
+one before an `apply_diff`, one before a `session_start`).
 
 Failures follow the session end's step. A drain that fails, a drain that
 passes the step's wait, and an earlier drain still unanswered are recorded
@@ -400,11 +400,14 @@ real time:
 | Worker idle interval | 30 s | real time | the drain replaces the wait between sessions and before every other clock advance of 30 s or more |
 | Age at which a consumer's oldest unconsumed commit makes a memory read `stale` | 60 s | scenario time | a clock advance ages every unconsumed commit by its length; the step before an advance of 30 s or more runs the worker's catch-up first |
 | Pause of a project's reviews after a failed stage-1 request | 60 s, and 2 s before the run's next attempt | real time | a provider failure delays reviews in real time, past a drain |
-| Deadlines of one attempt and of one run | 30 s and 120 s | real time for an attempt; a run's execution cutoff and its lease are also read on the daemon's wall clock | a drain ends every run before the clock jumps to the next session; a jump between two turns of an open session can end a run in flight (below) |
+| Deadlines of one attempt and of one run | 30 s and 120 s | real time for an attempt; a run's execution cutoff and its lease are also read on the daemon's wall clock | a drain ends every run before the clock jumps to the next session and before every other jump of 30 s or more; a jump of under 30 s between two turns of an open session can end a run in flight (below) |
 | Life of an `open` activation state without a new pass | 300 s | real time | the worker's passes renew it while the daemon runs |
 
-A clock advance between two turns of an open session can end a review run
-that is between its gateway reply and the daemon's record of it. A user
+A clock advance of under 30 s between two turns of an open session can end
+a review run that is between its gateway reply and the daemon's record of
+it; before an advance of 30 s or more the settle step's drain waits for the
+worker's pass in flight (a pass holds the worker's `serial` lock, which the
+drain's first pass takes next), so that run ends before the jump. A user
 turn in an open session waits only for the clock, and the scheduler moves
 scenario time to the turn's scheduled time once no job holds it; a reviewer
 call holds its jobs while its request is in flight at the gateway, and its
