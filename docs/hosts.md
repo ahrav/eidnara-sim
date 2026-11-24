@@ -881,12 +881,24 @@ complete evidence only when the two agree:
   commit the log holds), and of them the records an invalidation retired
   (`retired`): a retired record approves nothing, as when a later statement
   ends work in progress on a build with `current_work_delivery`, so its
-  statement owes no block. The capability check reads no retirement time
-  from the final store, so a record retired during the run is left out for
-  the whole run, the sessions before its retirement included; the evidence
+  statement owes no block. A statement whose memory is disputed owes no
+  block either (`disputed_statements`). Capture writes a statement record
+  as a decision of its own and names it as the approval of the statement's
+  memory (`admission_decisions.approval_object_id` on the memory's
+  `approve` decision, and on that of each memory that later replaces it;
+  Eidnara `memory_capture.rs` `record_statement`). A dispute, the
+  reviewer's in `contest` mode or the agent's own, is a `mark_disputed`
+  admission decision on the memory: the record stays live and the daemon
+  leaves the memory out of the block. A live record is counted as disputed
+  when it approves at least one live memory and every live memory it
+  approves has `disputed` as its latest own admission decision, on every
+  build. The capability check reads no retirement time and no dispute time
+  from the final store, so a record retired during the run, and a record
+  whose memory was disputed during the run, is left out for the whole run,
+  the sessions before the retirement or the dispute included; the evidence
   path (`docs/evidence.md`) reads the block of each probe turn directly.
   `statements.sessions` lists the
-  capture sessions the rationales of the live records name; Pi
+  capture sessions the rationales of the live, undisputed records name; Pi
   names an Eidnara session `sim-<session>`, and a name without that prefix
   stands for every session that made a `memory_capture` call, as does a
   statement whose payload names no session. A request owes a statement's
@@ -980,7 +992,9 @@ complete evidence only when the two agree:
     admission decision is `disputed`, live and retired. It decides no
     mismatch on any arm or build: the reviewer's `contest` mode writes the
     mark, and so does the agent's own `eidnara_memory` dispute action,
-    which every audited build has.
+    which every audited build has. `statements.disputed_statements` counts
+    the statement records among them by their memory (above), which the
+    owing sessions leave out.
   - `delivery.contested_blocks` counts agent requests whose
     `<project-memory>` block renders a contested statement, and
     `search.contested` the `eidnara_search` results with a `Contested by`

@@ -110,7 +110,7 @@ function captured(
         "create table decisions(object_id text, decision_payload blob, created_commit_seq integer, decision_kind text not null default 'CONSTRAINTS')",
     );
     db.run(
-        "create table admission_decisions(admission_decision_id text primary key, subject_object_id text, event_kind text, disposition text, commit_seq integer)",
+        "create table admission_decisions(admission_decision_id text primary key, subject_object_id text, event_kind text, disposition text, commit_seq integer, approval_object_id text)",
     );
     for (const [i, c] of classes.entries()) {
         db.run("insert into object_registry values (?, 'observation', ?, 1, ?, '')", [
@@ -499,6 +499,7 @@ test("delivery evidence must match the statements the final store holds", () => 
         sessions: ["sim-s-0001"],
         unattributed: 1,
         retired: 3,
+        disputed_statements: 0,
         error: null,
         lifetimes: { current_work: 5, constructor: 1, request: 1 },
         ended_work: 1,
@@ -1200,6 +1201,140 @@ test("the settle steps are totalled from review-drain.jsonl", () => {
     });
 });
 
+test("a statement whose memory is disputed owes no later session a block", () => {
+    // The statement record stm_a approves the memory mem_a, as capture writes them (Eidnara
+    // `memory_capture.rs` `record_statement`): the record is a decision of its own, and the
+    // memory's `approve` admission decision names it as `approval_object_id`. A dispute is a
+    // `mark_disputed` admission decision on the memory and leaves the record live.
+    const build = (rows: (db: Database) => void) => {
+        const root = captured(armRoot([PI_ON, PASS]));
+        const db = new Database(join(root, "..", "final-store", "kernel.sqlite"));
+        db.run("insert into commit_log values (3), (5)");
+        rows(db);
+        db.close();
+        return root;
+    };
+    const statement = (db: Database, id: string, session: string, created = 1) => {
+        const payload = new TextEncoder().encode(
+            JSON.stringify({
+                summary: "User stated: Use tabs.",
+                rationale: JSON.stringify({ session, memory: `mem_${id}` }),
+            }),
+        );
+        db.run(
+            "insert into decisions (object_id, decision_payload, created_commit_seq) values (?, ?, ?)",
+            [`stm_${id}`, payload, created],
+        );
+        db.run("insert into object_registry values (?, 'decision', 'user', ?, null, ?)", [
+            `stm_${id}`,
+            created,
+            // Each statement sits on its own message's lineage; the ids here are hex digits.
+            `memory_capture_statement:${id.repeat(32)}`,
+        ]);
+    };
+    const memory = (
+        db: Database,
+        id: string,
+        approval: string,
+        created = 1,
+        invalidated: number | null = null,
+    ) => {
+        db.run("insert into object_registry values (?, 'decision', 'assistant', ?, ?, '')", [
+            id,
+            created,
+            invalidated,
+        ]);
+        db.run("insert into admission_decisions values (?, ?, 'approve', 'active', ?, ?)", [
+            `${created}:approve:${id}`,
+            id,
+            created,
+            approval,
+        ]);
+    };
+    const dispute = (db: Database, id: string, commit: number) =>
+        db.run(
+            "insert into admission_decisions values (?, ?, 'mark_disputed', 'disputed', ?, null)",
+            [`${commit}:dispute:${id}`, id, commit],
+        );
+    const read = (root: string) => observeArm("eidnara", "pi", root, {}).statements;
+
+    // One statement, disputed: mem_a was replaced by mem_a2 under the same approval (a contested
+    // mark rewrites the memory), and the reviewer disputed the live one.
+    const alone = build((db) => {
+        statement(db, "a", "sim-s-0001");
+        memory(db, "mem_a", "stm_a", 1, 3);
+        memory(db, "mem_a2", "stm_a", 3);
+        dispute(db, "mem_a2", 5);
+    });
+    expect(read(alone)).toMatchObject({
+        count: 1,
+        sessions: [],
+        unattributed: 0,
+        retired: 0,
+        disputed_statements: 1,
+        disputed: { live: 1, retired: 0 },
+        error: null,
+    });
+    // A disputed statement beside a live one: later sessions owe for the live one alone.
+    const beside = build((db) => {
+        statement(db, "a", "sim-s-0001");
+        memory(db, "mem_a", "stm_a");
+        dispute(db, "mem_a", 3);
+        statement(db, "b", "sim-s-0004");
+        memory(db, "mem_b", "stm_b");
+    });
+    expect(read(beside)).toMatchObject({
+        count: 2,
+        sessions: ["sim-s-0004"],
+        unattributed: 0,
+        disputed_statements: 1,
+    });
+    // A statement stays owed while a live memory it approves stands: stm_a's dispute was followed
+    // by an approval, stm_b's dispute names a commit the log lacks, stm_c approves a second live
+    // memory, stm_d's disputed memory is retired with another live one beside it, and stm_e
+    // approves no memory.
+    const standing = build((db) => {
+        statement(db, "a", "sim-s-0001");
+        memory(db, "mem_a", "stm_a");
+        dispute(db, "mem_a", 3);
+        db.run(
+            "insert into admission_decisions values ('5:approve:mem_a', 'mem_a', 'approve', 'active', 5, 'stm_a')",
+        );
+        statement(db, "b", "sim-s-0002");
+        memory(db, "mem_b", "stm_b");
+        dispute(db, "mem_b", 99);
+        statement(db, "c", "sim-s-0003");
+        memory(db, "mem_c", "stm_c");
+        dispute(db, "mem_c", 3);
+        memory(db, "mem_c2", "stm_c", 3);
+        statement(db, "d", "sim-s-0004");
+        memory(db, "mem_d", "stm_d", 1, 5);
+        dispute(db, "mem_d", 3);
+        memory(db, "mem_d2", "stm_d", 5);
+        statement(db, "e", "sim-s-0005");
+    });
+    expect(read(standing)).toMatchObject({
+        count: 5,
+        sessions: ["sim-s-0001", "sim-s-0002", "sim-s-0003", "sim-s-0004", "sim-s-0005"],
+        disputed_statements: 0,
+    });
+    // The mismatch counts the statements that owe a block: the live one, without the disputed one.
+    const seen = observeArm("eidnara", "pi", beside, { agent: 3, memory_capture: 1 });
+    seen.delivery = {
+        requests: 3,
+        unreadable: 0,
+        injected_blocks: 0,
+        notes: { expected: 0, delivered: 0, missing: [], misplaced: [] },
+        memory_blocks: 0,
+        sessions: 2,
+        memory_due: true,
+        due_blocks: 0,
+    };
+    expect(armMismatches(seen)).toEqual([
+        "the final store holds 1 user statements captured before later sessions' agent requests, but none of those requests carried a <project-memory> block",
+    ]);
+});
+
 test("failed-command records and disputed objects are counted in the final store, live and retired", () => {
     const root = captured(armRoot([PI_ON, PASS]));
     const db = new Database(join(root, "..", "final-store", "kernel.sqlite"));
@@ -1248,7 +1383,8 @@ test("failed-command records and disputed objects are counted in the final store
         ]);
     }
     db.run(
-        `insert into admission_decisions values
+        `insert into admission_decisions
+            (admission_decision_id, subject_object_id, event_kind, disposition, commit_seq) values
             ('a1', 'mem_p', 'approve', 'approved', 1), ('a2', 'mem_p', 'mark_disputed', 'disputed', 3),
             ('a3', 'mem_q', 'mark_disputed', 'disputed', 3),
             ('a4', 'mem_r', 'mark_disputed', 'disputed', 3), ('a5', 'mem_r', 'approve', 'approved', 5),

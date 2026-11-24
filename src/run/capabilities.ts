@@ -689,11 +689,12 @@ export interface ReviewerStatusObservation {
 
 /**
  * The committed user statements (`stm_*` decisions whose commit the log holds) in
- * `final-store/kernel.sqlite`. `sessions` and `unattributed` describe the live ones, which the
- * Kernel still serves as approved: the sessions their capture rationale names and the count of
- * those whose payload names none. A record retired during the run is left out for the whole
- * run, the sessions before its retirement included. Null when the store is absent, and an
- * `error` when its decisions cannot be read.
+ * `final-store/kernel.sqlite`. `sessions` and `unattributed` describe the live ones whose memory
+ * the daemon still serves in the block: the sessions their capture rationale names and the count
+ * of those whose payload names none. A record retired during the run, and a record whose memory
+ * was disputed during the run, is left out for the whole run, the sessions before the retirement
+ * or the dispute included. Null when the store is absent, and an `error` when its decisions
+ * cannot be read.
  */
 export type StatementObservation = {
     count: number;
@@ -704,6 +705,13 @@ export type StatementObservation = {
      * progress a later statement ended; absent on observations recorded before it was read.
      */
     retired?: number;
+    /**
+     * Of `count`, the live statement records whose memory is disputed: the record approves at
+     * least one live memory, and every live memory it approves has `disputed` as its latest own
+     * admission decision. The daemon leaves a disputed memory out of the block, so these records
+     * owe none. Absent on observations recorded before it was read.
+     */
+    disputed_statements?: number;
     /** Why the store's decisions could not be read, or null. */
     error: string | null;
     /**
@@ -1356,9 +1364,35 @@ export function readDescriptors(
 }
 
 /**
+ * The standing of the object the enclosing query binds as `o`: the disposition of its latest own
+ * admission decision, the newest committed one that names it, from its creation on (Eidnara
+ * `kernel/src/admission.rs` `latest_own_decision_sql`, read here without its lineage clause).
+ */
+const LATEST_OWN_DISPOSITION = `(select a.disposition from admission_decisions a
+    where a.subject_object_id = o.object_id
+      and a.commit_seq in (select commit_seq from commit_log)
+      and a.commit_seq >= o.created_commit_seq
+    order by a.commit_seq desc, a.admission_decision_id desc
+    limit 1)`;
+
+/**
+ * The live memories the statement record the enclosing query binds as `d` approves: the subjects
+ * of the committed admission decisions that name the record as their approval
+ * (`approval_object_id`; capture writes one `approve` decision for the memory of a statement and
+ * one for each memory that later replaces it, Eidnara `memory_capture.rs`).
+ */
+const APPROVED_LIVE_MEMORIES = `admission_decisions ap
+    join object_registry o on o.object_id = ap.subject_object_id
+    where ap.approval_object_id = d.object_id
+      and ap.commit_seq in (select commit_seq from commit_log)
+      and o.created_commit_seq in (select commit_seq from commit_log)
+      and o.invalidated_commit_seq is null`;
+
+/**
  * The accepted user statements of a final Kernel store: `stm_*` decisions, each naming its capture
  * session in the rationale of its JSON payload, with the live ones told apart from those an
- * invalidation retired. Null when the store is absent or unreadable.
+ * invalidation retired and from those whose memory is disputed. Null when the store is absent or
+ * unreadable.
  */
 export function readStatements(kernelPath: string): StatementObservation {
     if (!lstatSync(kernelPath, { throwIfNoEntry: false })?.isFile()) return null;
@@ -1367,21 +1401,33 @@ export function readStatements(kernelPath: string): StatementObservation {
         db = new Database(kernelPath, { readonly: true });
         const rows = db
             .query(
-                `select decision_payload as p,
-                        object_id in (select object_id from object_registry
-                                      where invalidated_commit_seq is not null) as retired
-                 from decisions
-                 where object_id glob 'stm_*'
-                   and created_commit_seq in (select commit_seq from commit_log)`,
+                `select d.decision_payload as p,
+                        d.object_id in (select object_id from object_registry
+                                        where invalidated_commit_seq is not null) as retired,
+                        (exists (select 1 from ${APPROVED_LIVE_MEMORIES})
+                         and not exists (select 1 from ${APPROVED_LIVE_MEMORIES}
+                                         and coalesce(${LATEST_OWN_DISPOSITION}, '') <> 'disputed')
+                        ) as disputed
+                 from decisions d
+                 where d.object_id glob 'stm_*'
+                   and d.created_commit_seq in (select commit_seq from commit_log)`,
             )
-            .all() as { p: Uint8Array | string; retired: number }[];
+            .all() as { p: Uint8Array | string; retired: number; disputed: number }[];
         const sessions = new Set<string>();
         let unattributed = 0;
         let retired = 0;
-        // A retired record approves nothing, so no later session owes its statement's block.
-        for (const { p, retired: gone } of rows) {
+        let disputedStatements = 0;
+        // A retired record approves nothing, so no later session owes its statement's block. A
+        // dispute is an admission decision on the memory the record approves and leaves the
+        // record live; the daemon keeps a disputed memory out of the block, so a statement whose
+        // every live memory is disputed owes none either.
+        for (const { p, retired: gone, disputed: contested } of rows) {
             if (gone) {
                 retired++;
+                continue;
+            }
+            if (contested) {
+                disputedStatements++;
                 continue;
             }
             const session = rationaleOf(p)?.session;
@@ -1424,20 +1470,12 @@ export function readStatements(kernelPath: string): StatementObservation {
                    and d.created_commit_seq in (select commit_seq from commit_log)`,
             )
             .get() as { n: number; live: number };
-        // An object's standing is its latest own admission decision: the newest committed one
-        // that names it, from its creation on (Eidnara `kernel/src/admission.rs`
-        // `latest_own_decision_sql`, read here without its lineage clause).
         const disputed = db
             .query(
                 `select count(*) as n, coalesce(sum(o.invalidated_commit_seq is null), 0) as live
                  from object_registry o
                  where o.created_commit_seq in (select commit_seq from commit_log)
-                   and (select a.disposition from admission_decisions a
-                        where a.subject_object_id = o.object_id
-                          and a.commit_seq in (select commit_seq from commit_log)
-                          and a.commit_seq >= o.created_commit_seq
-                        order by a.commit_seq desc, a.admission_decision_id desc
-                        limit 1) = 'disputed'`,
+                   and ${LATEST_OWN_DISPOSITION} = 'disputed'`,
             )
             .get() as { n: number; live: number };
         return {
@@ -1445,6 +1483,7 @@ export function readStatements(kernelPath: string): StatementObservation {
             sessions: [...sessions].sort(),
             unattributed,
             retired,
+            disputed_statements: disputedStatements,
             error: null,
             lifetimes,
             ended_work: endedWork,
@@ -2039,7 +2078,10 @@ function memoryMismatches(profile: ArmProfile, o: ArmObservation): string[] {
         out.push(`the final store's user statements cannot be read: ${o.statements.error}`);
     }
     const mode = deliveryOf(profile);
-    const statements = (o.statements?.count ?? 0) - (o.statements?.retired ?? 0);
+    const statements =
+        (o.statements?.count ?? 0) -
+        (o.statements?.retired ?? 0) -
+        (o.statements?.disputed_statements ?? 0);
     if (d.memory_due && mode === "automatic" && (d.due_blocks ?? d.memory_blocks) === 0) {
         out.push(
             `the final store holds ${statements} user statements captured before later sessions' agent requests, but none of those requests carried a <project-memory> block`,
