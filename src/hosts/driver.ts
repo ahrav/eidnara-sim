@@ -101,8 +101,8 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm
     callsFor?: (session: string) => CallView[];
     /**
      * Awaited after a probe turn and before its snapshot, so background calls the turn started
-     * are on record, and at a session's end on an arm that runs the memory reviewer, before its
-     * reviewer drains.
+     * are on record, and in the settle step of an arm that runs the memory reviewer, at a
+     * session's end and before a clock advance, before its reviewer drains.
      */
     settle?: () => Promise<void>;
     /** Entries a walk of a workspace `.git` visits at most; the default is `GIT_DIR_ENTRY_CAP`. */
@@ -201,11 +201,30 @@ export const REVIEW_DRAIN_MS = 300_000;
 const CONTROL_GRACE_MS = 5_000;
 
 /**
- * One line of `<arm>/review-drain.jsonl`: a session end's settle step on an arm that runs the
- * memory reviewer, or, with `late`, the answer of a drain whose step recorded it unanswered.
+ * The idle interval of the daemon's review worker (Eidnara
+ * `crates/daemon/src/memory_reviewer/worker.rs`, `IDLE_INTERVAL`, 30 s of monotonic time): the
+ * worker runs a pass at least this often while the daemon is up. A clock advance of this length
+ * or more skips idle time in which the worker would have run a pass, so the arm that runs the
+ * memory reviewer settles before it (`settlesAdvance`).
+ */
+export const REVIEWER_IDLE_INTERVAL_MS = 30_000;
+
+/** What a settle step ran before: the end of a session, or a clock advance. */
+export type SettleKind = "session_end" | "advance";
+
+/**
+ * One line of `<arm>/review-drain.jsonl`: a settle step on an arm that runs the memory reviewer,
+ * or, with `late`, the answer of a drain whose step recorded it unanswered.
  */
 export interface ReviewDrainRecord {
+    /** The session that ended, or, on an `advance` line, the session of the event the clock advances onto. */
     session: string;
+    /** The step's kind. A line that carries no `before` is a session end's, written before the member existed. */
+    before?: SettleKind;
+    /** On an `advance` line, the event the clock advances onto. */
+    next_event?: string;
+    /** On an `advance` line, the scenario time the advance skips. */
+    skip_ms?: number;
     /** Wall time at which the step began, before the open-jobs wait. */
     started_wall_ms: number;
     /** Wall time at which the step ended, or, on a `late` line, at which the drain answered. */
@@ -232,6 +251,9 @@ const STOP_DRAIN_WAIT_MS = 30_000;
 
 /** What a review drain returned: the runs it settled, or why it returned none. */
 type DrainReply = Pick<ReviewDrainRecord, "settled" | "error">;
+
+/** The members of a settle step's line that are known when the step begins. */
+type DrainStep = Omit<ReviewDrainRecord, "wall_ms" | "settled" | "error" | "late">;
 
 /** Sends the fixture's review drain to `daemon` and resolves, whenever the control answers, to what it returned. */
 function drainReply(daemon: DaemonStack): Promise<DrainReply> {
@@ -877,7 +899,7 @@ export class HostDriver implements ArmDriver {
     private unanswered: {
         daemon: DaemonStack;
         pid: number | null;
-        step: Pick<ReviewDrainRecord, "session" | "started_wall_ms">;
+        step: DrainStep;
         returned: Promise<void>;
     } | null = null;
 
@@ -905,11 +927,7 @@ export class HostDriver implements ArmDriver {
      * unanswered request, and appends its answer or its failure to `review-drain.jsonl` as a
      * `late` line when it returns.
      */
-    private holdDrain(
-        daemon: DaemonStack,
-        step: Pick<ReviewDrainRecord, "session" | "started_wall_ms">,
-        request: Promise<DrainReply>,
-    ): void {
+    private holdDrain(daemon: DaemonStack, step: DrainStep, request: Promise<DrainReply>): void {
         const drain = { daemon, pid: daemon.pid(), step, returned: Promise.resolve() };
         drain.returned = request.then((reply) => {
             if (this.unanswered === drain) this.unanswered = null;
@@ -1294,7 +1312,7 @@ export class HostDriver implements ArmDriver {
             this.sessionProject = null;
             this.recordState();
             const gone = this.checkDaemon(e);
-            await this.settleReviews(e, gone);
+            await this.settleReviews({ session: String(e.session), before: "session_end" }, gone);
             // A daemon that ended during the drain is reported at this session end too.
             if (!gone) this.checkDaemon(e);
             if (!this.transcriptsChecked) this.checkTranscripts(host);
@@ -1414,23 +1432,28 @@ export class HostDriver implements ArmDriver {
 
     /**
      * The settle step of an arm that runs the memory reviewer, at each session end after the host
-     * session closed: the open background jobs end (`settle`), and the fixture drains the
+     * session closed and before each clock advance of `REVIEWER_IDLE_INTERVAL_MS` or more
+     * (`beforeAdvance`): the open background jobs end (`settle`), and the fixture drains the
      * reviewer's worker, which runs review passes until one settles nothing, so the reviews of
-     * the session's published messages end before the scheduler moves scenario time to the next
-     * session. The drain is the step's one request to the fixture control. Each call appends one
-     * `ReviewDrainRecord` to `review-drain.jsonl`. A drain that fails is recorded with its error,
-     * and the session end returns. A `settle` that rejects (the scheduler's job deadline) is recorded
-     * and rethrown, which stops the run; the resume reopens the session and delivers the
-     * `session_end` again (`settlesSessionEnds`). The step waits `REVIEW_DRAIN_MS` for its drain; a drain that passes
-     * the wait is recorded as unanswered, the session end returns, and the drain stays the
-     * control's one open request (`holdDrain`) while the worker keeps running in the daemon. A
+     * the published messages end, and the worker's claim catch-up runs, before the scheduler moves
+     * scenario time. The drain is the step's one request to the fixture control. Each call appends
+     * one `ReviewDrainRecord` to `review-drain.jsonl`, whose `before` names the kind. A drain that
+     * fails is recorded with its error, and the step returns. A `settle` that rejects (the
+     * scheduler's job deadline) is recorded and rethrown, which stops the run; the resume reopens
+     * the session and delivers the `session_end` again (`settlesSessionEnds`), or reaches the
+     * same advance and runs its step again. The step waits `REVIEW_DRAIN_MS` for its drain; a
+     * drain that passes the wait is recorded as unanswered, the step returns, and the drain stays
+     * the control's one open request (`holdDrain`) while the worker keeps running in the daemon. A
      * step that finds an earlier drain unanswered waits `REVIEW_DRAIN_MS` for it and, when it
      * stays unanswered, records that and sends no request. Every other arm skips the step and
      * writes no file.
      */
-    private async settleReviews(e: ScenarioEvent, daemonGone: boolean): Promise<void> {
+    private async settleReviews(
+        at: Omit<DrainStep, "started_wall_ms">,
+        daemonGone: boolean,
+    ): Promise<void> {
         if (!reviewsMemory(armProfile(this.o.arm))) return;
-        const step = { session: String(e.session), started_wall_ms: Date.now() };
+        const step: DrainStep = { ...at, started_wall_ms: Date.now() };
         const errors: string[] = [];
         let settled: number | null = null;
         const daemon = this.daemon;
@@ -1472,6 +1495,34 @@ export class HostDriver implements ArmDriver {
     /** Every `session_end` of an arm that runs the memory reviewer owes the settle step. */
     settlesSessionEnds(): boolean {
         return reviewsMemory(armProfile(this.o.arm));
+    }
+
+    /**
+     * Whether a clock advance of `skipMs` owes the settle step: the arm runs the memory reviewer
+     * and the advance skips at least the worker's idle interval, the idle time in which the
+     * worker would have run a pass.
+     */
+    settlesAdvance(skipMs: number): boolean {
+        return reviewsMemory(armProfile(this.o.arm)) && skipMs >= REVIEWER_IDLE_INTERVAL_MS;
+    }
+
+    /**
+     * The settle step before the scheduler advances the arm's clock `skipMs` onto `next`, or
+     * null when the advance owes none (`settlesAdvance`). The step's line carries `before`
+     * `advance`, `next` as `next_event`, and `skipMs` as `skip_ms`. A daemon that is gone gets
+     * no control request and the line says so; the next event reports the exit.
+     */
+    beforeAdvance(skipMs: number, next: ScenarioEvent): Promise<void> | null {
+        if (!this.settlesAdvance(skipMs)) return null;
+        return this.settleReviews(
+            {
+                session: String(next.session),
+                before: "advance",
+                next_event: next.id,
+                skip_ms: skipMs,
+            },
+            !this.daemonAlive(),
+        );
     }
 
     /** Reports a daemon that is gone, and returns whether it did. */
