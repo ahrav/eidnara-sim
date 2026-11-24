@@ -1093,16 +1093,15 @@ touch ${escaped}
         });
     });
 
-    test("a settle that rejects is recorded before it stops the session end, and the session end delivered again runs the step", async () => {
+    test("a settle that rejects is recorded before it stops the session end", async () => {
         const calls: string[] = [];
         // The scheduler's job deadline, as `quiesceJobs` raises it.
         const overrun = new DeadlineOverrun(
             "background jobs kept the quiet window open past 1200000 ms",
         );
-        let stuck = true;
         const settle = async () => {
             calls.push("settle");
-            if (stuck) throw overrun;
+            throw overrun;
         };
         const { driver, armDir } = ending("eidnara-reviewer", reviewing(calls), calls, { settle });
         const end = ev("session_end", { session: "s-0003" });
@@ -1119,19 +1118,62 @@ touch ${escaped}
             },
         ]);
         // The driver tells the scheduler that each of its session ends owes the step, so a
-        // resume delivers this one again; the step then runs and appends the session's next line.
+        // resume delivers this one again.
         expect(driver.settlesSessionEnds()).toBe(true);
-        stuck = false;
-        expect(await driver.event(end)).toEqual({});
-        expect(calls.slice(1)).toEqual(["settle", "drain"]);
-        expect(drains(armDir).map((d) => [d.session, d.settled, d.error === null])).toEqual([
-            ["s-0003", null, false],
-            ["s-0003", 3, true],
-        ]);
         // An arm without the reviewer switch owes no step, so the scheduler ends its cut session end.
         expect(ending("eidnara", reviewing([]), []).driver.settlesSessionEnds()).toBe(false);
         expect(ending("host", null, []).driver.settlesSessionEnds()).toBe(false);
     });
+
+    test.skipIf(!sudo)(
+        "a session end whose settle step the job deadline cut runs the step when a resume delivers it to a reopened session",
+        async () => {
+            const calls: string[] = [];
+            const overrun = new DeadlineOverrun(
+                "background jobs kept the quiet window open past 1200000 ms",
+            );
+            let stuck = true;
+            const settle = async () => {
+                calls.push("settle");
+                if (stuck) throw overrun;
+            };
+            const daemonFactory = () =>
+                ({ ...reviewing(calls), start: async () => undefined }) as unknown as DaemonStack;
+            const { driver, armDir, hosts, transcripts } = fixture(
+                "eidnara-reviewer",
+                { p: gitRepo() },
+                { settle, daemonFactory },
+            );
+            const o = (driver as unknown as { o: DriverOptions }).o;
+            const resumed = new HostDriver(o);
+            // A scenario's `session_end` names its session and no project.
+            const { project: _, ...end } = ev("session_end", { session: "s-0003" });
+            try {
+                await driver.reset();
+                mkdirSync(join(transcripts, "sessions"), { recursive: true });
+                await driver.event(ev("session_start", { session: "s-0003" }));
+                await expect(driver.event(end)).rejects.toBe(overrun);
+                await driver.stop();
+                // The scheduler's resume reopens the session with a fresh host and delivers the
+                // same event; the step runs on the replacement daemon and appends the next line.
+                stuck = false;
+                calls.length = 0;
+                await resumed.resume(ev("session_start", { session: "s-0003" }));
+                expect(hosts.at(-1)?.opened).toEqual([`s-0003@${resumed.workspace("p")}`]);
+                expect(await resumed.event(end)).toEqual({});
+                expect(calls).toEqual(["settle", "drain"]);
+                expect(drains(armDir).map((d) => [d.session, d.settled, d.error === null])).toEqual(
+                    [
+                        ["s-0003", null, false],
+                        ["s-0003", 3, true],
+                    ],
+                );
+            } finally {
+                await resumed.stop().catch(() => undefined);
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
 
     /**
      * The fixture's control as Eidnara's hermetic stack holds it

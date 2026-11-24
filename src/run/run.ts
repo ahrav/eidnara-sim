@@ -2966,7 +2966,8 @@ async function runArms(
                     await driver.stop();
                 }
             },
-        };
+            // The scheduler reads the settle-step rule from this wrapper, so the forward is required.
+        } satisfies ArmDriver & Required<Pick<ArmDriver, "settlesSessionEnds">>;
     }
     await scheduler.run();
     handlersFailed();
