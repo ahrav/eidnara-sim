@@ -48,6 +48,7 @@ import {
     type Qualification,
     qualificationHash,
     qualificationSeed,
+    reviewerStage1Model,
     type SideModels,
     sideModelsOf,
 } from "../prereg/qualification";
@@ -339,6 +340,7 @@ export function requirePlainArtifacts(out: string, arms: readonly string[]): voi
         join("hostbin", arm, `opencode.${process.pid}`),
         join(arm, "resources.jsonl"),
         join(arm, "daemon.log"),
+        join(arm, "review-drain.jsonl"),
         join(arm, "store.img"),
         join(arm, "transcripts.json"),
         join(arm, "clock", "offset"),
@@ -607,6 +609,7 @@ export function requireFreshArmRoots(out: string, arms: readonly string[]): void
         "s",
         "store.img",
         "daemon.log",
+        "review-drain.jsonl",
         "transcripts.json",
         "resources.jsonl",
         "state.json",
@@ -1516,7 +1519,11 @@ export interface ArmConfig {
  * The configuration each arm runs, as the host stack writes it for the side model the first
  * session uses; a `model_switch` moves later sessions' side model when no side model is fixed.
  */
-export function armConfigs(order: readonly string[], sideModel: string): Record<string, ArmConfig> {
+export function armConfigs(
+    order: readonly string[],
+    sideModel: string,
+    reviewerStage1Model?: string,
+): Record<string, ArmConfig> {
     return Object.fromEntries(
         order.map((label) => {
             const profile = armProfile(label);
@@ -1526,9 +1533,16 @@ export function armConfigs(order: readonly string[], sideModel: string): Record<
                 {
                     profile,
                     eidnara_config: profile.plugin
-                        ? eidnaraUserConfig("<connection file>", sideModel, arm)
+                        ? eidnaraUserConfig(
+                              "<connection file>",
+                              sideModel,
+                              arm,
+                              reviewerStage1Model,
+                          )
                         : null,
-                    daemon_config: profile.daemon ? fixtureDaemonConfig(sideModel, arm) : null,
+                    daemon_config: profile.daemon
+                        ? fixtureDaemonConfig(sideModel, arm, reviewerStage1Model)
+                        : null,
                 },
             ];
         }),
@@ -1728,7 +1742,11 @@ export async function loadManifest(
         const changed = Object.entries({
             ...current,
             tape_sha256: tapeDigests(manifest.tapes),
-            arms: armConfigs(manifest.order, manifest.side_model ?? manifest.models[0] ?? ""),
+            arms: armConfigs(
+                manifest.order,
+                manifest.side_model ?? manifest.models[0] ?? "",
+                reviewerStage1Model(qualificationOf(o)),
+            ),
             eidnara_build: bind(manifest.order),
         })
             .filter(([k]) => k !== "sim_commit" && k !== "sim_worktree")
@@ -1792,7 +1810,11 @@ export async function loadManifest(
         schema: "sim-run-manifest/v3",
         ...wanted,
         ...digests(),
-        arms: armConfigs(wanted.order, wanted.side_model ?? wanted.models[0] ?? ""),
+        arms: armConfigs(
+            wanted.order,
+            wanted.side_model ?? wanted.models[0] ?? "",
+            reviewerStage1Model(qualificationOf(o)),
+        ),
         eidnara_build: bind(wanted.order),
         tape_sha256: tapeDigests(wanted.tapes),
         base_wall_ms: Date.now(),
@@ -2263,6 +2285,9 @@ async function runArms(
     // The run's caching condition decides whether a record carries its cache gaps; a resume
     // rebuilds the last served receipt times from the log.
     const caching = manifest.prompt_caching ?? "off";
+    // The registered stage-1 model of the memory reviewer: every arm's host stack lists it, a
+    // reviewer arm names it in its configuration, and the arm's capability check reads it.
+    const stage1Model = manifest.side_models?.memory_reviewer_stage1;
     const cacheGaps = caching === "on" ? new CacheGaps() : null;
     /** Each arm's requests by component as this invocation's calls started, for the session-end check. */
     const liveCaching = new Map<string, Record<string, CachingCount>>();
@@ -2682,6 +2707,7 @@ async function runArms(
             build,
             caching,
             qualificationOf(o)?.search_fallback ?? null,
+            stage1Model,
         );
         const { mismatches } = record;
         writeAtomic(join(o.out, arm, "capabilities.json"), `${JSON.stringify(record, null, 2)}\n`);
@@ -2693,8 +2719,6 @@ async function runArms(
     // each session's last agent reply.
     const lastAgent = (arm: string, session: string): AgentReply =>
         agentText.get(`${arm}/${session}`) ?? { text: "" };
-    // The registered stage-1 model of the memory reviewer, which every arm's host stack receives.
-    const reviewerStage1Model = manifest.side_models?.memory_reviewer_stage1;
     for (const arm of manifest.order) {
         const armRoot = join(o.out, arm, "r");
         mkdirSync(dirname(offsetFile(arm)), { recursive: true });
@@ -2713,8 +2737,8 @@ async function runArms(
             models: manifest.models,
             contextLimit: manifest.context_limit,
             ...(manifest.side_model ? { sideModel: manifest.side_model } : {}),
+            ...(stage1Model ? { reviewerStage1Model: stage1Model } : {}),
             promptCaching: caching,
-            ...(reviewerStage1Model ? { reviewerStage1Model } : {}),
             turnDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
             transcriptPaths: hostRow.transcript_paths,
             hostVersions: {

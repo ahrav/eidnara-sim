@@ -230,7 +230,11 @@ export function currentIdentity(config: SimConfig, source: ProbeSource): Record<
     const sideModel = source.manifest.side_model ?? (source.manifest.models[0] as string);
     return {
         ...runIdentity(config, prereg, [source.project]),
-        arms: armConfigs([source.arm], sideModel),
+        arms: armConfigs(
+            [source.arm],
+            sideModel,
+            source.manifest.side_models?.memory_reviewer_stage1,
+        ),
         agent_model: config.agent_model,
     };
 }

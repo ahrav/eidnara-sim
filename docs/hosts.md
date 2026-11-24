@@ -54,14 +54,46 @@ from it.
 | `eidnara-cf` | fallback-search | `direct_host_fixture` | Eidnara | on | off | legacy scan | automatic |
 | `eidnara-hybrid` | production-hybrid | `direct_host_fixture` on the production query route | Eidnara | on | off | fused | automatic |
 | `eidnara-search` | explicit-search-only | `direct_host_fixture` | Eidnara | on | off | legacy scan | explicit search |
+| `eidnara-reviewer` | fallback-search | `direct_host_fixture` | Eidnara | on | off | legacy scan | automatic |
 | `host-oracle` | oracle-context | none | none | n/a | on | none | oracle context |
 
 `eidnara-cf` runs as `eidnara` here; its counterfactual deletions land with
 the counterfactual arm.
 
-Source capture is on for `eidnara`, `eidnara-cf`, `eidnara-hybrid`, and
-`eidnara-search` (`source_capture` in the profile) and off on every other
-arm, so each c8 contrast with `eidnara` differs in one setting. The user-only consent key
+`eidnara-reviewer` is the `eidnara` arm with Eidnara's memory reviewer
+switched on (`memory_reviewer` in the profile, set on this arm alone): the
+same daemon variant, search route, compaction, and source capture. It
+writes the user-only object
+
+```json
+"memory_reviewer": {"enabled": true, "apply": "contest", "model": "amazon-bedrock/<side model>", "stage1_model": "amazon-bedrock/<stage-1 model>"}
+```
+
+into the daemon's user tier (`fixtureDaemonConfig`) and the plugin's
+(`eidnaraUserConfig`), and every other arm writes no such key. The side
+model is the one the arm's history summarizer uses, and it is the review
+model, which writes a proposal for a review stage 1 flagged. The stage-1
+model is the one the registration names under
+`side_models.memory_reviewer_stage1` (`reviewerStage1Model` in
+`src/prereg/qualification.ts`), and `REVIEWER_STAGE1_MODEL`
+(`global.anthropic.claude-haiku-5-5`) when the run passes none; a
+registration that runs the arm must name it. The daemon reads the five
+`memory_reviewer` keys from its user tier alone (`crates/daemon/src/config.rs`),
+at every pass of its review worker, and the plugin's schema admits the
+object in the user tier and drops it from a project tier. The enabled
+switch also turns on the daemon's source capture, which the arm has on
+already, and its contradiction-candidate pass, which every other arm leaves
+off. The arm requires `memory_reviewer` and `memory_review` of its variant,
+so it runs on `eval/w9` and is refused on every earlier build, whose
+fixture installs no reviewer host. A contrast pairs two arms that differ in
+delivery mode, search route, or reviewer switch (`sameTreatment`), so
+`eidnara-reviewer` against `eidnara` is one. The settle step this arm runs
+at each session end is described under "Memory reviewer settle step".
+
+Source capture is on for `eidnara`, `eidnara-cf`, `eidnara-hybrid`,
+`eidnara-search`, and `eidnara-reviewer` (`source_capture` in the profile)
+and off on every other arm, so each c8 contrast with `eidnara` differs in
+one setting. The user-only consent key
 `source_capture.enabled` goes into the daemon's own user tier
 (`fixtureDaemonConfig`, which the hermetic host stack writes as the
 daemon's `eidnara.jsonc`) and into the plugin's user tier, as one user-tier
@@ -113,6 +145,85 @@ delivers automatically with the plugin and not at all without it):
   events carries those events' text ahead of the user's own (`src/run/oracle-note.ts`).
   It stands for no production configuration.
 
+### Memory reviewer settle step
+
+Reviews run in the daemon's worker
+(`crates/daemon/src/memory_reviewer/worker.rs`): one pass every 30 s of
+monotonic time while idle, and at once after a pass that settled a run, at
+most eight runs for a project in a pass. A review of a session's last
+messages starts in the pass after their capture.
+
+Between a session's last turn and the next session's first request the
+daemon otherwise gets this much real time: the scheduler sleeps `settleMs`
+(1,000 ms) after the turn's `EndTurn`; the run's post-turn hold
+(`holdForCpu`, `POST_TURN_SAMPLE_MS`) keeps the job `settle-cpu-<arm>-<n>`
+open for 2,000 ms while the sampler measures the daemon's CPU; and the next
+event waits until the busy set is empty (`quiesce`), which holds the open
+jobs: one `request-<n>` for each proxied request in flight, one
+`<component>-<n>` for each classified model call, and `daemon-cpu-<arm>-<n>`
+while the daemon's CPU fraction over a sample interval exceeds
+`liveness_bounds.daemon_busy_cpu_fraction` (0.05). Then the scheduler moves
+scenario time to the next session. A worker that sleeps between passes
+holds no job and uses no CPU, so the next session would open after about
+two seconds plus the host's close and start, and the reviews of the ended
+session's last messages would run inside it, after its block was composed.
+
+On an arm whose profile sets `memory_reviewer`, the driver's `session_end`
+handling therefore runs a settle step after the host session closed
+(`settleReviews` in `src/hosts/driver.ts`):
+
+1. it waits for the open background jobs (`settle`, the scheduler's
+   `quiesceJobs`, the wait a probe turn uses), so the session's capture and
+   summarizer calls have ended;
+2. it waits up to 30 s for source capture to settle
+   (`DaemonStack.sourceCapture`, the fixture's `source-capture-report`
+   control), so the later statement and the later message a review reads
+   are published;
+3. it calls the fixture's `review-drain` control through
+   `DaemonStack.reviewDrain` with a bound of 300,000 ms (`REVIEW_DRAIN_MS`).
+   The daemon runs review passes until one settles nothing and answers with
+   the number of runs settled.
+
+Each step appends one line to `<arm>/review-drain.jsonl`: `session`,
+`started_wall_ms`, `wall_ms`, `settled` (the runs settled, or `null`), and
+`error` (or `null`). A capture that does not settle is recorded and the
+drain still runs. A drain that fails, that passes its bound, whose control
+gives no reply within five seconds after the bound, or whose build has no
+`review-drain` control is recorded with its error, and the session end
+returns; the worker keeps running in the daemon. A daemon that is gone at
+the session end gets no control request and its line says so. A resume
+that delivers a `session_end` again appends a second line for the session.
+A `settle` that passes the scheduler's job deadline stops the run as it
+does on a probe turn. Every other arm runs no step and writes no file. A
+pass settles nothing while a project's reviews wait out the 60 s after a
+failed stage-1 request or its review holds are at their bound, so a drain
+that meets either returns with reviews still queued, which the worker runs
+in a later pass.
+
+The step runs inside the `session_end` event, before the scheduler journals
+that event and before the next event's clock jump. A `session_end` opens no
+turn, so scenario time stands still during the step except while a job is
+open: each reviewer request holds its request and call jobs, and scenario
+time runs at wall speed for as long as one is in flight. The gateway
+attributes a request by the scope the run holds at its arrival, so a
+drain's call records in `calls.jsonl` carry the ending session, `turn`
+`null`, and, on a component the gateway lists as background work, the
+session's last user turn as `origin_turn`.
+
+The daemon runs under the interposer with real monotonic clocks
+(`docs/time.md`), so its wall clock is scenario time and its timers are
+real time:
+
+| Behaviour | Length | Clock | In an S scenario |
+|---|---|---|---|
+| Review hold of a pending or disputed proposal | 7 days | scenario time | the scenario spans about 3 days, so a hold stays for the run |
+| Retention of captured messages, the evidence a review reads | 30 days | scenario time | every source stays readable |
+| Queue lifetime of a review job | 1 day | scenario time | the drain runs every ready job before the jump to the next session; the largest jump between sessions of S4 seed 104 was 13.2 hours |
+| Worker idle interval | 30 s | real time | the drain replaces the wait between sessions |
+| Pause of a project's reviews after a failed stage-1 request | 60 s, and 2 s before the run's next attempt | real time | a provider failure delays reviews in real time, past a drain |
+| Deadlines of one attempt and of one run | 30 s and 120 s | real time for an attempt; a run's lease is also read on the daemon's wall clock | a drain ends every run before the clock jumps |
+| Life of an `open` activation state without a new pass | 300 s | real time | the worker's passes renew it while the daemon runs |
+
 ### Oracle note
 
 The note is a prefix of the probe turn's user message. Both hosts take
@@ -155,7 +266,9 @@ the variants read there:
 
 | Build | Commit | Variants | Read for |
 |---|---|---|---|
-| `eval/w4` (`AUDITED_EIDNARA`, the current build) | `6aabc77e1` | all three | the correctness retest (W4S, W4SH, W4P): `main` `228f9fb74` (which holds the merged Eidnara #1221 to #1224) plus the open heads of #1230, #1227, #1228, and #1229 |
+| `eval/w9` (`AUDITED_EIDNARA`, the current build) | `4c293f183` | all three | the reviewer campaign: `main` `ea12bff2a` plus the heads of Eidnara #1236 (the block's closing sentence), #1237 (the dated replacement mark), #1238 (named files), #1232 (failed-command records), #1239 (the durable-text redactor), and #1240 to #1243 (the memory reviewer) |
+| `main-ea12bff2a` | `ea12bff2a` | all three | the reference arm of the reviewer campaign: `main` with the PRs of `eval/w4` as merged, plus #1233 (general talk classed `status`) and #1235 (a user's sentence approved by the speaker its extractor names) |
+| `eval/w4` | `6aabc77e1` | all three | the correctness retest (W4S, W4SH, W4P): `main` `228f9fb74` (which holds the merged Eidnara #1221 to #1224) plus the open heads of #1230, #1227, #1228, and #1229 |
 | `eval/w3-all` | `a996cc466` | all three | the caching-on retest (W3S, W3SH, W3P): `main` `2fbeb6059` (which holds #1220 as merged, three capture commits past the head in `eval/w2b`) plus the open heads of Eidnara #1223, #1224, #1221, and #1222 |
 | `eval/w2b` | `ae1b673b7` | all three | the S rerun (W2S2, W2S2H) and the reference arm of both retests: `main` `1bf1ae612` (which holds the merged heads of Eidnara #1209, #1212, #1213, #1214, and #1215) plus the open heads of #1220 and #1217 |
 | `eval/w2` | `7901aae39` | all three | the first focused S run (W2S, W2SH): `main` `da360026c` (which holds Eidnara #1210, #1211, and #1219) plus the open heads of #1209, #1212, #1213, #1214, #1215, #1217 |
@@ -171,18 +284,21 @@ those variants' source files match the clone's working tree. The manifest
 records the bound build as `eidnara_build` (`commit`, `label`, and the
 capability values of each variant the arms run), a resume must bind the same
 build, and the arm's evidence is checked against that build's values. One
-sim revision therefore runs the retest's arms on the `eval/w4` build and
-a reference arm on the `eval/w2b` build, each run with its own `SIM_CONFIG`
-(`docs/run-command.md`, campaign `config`). The `eval/w3-all`, `eval/w2b`,
-and `eval/w2` entries keep the earlier registrations bound to the commits
-they name; `eval/w3-all` has its own table (`W3_VARIANTS`) and the two w2
-builds share one (`W2_VARIANTS`). The table below holds for the current
-build, the w3 build, and both w2 builds:
+sim revision therefore runs a campaign's arms on its current build and
+a reference arm on its reference build, each run with its own `SIM_CONFIG`
+(`docs/run-command.md`, campaign `config`). The `eval/w4`, `eval/w3-all`,
+`eval/w2b`, and `eval/w2` entries keep the earlier registrations bound to
+the commits they name. `eval/w9` has the current table (`DAEMON_VARIANTS`),
+`main-ea12bff2a` and `eval/w4` share one (`W4_VARIANTS`), since every probe
+of that table holds at both commits, `eval/w3-all` has its own
+(`W3_VARIANTS`), and the two w2 builds share one (`W2_VARIANTS`). The table
+below holds for every build from `eval/w2` on, except its memory reviewer
+column, which on `eval/w9` reads `yes` for all three variants:
 
 | Variant | Search route | Embeddings | Memory reviewer | Side calls | Memory injection | Source capture |
 |---|---|---|---|---|---|---|
-| `direct_host_fixture` | legacy scan (started without `--query-route`) | deterministic 8-dimension engine | none (its `review-witness` control runs reviewer jobs against a scripted local provider on a test's request) | through the proxy, by the `--harness-runtime` redirect extension | switchable | on the consent key; its control socket reports the settled `source_capture` counters |
-| `direct_host_fixture` fused (`direct-host-fixture-fused`) | fused: `--query-route production --local-embeddings-manifest <payload-manifest.json>` | `gte-modernbert-base-f32`, the payload's local embedding lane | none | through the proxy | switchable | on the consent key |
+| `direct_host_fixture` | legacy scan (started without `--query-route`) | deterministic 8-dimension engine | before `eval/w9`: none (its `review-witness` control runs reviewer jobs against a scripted local provider on a test's request); on `eval/w9`: a reviewer host over the fixture's own model execution, with the `review-drain` control | through the proxy, by the `--harness-runtime` redirect extension | switchable | on the consent key; its control socket reports the settled `source_capture` counters |
+| `direct_host_fixture` fused (`direct-host-fixture-fused`) | fused: `--query-route production --local-embeddings-manifest <payload-manifest.json>` | `gte-modernbert-base-f32`, the payload's local embedding lane | as the legacy fixture | through the proxy | switchable | on the consent key |
 | production `eidnara-host` | fused | `gte-modernbert-base-f32` | yes | straight to Bedrock | switchable | on the consent key |
 
 Every variant also records the behaviours the arms run on, each with its
@@ -204,14 +320,15 @@ The c8 build and the two w2 builds differ in six:
 | `search_progress` | not registered (no fused variant) | `true` on the fused variants: `search.lifecycle.status` answers with `progress` (`tip`, `checkpoint`, `lag_commits`, `rebuilds`, `blocked`); `false` on the legacy fixture, which starts no lifecycle owner |
 
 The w3 build differs from the two w2 builds in two more, on every variant,
-and the current build keeps both values:
+and every later build keeps both values:
 
 | Capability | `eval/w2`, `eval/w2b` (and `eval/c8`) | `eval/w3-all` |
 |---|---|---|
 | `statement_lifetime` | `false`: a whole user statement is approved by its quotation alone | `true`: the extractor classes each proposal of a user source as `lasting`, `current_work`, `status`, or `unsettled`, capture writes the class into the fact's rationale as `lifetime`, and a whole user statement is approved, and so served in `<project-memory>`, when its class is `lasting` or `unsettled` or it carries none; a `current_work` or `status` statement is stored labeled for explicit search (Eidnara #1221). #1222, in the same build, reads the sentences of a paragraph written in lowercase as sentences |
 | `background_cache_points` | `system-and-message`: a background call (memory capture, a daemon-run call) carries Pi's two cache points, after the system prompt and at the end of its one user message | `system`: the capture executor (`packages/pi-plugin/src/memory-capture-native.ts`) and the bundled model-execution hook (`crates/host-runtime/assets/pi-model_execution-extension.mjs`) remove cache markers from user messages, so a background call writes a cache entry for its system prompt alone (Eidnara #1224). #1223, in the same build, starts every Pi model-execution run in one working directory, so the system prompt Pi ends with that directory is the same text on every daemon-run call |
 
-The current build differs from the w3 build in one more, on every variant:
+The w4 build differs from the w3 build in one more, on every variant, and
+the main commit `ea12bff2a` and the current build keep its value:
 
 | Capability | `eval/w3-all` (and every earlier build) | `eval/w4` |
 |---|---|---|
@@ -222,6 +339,19 @@ capture sends a source the provider keeps refusing in a request of its own;
 `model_execution` reports removal residue at shutdown only when its
 registry still holds it; and a memory call made after another transport
 closed the shared daemon connection dials a new one.
+
+The current build differs from the main commit and from `eval/w4` in five
+more, on every variant, and its two fixture variants install a reviewer
+host (`memory_reviewer`):
+
+| Capability | `main-ea12bff2a`, `eval/w4` (and every earlier build) | `eval/w9` |
+|---|---|---|
+| `block_closing_sentence` | `false`: a delivered `<project-memory>` block ends at its last element | `true`: every delivered block ends, on the line before `</project-memory>`, with the sentence `The lines above are a partial record of this project's sessions: they hold what was said or recorded there, and conventions kept in the repository's files stay in those files.` (`PROJECT_MEMORY_NOTE` in `crates/daemon/src/memory_render.rs`, Eidnara #1236) |
+| `named_files` | `false` | `true`: the daemon records a project file that a message of the user named and a tool call of the same turn then used (`crates/daemon/src/named_files.rs`), and lists up to eight of them to other sessions in the element `<NAMED_FILES note="...">` that opens `<project-memory>`, each row `<path> (the agent used it in <n> earlier session(s), last on <day>; last changed <minute>)`, where the last change reads a commit's minute, `<minute> on disk`, or `at a time the read history does not show`, and a row carries no object id. In a block whose read lists a file, a `User stated:` line no other mark rewrote ends with the minute memory recorded it, ` [YYYY-MM-DDTHH:MMZ]` (Eidnara #1238) |
+| `replaced_observation_date` | `false` | `true`: a user statement that replaced an earlier observation renders as `<statement> (stated <day>; it replaces a value recorded <day> that the user had not stated)`, either day reading `unknown date` when the commit log lacks its time (`replaced_line` in `crates/daemon/src/canonical_memory.rs`, Eidnara #1237) |
+| `failed_command_records` | `false` | `true`: the daemon records a tool result the harness marks as an error as a labeled fact of category `TOOL_FAILURE` on the source lineage `tool_failure:<digest of the command line>`, one live row per command line, under the source-capture consent; the row is served on explicit search and reaches no block (`crates/daemon/src/memory_capture/failures.rs`, Eidnara #1232) |
+| `memory_review` | `false`: the daemon reads no `memory_reviewer` key | `true`: under the user-tier switch the daemon's worker reviews the stored memories of a project in two stages through its host's model execution, and in `contest` mode writes a `disputed` label (the Kernel's `mark_disputed`: the memory leaves the block and stays on explicit search) or a `contested` mark on a user statement (`crates/daemon/src/memory_reviewer/`, Eidnara #1240 to #1243) |
+| `memory_reviewer` | fixture variants `false`, production `eidnara-host` `true` | `true` on all three: the fixture builds its `Handler` `with_memory_reviewer_host`, so the worker runs in it as under `eidnara-host`, and its control socket answers `review-drain` |
 
 The fused fixture's projection is served to readers while it trails the
 kernel tip by at most `FIXTURE_READER_LAG_COMMITS` (1,024) commits, the
@@ -265,9 +395,11 @@ handler, the Pi transform window, and the shared transform client whose
 
 Each variant also records `probes`: one regular expression per capability
 reading that a named source file at the audited commit matches or lacks
-(for example, the fixture lacks `with_memory_reviewer_host`, and
-`source_capture.rs` gates capture on `config.source_capture_enabled &&
-config.memory_enabled`). Moving the pin to a new Eidnara commit is one
+(for example, the fixture of a build before `eval/w9` lacks
+`with_memory_reviewer_host`, and `source_capture.rs` gates capture on
+`config.source_capture_enabled && config.memory_enabled`). A probe that
+reads a behaviour as absent names a file every audited commit holds, since
+a probe on a file the commit lacks fails. Moving the pin to a new Eidnara commit is one
 command against a checkout that holds both commits:
 
 ```sh
@@ -360,6 +492,29 @@ of a search result), and the capture executor and the model-execution hook
 (the merged forms of #1224). The w4 table adds
 `crates/daemon/src/memory_render.rs`, which renders the element, to its
 audited sources. The other capability values stand.
+
+At `4c293f183` the verdict against `eval/w9` is `unchanged`, at
+`ea12bff2a` against `main-ea12bff2a`, and each earlier build's commit stays
+`unchanged` against its own table. From `6aabc77e1` to `ea12bff2a` every
+probe of the w4 table holds and four audited sources change
+(`canonical_memory.rs`, `lib.rs`, `memory_capture.rs`, and
+`memory_capture/native.rs` under `crates/daemon/src/`: the merged forms of
+the w4 PRs, #1233, and #1235), so the main commit shares that table under
+its own label. From `ea12bff2a` to `4c293f183` every probe of the w4 table
+holds except the fixture's `memory_reviewer` probe and the seven that read
+the five capabilities above as absent, and sixteen audited sources change:
+the fixture and its `review_witness.rs`, `canonical_memory.rs`,
+`config.rs`, `lib.rs`, `m0_compose.rs`, `memory_capture.rs`,
+`memory_capture/native.rs`, `memory_render.rs`, `source_capture.rs`, and
+`transform.rs` under `crates/daemon/src/`, the model-execution hook and
+`model_execution/pi.rs`, `hermetic-host.ts`, and the Pi plugin's `index.ts`
+and `pi-transform.ts`. The hook gains a flag under which a daemon-run call
+sends its caller's system text as written, and it still removes cache
+markers from user messages, so `background_cache_points` stands. The w9
+table adds `named_files.rs`, `memory_capture/failures.rs`, and
+`memory_reviewer/worker.rs`, `review_cycle.rs`, `stage_one.rs`, and
+`coordinator.rs` to its audited sources. The other capability values
+stand.
 
 ## Prompt caching
 
@@ -730,6 +885,27 @@ complete evidence only when the two agree:
     `current_work_delivery`; a build with it may show none, since the
     element needs a live statement of work in progress from an earlier
     session and an end needs a later statement that names it.
+  - `delivery.closing_blocks`, `delivery.named_file_blocks`, and
+    `delivery.replaced_blocks` count the agent requests whose
+    `<project-memory>` block ends with the closing sentence, holds a
+    `<NAMED_FILES>` element, and renders a statement with the dated
+    replacement mark. Each above zero is a mismatch on a build without
+    `block_closing_sentence`, `named_files`, or `replaced_observation_date`
+    in turn. A build with `block_closing_sentence` is a mismatch when its
+    requests carry blocks and none ends with the sentence; it may show no
+    named file and no replacement, since the element needs a file an
+    earlier session used and the mark a statement that replaced an
+    observation.
+  - `statements.failed_commands` counts the committed failed-command
+    records of the final store, live and retired: decisions of kind
+    `TOOL_FAILURE` whose `object_registry` source id is `tool_failure` or
+    opens `tool_failure:`. One is a mismatch on a build without
+    `failed_command_records`; a build with it may show none.
+    `statements.disputed` counts the objects whose newest committed
+    admission decision is `disputed`, live and retired. It decides no
+    mismatch on any arm or build: the reviewer's `contest` mode writes the
+    mark, and so does the agent's own `eidnara_memory` dispute action,
+    which every audited build has.
   - `delivery.contested_blocks` counts agent requests whose
     `<project-memory>` block renders a contested statement, and
     `search.contested` the `eidnara_search` results with a `Contested by`
@@ -767,7 +943,59 @@ complete evidence only when the two agree:
     with no reading and at least one failed read is a mismatch, since the
     declared status is unverified; an arm too short for any read to return
     owes none. The lag and rebuild totals are recorded for the analysis and
-    decide no mismatch.
+    decide no mismatch. `daemon_status.memory_reviewer` totals the
+    `memory_reviewer` block of the same `status` answer, which every audited
+    build writes: the readings that carry it, those whose
+    `activation_state` is `open`, the readings by state, the last state,
+    and whether the last reading comes from a daemon process that reported
+    `open` before. The worker reports `open` while a pass found a project
+    under the review switch in the last 300 s of real time, and the state of
+    the owner's activation record otherwise, which in a run reads
+    `missing`.
+- `reviewer` holds what the arm's artefacts show of the memory reviewer,
+  read by one rule on every arm:
+  - `reviewer.log` counts the reviewer's lines in `daemon.log` over every
+    daemon generation, each by the form the daemon writes it in
+    (`readReviewerLog`): `enqueued job=` lines by trigger (`contested`,
+    `current_work`, `later_statement`, `later_message`), one review job
+    each; `selected <n> of <m> memories for review` lines, one selection
+    pass each; `stage 1 job=` lines by decider (`chat_model`, `classifier`,
+    and `none` for a decision the host made without a request) and decision
+    (`keep`, `flagged`), with the models the lines name; `stage 1 request
+    ended without an answer` lines; `review ended on a later reference the
+    model was not shown` lines; `applied a proposal` lines by kind
+    (`disputed`, `contested`, `standing`, `dropped`, `retired`, `revised`,
+    `created`); `left a change proposal for a reader` and `left a published
+    proposal unapplied` lines; the `stage-1 default <model> failed its
+    first request` line; and the lines that report reviews waiting (a
+    project at its hold bound, a kept hold of a settled proposal, a
+    selection walk that resumes by cursor). The `activation gate closed`
+    line and every other line that opens `daemon: memory_reviewer` are
+    counted apart (`gate_closed`, `other`) and show no review: a daemon
+    with a reviewer host writes the gate line with the switch off.
+    Reviews are the `enqueued` lines, requests the `chat_model` and
+    `classifier` decisions, and changes written the `applied` lines of
+    kind `disputed`, `contested`, `retired`, and `revised`.
+  - `reviewer.drains` totals `review-drain.jsonl`: the settle steps, the
+    runs they settled, their wall time in all and the longest, the steps
+    with an error and the first three messages, and the lines of another
+    shape.
+  - `reviewer.calls` counts the arm's gateway calls of the reviewer's two
+    components, `memory_reviewer_stage1` and `memory_reviewer_stage2`
+    (`REVIEWER_COMPONENTS`).
+  - An arm without the reviewer switch is a mismatch when its log holds a
+    line that shows a review ran, when the proxy records hold a call of a
+    reviewer component, when `review-drain.jsonl` holds a step, and when a
+    status reading reports `open`. The arm with the switch, on a build that
+    declares `memory_review`, having answered agent calls with at least one
+    status reading, is a mismatch when no reading carries the
+    `memory_reviewer` block, when no reading reports `open`, and when the
+    last reading reports another state after the same daemon process
+    reported `open`: a worker that was reviewing and stopped. A replacement
+    daemon after a restart reads `missing` until a session binds its
+    project again, so a last reading of a process that never reported
+    `open` stands. The arm is also a mismatch when a stage-1 decision of
+    the chat model names another model than the registered stage-1 model.
 
 The plugin writes its log inside the arm root, which the agent's tools can
 write too, so the evidence holds against an agent that leaves the log alone;

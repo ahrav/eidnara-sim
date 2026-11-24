@@ -61,6 +61,16 @@ export function evidenceRun(dirs: string[], out: string | null, checkout: string
             join(target, "evidence-sessions.jsonl"),
             r.sessions.map((s) => `${JSON.stringify(s)}\n`).join(""),
         );
+        // The memory reviewer's counts by arm, the ones the report's section renders.
+        const reviewer = Object.fromEntries(
+            [...r.run.arms].flatMap(([arm, data]) =>
+                data.reviewer ? [[arm, data.reviewer] as const] : [],
+            ),
+        );
+        writeAtomic(
+            join(target, "evidence-reviewer.json"),
+            `${JSON.stringify({ schema: "sim-evidence-reviewer/v1", arms: reviewer }, null, 2)}\n`,
+        );
     }
     const report = renderEvidence(runs);
     const reportDir = out ?? (dirs.length === 1 ? (dirs[0] as string) : null);
