@@ -2693,6 +2693,8 @@ async function runArms(
     // each session's last agent reply.
     const lastAgent = (arm: string, session: string): AgentReply =>
         agentText.get(`${arm}/${session}`) ?? { text: "" };
+    // The registered stage-1 model of the memory reviewer, which every arm's host stack receives.
+    const reviewerStage1Model = manifest.side_models?.memory_reviewer_stage1;
     for (const arm of manifest.order) {
         const armRoot = join(o.out, arm, "r");
         mkdirSync(dirname(offsetFile(arm)), { recursive: true });
@@ -2712,6 +2714,7 @@ async function runArms(
             contextLimit: manifest.context_limit,
             ...(manifest.side_model ? { sideModel: manifest.side_model } : {}),
             promptCaching: caching,
+            ...(reviewerStage1Model ? { reviewerStage1Model } : {}),
             turnDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
             transcriptPaths: hostRow.transcript_paths,
             hostVersions: {

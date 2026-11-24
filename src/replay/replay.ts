@@ -1079,6 +1079,7 @@ async function replayInto(
                 models: source.manifest.models,
                 contextLimit: source.manifest.context_limit,
                 sideModel: source.manifest.side_model,
+                reviewerStage1Model: source.manifest.side_models?.memory_reviewer_stage1 ?? null,
                 promptCaching: source.manifest.prompt_caching ?? "off",
                 backgroundCachePoints: backgroundCachePointsOf(source.manifest.eidnara_build),
                 turnDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,

@@ -442,6 +442,11 @@ prefix lives. A stage-1 system prompt is about 1,040 tokens; recorded
 `eval/w9` requests on Claude Haiku 5.5 read 1,042 tokens from the cache,
 and stage-2 requests on Claude Opus 5.5 wrote and then read 975.
 
+The arm's own Pi lists the run's registered stage-1 model beside the agent
+model and the side model (`piModels`), under the same display-name rule
+(`piModelName`), so a caller in the arm's Pi that uses that model places
+Pi's cache points for it as for the others.
+
 OpenCode 1.18.22 places its own cache points for a model whose id holds
 `anthropic` or `claude`: one after the system prompt and one on each of
 the last two messages, with the default lifetime. It does so under either

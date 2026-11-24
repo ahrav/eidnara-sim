@@ -38,6 +38,20 @@ test("a Pi host registers its side-call model beside the agent model, once", () 
     expect(piModels({ model: "opus", sideModel: "haiku" })).toEqual(["opus", "haiku"]);
 });
 
+test("a Pi host registers the reviewer's stage-1 model after the agent and side models, once", () => {
+    expect(piModels({ model: "opus", reviewerStage1Model: "haiku" })).toEqual(["opus", "haiku"]);
+    expect(piModels({ model: "opus", sideModel: "sonnet", reviewerStage1Model: "haiku" })).toEqual([
+        "opus",
+        "sonnet",
+        "haiku",
+    ]);
+    expect(piModels({ model: "opus", sideModel: "haiku", reviewerStage1Model: "haiku" })).toEqual([
+        "opus",
+        "haiku",
+    ]);
+    expect(piModels({ model: "opus", reviewerStage1Model: "opus" })).toEqual(["opus"]);
+});
+
 test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's clock from the turn's first message", async () => {
     const fakeNow = 9_000_000_000;
     const old = {

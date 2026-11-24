@@ -31,7 +31,7 @@ snapshot row that is missing, repeated, fails the grader's artefact check,
 or names another arm, item, turn, session, or outcome, a run whose
 journal does not end in `EndRun` or never ends the arm, a journal that fires a
 fault its fault schedule lacks, a manifest that is not `sim-run-manifest/v3` or lacks a valid base wall
-time, context limit, model list, order, or price table, a
+time, context limit, model list, order, or price table, or names malformed side models, a
 `scenario.json` that does not hash to the manifest's `scenario_hash` or names
 another tier or seed, a journal with no `ClockOffset` before the probe, an
 arm whose `capabilities.json` fails grade-run's capability check, an

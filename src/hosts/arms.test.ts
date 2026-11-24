@@ -1695,6 +1695,26 @@ test("Pi's model definitions are today's bytes with caching off, and differ in t
     expect(piModelName(OPUS, "on")).not.toMatch(/opus-4-|sonnet-4-|fable-5/);
 });
 
+test("Pi lists the registered reviewer stage-1 model under the display-name rule of its other models", () => {
+    const written = (caching: "on" | "off") => {
+        const ctx = { ...context(runDir()), model: OPUS, reviewerStage1Model: HAIKU };
+        const host = new PiSimHost({ ...ctx, promptCaching: caching });
+        (host as Untyped).writeConfigs(null);
+        const read = (file: string) => JSON.parse(readFileSync(join(host.agentDir, file), "utf8"));
+        const models = read("models.json").providers["amazon-bedrock"].models as Untyped[];
+        return {
+            models: models.map((m) => [m.id, m.name]),
+            enabled: read("settings.json").enabledModels,
+        };
+    };
+    for (const caching of ["on", "off"] as const) {
+        expect(written(caching)).toEqual({
+            models: [OPUS, HAIKU].map((id) => [id, piModelName(id, caching)]),
+            enabled: [OPUS, HAIKU].map((id) => `amazon-bedrock/${id}`),
+        });
+    }
+});
+
 const PI_AI = join(
     loadConfig().pi_install,
     "node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/compat.js",

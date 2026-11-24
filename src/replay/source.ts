@@ -4,6 +4,7 @@ import { assertArtefactsOnly, type Snapshot } from "../grade/artefacts";
 import { GradeLog, type GradeRecord } from "../grade/probes";
 import { CONTROL_LABEL } from "../hosts/arms";
 import { isArmName, PROMPT_CACHING, type PromptCaching } from "../hosts/profiles";
+import { isSideModels, type SideModels } from "../prereg/qualification";
 import { type CallRecord, recordProblems } from "../proxy/records";
 import { type Entry, eachLine, readJournal } from "../run/journal";
 import { isPriceTable, type PriceTable } from "../run/price";
@@ -32,6 +33,8 @@ export interface ProbeSource {
         price_table: PriceTable;
         /** The run's prompt-caching condition; a manifest from before the field ran `off`. */
         prompt_caching?: PromptCaching;
+        /** The side models the run's registration names; null or absent for none. */
+        side_models?: SideModels | null;
     };
     scenario: Scenario;
     journal: Entry[];
@@ -99,6 +102,7 @@ export function loadProbeSource(dir: string, arm: string, item: string): ProbeSo
             manifest.prompt_caching === undefined ||
                 PROMPT_CACHING.includes(manifest.prompt_caching),
         ],
+        ["side_models", manifest.side_models == null || isSideModels(manifest.side_models)],
         ["order", Array.isArray(manifest.order)],
     ];
     const bad = fields.filter(([, ok]) => !ok).map(([k]) => k);
