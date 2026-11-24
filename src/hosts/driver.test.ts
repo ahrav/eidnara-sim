@@ -1338,7 +1338,7 @@ touch ${escaped}
         });
     });
 
-    test("a stack without a reviewDrain function, a capture that does not settle, and a daemon that is gone are recorded", async () => {
+    test("a build without the review-drain control, a capture that does not settle, and a daemon that is gone are recorded", async () => {
         // A build whose hermetic stack has no review drain: the control exists for capture alone.
         const stack = new DaemonStack({ arm: "eidnara-reviewer" } as DaemonContext);
         (stack as unknown as { stack: unknown }).stack = {
@@ -1350,13 +1350,6 @@ touch ${escaped}
         expect(drains(older.armDir)[0]).toMatchObject({
             settled: null,
             error: "review drain failed: Error: the daemon's fixture control has no review drain",
-        });
-        // A daemon object with no such method at all reads the same way.
-        const bare = ending("eidnara-reviewer", fakeDaemon(PID + 10), []);
-        expect(await bare.driver.event(ev("session_end"))).toEqual({});
-        expect(drains(bare.armDir)[0]).toMatchObject({
-            settled: null,
-            error: "review drain failed: Error: the daemon stack has no reviewDrain function",
         });
         // Capture that does not settle is recorded, and the drain still runs.
         const calls: string[] = [];

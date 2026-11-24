@@ -240,12 +240,7 @@ function drainReply(daemon: DaemonStack): Promise<DrainReply> {
         error: `review drain failed: ${String(caught).slice(0, 500)}`,
     });
     return Promise.resolve()
-        .then(() => {
-            if (typeof daemon.reviewDrain !== "function") {
-                throw new Error("the daemon stack has no reviewDrain function");
-            }
-            return daemon.reviewDrain();
-        })
+        .then(() => daemon.reviewDrain())
         .then((count): DrainReply => {
             if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
                 return failed(new Error(`the drain returned ${JSON.stringify(count)}`));
