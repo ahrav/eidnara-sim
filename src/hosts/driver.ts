@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import {
+    appendFileSync,
     chmodSync,
     closeSync,
     constants,
@@ -46,7 +47,7 @@ import {
     type SimHost,
     type ToolRun,
 } from "./arms";
-import { armProfile } from "./profiles";
+import { armProfile, reviewsMemory } from "./profiles";
 import { type Change, entriesOf, SnapshotRecorder } from "./snapshot";
 import {
     checkStore,
@@ -97,7 +98,11 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm
     /** Wall time of scenario time 0, the same value the clock offset targets. */
     baseMs: number;
     callsFor?: (session: string) => CallView[];
-    /** Awaited after a probe turn and before its snapshot, so background calls the turn started are on record. */
+    /**
+     * Awaited after a probe turn and before its snapshot, so background calls the turn started
+     * are on record, and at a session's end on an arm that runs the memory reviewer, before its
+     * source capture settles and its reviewer drains.
+     */
     settle?: () => Promise<void>;
     /** Entries a walk of a workspace `.git` visits at most; the default is `GIT_DIR_ENTRY_CAP`. */
     gitDirEntryCap?: number;
@@ -111,6 +116,8 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm
      * before a fault takes one down, so each daemon lifetime has a first and a last sample.
      */
     sampleDaemon?: () => void;
+    /** The bound of one review drain at a session's end; `REVIEW_DRAIN_MS` when absent. */
+    reviewDrainMs?: number;
     /**
      * Sessions whose every user turn the driver snapshots before the prompt, so `lastTurnWork`
      * can give the user-sim the work of the turn before the one it is about to send.
@@ -180,8 +187,30 @@ export function combineCaptureGenerations(generations: readonly CaptureGeneratio
     };
 }
 
+/** The bound of one review drain at a session's end: the fixture control's own timeout. */
+export const REVIEW_DRAIN_MS = 300_000;
+
+/** How long past its own timeout a control request may stay unanswered before the driver stops waiting. */
+const CONTROL_GRACE_MS = 5_000;
+
+/** One line of `<arm>/review-drain.jsonl`: a session end's settle step on an arm that runs the memory reviewer. */
+export interface ReviewDrainRecord {
+    session: string;
+    /** Wall time at which the step began, before the open-jobs wait. */
+    started_wall_ms: number;
+    /** Wall time at which the step ended. */
+    wall_ms: number;
+    /** The review runs the drain settled, or null when it returned none. */
+    settled: number | null;
+    /** Why source capture did not settle or the drain returned no count, or null. */
+    error: string | null;
+}
+
 /** The longest a daemon fault waits for the dying generation's counters before its kill. */
 const FAULT_READ_MS = 250;
+
+/** The longest the settle step waits for source capture to settle. */
+const CAPTURE_SETTLE_MS = 30_000;
 
 /** A stop's bound on the read: the 30 s settle wait and one more control request. */
 const STOP_READ_MS = 35_000;
@@ -924,7 +953,12 @@ export class HostDriver implements ArmDriver {
         for (const dir of [this.o.armRoot, this.storeRoot])
             rmSync(dir, { recursive: true, force: true });
         rmSync(this.image, { force: true });
-        for (const stale of ["daemon.log", "transcripts.json", "source-capture.json"]) {
+        for (const stale of [
+            "daemon.log",
+            "transcripts.json",
+            "source-capture.json",
+            "review-drain.jsonl",
+        ]) {
             rmSync(join(this.armDir, stale), { force: true });
         }
         mkdirSync(join(this.o.armRoot, "workspaces"), { recursive: true });
@@ -1155,7 +1189,10 @@ export class HostDriver implements ArmDriver {
             this.clearStoreFill();
             this.sessionProject = null;
             this.recordState();
-            this.checkDaemon(e);
+            const gone = this.checkDaemon(e);
+            await this.settleReviews(e, gone);
+            // A daemon that ended during the drain is reported at this session end too.
+            if (!gone) this.checkDaemon(e);
             if (!this.transcriptsChecked) this.checkTranscripts(host);
             // The session's background passes have settled by now, so a check they earned runs
             // here, after the state write, so the recorded obligation outlives the journal append.
@@ -1269,6 +1306,62 @@ export class HostDriver implements ArmDriver {
         const owedAfter = this.owedStores();
         if (owedAfter) outcome.stores = [...(outcome.stores ?? []), ...owedAfter];
         return outcome;
+    }
+
+    /**
+     * The settle step of an arm that runs the memory reviewer, at each session end after the host
+     * session closed: the open background jobs end (`settle`), source capture settles, and the
+     * fixture drains the reviewer's worker, which runs review passes until one settles nothing.
+     * The reviews of the session's last messages so end before the scheduler moves scenario time
+     * to the next session. Each call appends one `ReviewDrainRecord` to `review-drain.jsonl`. A
+     * capture that does not settle, a drain that fails, and a drain that passes its bound
+     * (`REVIEW_DRAIN_MS`) are recorded with their error and the session end returns; the worker keeps running in the
+     * daemon. Every other arm skips the step and writes no file.
+     */
+    private async settleReviews(e: ScenarioEvent, daemonGone: boolean): Promise<void> {
+        if (!reviewsMemory(armProfile(this.o.arm))) return;
+        const started_wall_ms = Date.now();
+        const errors: string[] = [];
+        let settled: number | null = null;
+        const daemon = this.daemon;
+        // A control request that outlives its own timeout by the grace has no reply.
+        const answered = async <T>(request: Promise<T>, ms: number): Promise<T> => {
+            const bound = ms + Math.min(CONTROL_GRACE_MS, ms);
+            const reply = await withDeadline(request, bound);
+            if (reply === null) throw new Error(`no reply in ${bound} ms`);
+            return reply;
+        };
+        const drainMs = this.o.reviewDrainMs ?? REVIEW_DRAIN_MS;
+        if (!daemon || daemonGone) {
+            errors.push("the daemon is not running");
+        } else {
+            await this.o.settle?.();
+            try {
+                await answered(daemon.sourceCapture(CAPTURE_SETTLE_MS), CAPTURE_SETTLE_MS);
+            } catch (caught) {
+                errors.push(`source capture did not settle: ${String(caught).slice(0, 500)}`);
+            }
+            try {
+                if (typeof daemon.reviewDrain !== "function") {
+                    throw new Error("the daemon stack has no reviewDrain function");
+                }
+                const count = await answered(daemon.reviewDrain(drainMs), drainMs);
+                if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+                    throw new Error(`the drain returned ${JSON.stringify(count)}`);
+                }
+                settled = count;
+            } catch (caught) {
+                errors.push(`review drain failed: ${String(caught).slice(0, 500)}`);
+            }
+        }
+        const record: ReviewDrainRecord = {
+            session: String(e.session),
+            started_wall_ms,
+            wall_ms: Date.now(),
+            settled,
+            error: errors.length > 0 ? errors.join("; ") : null,
+        };
+        appendFileSync(join(this.armDir, "review-drain.jsonl"), `${JSON.stringify(record)}\n`);
     }
 
     /** Reports a daemon that is gone, and returns whether it did. */

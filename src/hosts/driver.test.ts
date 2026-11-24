@@ -34,8 +34,21 @@ import { processStart, running } from "../run/procs";
 import { HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import { type FaultType, SEAMS } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
-import type { DaemonStack, HostContext, PromptResult, SimHost } from "./arms";
-import { createNoFollow, type DriverOptions, expandTemplate, HostDriver } from "./driver";
+import {
+    type DaemonContext,
+    DaemonStack,
+    type HostContext,
+    type PromptResult,
+    type SimHost,
+} from "./arms";
+import {
+    createNoFollow,
+    type DriverOptions,
+    expandTemplate,
+    HostDriver,
+    REVIEW_DRAIN_MS,
+    type ReviewDrainRecord,
+} from "./driver";
 import { SnapshotRecorder } from "./snapshot";
 import type { StoreCheck } from "./storecheck";
 
@@ -976,6 +989,182 @@ touch ${escaped}
         driver.daemon = daemon as unknown as DaemonStack;
         await driver.event(ev("session_end", { id: "e-9" }));
         expect(exits).toEqual([{ after: "e-9" }]);
+    });
+
+    /** A reviewer-capable fake daemon that logs each control call in order. */
+    const reviewing = (calls: string[], settled: number | Error | "silent" = 3) =>
+        Object.assign(fakeDaemon(PID + 10), {
+            sourceCapture: async (ms: number) => {
+                calls.push(`capture:${ms}`);
+                return { admitted: 2, completed: 2 };
+            },
+            reviewDrain: async (ms: number) => {
+                calls.push(`drain:${ms}`);
+                if (settled === "silent") return new Promise<number>(() => undefined);
+                if (settled instanceof Error) throw settled;
+                return settled;
+            },
+        });
+    const drains = (armDir: string): ReviewDrainRecord[] =>
+        readFileSync(join(armDir, "review-drain.jsonl"), "utf8")
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line));
+    /** A driver between sessions with a fake host and `daemon`, ready for a `session_end`. */
+    const ending = (
+        arm: string,
+        daemon: object | null,
+        calls: string[],
+        extra: Partial<DriverOptions> = {},
+    ) => {
+        const settle = async () => void calls.push("settle");
+        const made = fixture(arm, {}, { settle, ...extra });
+        mkdirSync(join(made.transcripts, "sessions"), { recursive: true });
+        made.driver.host = new FakeHost({} as HostContext, made.transcripts) as unknown as SimHost;
+        made.driver.daemon = daemon as unknown as DaemonStack;
+        return made;
+    };
+
+    test("the reviewer arm settles jobs, then source capture, then drains the reviewer at each session end", async () => {
+        const calls: string[] = [];
+        const { driver, armDir, hosts } = ending("eidnara-reviewer", reviewing(calls), calls);
+        const before = Date.now();
+        expect(await driver.event(ev("session_end", { id: "e-1", session: "s-0001" }))).toEqual({});
+        // The host session closed before the step, and the drain's bound is 300,000 ms.
+        expect((driver.host as unknown as FakeHost).closed).toBe(1);
+        expect(hosts).toEqual([]);
+        expect(calls).toEqual(["settle", "capture:30000", "drain:300000"]);
+        expect(REVIEW_DRAIN_MS).toBe(300_000);
+        const [first] = drains(armDir);
+        expect(first).toEqual({
+            session: "s-0001",
+            started_wall_ms: expect.any(Number),
+            wall_ms: expect.any(Number),
+            settled: 3,
+            error: null,
+        });
+        expect(first?.started_wall_ms).toBeGreaterThanOrEqual(before);
+        expect(first?.wall_ms).toBeGreaterThanOrEqual(first?.started_wall_ms as number);
+        // Each session end appends one line, and a session end delivered again appends another.
+        await driver.event(ev("session_end", { id: "e-2", session: "s-0002" }));
+        await driver.event(ev("session_end", { id: "e-2", session: "s-0002" }));
+        expect(drains(armDir).map((d) => [d.session, d.settled, d.error])).toEqual([
+            ["s-0001", 3, null],
+            ["s-0002", 3, null],
+            ["s-0002", 3, null],
+        ]);
+        expect(calls).toHaveLength(9);
+    });
+
+    test("an arm without the reviewer switch runs no settle step and writes no drain record", async () => {
+        for (const arm of ["eidnara", "eidnara-hybrid", "eidnara-search", "host"]) {
+            const calls: string[] = [];
+            const daemon = arm === "host" ? null : reviewing(calls);
+            const { driver, armDir } = ending(arm, daemon, calls);
+            expect(await driver.event(ev("session_end", { id: "e-1" }))).toEqual({});
+            expect([arm, calls]).toEqual([arm, []]);
+            expect([arm, existsSync(join(armDir, "review-drain.jsonl"))]).toEqual([arm, false]);
+        }
+    });
+
+    test("a drain that throws, times out, or never answers is recorded, and the session end returns", async () => {
+        const calls: string[] = [];
+        const refused = new Error("fixture control rejected: memory_reviewer_unavailable");
+        const thrown = ending("eidnara-reviewer", reviewing(calls, refused), calls);
+        expect(await thrown.driver.event(ev("session_end"))).toEqual({});
+        expect(drains(thrown.armDir)).toMatchObject([
+            {
+                session: "s-0000",
+                settled: null,
+                error: "review drain failed: Error: fixture control rejected: memory_reviewer_unavailable",
+            },
+        ]);
+        expect(calls).toEqual(["settle", "capture:30000", "drain:300000"]);
+        // The fixture's control gives up at the bound the driver hands it.
+        const late = Object.assign(reviewing([]), {
+            reviewDrain: (ms: number) =>
+                new Promise<number>((_, reject) =>
+                    setTimeout(
+                        () => reject(new Error(`fixture control timed out after ${ms} ms`)),
+                        ms,
+                    ),
+                ),
+        });
+        const timed = ending("eidnara-reviewer", late, [], { reviewDrainMs: 30 });
+        expect(await timed.driver.event(ev("session_end"))).toEqual({});
+        expect(drains(timed.armDir)[0]).toMatchObject({
+            settled: null,
+            error: "review drain failed: Error: fixture control timed out after 30 ms",
+        });
+        // A control that never answers is given up on a grace after its own bound.
+        const silent = ending("eidnara-reviewer", reviewing([], "silent"), [], {
+            reviewDrainMs: 30,
+        });
+        const started = Date.now();
+        expect(await silent.driver.event(ev("session_end"))).toEqual({});
+        expect(Date.now() - started).toBeLessThan(5_000);
+        expect(drains(silent.armDir)[0]).toMatchObject({
+            settled: null,
+            error: "review drain failed: Error: no reply in 60 ms",
+        });
+        // A count outside the non-negative integers is no count.
+        const odd = ending("eidnara-reviewer", reviewing([], -1), []);
+        await odd.driver.event(ev("session_end"));
+        expect(drains(odd.armDir)[0]).toMatchObject({
+            settled: null,
+            error: "review drain failed: Error: the drain returned -1",
+        });
+    });
+
+    test("a stack without a reviewDrain function, a capture that does not settle, and a daemon that is gone are recorded", async () => {
+        // A build whose hermetic stack has no review drain: the control exists for capture alone.
+        const stack = new DaemonStack({ arm: "eidnara-reviewer" } as DaemonContext);
+        (stack as unknown as { stack: unknown }).stack = {
+            child: { pid: PID + 10 },
+            settledSourceCapture: async () => ({ admitted: 1, completed: 1 }),
+        };
+        const older = ending("eidnara-reviewer", stack, []);
+        expect(await older.driver.event(ev("session_end"))).toEqual({});
+        expect(drains(older.armDir)[0]).toMatchObject({
+            settled: null,
+            error: "review drain failed: Error: the daemon's fixture control has no review drain",
+        });
+        // A daemon object with no such method at all reads the same way.
+        const bare = ending("eidnara-reviewer", fakeDaemon(PID + 10), []);
+        expect(await bare.driver.event(ev("session_end"))).toEqual({});
+        expect(drains(bare.armDir)[0]).toMatchObject({
+            settled: null,
+            error: "review drain failed: Error: the daemon stack has no reviewDrain function",
+        });
+        // Capture that does not settle is recorded, and the drain still runs.
+        const calls: string[] = [];
+        const unsettled = Object.assign(reviewing(calls, 2), {
+            sourceCapture: async () => {
+                calls.push("capture");
+                throw new Error("source capture never settled");
+            },
+        });
+        const busy = ending("eidnara-reviewer", unsettled, calls);
+        expect(await busy.driver.event(ev("session_end"))).toEqual({});
+        expect(calls).toEqual(["settle", "capture", "drain:300000"]);
+        expect(drains(busy.armDir)[0]).toMatchObject({
+            settled: 2,
+            error: "source capture did not settle: Error: source capture never settled",
+        });
+        // A daemon that is gone gets no control request; its exit is reported once.
+        calls.length = 0;
+        const gone = reviewing(calls);
+        const dead = ending("eidnara-reviewer", gone, calls);
+        (dead.driver.host as unknown as FakeHost).onClose = () => {
+            gone.current = null;
+        };
+        expect(await dead.driver.event(ev("session_end", { id: "e-9" }))).toEqual({});
+        expect(calls).toEqual([]);
+        expect(dead.exits).toEqual([{ after: "e-9" }]);
+        expect(drains(dead.armDir)[0]).toMatchObject({
+            settled: null,
+            error: "the daemon is not running",
+        });
     });
 
     test.skipIf(!sudo)(
