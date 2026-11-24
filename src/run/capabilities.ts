@@ -26,7 +26,7 @@ import {
     type PromptCaching,
 } from "../hosts/profiles";
 import type { ConverseBody } from "../proxy/classify";
-import { type CallRecord, HARNESS_COMPONENTS } from "../proxy/records";
+import { type CallRecord, HARNESS_COMPONENTS, REVIEWER_COMPONENTS } from "../proxy/records";
 import {
     bodyCachePoints,
     cachePointsOf,
@@ -42,6 +42,7 @@ export const EIDNARA_COMPONENTS = [
     "memory_capture",
     "memory_classifier",
     "context_researcher",
+    ...REVIEWER_COMPONENTS,
 ] as const;
 
 /** What an arm's run evidence shows it ran. */
@@ -152,14 +153,16 @@ export function noteRequest(
 }
 
 /**
- * The model calls the daemon runs itself. On Pi its model-execution backend starts a child `pi`
- * from the daemon's own Pi closure, with a private home and Pi's built-in model list, so the
- * model definition the arm writes (`piModelName`) stays outside it.
+ * The model calls the daemon runs itself: the summarizer, the classifier, the researcher, and the
+ * two stages of the memory reviewer. On Pi its model-execution backend starts a child `pi` from
+ * the daemon's own Pi closure, with a private home and Pi's built-in model list, so the model
+ * definition the arm writes (`piModelName`) stays outside it.
  */
 const DAEMON_CALLERS: readonly string[] = [
     "history_summarizer",
     "memory_classifier",
     "context_researcher",
+    ...REVIEWER_COMPONENTS,
 ];
 
 /**
@@ -255,9 +258,10 @@ export class CachingTally {
 }
 
 /**
- * The components whose every request the host's model client sends with cache points: the agent
- * loop and the Eidnara plugin's calls. Pi's own compaction is recorded and held to nothing, since
- * Pi 0.87 sends its compaction summary with cache retention `none` where 0.80.2 places the points.
+ * The components whose every request reaches the provider with cache points: the agent loop, the
+ * Eidnara plugin's calls, and the daemon's own calls, the memory reviewer's two stages among
+ * them. Pi's own compaction is recorded and held to nothing, since Pi 0.87 sends its compaction
+ * summary with cache retention `none` where 0.80.2 places the points.
  */
 const CACHED_CALLERS: readonly string[] = ["agent", ...EIDNARA_COMPONENTS];
 

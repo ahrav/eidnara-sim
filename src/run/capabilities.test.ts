@@ -1365,6 +1365,77 @@ test("on a build whose hook keeps a background call's cache writes to the system
     }
 });
 
+test("a reviewer request gets the system prompt's cache point by the build's layout, and each stage is held to carry one", () => {
+    const sent = JSON.parse(
+        readFileSync(join(import.meta.dir, "../../tests/fixtures/reviewer/requests.json"), "utf8"),
+    ) as Record<"stage1" | "stage2", ConverseBody>;
+    const stages = [
+        ["memory_reviewer_stage1", sent.stage1],
+        ["memory_reviewer_stage2", sent.stage2],
+    ] as const;
+    for (const [component, host] of stages) {
+        // The daemon's child Pi sends the request with no cache point (`eval/w9` is a `system`
+        // build): the proxy places the one after the system text and leaves the message as sent.
+        const body = structuredClone(host);
+        expect(bodyCachePoints(body)).toBe(0);
+        expect(placeFor("system")(body, component)).toBe(1);
+        expect(body).toEqual({ ...host, system: [...(host.system ?? []), POINT] });
+        expect(placeFor("system")(body, component)).toBe(0);
+        // Under Pi's own layout the same request carries the message's point too.
+        const both = structuredClone(host);
+        expect(placeFor("system-and-message")(both, component)).toBe(2);
+        expect(both.messages?.[0]?.content.at(-1)).toEqual(POINT);
+    }
+    // The session-end count holds each stage to a cache point on every request.
+    const live: Record<string, CachingCount> = {};
+    noteRequest(live, "memory_reviewer_stage1", 1, 1);
+    noteRequest(live, "memory_reviewer_stage1", 0);
+    noteRequest(live, "memory_reviewer_stage2", 0);
+    expect(cachingMismatches("on", { components: live })).toEqual([
+        "1 of 2 memory_reviewer_stage1 requests carry no cache point, but the run registers prompt caching on",
+        "1 of 1 memory_reviewer_stage2 requests carry no cache point, but the run registers prompt caching on",
+    ]);
+    expect(cachingMismatches("off", { components: live })).toEqual([]);
+    // The arm-end tally reads the stored bodies: a point the proxy placed is counted as placed
+    // and stays out of the layout check, which reads the points a host sent itself.
+    const parts = new Map<string, RequestPart>([
+        ["sys+", { field: "system", value: [...(sent.stage1.system ?? []), POINT] }],
+        ["sys", { field: "system", value: sent.stage1.system }],
+        ["u", { field: "messages", value: sent.stage1.messages?.[0] }],
+    ]);
+    const tokens = { input_tokens: 458, cache_read_tokens: 1_042, cache_write_tokens: 0 };
+    const placed = { sha256: "x", bytes: 1, parts: ["sys+", "u"] };
+    const tally = new CachingTally(parts);
+    for (const [component] of stages) {
+        tally.add({ component, request: placed, ...tokens, cache_points_placed: 1 });
+    }
+    const layout = { layout: "system" as const, label: "eval/w9" };
+    expect(tally.observation().components).toMatchObject({
+        memory_reviewer_stage1: {
+            requests: 1,
+            with_cache_points: 1,
+            placed_by_proxy: 1,
+            cache_read_tokens: 1_042,
+        },
+        memory_reviewer_stage2: { requests: 1, with_cache_points: 1, placed_by_proxy: 1 },
+    });
+    expect(cachingMismatches("on", tally.observation(), layout)).toEqual([]);
+    const bare = { sha256: "y", bytes: 1, parts: ["sys", "u"] };
+    tally.add({ component: "memory_reviewer_stage2", request: bare, ...tokens });
+    expect(cachingMismatches("on", tally.observation(), layout)).toEqual([
+        "1 of 2 memory_reviewer_stage2 requests carry no cache point, but the run registers prompt caching on",
+    ]);
+});
+
+test("a reviewer call on an arm without the plugin is a mismatch, as every Eidnara component is", () => {
+    const empty = join(tmp(), "r");
+    mkdirSync(empty);
+    const calls = { agent: 4, memory_reviewer_stage1: 3, memory_reviewer_stage2: 1 };
+    const mismatches = armMismatches(observeArm("host", "pi", empty, calls));
+    expect(mismatches).toContain("3 memory_reviewer_stage1 calls on a host-only arm");
+    expect(mismatches).toContain("1 memory_reviewer_stage2 calls on a host-only arm");
+});
+
 test("a Pi arm's background requests show the cache-point layout its build declares", () => {
     const parts = new Map<string, RequestPart>([
         ["sys", { field: "system", value: [{ text: "s" }] }],

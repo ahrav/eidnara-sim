@@ -251,6 +251,21 @@ describe("oracle edge cases", () => {
         expect(oracle(persisted, "F4")).toEqual([]);
     });
 
+    test("F4 counts a same-turn call of either reviewer stage as follow-up activity", () => {
+        for (const component of ["memory_reviewer_stage1", "memory_reviewer_stage2"] as const) {
+            const reviewed = runWith(
+                armOf("eidnara", {
+                    calls: [
+                        call({ seq: 0, started_wall_ms: 0, wall_ms: 400, scenario_ms: 10_000 }),
+                        call({ seq: 1, component, scenario_ms: 10_000 + 120_000 }),
+                    ],
+                    journal: [endTurn("eidnara", "e-1", 10_000 + 400_000)],
+                }),
+            );
+            expect(oracle(reviewed, "F4")).toEqual([]);
+        }
+    });
+
     test("F1 and F2 classify 4xx refusals only; a 5xx carrying the same text is infrastructure", () => {
         const overflow = "ValidationException: prompt is too long: 300000 tokens > 200000 maximum";
         const shape = "messages: roles must alternate between user and assistant";

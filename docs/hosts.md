@@ -405,6 +405,7 @@ The call record names how many the proxy placed as `cache_points_placed`:
 | `native_compaction` | Pi's compaction, through the same client | system, last user message on Pi 0.80.2; none on Pi 0.87, which sends its compaction summary with cache retention `none` |
 | `memory_capture` | the plugin's `streamSimple` call with the model from Pi's registry (`packages/pi-plugin/src/memory-capture-native.ts`) | system, the one user message; system alone on a `system` build, whose executor removes the message's marker |
 | `history_summarizer`, `context_researcher`, `memory_classifier` | the daemon's model-execution backend: a child `pi --print --mode json --no-session --no-tools` from the daemon's Pi closure, with its own home and a provider extension that sets the proxy's address | system, last user message, placed by the proxy; system alone on a `system` build |
+| `memory_reviewer_stage1`, `memory_reviewer_stage2` | the same backend and child `pi`, for the memory reviewer's two request kinds (`docs/proxy.md`, Component tags) | system alone, placed by the proxy: every build with the reviewer is a `system` build |
 | `user-sim`, `judge` | the harness, straight to the proxy | none; their bodies are the same under both values, and the report prices them at the run's table |
 
 The host arm and the Eidnara arms therefore run under one policy, set by
@@ -417,6 +418,29 @@ writes its own user message to the cache, an entry no later call reads.
 Pi ends a system prompt with the working directory, and before Eidnara
 #1223 each daemon-run call had a directory of its own, so on the w2 builds
 a summarizer call reads nothing and writes its whole prompt.
+
+The memory reviewer's requests take the daemon's path, so the same rule
+gives them their cache point. The child `pi` reads Pi's built-in model
+list in its private home, and Pi 0.80.2 places no cache point for a
+Claude 5.5 id, so a reviewer request reaches the proxy with none. The
+bundled hook (`crates/host-runtime/assets/pi-model_execution-extension.mjs`
+on `eval/w9`) sets the request's output cap and temperature, removes
+cache markers from user messages (`withoutConversationCacheMarkers`), and
+keeps the system prompt's marker; it places no marker itself, so a request
+from a Pi that places its two leaves with the system prompt's alone. Under
+`on` the proxy places that one point after the system text of each stage's
+request
+(`cache_points_placed: 1`), and the session-end and arm-end checks hold
+`memory_reviewer_stage1` and `memory_reviewer_stage2` to a cache point on
+every request, as they hold the summarizer. The reviewer asks for its
+system text as written (`PLAIN_SYSTEM_DIRECTIVE`,
+`crates/daemon/src/memory_reviewer/host_execution.rs`), so the hook hands
+the model the text without Pi's date and working-directory lines, and each
+stage sends the same system bytes on every request in every session: a
+request after the first reads its system prompt from the cache while the
+prefix lives. A stage-1 system prompt is about 1,040 tokens; recorded
+`eval/w9` requests on Claude Haiku 5.5 read 1,042 tokens from the cache,
+and stage-2 requests on Claude Opus 5.5 wrote and then read 975.
 
 OpenCode 1.18.22 places its own cache points for a model whose id holds
 `anthropic` or `claude`: one after the system prompt and one on each of

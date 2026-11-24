@@ -55,6 +55,15 @@ const AGENT_BODY = {
     messages: [{ role: "user", content: [{ text: "Fix the bug." }] }],
     toolConfig: { tools: [{ toolSpec: { name: "bash" } }] },
 };
+/** One request of each stage of Eidnara's memory reviewer (`tests/fixtures/reviewer/README.md`). */
+const REVIEWER: Record<"stage1" | "stage2", ReviewerBody> = JSON.parse(
+    readFileSync(join(import.meta.dir, "../../tests/fixtures/reviewer/requests.json"), "utf8"),
+);
+type ReviewerBody = {
+    system: { text: string }[];
+    messages: { role: string; content: { text: string }[] }[];
+    inferenceConfig: { maxTokens: number };
+};
 const SUMMARIZER_BODY = {
     system: [{ text: "Summarize." }],
     messages: [{ role: "user", content: [{ text: "<new_messages>\n[1] U: hi\n</new_messages>" }] }],
@@ -1928,6 +1937,69 @@ describe("classification", () => {
         expect((await writeFault("provider_429", {}, false, dead, undefined)).applied).toBe(false);
         expect((await writeFault("provider_429", {}, false, live, undefined)).applied).toBe(true);
         expect((await writeFault("empty_content", {}, true, dead, undefined)).applied).toBe(false);
+    });
+
+    test("the memory reviewer's two request kinds are components of their own", () => {
+        const { stage1, stage2 } = REVIEWER;
+        expect(classify(stage1, undefined)).toEqual({
+            component: "memory_reviewer_stage1",
+            componentSource: "inferred",
+        });
+        expect(classify(stage2, undefined).component).toBe("memory_reviewer_stage2");
+        // The stage-1 text is the wording Eidnara's own test pins by digest.
+        expect(sha256Hex(stage1.system[0]?.text ?? "")).toBe(
+            "dffaac456bc96ea71b6f8c3efcacc03a4d87ad0e89a2e17ca7ae515fece34b61",
+        );
+        const text = (body: typeof stage1) => body.messages[0]?.content[0]?.text ?? "";
+        const withUser = (body: typeof stage1, user: string) => ({
+            ...body,
+            messages: [{ role: "user", content: [{ text: user }] }],
+        });
+        const withSystem = (body: typeof stage1, system: string) => ({
+            ...body,
+            system: [{ text: system }],
+        });
+        // A reviewed message can quote the summarizer's marker or the capture's field name, and
+        // a question template can name a summary: the request stays the reviewer's.
+        const quoting = 'the fold wraps turns in <new_messages> and "existing_memories"';
+        expect(
+            classify(withUser(stage1, text(stage1).replace("Understood.", quoting)), undefined)
+                .component,
+        ).toBe("memory_reviewer_stage1");
+        const quoted = withUser(stage2, `${text(stage2)}\n${quoting}`);
+        expect(classify(quoted, undefined).component).toBe("memory_reviewer_stage2");
+        const summarizing = `Summarize what the references show.\n\n${stage2.system[0]?.text}`;
+        expect(classify(withSystem(stage2, summarizing), undefined).component).toBe(
+            "memory_reviewer_stage2",
+        );
+        // A later attempt of a stage-2 run resends the transcript with what the run read since.
+        const resent = `${text(stage2)}\n\n[ref-4 fc13f1d1bf0cf248]\nUnderstood.\n[/ref-4 fc13f1d1bf0cf248]`;
+        expect(classify(withUser(stage2, resent), undefined).component).toBe(
+            "memory_reviewer_stage2",
+        );
+        // Each kind needs its system text and its user message: either alone is another call.
+        expect(classify(withUser(stage1, "hello"), undefined).component).toBe("other");
+        expect(classify(withUser(stage2, "ref-1 is a memory"), undefined).component).toBe("other");
+        expect(classify(withSystem(stage1, "You are helpful."), undefined).component).toBe("other");
+        expect(classify(withSystem(stage2, "You are helpful."), undefined).component).toBe("other");
+        expect(
+            classify(withSystem(stage1, `Note. ${stage1.system[0]?.text}`), undefined).component,
+        ).toBe("other");
+        expect(classify(withUser(stage2, text(stage1)), undefined).component).toBe("other");
+        expect(classify(withUser(stage1, text(stage2)), undefined).component).toBe("other");
+        // A request that offers the `bash` tool is the agent's, whatever its text.
+        const tools = { toolConfig: { tools: [{ toolSpec: { name: "bash" } }] } };
+        for (const body of [stage1, stage2]) {
+            expect(classify({ ...body, ...tools }, undefined).component).toBe("agent");
+        }
+        // A call record names either stage, and no other reviewer component.
+        const written = { ...RECORD, seq: 0, wall_ms: 1 };
+        for (const component of ["memory_reviewer_stage1", "memory_reviewer_stage2"]) {
+            expect(recordProblems({ ...written, component })).toEqual([]);
+        }
+        expect(recordProblems({ ...written, component: "memory_reviewer" })).toEqual([
+            "component missing",
+        ]);
     });
 
     test("an agent request whose text mentions <new_messages> stays agent", () => {

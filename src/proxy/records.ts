@@ -20,12 +20,23 @@ export const COMPONENTS = [
     "memory_capture",
     "memory_classifier",
     "context_researcher",
+    "memory_reviewer_stage1",
+    "memory_reviewer_stage2",
     "user-sim",
     "judge",
     "other",
     "rejected",
 ] as const;
 export type Component = (typeof COMPONENTS)[number];
+
+/**
+ * The two request kinds of the daemon's memory reviewer: stage 1 screens one stored memory against
+ * the later messages, and stage 2 proposes a change to a memory stage 1 flagged.
+ */
+export const REVIEWER_COMPONENTS = [
+    "memory_reviewer_stage1",
+    "memory_reviewer_stage2",
+] as const satisfies readonly Component[];
 
 /** The components the harness itself records: its own callers and the requests the proxy refused. */
 export const HARNESS_COMPONENTS: ReadonlySet<string> = new Set(["user-sim", "judge", "rejected"]);
