@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { lstatSync } from "node:fs";
 import { basename, join } from "node:path";
+import { isSqliteError } from "../evidence/load";
 import type { Entry } from "../run/journal";
 
 /** The producers of the memory reviewer's receipts in the Kernel store. */
@@ -8,15 +9,8 @@ export const PRODUCER_DISPUTE = "eidnara-daemon/memory-reviewer-contest";
 export const PRODUCER_CONTEST = "eidnara-daemon/memory-reviewer-later-statement";
 export const PRODUCER_SETTLEMENT = "eidnara-kernel/memory-reviewer-settlement";
 
-export const CHANGE_KINDS = ["disputed", "contested", "retired", "revised", "created"] as const;
-export type ChangeKind = (typeof CHANGE_KINDS)[number];
-export const TARGET_KINDS = [
-    "user statement",
-    "work in progress",
-    "assistant report",
-    "agent note",
-] as const;
-export type TargetKind = (typeof TARGET_KINDS)[number];
+export type ChangeKind = "disputed" | "contested" | "retired" | "revised" | "created";
+export type TargetKind = "user statement" | "work in progress" | "assistant report" | "agent note";
 
 /** One passage a proposal cites against its memory: a reference alias and a byte range of its text. */
 export interface CitedSpan {
@@ -44,7 +38,11 @@ export interface ReviewerChange {
     recorded_ms: number;
     /** When the target row was stored: the time of its creating commit; null when the log lacks it. */
     stored_ms: number | null;
-    /** The target's visibility by its last admission decision before the change, and by the change's own. */
+    /**
+     * The visibility of the statement by its last admission decision before the change, and by
+     * the change's own: the target's for a dispute or a settlement, and the marked row's for a
+     * contest mark, which supersedes its target by that row.
+     */
     delivery: { before: string | null; after: string | null };
     /** The project the review job ran in: the last segment of its workspace path. */
     project: string | null;
@@ -54,7 +52,7 @@ export interface ReviewerChange {
     contested_by: { memory: string; text: string } | null;
 }
 
-/** Whether a change took its target out of automatic delivery, by the store's admission decisions. */
+/** Whether a change took its statement out of automatic delivery, by the store's admission decisions. */
 export const leftAutomatic = (c: Pick<ReviewerChange, "delivery">): boolean =>
     c.delivery.before === "automatic" && c.delivery.after !== "automatic";
 
@@ -69,8 +67,8 @@ const parsed = (text: string): unknown => {
 };
 
 /** A decision row's summary and its rationale, which capture writes as a JSON object. */
-function rowOf(payload: string): { summary: string; rationale: Obj } {
-    const p = parsed(payload);
+function rowOf(payload: string | null | undefined): { summary: string; rationale: Obj } {
+    const p = parsed(payload ?? "");
     if (!isObj(p)) return { summary: "", rationale: {} };
     const raw = p.rationale;
     const rationale = typeof raw === "string" && raw.startsWith("{") ? parsed(raw) : null;
@@ -80,26 +78,39 @@ function rowOf(payload: string): { summary: string; rationale: Obj } {
     };
 }
 
-const isSqliteError = (e: unknown) =>
-    e instanceof Error &&
-    (e.name === "SQLiteError" || /^SQLITE_/.test(String((e as { code?: unknown }).code)));
+/** The database at `path` opened for reading; null when no regular file stands there. */
+function openReadonly(path: string): Database | null {
+    if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) return null;
+    return new Database(path, { readonly: true });
+}
 
-/** The rows of one query; an empty list when the store lacks the table or a column. */
+/**
+ * The rows of one query. A store from before a table or column existed reads as holding no such
+ * rows; any other SQLite error (a file that is no database, a damaged page) is thrown, so damaged
+ * evidence never reads as a reviewer that wrote nothing.
+ */
 function rows<T>(db: Database, sql: string, ...args: (string | number)[]): T[] {
     try {
         return db.query(sql).all(...args) as T[];
     } catch (caught) {
-        if (isSqliteError(caught)) return [];
+        if (isSqliteError(caught) && /no such (?:table|column)/.test((caught as Error).message)) {
+            return [];
+        }
         throw caught;
     }
 }
 
-/** The kind of a target row by its writer: the creating commit's producer, the rationale, and the text. */
-function targetKind(text: string, rationale: Obj, producer: string | undefined): TargetKind {
+/** The kind of a target row by its writer: the creating commit's producer, the text, and the rationale. */
+function targetKind(
+    text: string,
+    rationale: Obj,
+    producer: string | undefined,
+    statement: boolean,
+): TargetKind {
     if (producer === "plugin") return "agent note";
     if (text.startsWith("Assistant reported")) return "assistant report";
     if (rationale.lifetime === "current_work") return "work in progress";
-    if (text.startsWith("User stated") || rationale.speaker === "user") return "user statement";
+    if (statement || rationale.speaker === "user") return "user statement";
     return "assistant report";
 }
 
@@ -111,59 +122,115 @@ const spans = (list: unknown): CitedSpan[] =>
         return [{ alias: span.alias, start: at(span.start), end: at(span.end) }];
     });
 
+interface Receipt {
+    producer: string;
+    key: string;
+    seq: number | null;
+    result: string | null;
+}
+interface Decision {
+    id: string;
+    payload: string | null;
+    created: number;
+    invalidated: number | null;
+    superseded: string | null;
+}
+interface Commit {
+    seq: number;
+    at: number;
+    key: string;
+    producer: string;
+}
+/** A written change as its receipt names it, before the target row and the proposal are read. */
+interface Written {
+    kind: ChangeKind;
+    /** The job's causal identity, whole or its opening hex digits. */
+    identity: string;
+    target: string;
+    seq: number;
+    /** The row whose admission the change's commit made, when it is another row than the target. */
+    marked?: string;
+}
+
 /**
- * The reviewer's written changes in the final store under `storeDir`, in commit order; null when
- * the Kernel store is absent or unreadable.
- *
- * A dispute receipt names its target through the `mark_disputed` admission decision of its commit.
- * A later-statement receipt whose result is a row id is a contested mark: its target is the
- * statement that commit superseded by the result row. A settlement receipt's result names the
- * target and the effect; `retired`, `revised` and `created` are changes. The proposal a change
- * applied is the selected candidate of its job's receipt in `store.db`.
+ * The changes the reviewer's receipts name, in receipt order. A dispute names its target through
+ * the `mark_disputed` admission decision of its commit. A later-statement receipt whose result is
+ * a row id is a contested mark: its target is the statement that commit superseded by the result
+ * row, and an empty result is a statement left standing. A settlement's result names the target
+ * and the effect; `retired`, `revised` and `created` are changes, a created row is named by the
+ * effect, and the job is the one whose receipt selected the settled proposal. A receipt whose
+ * commit the log lacks is a write that never committed and names no change.
+ */
+function writtenChanges(
+    receipts: readonly Receipt[],
+    decisions: ReadonlyMap<string, Decision>,
+    commits: ReadonlyMap<number, Commit>,
+    disputed: ReadonlyMap<number, string>,
+    identityOf: (proposal: string) => string | undefined,
+): Written[] {
+    const out: Written[] = [];
+    for (const r of receipts) {
+        if (r.seq === null || !commits.has(r.seq)) continue;
+        const seq = r.seq;
+        const keyed = r.key.split("#").at(-1) ?? "";
+        const result =
+            r.result === null || r.result === '""' || r.result === "null" ? "" : r.result;
+        if (r.producer === PRODUCER_DISPUTE) {
+            const target = disputed.get(seq);
+            if (target) out.push({ kind: "disputed", identity: keyed, target, seq });
+        } else if (r.producer === PRODUCER_CONTEST) {
+            if (result === "") continue;
+            const superseded = [...decisions.values()].find(
+                (d) => d.invalidated === seq && d.superseded === result,
+            );
+            out.push({
+                kind: "contested",
+                identity: keyed,
+                target: superseded?.id ?? result,
+                seq,
+                marked: result,
+            });
+        } else {
+            const settled = parsed(result);
+            if (!isObj(settled)) continue;
+            const effect = isObj(settled.effect) ? settled.effect : {};
+            const name = String(effect.kind ?? settled.effect).toLowerCase();
+            if (name !== "retired" && name !== "revised" && name !== "created") continue;
+            const named = isObj(settled.target) ? settled.target.object_id : undefined;
+            const target = typeof named === "string" ? named : effect.object_id;
+            if (typeof target !== "string") continue;
+            const proposal = typeof settled.proposal_id === "string" ? settled.proposal_id : "";
+            const identity = identityOf(proposal) ?? commits.get(seq)?.key.split("#")[1] ?? keyed;
+            out.push({ kind: name, identity, target, seq });
+        }
+    }
+    return out;
+}
+
+/**
+ * The reviewer's written changes in the final store under `storeDir`, in receipt order; null when
+ * no Kernel store stands there. Each change carries its target row, the row's writer kind, its
+ * delivery before and after the change, and the proposal the change applied: the selected
+ * candidate of the job's receipt in `store.db`.
  */
 export function readChanges(storeDir: string): ReviewerChange[] | null {
-    const kernelPath = join(storeDir, "kernel.sqlite");
-    if (!lstatSync(kernelPath, { throwIfNoEntry: false })?.isFile()) return null;
-    let kernel: Database;
-    try {
-        kernel = new Database(kernelPath, { readonly: true });
-    } catch (caught) {
-        if (isSqliteError(caught)) return null;
-        throw caught;
-    }
-    const storePath = join(storeDir, "store.db");
+    const kernel = openReadonly(join(storeDir, "kernel.sqlite"));
+    if (!kernel) return null;
     let store: Database | null = null;
     try {
-        if (lstatSync(storePath, { throwIfNoEntry: false })?.isFile()) {
-            store = new Database(storePath, { readonly: true });
-        }
-    } catch (caught) {
-        if (!isSqliteError(caught)) throw caught;
-    }
-    try {
-        const receipts = rows<{
-            producer: string;
-            key: string;
-            seq: number | null;
-            result: string | null;
-            created: number;
-        }>(
+        store = openReadonly(join(storeDir, "store.db"));
+        const daemon = store;
+        const receipts = rows<Receipt>(
             kernel,
             `select producer, operation_key as key, commit_seq as seq,
-                cast(result_payload as text) as result, created_at as created
+                cast(result_payload as text) as result
              from operation_receipts where producer in (?, ?, ?) order by commit_seq, created_at`,
             PRODUCER_DISPUTE,
             PRODUCER_CONTEST,
             PRODUCER_SETTLEMENT,
         );
         const decisions = new Map(
-            rows<{
-                id: string;
-                payload: string | null;
-                created: number;
-                invalidated: number | null;
-                superseded: string | null;
-            }>(
+            rows<Decision>(
                 kernel,
                 `select object_id as id, cast(decision_payload as text) as payload,
                     created_commit_seq as created, invalidated_commit_seq as invalidated,
@@ -171,7 +238,7 @@ export function readChanges(storeDir: string): ReviewerChange[] | null {
             ).map((d) => [d.id, d]),
         );
         const commits = new Map(
-            rows<{ seq: number; at: number; key: string; producer: string }>(
+            rows<Commit>(
                 kernel,
                 "select commit_seq as seq, recorded_at as at, operation_key as key, producer from commit_log",
             ).map((c) => [c.seq, c]),
@@ -186,40 +253,41 @@ export function readChanges(storeDir: string): ReviewerChange[] | null {
         // A statement record (`stm_`) names the memory that holds a user's statement.
         const statements = new Set<unknown>();
         for (const [id, d] of decisions) {
-            if (id.startsWith("stm_")) statements.add(rowOf(d.payload ?? "").rationale.memory);
+            if (id.startsWith("stm_")) statements.add(rowOf(d.payload).rationale.memory);
         }
-        const out: ReviewerChange[] = [];
-        const add = (
-            kind: ChangeKind,
-            job: string,
-            target: string,
-            seq: number,
-            at: number,
-            contestedBy: ReviewerChange["contested_by"] = null,
-        ) => {
-            const decision = decisions.get(target);
-            const { summary, rationale } = rowOf(decision?.payload ?? "");
-            const created = decision ? commits.get(decision.created) : undefined;
-            const admissions = rows<{ seq: number; visibility: string }>(
+        const identityOf = (proposal: string) =>
+            daemon && proposal !== ""
+                ? rows<{ identity: string }>(
+                      daemon,
+                      `select causal_identity as identity from memory_reviewer_receipts
+                       where selected_candidate_id = ?`,
+                      proposal,
+                  )[0]?.identity
+                : undefined;
+        const visibility = (id: string) =>
+            rows<{ seq: number; visibility: string }>(
                 kernel,
                 `select commit_seq as seq, visibility from admission_decisions
                  where subject_object_id = ? order by commit_seq, decided_at, admission_decision_id`,
-                target,
+                id,
             );
-            const receipt = store
-                ? rows<{ candidate: string | null }>(
-                      store,
-                      `select selected_candidate_id as candidate from memory_reviewer_receipts
-                       where substr(causal_identity, 1, 16) = ?`,
+        return writtenChanges(receipts, decisions, commits, disputed, identityOf).map((w) => {
+            const job = w.identity.slice(0, 16);
+            const decision = decisions.get(w.target);
+            const { summary, rationale } = rowOf(decision?.payload);
+            const created = decision ? commits.get(decision.created) : undefined;
+            const statement = summary.startsWith("User stated") || statements.has(w.target);
+            const before = visibility(w.target).filter((a) => a.seq < w.seq);
+            const after = visibility(w.marked ?? w.target).filter((a) => a.seq === w.seq);
+            const receipt = daemon
+                ? rows<{ candidate: string | null; project: string | null }>(
+                      daemon,
+                      `select r.selected_candidate_id as candidate, j.project as project
+                       from memory_reviewer_receipts r
+                       left join memory_reviewer_jobs j on j.causal_identity = r.causal_identity
+                       where substr(r.causal_identity, 1, 16) = ?`,
                       job,
                   )[0]
-                : undefined;
-            const project = store
-                ? rows<{ project: string }>(
-                      store,
-                      "select project from memory_reviewer_jobs where substr(causal_identity, 1, 16) = ?",
-                      job,
-                  )[0]?.project
                 : undefined;
             const candidate = receipt?.candidate
                 ? rows<{ payload: string }>(
@@ -230,21 +298,25 @@ export function readChanges(storeDir: string): ReviewerChange[] | null {
                 : undefined;
             const wrapped = candidate ? parsed(candidate.payload) : null;
             const body = isObj(wrapped) && isObj(wrapped.body) ? wrapped.body : null;
-            out.push({
-                kind,
+            const by = w.marked
+                ? rowOf(decisions.get(w.marked)?.payload).rationale.contested_by
+                : null;
+            const later = isObj(by) && typeof by.memory === "string" ? by.memory : null;
+            return {
+                kind: w.kind,
                 job,
-                target,
+                target: w.target,
                 text: summary,
-                target_kind: targetKind(summary, rationale, created?.producer),
-                user_statement: summary.startsWith("User stated") || statements.has(target),
-                commit_seq: seq,
-                recorded_ms: commits.get(seq)?.at ?? at,
+                target_kind: targetKind(summary, rationale, created?.producer, statement),
+                user_statement: statement,
+                commit_seq: w.seq,
+                recorded_ms: (commits.get(w.seq) as Commit).at,
                 stored_ms: created?.at ?? null,
                 delivery: {
-                    before: admissions.filter((a) => a.seq < seq).at(-1)?.visibility ?? null,
-                    after: admissions.filter((a) => a.seq === seq).at(-1)?.visibility ?? null,
+                    before: before.at(-1)?.visibility ?? null,
+                    after: after.at(-1)?.visibility ?? null,
                 },
-                project: project ? basename(project) : null,
+                project: receipt?.project ? basename(receipt.project) : null,
                 proposal:
                     body && typeof body.action === "string"
                         ? {
@@ -253,92 +325,69 @@ export function readChanges(storeDir: string): ReviewerChange[] | null {
                               contradictions: spans(body.contradictions),
                           }
                         : null,
-                contested_by: contestedBy,
-            });
-        };
-        for (const r of receipts) {
-            if (r.seq === null) continue;
-            const job = (r.key.split("#").at(-1) ?? "").slice(0, 16);
-            const result =
-                r.result === null || r.result === '""' || r.result === "null" ? "" : r.result;
-            if (r.producer === PRODUCER_DISPUTE) {
-                const target = disputed.get(r.seq);
-                if (target) add("disputed", job, target, r.seq, r.created);
-            } else if (r.producer === PRODUCER_CONTEST) {
-                // An empty result is a statement left standing: the reviewer wrote nothing.
-                if (result === "") continue;
-                const superseded = [...decisions.values()].find(
-                    (d) => d.invalidated === r.seq && d.superseded === result,
-                );
-                const by = rowOf(decisions.get(result)?.payload ?? "").rationale.contested_by;
-                const memory = isObj(by) && typeof by.memory === "string" ? by.memory : null;
-                add(
-                    "contested",
-                    job,
-                    superseded?.id ?? result,
-                    r.seq,
-                    r.created,
-                    memory
-                        ? { memory, text: rowOf(decisions.get(memory)?.payload ?? "").summary }
-                        : null,
-                );
-            } else {
-                const settled = parsed(result);
-                if (!isObj(settled)) continue;
-                const effect = isObj(settled.effect) ? settled.effect.kind : settled.effect;
-                const name = String(effect).toLowerCase();
-                const target = isObj(settled.target) ? settled.target.object_id : null;
-                if (
-                    (name === "retired" || name === "revised" || name === "created") &&
-                    typeof target === "string"
-                ) {
-                    const named = (commits.get(r.seq)?.key ?? "").split("#")[1];
-                    add(name, (named ?? job).slice(0, 16), target, r.seq, r.created);
-                }
-            }
-        }
-        return out;
+                contested_by: later
+                    ? { memory: later, text: rowOf(decisions.get(later)?.payload).summary }
+                    : null,
+            };
+        });
     } finally {
         kernel.close();
         store?.close();
     }
 }
 
-/** One span of the daemon's clock: from `start` on it reads the real clock plus `offset`. */
+/** One offset of an arm's clock: from wall time `wall` on the daemon reads the wall clock plus `offset`. */
 interface ClockSpan {
-    /** The daemon's time at which the span begins. */
-    start: number;
     wall: number;
-    scenario: number;
     offset: number;
+    scenario: number;
+    /** The daemon's reading at the journal entry that recorded the offset. */
+    start: number;
 }
 
 /**
  * The daemon's clock of one arm, from the journal's `ClockOffset` entries: the daemon reads the
- * real clock plus the offset in effect. `real` gives the wall time of a daemon time, `daemon`
- * the daemon's reading at a wall time, and `scenario` the scenario time of a daemon time (null
- * before the first entry when the manifest names no base).
+ * wall clock plus the offset in effect.
+ *
+ * `wall` takes a daemon time back to wall time through the offset in effect when it was read. An
+ * offset smaller than the one before it (a resume, or a jump shorter than the idle time before
+ * it) steps the daemon's clock back, so two offsets can claim one daemon time; `wall` is null for
+ * such a time and for one no offset claims. `daemon` gives the daemon's reading at a wall time.
+ * `scenario` is the registered R1 reader's scenario time of a daemon time: the last offset whose
+ * first daemon reading is at or before it, or the manifest's base without one.
  */
 export function daemonClock(entries: readonly Entry[], arm: string, baseWallMs: number | null) {
-    const spanList: ClockSpan[] = entries
-        .filter((e) => e.kind === "ClockOffset" && (e.arm === arm || e.arm === null))
+    const list: ClockSpan[] = entries
+        .filter((e) => e.kind === "ClockOffset" && e.arm === arm)
         .map((e) => {
             const offset = (Number(e.offset_s) || 0) * 1000;
-            return { start: e.wall_ms + offset, wall: e.wall_ms, scenario: e.scenario_ms, offset };
+            const set = e.offset_wall_ms;
+            return {
+                wall: typeof set === "number" && Number.isFinite(set) ? set : e.wall_ms,
+                offset,
+                scenario: e.scenario_ms,
+                start: e.wall_ms + offset,
+            };
         })
-        .sort((a, b) => a.start - b.start);
-    const at = (daemonMs: number) => spanList.filter((s) => s.start <= daemonMs).at(-1);
+        .sort((a, b) => a.wall - b.wall);
+    const byStart = [...list].sort((a, b) => a.start - b.start);
     return {
-        real: (daemonMs: number): number => daemonMs - (at(daemonMs)?.offset ?? 0),
+        wall: (daemonMs: number): number | null => {
+            const walls = new Set(
+                list.flatMap((span, i) => {
+                    const wall = daemonMs - span.offset;
+                    const until = list[i + 1]?.wall ?? Number.POSITIVE_INFINITY;
+                    return wall >= span.wall && wall < until ? [wall] : [];
+                }),
+            );
+            if (list.length === 0) return daemonMs;
+            return walls.size === 1 ? ([...walls][0] as number) : null;
+        },
         daemon: (wallMs: number): number =>
-            wallMs +
-            ([...spanList]
-                .sort((a, b) => a.wall - b.wall)
-                .filter((s) => s.wall <= wallMs)
-                .at(-1)?.offset ?? 0),
+            wallMs + (list.filter((s) => s.wall <= wallMs).at(-1)?.offset ?? 0),
         scenario: (daemonMs: number): number | null => {
-            const span = at(daemonMs);
-            if (span) return span.scenario + (daemonMs - span.offset - span.wall);
+            const span = byStart.filter((s) => s.start <= daemonMs).at(-1);
+            if (span) return span.scenario + (daemonMs - span.start);
             return baseWallMs === null ? null : daemonMs - baseWallMs;
         },
     };

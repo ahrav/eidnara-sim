@@ -20,13 +20,15 @@ export interface ReviewScenario {
     sessions: { id: string; project?: string; start_ms?: number }[];
     plans?: PlanRecord[];
 }
-type ScenarioEvent = ReviewScenario["events"][number];
+export type ScenarioEvent = ReviewScenario["events"][number];
 
 const flat = (value: unknown): string[] =>
     typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(flat) : [];
 const byCodeUnit = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-const eventText = (e: ScenarioEvent) => [e.text, e.content].filter((x) => x).join("\n");
-const factsOf = (e: ScenarioEvent): string[] => [
+/** An event's text: a user turn's words and a committed file's content. */
+export const eventText = (e: ScenarioEvent) => [e.text, e.content].filter((x) => x).join("\n");
+/** The facts an event names: its own and the ones it carries beside it. */
+export const factsOf = (e: ScenarioEvent): string[] => [
     ...(e.fact ? [e.fact] : []),
     ...(e.facts ?? []).filter((x) => typeof x === "string"),
 ];
@@ -248,6 +250,51 @@ export interface ScenarioStatement {
 export type InForce = "in force" | "ended" | "states no fact" | "no scenario statement";
 
 /**
+ * The scenario records that ended the statement event `e` makes of `fact`, among the events the
+ * arm had received (`reached`): a fact of the same line with a higher revision, a later step of
+ * the fact's plan record with status `revised` or `completed`, and a later statement or committed
+ * file of the same fact, a scoped update aside.
+ */
+function endedBy(
+    fact: Fact,
+    e: ScenarioEvent,
+    scenario: ReviewScenario,
+    delivered: Map<string, number>,
+    reached: (event: string) => boolean,
+): ScenarioStatement["ended"] {
+    const ended: ScenarioStatement["ended"] = [];
+    for (const later of scenario.facts) {
+        if (later.line !== fact.line || later.revision <= fact.revision) continue;
+        const by = scenario.events.find(
+            (x) => factsOf(x).includes(later.id) && x.role !== "probe" && reached(x.id),
+        );
+        if (by) ended.push({ by: "superseded", event: by.id });
+    }
+    const history = scenario.plans?.find((p) => p.fact === fact.id)?.history ?? [];
+    const step = history.findIndex((h) => h.event === e.id);
+    for (const h of history.slice(step + 1)) {
+        if (h.status !== "accepted" && reached(h.event)) {
+            ended.push({ by: `plan ${h.status}`, event: h.event });
+        }
+    }
+    if (fact.kind === "scoped_update") return ended;
+    const from = delivered.get(e.id) ?? 0;
+    for (const x of scenario.events) {
+        const restates = x.kind === "apply_diff" || x.role === "conveyance" || x.role === "update";
+        if (
+            x.id !== e.id &&
+            restates &&
+            factsOf(x).includes(fact.id) &&
+            reached(x.id) &&
+            (delivered.get(x.id) ?? 0) > from
+        ) {
+            ended.push({ by: "restated", event: x.id });
+        }
+    }
+    return ended;
+}
+
+/**
  * Whether the scenario holds a memory's statement in force at wall time `atWallMs`, by the
  * scenario's own records. The memory restates a scenario statement when a paragraph of a user
  * turn that conveys, updates, or first states a fact contains the memory's statement or is
@@ -292,37 +339,7 @@ export function inForceReading(
                 mine.some((p) => p.toLowerCase().includes(stated)) ||
                 role === "update" ||
                 role === "reversal";
-            const ended: ScenarioStatement["ended"] = [];
-            for (const later of scenario.facts) {
-                if (later.line !== fact.line || later.revision <= fact.revision) continue;
-                const by = scenario.events.find(
-                    (x) => factsOf(x).includes(later.id) && x.role !== "probe" && reached(x.id),
-                );
-                if (by) ended.push({ by: "superseded", event: by.id });
-            }
-            const history = scenario.plans?.find((p) => p.fact === fact.id)?.history ?? [];
-            const step = history.findIndex((h) => h.event === e.id);
-            for (const h of history.slice(step + 1)) {
-                if (h.status !== "accepted" && reached(h.event)) {
-                    ended.push({ by: `plan ${h.status}`, event: h.event });
-                }
-            }
-            if (fact.kind !== "scoped_update") {
-                const from = delivered.get(e.id) ?? 0;
-                for (const x of scenario.events) {
-                    const restates =
-                        x.kind === "apply_diff" || x.role === "conveyance" || x.role === "update";
-                    if (
-                        x.id !== e.id &&
-                        restates &&
-                        factsOf(x).includes(fact.id) &&
-                        reached(x.id) &&
-                        (delivered.get(x.id) ?? 0) > from
-                    ) {
-                        ended.push({ by: "restated", event: x.id });
-                    }
-                }
-            }
+            const ended = endedBy(fact, e, scenario, delivered, reached);
             statements.push({ event: e.id, role, fact: fact.id, line: fact.line, states, ended });
         }
     }

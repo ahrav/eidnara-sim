@@ -172,15 +172,48 @@ export const ROWS = {
 } as const;
 export type RowName = keyof typeof ROWS;
 
+/** The rows the `extra` option adds: a contested statement and a revised report. */
+export const EXTRA = {
+    contest: {
+        id: "mem_quote",
+        marked: "mem_quote_marked",
+        job: "aaaaaaaaaaaaaaa5",
+        text: "User stated: string literals you add use single quotes.",
+        later: "User stated: string literals you add use double quotes.",
+    },
+    revised: {
+        id: "mem_count",
+        job: "aaaaaaaaaaaaaaa6",
+        proposal: "review-result:revised",
+        text: "Assistant reported: 21 cookie tests fail.",
+        revised: "Assistant reported: 20 cookie tests fail.",
+        cited: "I counted again: 20 cookie tests fail, not 21.",
+    },
+} as const;
+
+/** What a test changes in the fixture run. */
+export interface RunOptions {
+    /** Adds a contest mark with a marked row and a settlement that revised a row. */
+    extra?: boolean;
+    /** Adds a second arm whose journal entries and stage-2 call the reviewer arm's readings leave out. */
+    otherArm?: boolean;
+    /** The wall second at which the arm received the replacing tag statement (e-5). */
+    tagAt?: number;
+    /** The model the gateway recorded for the reviewer's calls. */
+    reviewerModel?: string;
+}
+export const OTHER_ARM = "eidnara";
+
 /**
- * A finished run directory with one reviewer arm: the scenario above, a journal with a clock
- * jump, a Kernel store and a daemon store that hold four disputes, a contest mark left standing,
- * and an unchanged settlement, the gateway record of each dispute's stage-2 request, and a Pi
- * transcript. Seconds are wall seconds after `WALL0`.
+ * A finished run directory with one reviewer arm: the scenario above, a complete journal with a
+ * clock jump, a Kernel store and a daemon store that hold four disputes, a contest mark left
+ * standing, and an unchanged settlement, the gateway record of each dispute's stage-2 request,
+ * and a Pi transcript. Seconds are wall seconds after `WALL0`.
  */
-export function reviewerRun(): string {
+export function reviewerRun(o: RunOptions = {}): string {
     const dir = mkdtempSync(join(tmpdir(), "reviewer-run-"));
     const scenario = reviewerScenario();
+    const arms = o.otherArm ? [OTHER_ARM, ARM] : [ARM];
     writeFileSync(join(dir, "scenario.json"), `${canonicalJson(scenario)}\n`);
     writeFileSync(
         join(dir, "manifest.json"),
@@ -189,43 +222,66 @@ export function reviewerRun(): string {
             tier: "S",
             seed: 101,
             host: "pi",
-            order: [ARM],
+            order: arms,
+            events: scenario.events.length,
             models: ["global.anthropic.claude-opus-5-5"],
             scenario_hash: scenario.scenario_hash,
             base_wall_ms: WALL0,
         }),
     );
-    // Wall seconds at which the arm received each turn: the plan, the first tag, the probe, the
-    // closing sentence, the second tag.
-    const turns: [string, number][] = [
-        ["e-1", 20],
-        ["e-2", 30],
-        ["e-3", 40],
-        ["e-4", 50],
-        ["e-5", 70],
+    // Wall seconds at which the reviewer arm received each event: the plan, the first tag, a
+    // probe, the closing sentence, the second tag, a probe.
+    const at: Record<string, number> = {
+        "e-0": 15,
+        "e-1": 20,
+        "e-2": 30,
+        "e-3": 40,
+        "e-4": 50,
+        "e-5": o.tagAt ?? 70,
+        "e-6": 95,
+        "e-7": 99,
+    };
+    const journal: Record<string, unknown>[] = [
+        { kind: "StartRun", arm: null, order: arms, scenario_ms: 0, wall_ms: WALL0 - 400_000 },
     ];
-    const journal = [
-        { kind: "ClockOffset", arm: ARM, offset_s: 0, scenario_ms: 0, wall_ms: WALL0 },
-        {
-            kind: "ClockOffset",
-            arm: ARM,
-            offset_s: JUMP_MS / 1_000,
-            scenario_ms: 110_000,
-            wall_ms: WALL0 + 10_000,
-        },
-        ...turns.map(([event, s]) => ({
-            kind: "BeginTurn",
-            arm: ARM,
-            event,
-            probe: null,
-            scenario_ms: 100_000 + s * 1_000,
-            wall_ms: WALL0 + s * 1_000,
-        })),
-    ].map((e, seq) => ({ ...e, seq }));
+    const armEntries = (arm: string, shift: number, offsets: [number, number, number][]) => {
+        for (const [s, offset, scenarioMs] of offsets) {
+            journal.push({
+                kind: "ClockOffset",
+                arm,
+                offset_s: offset,
+                scenario_ms: scenarioMs,
+                wall_ms: WALL0 + s * 1_000,
+            });
+        }
+        for (const e of scenario.events) {
+            const wall = WALL0 + ((at[e.id] as number) + shift) * 1_000;
+            const entry = { arm, event: e.id, scenario_ms: 100_000 + (at[e.id] as number) * 1_000 };
+            if (e.kind === "user_turn") {
+                journal.push({ kind: "BeginTurn", probe: null, ...entry, wall_ms: wall });
+            }
+            journal.push({ kind: "Event", outcome: "ok", ...entry, wall_ms: wall + 500 });
+        }
+        journal.push({
+            kind: "EndArm",
+            arm,
+            scenario_ms: 200_000,
+            wall_ms: WALL0 + (100 + shift) * 1_000,
+        });
+    };
+    // The other arm runs first, a day ahead on its own clock, and receives every event earlier.
+    if (o.otherArm) armEntries(OTHER_ARM, -200, [[-300, 86_400, 0]]);
+    armEntries(ARM, 0, [
+        [0, 0, 0],
+        [10, JUMP_MS / 1_000, 110_000],
+    ]);
+    journal.push({ kind: "EndRun", arm: null, scenario_ms: 0, wall_ms: WALL0 + 200_000 });
+    journal.sort((a, b) => (a.wall_ms as number) - (b.wall_ms as number));
     writeFileSync(
         join(dir, "journal.jsonl"),
-        journal.map((e) => `${JSON.stringify(e)}\n`).join(""),
+        journal.map((e, seq) => `${JSON.stringify({ ...e, seq })}\n`).join(""),
     );
+    if (o.otherArm) mkdirSync(join(dir, OTHER_ARM));
 
     const store = join(dir, ARM, "final-store");
     mkdirSync(store, { recursive: true });
@@ -261,8 +317,107 @@ export function reviewerRun(): string {
             seq,
             seq,
         ]);
+    const decide = (
+        id: string,
+        text: string,
+        rationale: object,
+        created: number,
+        ended?: [number, string],
+    ) =>
+        kernel.run("insert into decisions values (?, ?, ?, ?, ?)", [
+            id,
+            JSON.stringify({ summary: text, rationale: JSON.stringify(rationale) }),
+            created,
+            ended?.[0] ?? null,
+            ended?.[1] ?? null,
+        ]);
+    const receipt = (producer: string, key: string, seq: number, result: string, s: number) =>
+        kernel.run("insert into operation_receipts values (?, ?, ?, ?, ?)", [
+            producer,
+            key,
+            seq,
+            result,
+            daemonAt(s),
+        ]);
     const calls: Record<string, unknown>[] = [];
     const parts: string[] = [];
+    /** The job's proposal in both stores and the stage-2 request the gateway recorded for it. */
+    const review = (r: {
+        arm?: string;
+        job: string;
+        candidate: string;
+        text: string;
+        body: object;
+        cited: string;
+        citedBy: string;
+        citedAt: number;
+        source: [string, number] | null;
+        endedAt: number;
+    }) => {
+        const identity = `${r.job}${"0".repeat(48)}`;
+        if (r.arm === undefined) {
+            kernel.run("insert into candidates values (?, 'review_proposal', ?)", [
+                r.candidate,
+                JSON.stringify({
+                    version: 2,
+                    body: { kind: "review_proposal", support: [], ...r.body },
+                }),
+            ]);
+            daemon.run("insert into memory_reviewer_receipts values (?, ?)", [
+                identity,
+                r.candidate,
+            ]);
+            daemon.run("insert into memory_reviewer_jobs values (?, ?)", [
+                identity,
+                "/runs/x/r/workspaces/elysia",
+            ]);
+        }
+        const label =
+            r.citedBy === "tool"
+                ? "a message a tool wrote"
+                : `a message the ${r.citedBy} wrote at ${iso(daemonAt(r.citedAt))}`;
+        const user = [
+            `[ref-1 ${TOKEN}]\n${r.text}\n[/ref-1 ${TOKEN}]`,
+            [
+                "linked references:",
+                ...(r.source
+                    ? [
+                          `ref-2: a message the ${r.source[0]} wrote at ${iso(daemonAt(r.source[1]))}; the memory cites it as its source`,
+                      ]
+                    : []),
+                `ref-3: ${label}; written after the memory's source`,
+            ].join("\n"),
+            ...(r.source ? [`[ref-2 ${TOKEN}]\nthe source message\n[/ref-2 ${TOKEN}]`] : []),
+            `[ref-3 ${TOKEN}]\n${r.cited}\n[/ref-3 ${TOKEN}]`,
+        ].join("\n\n");
+        const body: ConverseBody = { messages: [{ role: "user", content: [{ text: user }] }] };
+        const pieces = requestParts(body);
+        for (const part of pieces) parts.push(JSON.stringify({ id: partId(part), part }));
+        const json = JSON.stringify(body);
+        calls.push({
+            arm: r.arm ?? ARM,
+            session: "s-1",
+            turn: null,
+            component: "memory_reviewer_stage2",
+            componentSource: "inferred",
+            model: o.reviewerModel ?? "global.anthropic.claude-opus-5-5",
+            status: 200,
+            started_wall_ms: WALL0 + r.endedAt * 1_000 - 900,
+            wall_ms: WALL0 + r.endedAt * 1_000 - 100,
+            scenario_ms: 0,
+            request: {
+                sha256: sha256Hex(json),
+                bytes: Buffer.byteLength(json),
+                parts: pieces.map(partId),
+            },
+        });
+    };
+    const cite = (text: string) => [
+        {
+            evidence_id: "srcev:x",
+            span: { alias: "ref-3", start: 0, end: Buffer.byteLength(text) },
+        },
+    ];
     // Each row is stored at `stored` and disputed at `changed` wall seconds.
     const schedule: Record<
         RowName,
@@ -274,116 +429,156 @@ export function reviewerRun(): string {
         tag: { stored: 31, changed: 78, source: 30, citedAt: 70 },
     };
     let seq = 0;
+    // The other arm reviewed the plan row's text too, later than the reviewer arm's change.
+    if (o.otherArm) {
+        review({
+            arm: OTHER_ARM,
+            job: "ffffffffffffffff",
+            candidate: "cand-other",
+            text: ROWS.plan.text,
+            body: {},
+            cited: "a message of the other arm",
+            citedBy: "user",
+            citedAt: 51,
+            source: null,
+            endedAt: 51,
+        });
+    }
     for (const name of Object.keys(ROWS) as RowName[]) {
         const row = ROWS[name];
-        const at = schedule[name];
+        const when = schedule[name];
         const created = ++seq;
-        commit(created, at.stored, row.producer);
-        kernel.run("insert into decisions values (?, ?, ?, null, null)", [
-            row.id,
-            JSON.stringify({ summary: row.text, rationale: JSON.stringify(row.rationale) }),
-            created,
-        ]);
+        commit(created, when.stored, row.producer);
+        decide(row.id, row.text, row.rationale, created);
         admit(created, row.id, row.before === "automatic" ? "approve" : "other", row.before);
         const disputed = ++seq;
-        const identity = `${row.job}${"0".repeat(48)}`;
-        commit(disputed, at.changed, PRODUCER_DISPUTE);
-        kernel.run("insert into operation_receipts values (?, ?, ?, ?, ?)", [
+        commit(disputed, when.changed, PRODUCER_DISPUTE);
+        receipt(
             PRODUCER_DISPUTE,
-            `project#${identity}`,
+            `project#${row.job}${"0".repeat(48)}`,
             disputed,
             "disputed",
-            daemonAt(at.changed),
-        ]);
+            when.changed,
+        );
         admit(disputed, row.id, "mark_disputed", "explicit_labeled");
-        const cited = Buffer.byteLength(row.cited);
-        kernel.run("insert into candidates values (?, 'review_proposal', ?)", [
-            `cand-${name}`,
-            JSON.stringify({
-                version: 2,
-                body: {
-                    kind: "review_proposal",
-                    action: "retire",
-                    contradictions: [
-                        { evidence_id: "srcev:x", span: { alias: "ref-3", start: 0, end: cited } },
-                    ],
-                    support: [],
-                },
-            }),
-        ]);
-        daemon.run("insert into memory_reviewer_receipts values (?, ?)", [
-            identity,
-            `cand-${name}`,
-        ]);
-        daemon.run("insert into memory_reviewer_jobs values (?, ?)", [
-            identity,
-            "/runs/x/r/workspaces/elysia",
-        ]);
-        const label =
-            row.citedBy === "tool"
-                ? "a message a tool wrote"
-                : `a message the ${row.citedBy} wrote at ${iso(daemonAt(at.citedAt))}`;
-        const sourceLine =
-            at.source === null
-                ? []
-                : [
-                      `ref-2: a message the ${name === "question" ? "assistant" : "user"} wrote at ${iso(daemonAt(at.source))}; the memory cites it as its source`,
-                  ];
-        const user = [
-            `[ref-1 ${TOKEN}]\n${row.text}\n[/ref-1 ${TOKEN}]`,
-            [
-                "linked references:",
-                ...sourceLine,
-                `ref-3: ${label}; written after the memory's source`,
-            ].join("\n"),
-            ...(at.source === null
-                ? []
-                : [`[ref-2 ${TOKEN}]\nthe source message\n[/ref-2 ${TOKEN}]`]),
-            `[ref-3 ${TOKEN}]\n${row.cited}\n[/ref-3 ${TOKEN}]`,
-        ].join("\n\n");
-        const body: ConverseBody = { messages: [{ role: "user", content: [{ text: user }] }] };
-        const pieces = requestParts(body);
-        for (const part of pieces) parts.push(JSON.stringify({ id: partId(part), part }));
-        const json = JSON.stringify(body);
-        calls.push({
-            seq: calls.length,
-            arm: ARM,
-            session: "s-1",
-            turn: null,
-            component: "memory_reviewer_stage2",
-            componentSource: "inferred",
-            model: "global.anthropic.claude-opus-5-5",
-            status: 200,
-            started_wall_ms: WALL0 + at.changed * 1_000 - 900,
-            wall_ms: WALL0 + at.changed * 1_000 - 100,
-            scenario_ms: 0,
-            request: {
-                sha256: sha256Hex(json),
-                bytes: Buffer.byteLength(json),
-                parts: pieces.map(partId),
-            },
+        review({
+            job: row.job,
+            candidate: `cand-${name}`,
+            text: row.text,
+            body: { action: "retire", contradictions: cite(row.cited) },
+            cited: row.cited,
+            citedBy: row.citedBy,
+            citedAt: when.citedAt,
+            source:
+                when.source === null
+                    ? null
+                    : [name === "question" ? "assistant" : "user", when.source],
+            endedAt: when.changed,
         });
     }
     // A statement left standing and an unchanged settlement: receipts that write no change.
     commit(++seq, 80, PRODUCER_CONTEST);
-    kernel.run("insert into operation_receipts values (?, ?, ?, ?, ?)", [
-        PRODUCER_CONTEST,
-        `project#${"b".repeat(64)}`,
-        seq,
-        "",
-        daemonAt(80),
-    ]);
-    commit(++seq, 81, PRODUCER_SETTLEMENT);
-    kernel.run("insert into operation_receipts values (?, ?, ?, ?, ?)", [
+    receipt(PRODUCER_CONTEST, `project#${"b".repeat(64)}`, seq, "", 80);
+    commit(++seq, 81, "eidnara-daemon/review-accept");
+    receipt(
         PRODUCER_SETTLEMENT,
-        "settlement-v1",
+        "memory-reviewer-settlement-v1:64#digest:78#review-result:unchanged",
         seq,
-        JSON.stringify({ target: { object_id: "mem_plan" }, effect: { kind: "unchanged" } }),
-        daemonAt(81),
-    ]);
+        JSON.stringify({
+            version: 1,
+            proposal_id: "review-result:unchanged",
+            target: { kind: "memory", object_id: "mem_plan" },
+            effect: { kind: "unchanged" },
+        }),
+        81,
+    );
+    // A receipt whose commit the log lacks: a write that never committed.
+    receipt(PRODUCER_DISPUTE, `project#${"c".repeat(64)}`, 9_999, "disputed", 82);
+    if (o.extra) {
+        // A contest mark: the statement is superseded by a marked row that stays delivered and
+        // names the later statement.
+        const quote = EXTRA.contest;
+        commit(++seq, 83, "memory_capture");
+        decide("mem_later", quote.later, { source: "memory_capture", speaker: "user" }, seq);
+        const stated = ++seq;
+        commit(stated, 84, "memory_capture");
+        admit(stated, quote.id, "approve", "automatic");
+        const marked = ++seq;
+        decide(quote.id, quote.text, { source: "memory_capture", speaker: "user" }, stated, [
+            marked,
+            quote.marked,
+        ]);
+        commit(marked, 86, PRODUCER_CONTEST);
+        decide(quote.marked, quote.text, { contested_by: { memory: "mem_later" } }, marked);
+        admit(marked, quote.marked, "approve", "automatic");
+        receipt(
+            PRODUCER_CONTEST,
+            `project#${quote.job}${"0".repeat(48)}`,
+            marked,
+            quote.marked,
+            86,
+        );
+        review({
+            job: quote.job,
+            candidate: "cand-contest",
+            text: quote.text,
+            body: { action: "revise", new_text: quote.later, contradictions: cite(quote.later) },
+            cited: quote.later,
+            citedBy: "user",
+            citedAt: 85,
+            source: null,
+            endedAt: 86,
+        });
+        // A settlement that revised a row: the job is the one whose receipt selected the proposal.
+        const report = EXTRA.revised;
+        commit(++seq, 87, "memory_capture");
+        decide(report.id, report.text, { source: "memory_capture" }, seq);
+        admit(seq, report.id, "other", "explicit_labeled");
+        const settled = ++seq;
+        commit(
+            settled,
+            89,
+            "eidnara-daemon/review-accept",
+            `project#${report.job}${"0".repeat(48)}#digest`,
+        );
+        receipt(
+            PRODUCER_SETTLEMENT,
+            `memory-reviewer-settlement-v1:64#${"d".repeat(64)}:78#${report.proposal}`,
+            settled,
+            JSON.stringify({
+                version: 1,
+                proposal_id: report.proposal,
+                action: "revise",
+                target: { kind: "memory", object_id: report.id },
+                commit_seq: settled,
+                effect: { kind: "revised" },
+            }),
+            89,
+        );
+        admit(settled, report.id, "other", "explicit_labeled");
+        review({
+            job: report.job,
+            candidate: report.proposal,
+            text: report.text,
+            body: {
+                action: "revise",
+                new_text: report.revised,
+                contradictions: cite(report.cited),
+            },
+            cited: report.cited,
+            citedBy: "assistant",
+            citedAt: 88,
+            source: null,
+            endedAt: 89,
+        });
+    }
     kernel.close();
     daemon.close();
-    writeFileSync(join(dir, "calls.jsonl"), calls.map((c) => `${JSON.stringify(c)}\n`).join(""));
+    calls.sort((a, b) => (a.wall_ms as number) - (b.wall_ms as number));
+    writeFileSync(
+        join(dir, "calls.jsonl"),
+        calls.map((c, n) => `${JSON.stringify({ seq: n, ...c })}\n`).join(""),
+    );
     writeFileSync(join(dir, "requests.jsonl"), [...new Set(parts)].map((p) => `${p}\n`).join(""));
 
     const sessions = join(dir, ARM, "r", "home", ".pi", "agent", "sessions", "--elysia--");

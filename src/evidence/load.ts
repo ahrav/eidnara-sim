@@ -404,7 +404,7 @@ const blobText = (v: unknown): string =>
 
 class StoreUnreadable extends Error {}
 
-const isSqliteError = (e: unknown) =>
+export const isSqliteError = (e: unknown) =>
     e instanceof Error &&
     (e.name === "SQLiteError" || /^SQLITE_/.test(String((e as { code?: unknown }).code)));
 

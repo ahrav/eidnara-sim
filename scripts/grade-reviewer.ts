@@ -41,16 +41,23 @@ import {
     type ReviewScenario,
     type ScenarioStatement,
 } from "../src/reviewer/truth";
-import { changeView, readConversation, requestOf, reviewRequests } from "../src/reviewer/view";
+import {
+    blindConversation,
+    blindText,
+    changeView,
+    readConversation,
+    requestOf,
+    reviewRequests,
+} from "../src/reviewer/view";
 import { Rng } from "../src/rng";
 import { writeAtomic } from "../src/run/atomic";
 import { CallLog } from "../src/run/calllog";
 import {
-    type Entry,
     keepCompleteLines,
-    readJsonl,
+    readJournal,
     releaseLease,
     requireAppendable,
+    requireComplete,
     takeLease,
 } from "../src/run/journal";
 import { simIdentity } from "../src/run/run";
@@ -59,7 +66,13 @@ import { scenarioHash } from "../src/scenario/compile";
 export const REVIEWER_JUDGMENTS = "reviewer-judgments.jsonl";
 export const REVIEWER_GRADES = "reviewer-grades.jsonl";
 export const REVIEWER_GRADE_SCHEMA = "sim-reviewer-grade/v1";
-const JUDGE_FAILED = "judge call failed";
+const JUDGE_CALLS = "judge-calls.jsonl";
+/** Why a change carries no label: each is evidence the run lacks, or a judge call that failed. */
+export const UNJUDGED = {
+    clock: "the commit time maps to no single wall time",
+    request: "no stage-2 request recorded for the change",
+    judge: "judge call failed",
+} as const;
 
 /** One reviewer change with its judged label, the registered literal rule's reading, and its delivery. */
 export interface ReviewerGrade {
@@ -75,6 +88,8 @@ export interface ReviewerGrade {
     /** The change's commit time on the daemon's clock, and its scenario time. */
     recorded_ms: number;
     scenario_ms: number | null;
+    /** The gateway's sequence number of the stage-2 request the view read the cited sources from. */
+    request_seq: number | null;
     /** The judged label and its reading; null with `reason` when no judgment stands. */
     label: ChangeLabel | null;
     verdict: string | null;
@@ -82,7 +97,7 @@ export interface ReviewerGrade {
     /** The registered literal rule's reading (`R1.v1`), kept beside the label. */
     metrics: { "R1.v1": LiteralReading["verdict"] };
     literal_lines: LiteralReading["lines"];
-    /** The target's visibility before and after the change, and whether the change took it out of automatic delivery. */
+    /** The statement's visibility before and after the change, and whether the change took it out of automatic delivery. */
     delivery: { before: string | null; after: string | null; left_automatic: boolean };
     /** For a user statement: whether the scenario held it in force at the change, by its supersession and plan records. */
     in_force: { reading: InForce; statements: ScenarioStatement[] } | null;
@@ -92,10 +107,13 @@ export interface ReviewerGrade {
 }
 
 export interface ReviewerSummary {
-    /** The written changes by arm. */
+    /** The written changes by arm; an arm without a Kernel store counts 0 and is listed in `without_store`. */
     changes: Record<string, number>;
-    /** Over every arm: the changes by judged label; `none` counts a change without a standing judgment. */
+    without_store: string[];
+    /** Over every arm: the changes by judged label; `none` counts a change without a label. */
     labels: Record<string, number>;
+    /** The changes without a label, by reason. */
+    unjudged: Record<string, number>;
     /** Over every arm: the changes by the literal rule's reading. */
     literal: Record<string, number>;
     /** User statements a change took out of automatic delivery, by the in-force reading. */
@@ -122,13 +140,23 @@ export const reviewerGraderDigest = (): string =>
             .join("\n"),
     );
 
-interface Framed {
+/** One change as the step read it, with the judge's prompt when the run holds the evidence for one. */
+interface Read {
     arm: string;
     change: ReviewerChange;
+    scenario_ms: number | null;
+    literal: LiteralReading;
+    in_force: ReviewerGrade["in_force"];
+    request_seq: number | null;
+    /** Why the change gets no judge call; absent on a change with a prompt. */
+    unjudged?: string;
+}
+interface Framed extends Read {
     prompt: string;
     prompt_digest: string;
     answer_digest: string;
 }
+const isFramed = (item: Read): item is Framed => "prompt" in item;
 
 /**
  * The stored judgments of `log`, keyed by prompt and change digest. A completed row that holds
@@ -150,6 +178,7 @@ function storedJudgments(log: string): Map<string, ChangeJudgment> {
         if (!isChangeJudgment(judgment)) {
             throw new Error(`${log}: line ${i + 1} holds no change judgment`);
         }
+        // A later row for the same prompt and change is the newer label.
         rows.set(`${judgment.prompt_digest}:${judgment.answer_digest}`, judgment);
     }
     return rows;
@@ -173,7 +202,7 @@ export async function judgeChanges(o: {
 }): Promise<{ labels: Map<Framed, ChangeJudgment>; calls: number; judgeErrors: number }> {
     const { items, dir, upstream, seed, revision, models } = o;
     const log = join(dir, REVIEWER_JUDGMENTS);
-    for (const path of [log, join(dir, "judge-calls.jsonl")]) {
+    for (const path of [log, join(dir, JUDGE_CALLS)]) {
         requireAppendable(path);
         const links = lstatSync(path, { throwIfNoEntry: false })?.nlink ?? 1;
         if (links !== 1)
@@ -190,7 +219,7 @@ export async function judgeChanges(o: {
     }
     if (pending.length === 0) return { labels, calls: 0, judgeErrors: 0 };
     if (!upstream) throw new Error("reviewer-change judging needs the sim config");
-    const records = new RecordWriter(join(dir, "judge-calls.jsonl"), { resume: true });
+    const records = new RecordWriter(join(dir, JUDGE_CALLS), { resume: true });
     const gateway = new Gateway({
         upstream,
         records,
@@ -199,7 +228,7 @@ export async function judgeChanges(o: {
         clock: { scenarioMs: () => 0 },
         scope: () => ({ arm: "judge", session: null, turn: null }),
     });
-    const fresh: { item: Framed; judgment: ChangeJudgment; calls: number[] }[] = [];
+    const fresh: { item: Framed; judgment: ChangeJudgment; seqs: number[] }[] = [];
     let judgeErrors = 0;
     let calls = 0;
     try {
@@ -218,7 +247,7 @@ export async function judgeChanges(o: {
                         revision: judge.revision,
                         label,
                     },
-                    calls: records.records.slice(firstCall).map((r) => r.seq),
+                    seqs: records.records.slice(firstCall).map((r) => r.seq),
                 });
             } catch (caught) {
                 if (!(caught instanceof GradeRefused)) throw caught;
@@ -236,7 +265,7 @@ export async function judgeChanges(o: {
     }
     // A label rests on a recorded call, so a pass whose call log lost a write keeps none of its new rows.
     if (gateway.failures.length > 0) {
-        for (const f of gateway.failures) console.error(`judge-calls.jsonl: ${String(f)}`);
+        for (const f of gateway.failures) console.error(`${JUDGE_CALLS}: ${String(f)}`);
         return { labels, calls, judgeErrors: judgeErrors + gateway.failures.length + fresh.length };
     }
     if (fresh.length > 0) {
@@ -244,8 +273,13 @@ export async function judgeChanges(o: {
         appendFileSync(
             log,
             fresh
-                .map(({ item, judgment, calls }) =>
-                    JSON.stringify({ change: item.change.job, arm: item.arm, calls, judgment }),
+                .map(({ item, judgment, seqs }) =>
+                    JSON.stringify({
+                        change: item.change.job,
+                        arm: item.arm,
+                        calls: seqs,
+                        judgment,
+                    }),
                 )
                 .map((row) => `${row}\n`)
                 .join(""),
@@ -255,16 +289,45 @@ export async function judgeChanges(o: {
     return { labels, calls, judgeErrors };
 }
 
+/** The grade row of one change: its readings, and its label when a judgment stands. */
+function gradeRow(item: Read, judgment: ChangeJudgment | null, grader: string): ReviewerGrade {
+    const { change } = item;
+    const { label, ...made } = judgment ?? { label: null };
+    return {
+        schema: REVIEWER_GRADE_SCHEMA,
+        arm: item.arm,
+        change: change.job,
+        kind: change.kind,
+        target: change.target,
+        target_kind: change.target_kind,
+        user_statement: change.user_statement,
+        commit_seq: change.commit_seq,
+        recorded_ms: change.recorded_ms,
+        scenario_ms: item.scenario_ms,
+        request_seq: item.request_seq,
+        label,
+        verdict: label === null ? null : CHANGE_VERDICTS[label],
+        ...(label === null ? { reason: item.unjudged ?? UNJUDGED.judge } : {}),
+        metrics: { "R1.v1": item.literal.verdict },
+        literal_lines: item.literal.lines,
+        delivery: { ...change.delivery, left_automatic: leftAutomatic(change) },
+        in_force: item.in_force,
+        judgment: judgment ? (made as Omit<ChangeJudgment, "label">) : null,
+        grader,
+    };
+}
+
 const tally = (counts: Record<string, number>, key: string) => {
     counts[key] = (counts[key] ?? 0) + 1;
 };
 
 /**
  * Grades the written changes of the memory reviewer in a finished run. The step holds the run
- * directory's lease, requires the scenario to hash to the manifest's digest, and reads each arm's
- * final store, the journal, the gateway's call and request logs, and Pi's transcripts. It writes
- * `reviewer-grades.jsonl` whole, one row per change, and appends new labels to
- * `reviewer-judgments.jsonl`; every other file of the run stays as it was.
+ * directory's lease, requires the scenario to hash to the manifest's digest and the journal to
+ * record a complete run, and reads each arm's final store, the journal, the gateway's call and
+ * request logs, and Pi's transcripts. It writes `reviewer-grades.jsonl` whole, one row per
+ * change, and appends new labels to `reviewer-judgments.jsonl`. A change whose commit time or
+ * stage-2 request the run's records leave open gets a row with no label and no judge call.
  */
 export async function gradeReviewer(
     dir: string,
@@ -278,8 +341,9 @@ export async function gradeReviewer(
     try {
         const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
             scenario_hash?: string;
-            order?: string[];
+            order?: unknown;
             models?: unknown;
+            events?: unknown;
             seed?: number;
             base_wall_ms?: number;
         };
@@ -288,14 +352,26 @@ export async function gradeReviewer(
             throw new Error(`${dir}: scenario.json differs from the manifest's scenario_hash`);
         }
         const read = scenario as ReviewScenario;
-        const entries = readJsonl<Entry>(join(dir, "journal.jsonl"));
+        const arms = manifest.order;
+        if (!Array.isArray(arms) || !arms.every((a): a is string => typeof a === "string")) {
+            throw new Error(`${dir}: the manifest records no arm order`);
+        }
+        const entries = readJournal(join(dir, "journal.jsonl"));
+        const events = Number.isSafeInteger(manifest.events)
+            ? (manifest.events as number)
+            : read.events.length;
+        requireComplete(
+            entries,
+            arms,
+            read.events.slice(0, events).map((e) => e.id),
+        );
         const callLog = new CallLog(join(dir, "calls.jsonl"));
         calls = callLog;
         const requestsPath = join(dir, "requests.jsonl");
-        parts = lstatSync(requestsPath, { throwIfNoEntry: false })?.isFile()
+        const stored = lstatSync(requestsPath, { throwIfNoEntry: false })?.isFile()
             ? new RequestPartLog(requestsPath)
             : null;
-        const stored = parts;
+        parts = stored;
         const bodyOf = (position: number) => {
             const ref = stored ? callLog.request(position) : null;
             return ref && stored ? rebuildRequest(ref, stored) : null;
@@ -303,19 +379,14 @@ export async function gradeReviewer(
         const revision = loadReviewerRevision();
         const grader = reviewerGraderDigest();
         const timeline = factTimeline(read);
-        const runName = resolve(dir).split("/").at(-1) ?? "";
-        const framed: Framed[] = [];
-        const readings = new Map<
-            Framed,
-            {
-                scenario_ms: number | null;
-                literal: LiteralReading;
-                in_force: ReviewerGrade["in_force"];
-            }
-        >();
+        const names = [resolve(dir).split("/").at(-1) ?? "", ...arms];
+        const blinded = (text: string) => blindText(text, names);
+        const items: Read[] = [];
         const summary: ReviewerSummary = {
             changes: {},
+            without_store: [],
             labels: {},
+            unjudged: {},
             literal: {},
             left_automatic: {},
             judge_calls: 0,
@@ -323,53 +394,71 @@ export async function gradeReviewer(
             revision: reviewerRevisionHash(revision),
             grader: { digest: grader, ...simIdentity() },
         };
-        for (const arm of manifest.order ?? []) {
-            // An arm is one directory of this run.
-            if (!/^[A-Za-z0-9][A-Za-z0-9._~-]*$/.test(arm)) {
-                throw new Error(`${dir}: arm ${JSON.stringify(arm)} is not a directory name`);
+        for (const arm of arms) {
+            // An arm is one directory of this run, and its store a directory inside it.
+            const root = join(dir, arm);
+            const named = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/.test(arm);
+            if (!named || !lstatSync(root, { throwIfNoEntry: false })?.isDirectory()) {
+                throw new Error(`${dir}: arm ${JSON.stringify(arm)} is no directory of the run`);
             }
-            const changes = readChanges(join(dir, arm, "final-store")) ?? [];
-            summary.changes[arm] = changes.length;
-            if (changes.length === 0) continue;
+            const store = join(root, "final-store");
+            const changes = lstatSync(store, { throwIfNoEntry: false })?.isDirectory()
+                ? readChanges(store)
+                : null;
+            summary.changes[arm] = changes?.length ?? 0;
+            if (changes === null) summary.without_store.push(arm);
+            if (!changes || changes.length === 0) continue;
             const clock = daemonClock(entries, arm, manifest.base_wall_ms ?? null);
             const delivered = deliveredAt(entries, arm);
             const requests = reviewRequests(callLog.calls, bodyOf, arm);
-            const conversation = readConversation(
-                join(dir, arm, "r", "home", ".pi", "agent", "sessions"),
-                join(dir, arm),
+            const spoken = readConversation(
+                join(root, "r", "home", ".pi", "agent", "sessions"),
+                root,
             );
+            const conversation = spoken && blindConversation(spoken, blinded);
             for (const change of changes) {
-                const view = changeView({
-                    change,
-                    request: requestOf(change, requests, clock),
-                    conversation,
-                    scenario: read,
-                    delivered,
-                    clock,
-                    runName,
-                });
-                const prompt = changePrompt(revision.rubric, view);
-                const item: Framed = {
+                const wallMs = clock.wall(change.recorded_ms);
+                const scenarioMs = clock.scenario(change.recorded_ms);
+                const request = wallMs === null ? null : requestOf(change, requests, wallMs);
+                const item: Read = {
                     arm,
                     change,
+                    scenario_ms: scenarioMs,
+                    literal: literalReading(change.text, scenarioMs, timeline),
+                    in_force:
+                        change.user_statement && wallMs !== null
+                            ? inForceReading(change.text, wallMs, read, delivered)
+                            : null,
+                    request_seq: request?.seq ?? null,
+                };
+                if (wallMs === null || request === null) {
+                    items.push({
+                        ...item,
+                        unjudged: wallMs === null ? UNJUDGED.clock : UNJUDGED.request,
+                    });
+                    continue;
+                }
+                const prompt = changePrompt(
+                    revision.rubric,
+                    changeView({
+                        change,
+                        wallMs,
+                        request,
+                        conversation,
+                        scenario: read,
+                        timeline,
+                        delivered,
+                        clock,
+                        blinded,
+                    }),
+                );
+                const framed: Framed = {
+                    ...item,
                     prompt,
                     prompt_digest: sha256Hex(prompt),
                     answer_digest: changeDigest(change),
                 };
-                framed.push(item);
-                const scenarioMs = clock.scenario(change.recorded_ms);
-                readings.set(item, {
-                    scenario_ms: scenarioMs,
-                    literal: literalReading(change.text, scenarioMs, timeline),
-                    in_force: change.user_statement
-                        ? inForceReading(
-                              change.text,
-                              clock.real(change.recorded_ms),
-                              read,
-                              delivered,
-                          )
-                        : null,
-                });
+                items.push(framed);
             }
         }
         // The judge is of another family than the run's agent models and the models the reviewer called.
@@ -381,15 +470,17 @@ export async function gradeReviewer(
                     .map((c) => c.model),
             ]),
         ];
-        const upstream =
-            judgeUpstream ??
-            (config ? bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile) : null);
+        const framed = items.filter(isFramed);
         const judged =
             framed.length > 0
                 ? await judgeChanges({
                       items: framed,
                       dir,
-                      upstream,
+                      upstream:
+                          judgeUpstream ??
+                          (config
+                              ? bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile)
+                              : null),
                       seed: manifest.seed ?? 0,
                       revision,
                       models,
@@ -397,39 +488,17 @@ export async function gradeReviewer(
                 : { labels: new Map<Framed, ChangeJudgment>(), calls: 0, judgeErrors: 0 };
         summary.judge_calls = judged.calls;
         summary.judge_errors = judged.judgeErrors;
-        const rows: ReviewerGrade[] = framed.map((item) => {
-            const { change, arm } = item;
-            const reading = readings.get(item) as NonNullable<ReturnType<typeof readings.get>>;
-            const judgment = judged.labels.get(item) ?? null;
-            const left = leftAutomatic(change);
-            tally(summary.labels, judgment?.label ?? "none");
-            tally(summary.literal, reading.literal.verdict);
-            if (change.user_statement && left && reading.in_force) {
-                tally(summary.left_automatic, reading.in_force.reading);
+        const rows = items.map((item) =>
+            gradeRow(item, isFramed(item) ? (judged.labels.get(item) ?? null) : null, grader),
+        );
+        for (const row of rows) {
+            tally(summary.labels, row.label ?? "none");
+            if (row.reason !== undefined) tally(summary.unjudged, row.reason);
+            tally(summary.literal, row.metrics["R1.v1"]);
+            if (row.user_statement && row.delivery.left_automatic && row.in_force) {
+                tally(summary.left_automatic, row.in_force.reading);
             }
-            const { label, ...made } = judgment ?? { label: null };
-            return {
-                schema: REVIEWER_GRADE_SCHEMA,
-                arm,
-                change: change.job,
-                kind: change.kind,
-                target: change.target,
-                target_kind: change.target_kind,
-                user_statement: change.user_statement,
-                commit_seq: change.commit_seq,
-                recorded_ms: change.recorded_ms,
-                scenario_ms: reading.scenario_ms,
-                label,
-                verdict: label === null ? null : CHANGE_VERDICTS[label],
-                ...(label === null ? { reason: JUDGE_FAILED } : {}),
-                metrics: { "R1.v1": reading.literal.verdict },
-                literal_lines: reading.literal.lines,
-                delivery: { ...change.delivery, left_automatic: left },
-                in_force: reading.in_force,
-                judgment: judgment ? (made as Omit<ChangeJudgment, "label">) : null,
-                grader,
-            };
-        });
+        }
         writeAtomic(join(dir, REVIEWER_GRADES), rows.map((r) => `${JSON.stringify(r)}\n`).join(""));
         return summary;
     } finally {
@@ -447,5 +516,6 @@ if (import.meta.main) {
     }
     const summary = await gradeReviewer(dir, loadConfig());
     console.log(JSON.stringify(summary, null, 2));
-    if (summary.judge_errors > 0) process.exit(1);
+    // A change without a label leaves the grades incomplete, whatever the reason.
+    if ((summary.labels.none ?? 0) > 0) process.exit(1);
 }
