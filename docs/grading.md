@@ -1694,29 +1694,36 @@ host turns names the identity.
 `prereg/G16.json` (`sim-reviewer-change-revision/v1`) grades the written
 changes of Eidnara's memory reviewer: a dispute, a contest mark, a
 retirement, or a revision of one stored memory row, which the reviewer
-justifies by a later source. `bun scripts/grade-reviewer.ts <run dir>`
+justifies by a later source, and a row the reviewer created. `bun scripts/grade-reviewer.ts <run dir>`
 grades them in a finished run. The step takes the run's lease, requires
 `scenario.json` to hash to the manifest's digest and the journal to record
 a complete run (`requireComplete`), and reads each arm's `final-store`,
 the journal, the gateway's `calls.jsonl` and `requests.jsonl`, and Pi's
 transcripts. An arm is a directory of the run and its store a directory
 inside it; an arm without a Kernel store grades nothing and is listed in
-the summary's `without_store`, and a store that is no database refuses
-the pass. The step writes `reviewer-grades.jsonl` whole (one row per
+the summary's `without_store`. A store that is no database, a store file
+or directory behind a link, and a reviewer receipt that names a commit
+the log lacks each refuse the pass. The step writes `reviewer-grades.jsonl` whole (one row per
 change, `sim-reviewer-grade/v1`) and appends new labels to
 `reviewer-judgments.jsonl` and the judge's calls to `judge-calls.jsonl`.
 It writes no other file of the run; a read-only open of a store in WAL
 mode can create the store's `-shm` file, as the evidence readers' opens
-do. It exits 1 when a change has no label.
+do. It exits 1 when a change the revision grades has no label (the
+summary's `unlabelled`).
 
 A change gets a row with no label, a `reason`, and no judge call when the
 run's records leave its evidence open: its commit time maps to no single
 wall time (two clock offsets claim it after an offset shrank, or none
-does), or the gateway recorded no stage-2 request for it (`requests.jsonl`
-is absent, the request does not rebuild, or a cited alias has no label the
-step reads). The summary counts these under `unjudged` by reason. A
-receipt whose commit the log lacks is a write that never committed and is
-no change.
+does; the same holds for the times of its job's last attempt), the store
+holds no applied proposal for it (no `store.db`, or no receipt for its
+job), or the gateway's record holds no single stage-2 request for it
+(`requests.jsonl` is absent, the request does not rebuild, a cited alias
+has no label the step reads, a cited byte range lies outside its
+reference, or two requests fit). A row the reviewer created has no
+target that stood before it, which is what the rubric grades, so it gets
+a row with no label and the reason `a created row lies outside the
+revision's property`, and it does not count as unlabelled. The summary
+counts every change without a label under `unjudged` by reason.
 
 The rule a campaign registered before this revision (R1 of the S5
 campaign) read a change by the scenario's value literals in the target
@@ -1737,19 +1744,22 @@ line. Times are the daemon's clock.
 |---|---|
 | The target row: text, writer kind, the writer and time of the message it was captured from, the time it was stored | `decisions` and `commit_log` of `final-store/kernel.sqlite`; the kind is `agent note` for a row a `plugin` commit created, `assistant report` for text that opens `Assistant reported`, `work in progress` for a captured statement of lifetime `current_work`, `user statement` for a row whose text opens `User stated`, that a statement record names, or whose rationale gives the user as speaker, and `assistant report` for any other row; the source line comes from the reference the stage-2 request labels as the memory's source |
 | The change: kind and commit time, and the new text of a revision | the reviewer's receipts in `operation_receipts`: a dispute through the `mark_disputed` admission decision of its commit, a contest mark through the row its commit superseded, a settlement with effect `retired`, `revised`, or `created` (a created row is named by the effect; the job is the one whose receipt selected the settled proposal) |
-| Each cited later source: writer, time, text | the contradiction spans of the proposal the change applied (the selected candidate of its receipt in `store.db`), read in the stage-2 request the gateway recorded: the last `memory_reviewer_stage2` request of the arm for the row's text that ended by the change's commit and holds every cited alias. A reference's writer (the user, the assistant, a tool, a repository file, or unrecorded), time, and relation come from its line in the request's reference list, read after the memory's own bytes; the host gives a tool output no time |
+| Each cited later source: writer, time, text | the contradiction spans of the proposal the change applied (the selected candidate of its receipt in `store.db`), read in the stage-2 request the gateway recorded: the one completed `memory_reviewer_stage2` call of the arm (status 200, no error) for the row's text that lies inside the job's last attempt (`memory_reviewer_attempts` in `store.db`, from its commit to its end, taken back to wall time) and holds every cited alias with the cited byte range inside the reference. A reference's writer (the user, the assistant, a tool, a repository file, or unrecorded), time, and relation come from its line in the request's reference list, read where the host writes it, directly after the memory's own bytes; the host gives a tool output no time |
 | The conversation of the row's project from the row's time to the change | Pi's session transcripts: user messages (3,000 characters each), assistant text (1,800), tool calls (300) and outputs (400); a span over 36,000 characters keeps its first 9,000 and last 18,000 and, between them, the newest of the user's messages that fit 6,000 characters, cut to 500 each. It starts at the row's source message, or 15 minutes before a row without a source was stored, or at a cited source that precedes both |
 | The scenario's record of the row's subject up to the change | the events of each fact line the row restates or whose value literal stands in the row as a whole token, in the order the arm received them (`BeginTurn` or `Event` in the journal), with the plan step each set (`plans`) and a mark on the first event of a fact that supersedes an earlier one |
 
 The view holds nothing written after the change. Every text is blinded
 before it is cut: block tags are removed, an arm's workspace and home
-paths are shortened to their last part, the run directory's name and each
-arm's name are replaced whole, and the arm token is replaced. The row and
-each cited source stand between `<<<` and `>>>`, and a run of three such
-marks inside a text is spaced apart. A line inside a conversation entry
-that opens as a line of the view does (an entry's time and speaker, a
-section heading, the answer line) is marked with `| `, so text an agent
-wrote reads as that entry's text. `VIEW_VERSION` and `VIEW_LIMITS` enter
+paths are shortened to their last part (read from at most 64 directories
+back), the run directory's name is replaced, each arm's name is replaced
+where it stands as a whole name (`host` in `the host arm`, and no part of
+`localhost`), and the arm token is replaced. The row and each cited
+source stand between `<<<` and `>>>`, and a run of three such marks
+inside a text is spaced apart. A line inside the row, a cited source, or
+a conversation entry that opens as a line of the view does (an entry's or
+a record's time, a section heading, a subject line, the answer line,
+after any line break and any blanks) is marked with `| `, so text an
+agent wrote reads as that text. `VIEW_VERSION` and `VIEW_LIMITS` enter
 the judge's prompt digest, so a view that renders a change as other text
 lapses the stored labels.
 
@@ -1784,8 +1794,9 @@ holds the counts by label.
 A grade row reads delivery from the store: `delivery.before` is the
 target's visibility by its last admission decision before the change's
 commit, `delivery.after` the visibility the change's own decision gives
-(for a contest mark, the decision on the marked row that supersedes the
-target, so a marked statement that stays delivered reads `automatic`),
+(for a contest mark and for a revision, the decision on the row that
+supersedes the target: the marked row, the successor row; so a marked
+statement that stays delivered reads `automatic`),
 and `left_automatic` is true when the first is `automatic` and the second
 is another value. A dispute of a row that was `explicit_labeled` before
 changes what no session receives.

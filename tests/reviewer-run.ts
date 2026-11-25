@@ -172,7 +172,7 @@ export const ROWS = {
 } as const;
 export type RowName = keyof typeof ROWS;
 
-/** The rows the `extra` option adds: a contested statement and a revised report. */
+/** The rows the `extra` option adds: a contested statement, a revised report, and a created row. */
 export const EXTRA = {
     contest: {
         id: "mem_quote",
@@ -183,18 +183,30 @@ export const EXTRA = {
     },
     revised: {
         id: "mem_count",
+        successor: "mem_count_v2",
         job: "aaaaaaaaaaaaaaa6",
         proposal: "review-result:revised",
         text: "Assistant reported: 21 cookie tests fail.",
         revised: "Assistant reported: 20 cookie tests fail.",
         cited: "I counted again: 20 cookie tests fail, not 21.",
     },
+    created: {
+        id: "mem_made",
+        job: "aaaaaaaaaaaaaaa7",
+        proposal: "review-result:created",
+        text: "User stated: release notes go in CHANGES.md.",
+        cited: "Put release notes in CHANGES.md from now on.",
+    },
 } as const;
 
 /** What a test changes in the fixture run. */
 export interface RunOptions {
-    /** Adds a contest mark with a marked row and a settlement that revised a row. */
+    /** Adds a contest mark with a marked row, a settlement that revised a row, and one that created a row. */
     extra?: boolean;
+    /** Adds a reviewer receipt that names a commit the log lacks. */
+    orphan?: boolean;
+    /** The wall second at which the arm's clock offset shrinks by 30 s. */
+    shrinkAt?: number;
     /** Adds a second arm whose journal entries and stage-2 call the reviewer arm's readings leave out. */
     otherArm?: boolean;
     /** The wall second at which the arm received the replacing tag statement (e-5). */
@@ -274,6 +286,13 @@ export function reviewerRun(o: RunOptions = {}): string {
     armEntries(ARM, 0, [
         [0, 0, 0],
         [10, JUMP_MS / 1_000, 110_000],
+        ...(o.shrinkAt === undefined
+            ? []
+            : ([[o.shrinkAt, JUMP_MS / 1_000 - 30, 100_000 + o.shrinkAt * 1_000]] as [
+                  number,
+                  number,
+                  number,
+              ][])),
     ]);
     journal.push({ kind: "EndRun", arm: null, scenario_ms: 0, wall_ms: WALL0 + 200_000 });
     journal.sort((a, b) => (a.wall_ms as number) - (b.wall_ms as number));
@@ -306,6 +325,9 @@ export function reviewerRun(o: RunOptions = {}): string {
         "create table memory_reviewer_receipts(causal_identity text, selected_candidate_id text)",
     );
     daemon.run("create table memory_reviewer_jobs(causal_identity text, project text)");
+    daemon.run(
+        "create table memory_reviewer_attempts(causal_identity text, attempt_index integer, committed_at_ms integer, terminal_at_ms integer)",
+    );
     const commit = (seq: number, s: number, producer: string, key = `op-${seq}`) =>
         kernel.run("insert into commit_log values (?, ?, ?, ?)", [seq, daemonAt(s), key, producer]);
     const admit = (seq: number, id: string, event: string, visibility: string) =>
@@ -371,6 +393,19 @@ export function reviewerRun(o: RunOptions = {}): string {
                 identity,
                 "/runs/x/r/workspaces/elysia",
             ]);
+            // The job's two attempts, on the daemon's clock: stage 1, then the stage-2 attempt
+            // whose request the gateway recorded between its commit and its end.
+            const end = daemonAt(r.endedAt);
+            daemon.run("insert into memory_reviewer_attempts values (?, 0, ?, ?)", [
+                identity,
+                end - 6_000,
+                end - 2_000,
+            ]);
+            daemon.run("insert into memory_reviewer_attempts values (?, 1, ?, ?)", [
+                identity,
+                end - 1_900,
+                end - 50,
+            ]);
         }
         const label =
             r.citedBy === "tool"
@@ -402,6 +437,8 @@ export function reviewerRun(o: RunOptions = {}): string {
             componentSource: "inferred",
             model: o.reviewerModel ?? "global.anthropic.claude-opus-5-5",
             status: 200,
+            error: null,
+            finish_reason: "end_turn",
             started_wall_ms: WALL0 + r.endedAt * 1_000 - 900,
             wall_ms: WALL0 + r.endedAt * 1_000 - 100,
             scenario_ms: 0,
@@ -492,8 +529,7 @@ export function reviewerRun(o: RunOptions = {}): string {
         }),
         81,
     );
-    // A receipt whose commit the log lacks: a write that never committed.
-    receipt(PRODUCER_DISPUTE, `project#${"c".repeat(64)}`, 9_999, "disputed", 82);
+    if (o.orphan) receipt(PRODUCER_DISPUTE, `project#${"c".repeat(64)}`, 9_999, "disputed", 82);
     if (o.extra) {
         // A contest mark: the statement is superseded by a marked row that stays delivered and
         // names the later statement.
@@ -529,33 +565,37 @@ export function reviewerRun(o: RunOptions = {}): string {
             source: null,
             endedAt: 86,
         });
-        // A settlement that revised a row: the job is the one whose receipt selected the proposal.
+        // A settlement that revised a row: the job is the one whose receipt selected the proposal,
+        // and the commit admits the successor row the effect names.
         const report = EXTRA.revised;
         commit(++seq, 87, "memory_capture");
-        decide(report.id, report.text, { source: "memory_capture" }, seq);
         admit(seq, report.id, "other", "explicit_labeled");
         const settled = ++seq;
+        decide(report.id, report.text, { source: "memory_capture" }, settled - 1, [
+            settled,
+            report.successor,
+        ]);
+        decide(report.successor, report.revised, { source: "memory_capture" }, settled);
         commit(
             settled,
             89,
             "eidnara-daemon/review-accept",
             `project#${report.job}${"0".repeat(48)}#digest`,
         );
+        const settlement = (proposal: string, target: object, effect: object) =>
+            JSON.stringify({ version: 1, proposal_id: proposal, target, commit_seq: seq, effect });
         receipt(
             PRODUCER_SETTLEMENT,
             `memory-reviewer-settlement-v1:64#${"d".repeat(64)}:78#${report.proposal}`,
             settled,
-            JSON.stringify({
-                version: 1,
-                proposal_id: report.proposal,
-                action: "revise",
-                target: { kind: "memory", object_id: report.id },
-                commit_seq: settled,
-                effect: { kind: "revised" },
-            }),
+            settlement(
+                report.proposal,
+                { kind: "memory", object_id: report.id },
+                { kind: "revised", object_id: report.successor },
+            ),
             89,
         );
-        admit(settled, report.id, "other", "explicit_labeled");
+        admit(settled, report.successor, "other", "explicit_labeled");
         review({
             job: report.job,
             candidate: report.proposal,
@@ -570,6 +610,39 @@ export function reviewerRun(o: RunOptions = {}): string {
             citedAt: 88,
             source: null,
             endedAt: 89,
+        });
+        // A settlement that created a row: its target is a staged candidate, and the effect names the row.
+        const made = EXTRA.created;
+        const creating = ++seq;
+        commit(
+            creating,
+            91,
+            "eidnara-daemon/review-accept",
+            `project#${made.job}${"0".repeat(48)}#digest`,
+        );
+        decide(made.id, made.text, {}, creating);
+        admit(creating, made.id, "other", "explicit_labeled");
+        receipt(
+            PRODUCER_SETTLEMENT,
+            `memory-reviewer-settlement-v1:64#${"d".repeat(64)}:78#${made.proposal}`,
+            creating,
+            settlement(
+                made.proposal,
+                { kind: "candidate" },
+                { kind: "created", object_id: made.id },
+            ),
+            91,
+        );
+        review({
+            job: made.job,
+            candidate: made.proposal,
+            text: made.text,
+            body: { action: "revise", contradictions: cite(made.cited) },
+            cited: made.cited,
+            citedBy: "user",
+            citedAt: 90,
+            source: null,
+            endedAt: 91,
         });
     }
     kernel.close();

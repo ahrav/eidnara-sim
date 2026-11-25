@@ -40,8 +40,8 @@ export interface ReviewerChange {
     stored_ms: number | null;
     /**
      * The visibility of the statement by its last admission decision before the change, and by
-     * the change's own: the target's for a dispute or a settlement, and the marked row's for a
-     * contest mark, which supersedes its target by that row.
+     * the change's own: the target's for a dispute or a retirement, the marked row's for a
+     * contest mark, and the successor row's for a revision, each of which supersedes its target.
      */
     delivery: { before: string | null; after: string | null };
     /** The project the review job ran in: the last segment of its workspace path. */
@@ -50,6 +50,11 @@ export interface ReviewerChange {
     proposal: { action: string; new_text: string | null; contradictions: CitedSpan[] } | null;
     /** A contested mark's later statement: the memory the mark names, with its text. */
     contested_by: { memory: string; text: string } | null;
+    /**
+     * The job's last model attempt, which made the applied proposal: when the daemon committed it
+     * and when it ended, on the daemon's clock. The stage-2 request of the change lies inside it.
+     */
+    attempt: { committed_ms: number; terminal_ms: number } | null;
 }
 
 /** Whether a change took its statement out of automatic delivery, by the store's admission decisions. */
@@ -78,9 +83,11 @@ function rowOf(payload: string | null | undefined): { summary: string; rationale
     };
 }
 
-/** The database at `path` opened for reading; null when no regular file stands there. */
+/** The database at `path` opened for reading; null when nothing stands there, and refused when a link or another kind of entry does. */
 function openReadonly(path: string): Database | null {
-    if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) return null;
+    const entry = lstatSync(path, { throwIfNoEntry: false });
+    if (!entry) return null;
+    if (!entry.isFile()) throw new Error(`${path} is no regular file`);
     return new Database(path, { readonly: true });
 }
 
@@ -148,8 +155,11 @@ interface Written {
     identity: string;
     target: string;
     seq: number;
-    /** The row whose admission the change's commit made, when it is another row than the target. */
-    marked?: string;
+    /**
+     * The row whose admission the change's commit made, when it is another row than the target:
+     * the marked row of a contest mark, the successor row of a revision.
+     */
+    successor?: string;
 }
 
 /**
@@ -158,8 +168,8 @@ interface Written {
  * a row id is a contested mark: its target is the statement that commit superseded by the result
  * row, and an empty result is a statement left standing. A settlement's result names the target
  * and the effect; `retired`, `revised` and `created` are changes, a created row is named by the
- * effect, and the job is the one whose receipt selected the settled proposal. A receipt whose
- * commit the log lacks is a write that never committed and names no change.
+ * effect, and the job is the one whose receipt selected the settled proposal. A receipt names a
+ * commit of the log; one that names another is damaged evidence and refuses the read.
  */
 function writtenChanges(
     receipts: readonly Receipt[],
@@ -170,7 +180,11 @@ function writtenChanges(
 ): Written[] {
     const out: Written[] = [];
     for (const r of receipts) {
-        if (r.seq === null || !commits.has(r.seq)) continue;
+        if (r.seq === null || !commits.has(r.seq)) {
+            throw new Error(
+                `a reviewer receipt names commit ${String(r.seq)}, which the log lacks`,
+            );
+        }
         const seq = r.seq;
         const keyed = r.key.split("#").at(-1) ?? "";
         const result =
@@ -188,7 +202,7 @@ function writtenChanges(
                 identity: keyed,
                 target: superseded?.id ?? result,
                 seq,
-                marked: result,
+                successor: result,
             });
         } else {
             const settled = parsed(result);
@@ -201,7 +215,14 @@ function writtenChanges(
             if (typeof target !== "string") continue;
             const proposal = typeof settled.proposal_id === "string" ? settled.proposal_id : "";
             const identity = identityOf(proposal) ?? commits.get(seq)?.key.split("#")[1] ?? keyed;
-            out.push({ kind: name, identity, target, seq });
+            const successor = name === "revised" ? effect.object_id : undefined;
+            out.push({
+                kind: name,
+                identity,
+                target,
+                seq,
+                ...(typeof successor === "string" ? { successor } : {}),
+            });
         }
     }
     return out;
@@ -278,7 +299,7 @@ export function readChanges(storeDir: string): ReviewerChange[] | null {
             const created = decision ? commits.get(decision.created) : undefined;
             const statement = summary.startsWith("User stated") || statements.has(w.target);
             const before = visibility(w.target).filter((a) => a.seq < w.seq);
-            const after = visibility(w.marked ?? w.target).filter((a) => a.seq === w.seq);
+            const after = visibility(w.successor ?? w.target).filter((a) => a.seq === w.seq);
             const receipt = daemon
                 ? rows<{ candidate: string | null; project: string | null }>(
                       daemon,
@@ -286,6 +307,15 @@ export function readChanges(storeDir: string): ReviewerChange[] | null {
                        from memory_reviewer_receipts r
                        left join memory_reviewer_jobs j on j.causal_identity = r.causal_identity
                        where substr(r.causal_identity, 1, 16) = ?`,
+                      job,
+                  )[0]
+                : undefined;
+            const attempt = daemon
+                ? rows<{ committed: number; terminal: number | null }>(
+                      daemon,
+                      `select committed_at_ms as committed, terminal_at_ms as terminal
+                       from memory_reviewer_attempts where substr(causal_identity, 1, 16) = ?
+                       order by committed_at_ms desc limit 1`,
                       job,
                   )[0]
                 : undefined;
@@ -298,9 +328,10 @@ export function readChanges(storeDir: string): ReviewerChange[] | null {
                 : undefined;
             const wrapped = candidate ? parsed(candidate.payload) : null;
             const body = isObj(wrapped) && isObj(wrapped.body) ? wrapped.body : null;
-            const by = w.marked
-                ? rowOf(decisions.get(w.marked)?.payload).rationale.contested_by
-                : null;
+            const by =
+                w.kind === "contested" && w.successor
+                    ? rowOf(decisions.get(w.successor)?.payload).rationale.contested_by
+                    : null;
             const later = isObj(by) && typeof by.memory === "string" ? by.memory : null;
             return {
                 kind: w.kind,
@@ -328,6 +359,10 @@ export function readChanges(storeDir: string): ReviewerChange[] | null {
                 contested_by: later
                     ? { memory: later, text: rowOf(decisions.get(later)?.payload).summary }
                     : null,
+                attempt:
+                    attempt && attempt.terminal !== null
+                        ? { committed_ms: attempt.committed, terminal_ms: attempt.terminal }
+                        : null,
             };
         });
     } finally {

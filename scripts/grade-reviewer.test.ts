@@ -17,6 +17,7 @@ import { changeDigest, changeIdentity, proxyChangeJudge } from "../src/reviewer/
 import { ARM, EXTRA, OTHER_ARM, ROWS, type RunOptions, reviewerRun } from "../tests/reviewer-run";
 import {
     gradeReviewer,
+    OUTSIDE,
     REVIEWER_GRADES,
     REVIEWER_JUDGMENTS,
     type ReviewerGrade,
@@ -79,6 +80,7 @@ describe("grading the reviewer's changes of a finished run", () => {
             without_store: [],
             labels: { R: 3, W: 1 },
             unjudged: {},
+            unlabelled: 0,
             literal: { right: 1, wrong: 2, "no truth": 1 },
             left_automatic: { ended: 2 },
             judge_calls: 4,
@@ -116,11 +118,16 @@ describe("grading the reviewer's changes of a finished run", () => {
         ]);
     });
 
-    test("a contest mark and a revision are graded as changes, and a marked statement stays in delivery", async () => {
+    test("a contest mark, a revision, and a created row are graded as changes, and a marked statement stays in delivery", async () => {
         const dir = run({ extra: true });
         const upstream = judgeSays(fair);
         const summary = await gradeReviewer(dir, null, upstream);
-        expect(summary.changes).toEqual({ [ARM]: 6 });
+        expect(summary.changes).toEqual({ [ARM]: 7 });
+        // A row the reviewer created has no target the rubric grades: no judge call, and no missing label.
+        expect(summary.labels).toEqual({ R: 5, W: 1, none: 1 });
+        expect(summary.unjudged).toEqual({ [OUTSIDE]: 1 });
+        expect(summary.unlabelled).toBe(0);
+        expect(upstream.prompts).toHaveLength(6);
         const rows = grades(dir);
         expect(rows.slice(4).map((r) => [r.kind, r.target, r.change, r.delivery])).toEqual([
             [
@@ -134,6 +141,12 @@ describe("grading the reviewer's changes of a finished run", () => {
                 EXTRA.revised.id,
                 EXTRA.revised.job,
                 { before: "explicit_labeled", after: "explicit_labeled", left_automatic: false },
+            ],
+            [
+                "created",
+                EXTRA.created.id,
+                EXTRA.created.job,
+                { before: null, after: "explicit_labeled", left_automatic: false },
             ],
         ]);
         expect(upstream.prompts[5]).toContain(`New text:\n<<<\n${EXTRA.revised.revised}\n>>>`);
@@ -245,6 +258,39 @@ describe("grading the reviewer's changes of a finished run", () => {
             "right",
         ]);
         expect(existsSync(join(dir, REVIEWER_JUDGMENTS))).toBe(false);
+    });
+
+    test("a change without an applied proposal on record, and a change whose commit time two clock offsets claim, get no judge call and no label", async () => {
+        const bare = run();
+        rmSync(join(bare, ARM, "final-store", "store.db"));
+        const upstream = judgeSays(fair);
+        const summary = await gradeReviewer(bare, null, upstream);
+        expect(upstream.prompts).toHaveLength(0);
+        expect(summary).toMatchObject({
+            labels: { none: 4 },
+            unjudged: { [UNJUDGED.proposal]: 4 },
+            unlabelled: 4,
+        });
+        // The arm's offset shrinks by 30 s at wall second 77, so daemon times from wall second 47 to 107 are
+        // read twice: three commit times, and the last change's attempt, map to no single wall time.
+        const shrunk = run({ shrinkAt: 77 });
+        const again = judgeSays(fair);
+        const second = await gradeReviewer(shrunk, null, again);
+        expect(again.prompts).toHaveLength(0);
+        expect(second).toMatchObject({
+            labels: { none: 4 },
+            unjudged: { [UNJUDGED.clock]: 4 },
+            unlabelled: 4,
+        });
+        expect(
+            grades(shrunk).map((r) => [r.target, r.reason, r.in_force?.reading ?? null]),
+        ).toEqual([
+            ["mem_plan", UNJUDGED.clock, null],
+            ["mem_question", UNJUDGED.clock, null],
+            ["mem_note", UNJUDGED.clock, null],
+            // This commit's own time maps to one wall time, so its scenario reading stands.
+            ["mem_tag0", UNJUDGED.clock, "ended"],
+        ]);
     });
 
     test("a completed log row that holds no judgment refuses the pass by its line, and the lease is released", async () => {

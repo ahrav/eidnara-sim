@@ -70,9 +70,15 @@ const JUDGE_CALLS = "judge-calls.jsonl";
 /** Why a change carries no label: each is evidence the run lacks, or a judge call that failed. */
 export const UNJUDGED = {
     clock: "the commit time maps to no single wall time",
-    request: "no stage-2 request recorded for the change",
+    proposal: "no applied proposal recorded for the change",
+    request: "no single stage-2 request recorded for the change",
     judge: "judge call failed",
 } as const;
+/**
+ * Why a created row carries no label: the revision's rubric grades a change to a row that stood
+ * before it, and a row the reviewer wrote anew has no such target.
+ */
+export const OUTSIDE = "a created row lies outside the revision's property";
 
 /** One reviewer change with its judged label, the registered literal rule's reading, and its delivery. */
 export interface ReviewerGrade {
@@ -114,6 +120,8 @@ export interface ReviewerSummary {
     labels: Record<string, number>;
     /** The changes without a label, by reason. */
     unjudged: Record<string, number>;
+    /** The changes of a kind the revision grades that have no label; the step exits 1 when it is above 0. */
+    unlabelled: number;
     /** Over every arm: the changes by the literal rule's reading. */
     literal: Record<string, number>;
     /** User statements a change took out of automatic delivery, by the in-force reading. */
@@ -326,8 +334,9 @@ const tally = (counts: Record<string, number>, key: string) => {
  * directory's lease, requires the scenario to hash to the manifest's digest and the journal to
  * record a complete run, and reads each arm's final store, the journal, the gateway's call and
  * request logs, and Pi's transcripts. It writes `reviewer-grades.jsonl` whole, one row per
- * change, and appends new labels to `reviewer-judgments.jsonl`. A change whose commit time or
- * stage-2 request the run's records leave open gets a row with no label and no judge call.
+ * change, and appends new labels to `reviewer-judgments.jsonl`. A change whose commit time,
+ * applied proposal, or stage-2 request the run's records leave open gets a row with no label and
+ * no judge call, and so does a row the reviewer created, which the revision's rubric leaves out.
  */
 export async function gradeReviewer(
     dir: string,
@@ -387,6 +396,7 @@ export async function gradeReviewer(
             without_store: [],
             labels: {},
             unjudged: {},
+            unlabelled: 0,
             literal: {},
             left_automatic: {},
             judge_calls: 0,
@@ -402,9 +412,9 @@ export async function gradeReviewer(
                 throw new Error(`${dir}: arm ${JSON.stringify(arm)} is no directory of the run`);
             }
             const store = join(root, "final-store");
-            const changes = lstatSync(store, { throwIfNoEntry: false })?.isDirectory()
-                ? readChanges(store)
-                : null;
+            const entry = lstatSync(store, { throwIfNoEntry: false });
+            if (entry && !entry.isDirectory()) throw new Error(`${store} is no directory`);
+            const changes = entry ? readChanges(store) : null;
             summary.changes[arm] = changes?.length ?? 0;
             if (changes === null) summary.without_store.push(arm);
             if (!changes || changes.length === 0) continue;
@@ -419,7 +429,16 @@ export async function gradeReviewer(
             for (const change of changes) {
                 const wallMs = clock.wall(change.recorded_ms);
                 const scenarioMs = clock.scenario(change.recorded_ms);
-                const request = wallMs === null ? null : requestOf(change, requests, wallMs);
+                const cites = change.proposal !== null || change.contested_by !== null;
+                // The request lies inside the job's last attempt, taken back to wall time.
+                const from = change.attempt && clock.wall(change.attempt.committed_ms);
+                const to = change.attempt && clock.wall(change.attempt.terminal_ms);
+                const timed =
+                    wallMs !== null && (!change.attempt || (from !== null && to !== null));
+                const request =
+                    timed && cites && typeof from === "number" && typeof to === "number"
+                        ? requestOf(change, requests, { from, to })
+                        : null;
                 const item: Read = {
                     arm,
                     change,
@@ -431,11 +450,16 @@ export async function gradeReviewer(
                             : null,
                     request_seq: request?.seq ?? null,
                 };
-                if (wallMs === null || request === null) {
-                    items.push({
-                        ...item,
-                        unjudged: wallMs === null ? UNJUDGED.clock : UNJUDGED.request,
-                    });
+                if (change.kind === "created" || wallMs === null || request === null) {
+                    const unjudged =
+                        change.kind === "created"
+                            ? OUTSIDE
+                            : !timed
+                              ? UNJUDGED.clock
+                              : cites
+                                ? UNJUDGED.request
+                                : UNJUDGED.proposal;
+                    items.push({ ...item, unjudged });
                     continue;
                 }
                 const prompt = changePrompt(
@@ -494,6 +518,7 @@ export async function gradeReviewer(
         for (const row of rows) {
             tally(summary.labels, row.label ?? "none");
             if (row.reason !== undefined) tally(summary.unjudged, row.reason);
+            if (row.label === null && row.reason !== OUTSIDE) summary.unlabelled++;
             tally(summary.literal, row.metrics["R1.v1"]);
             if (row.user_statement && row.delivery.left_automatic && row.in_force) {
                 tally(summary.left_automatic, row.in_force.reading);
@@ -516,6 +541,6 @@ if (import.meta.main) {
     }
     const summary = await gradeReviewer(dir, loadConfig());
     console.log(JSON.stringify(summary, null, 2));
-    // A change without a label leaves the grades incomplete, whatever the reason.
-    if ((summary.labels.none ?? 0) > 0) process.exit(1);
+    // A change the revision grades that has no label leaves the grades incomplete.
+    if (summary.unlabelled > 0) process.exit(1);
 }

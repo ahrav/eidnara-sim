@@ -27,7 +27,8 @@ export interface Reference {
 /** One stage-2 request of the memory reviewer as the gateway recorded it. */
 export interface ReviewRequest {
     seq: number;
-    /** The wall time the call ended. */
+    /** The wall times the call started and ended. */
+    started_wall_ms: number;
     ended_wall_ms: number;
     /** The memory under review: the text of `ref-1`. */
     memory: string;
@@ -40,8 +41,8 @@ const LABEL =
 
 /**
  * The references of one stage-2 request text: the bytes between each pair of host markers, and
- * each one's label from the list that follows the memory's own bytes, so a memory that holds a
- * line shaped like the list names no reference.
+ * each one's label from the list that directly follows the memory's own bytes, so a memory or a
+ * later reference that holds a line shaped like the list names no reference.
  */
 export function parseReferences(
     user: string,
@@ -58,9 +59,10 @@ export function parseReferences(
     const memory = bodies.get("ref-1");
     if (memory === undefined) return null;
     const references = new Map<string, Reference>();
+    // The host writes the list right after the memory's own bytes; a later reference's text names none.
     const close = `\n[/ref-1 ${token}]`;
     const after = user.slice(user.indexOf(close) + close.length);
-    const listed = /\nlinked references:\n([\s\S]*?)\n\n/.exec(after)?.[1] ?? "";
+    const listed = /^\n\nlinked references:\n([\s\S]*?)\n\n/.exec(after)?.[1] ?? "";
     for (const line of listed.split("\n")) {
         const [, alias, label] = /^(ref-\d+): (.*)$/.exec(line) ?? [];
         const text = alias === undefined ? undefined : bodies.get(alias);
@@ -92,38 +94,52 @@ export function reviewRequests(
     const out: ReviewRequest[] = [];
     calls.forEach((call, position) => {
         if (call.arm !== arm || call.component !== "memory_reviewer_stage2") return;
+        // A call that failed or broke off made no proposal.
+        if (call.status !== 200 || call.error) return;
         const messages = bodyOf(position)?.messages ?? [];
         const user = messages
             .filter((m) => m.role === "user")
             .map((m) => blockText(m.content))
             .join("\n\n");
         const read = parseReferences(user);
-        if (read) out.push({ seq: call.seq, ended_wall_ms: call.wall_ms, ...read });
+        if (read) {
+            out.push({
+                seq: call.seq,
+                started_wall_ms: call.started_wall_ms,
+                ended_wall_ms: call.wall_ms,
+                ...read,
+            });
+        }
     });
     return out;
 }
 
 /**
- * The request that produced a change: the last stage-2 request for the change's memory text that
- * ended by the change's commit, at wall time `commitWallMs`, and holds every alias the applied
- * proposal cites.
+ * The request that produced a change: the one stage-2 request for the change's memory text whose
+ * call lies inside the job's last attempt (`within`, wall times) and that holds every passage the
+ * applied proposal cites, each byte range inside its reference. Null when no request or more
+ * than one fits, so a change is never read with another review's sources.
  */
 export function requestOf(
     change: ReviewerChange,
     requests: readonly ReviewRequest[],
-    commitWallMs: number,
+    within: { from: number; to: number },
 ): ReviewRequest | null {
     const cited = change.proposal?.contradictions ?? [];
-    return (
-        requests
-            .filter(
-                (r) =>
-                    r.memory === change.text &&
-                    r.ended_wall_ms <= commitWallMs &&
-                    cited.every((c) => r.references.has(c.alias)),
-            )
-            .at(-1) ?? null
+    const holds = (r: ReviewRequest, span: CitedSpan) => {
+        const text = r.references.get(span.alias)?.text;
+        if (text === undefined) return false;
+        if (span.start === null || span.end === null) return true;
+        return 0 <= span.start && span.start <= span.end && span.end <= Buffer.byteLength(text);
+    };
+    const fitting = requests.filter(
+        (r) =>
+            r.memory === change.text &&
+            r.started_wall_ms >= within.from &&
+            r.ended_wall_ms <= within.to &&
+            cited.every((span) => holds(r, span)),
     );
+    return fitting.length === 1 ? (fitting[0] as ReviewRequest) : null;
 }
 
 /** One entry of a session transcript. */
@@ -199,7 +215,7 @@ export const VIEW_LIMITS = {
     uncited_lead_ms: 900_000,
 } as const;
 /** Changes whenever the view's text for the same inputs changes, so a stored label names its view. */
-export const VIEW_VERSION = "sim-reviewer-view/v1";
+export const VIEW_VERSION = "sim-reviewer-view/v2";
 
 /** `text` cut to `max` characters: its start and its end around a marked cut. */
 export function clip(text: string, max: number): string {
@@ -209,14 +225,16 @@ export function clip(text: string, max: number): string {
     return `${text.slice(0, head)} [... ${text.length - max} characters cut ...] ${text.slice(text.length - tail)}`;
 }
 
-const ARM_PATH = /(?:\/[\w.@+~-]+)+\/r\/(workspaces|home)\//g;
+/** An arm's workspace or home path, read from at most 64 directories back so one line costs one scan. */
+const ARM_PATH = /(?:\/[\w.@+~-]+){1,64}\/r\/(workspaces|home)\//g;
+const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * Text as the labeller reads it: block tags removed, every workspace or home path of an arm
- * shortened to its last part, the run directory's name and each arm's name replaced whole, the
- * arm token replaced, and a run of three or more `<` or `>` spaced apart so the view's own frames
- * stay distinct. `names` lists the run directory's name and then the run's arm names. The path
- * rule reads only the lines that hold an arm path, so a long text without one costs one scan.
+ * shortened to its last part, the run directory's name replaced, each arm's name replaced where
+ * it stands as a whole name (`host` in `the host arm`, and no part of `localhost`), the arm token
+ * replaced, and a run of three or more `<` or `>` spaced apart so the view's own frames stay
+ * distinct. `names` lists the run directory's name and then the run's arm names.
  */
 export function blindText(text: string, names: readonly string[]): string {
     const [run = "", ...arms] = names;
@@ -224,13 +242,18 @@ export function blindText(text: string, names: readonly string[]): string {
     if (out.includes("/r/workspaces/") || out.includes("/r/home/")) {
         out = out
             .split("\n")
-            .map((line) => (line.includes("/r/") ? line.replace(ARM_PATH, "/$1/") : line))
+            .map((line) =>
+                line.includes("/r/workspaces/") || line.includes("/r/home/")
+                    ? line.replace(ARM_PATH, "/$1/")
+                    : line,
+            )
             .join("\n");
     }
     if (run !== "") out = out.replaceAll(run, "run");
     // A longer arm name goes first, so `eidnara-reviewer` is replaced before `eidnara`.
     for (const arm of [...arms].sort((a, b) => b.length - a.length)) {
-        if (arm !== "") out = out.replaceAll(arm, "arm");
+        if (arm === "") continue;
+        out = out.replace(new RegExp(`(?<![\\w-])${escaped(arm)}(?![\\w-])`, "g"), "arm");
     }
     return out
         .replace(/eidnara/gi, "memtool")
@@ -265,12 +288,15 @@ const WRITER_TEXT: Record<Reference["writer"], string> = {
     unrecorded: "source of unrecorded origin",
 };
 /**
- * A line inside an entry that opens as one of the view's own lines does: an entry's time and
- * speaker, a section's heading, or the answer line. Such a line is marked, so text an agent wrote
- * reads as that entry's text and never as a turn of the user or a section of the view.
+ * A line inside a text an agent could have written that opens as one of the view's own lines
+ * does: an entry's or a record's time, a section's heading, a subject line, or the answer line,
+ * after any line break and any blanks. Such a line is marked, so the text reads as its entry's or
+ * its frame's text and never as a turn of the user, a record of the scenario, or a section.
  */
 const FRAME_LINE =
-    /(?<=\n)(?=\[\d{4}-\d\d-\d\dT[\d:]{8}Z\] (?:USER|ASSISTANT|TOOL OUTPUT)|(?:TARGET ROW|CHANGE)(?:\n|$)|CITED LATER (?:SOURCE|STATEMENT)|CONVERSATION \(|SCENARIO RECORD \(|Answer with exactly one letter)/g;
+    /(?<=[\n\r\f\v\u0085\u2028\u2029])[ \t]*(?=\[\d{4}-\d\d-\d\dT[\d:]{8}Z\] |(?:TARGET ROW|CHANGE)(?=\s|$)|CITED LATER (?:SOURCE|STATEMENT)|CONVERSATION \(|SCENARIO RECORD \(|Subject |Answer with exactly one letter)/g;
+/** `text` with each line that opens as a line of the view marked as text. */
+const marked = (text: string) => text.replace(FRAME_LINE, "$&| ");
 
 /** The passage of a reference a span cites: its byte range, or the whole text without one. */
 function passage(text: string, span: CitedSpan): { text: string; whole: boolean } {
@@ -289,7 +315,7 @@ function conversationText(entries: readonly Spoken[]): string {
     const L = VIEW_LIMITS;
     const line = (e: Spoken, userMax: number = L.user): string => {
         const at = `[${iso(e.at_ms)}]`;
-        const text = e.text.replace(FRAME_LINE, "| ");
+        const text = marked(e.text);
         if (e.speaker === "user") return `${at} USER: ${clip(text, userMax)}`;
         if (e.speaker === "assistant") return `${at} ASSISTANT: ${clip(text, L.assistant)}`;
         if (e.speaker === "tool call") {
@@ -429,7 +455,9 @@ export interface ViewInputs {
  * Times are the daemon's clock. The view holds nothing written after the change.
  */
 export function changeView(o: ViewInputs): string {
-    const { change, request, scenario, clock, blinded } = o;
+    const { change, request, scenario, clock } = o;
+    // A row, a source, and a statement are texts an agent or a tool wrote, read as text.
+    const blinded = (text: string) => marked(o.blinded(text));
     const source = [...request.references.values()].find((r) => r.relation === "source");
     const cited = (change.proposal?.contradictions ?? []).flatMap((span) => {
         const ref = request.references.get(span.alias);
@@ -504,7 +532,7 @@ export function changeView(o: ViewInputs): string {
     parts.push(
         "",
         "SCENARIO RECORD (the scripted user's statements on the row's subject, up to the change)",
-        scenarioRecord(change.text, o.wallMs, scenario, o.timeline, o.delivered, clock, blinded),
+        scenarioRecord(change.text, o.wallMs, scenario, o.timeline, o.delivered, clock, o.blinded),
     );
     return parts.join("\n");
 }
