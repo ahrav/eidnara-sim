@@ -1689,6 +1689,282 @@ as `source check never ran` is ungraded and carries no metric. Over the graded P
 of 122 of the 437 failing Eidnara-arm turns and of 28 of the 240 failing
 host turns names the identity.
 
+## Grading revision 16
+
+`prereg/G16.json` (`sim-reviewer-change-revision/v1`) grades the written
+changes of Eidnara's memory reviewer: a dispute, a contest mark, a
+retirement, or a revision of one stored memory row, which the reviewer
+justifies by a later source. A row the reviewer created is listed
+without a label. `bun scripts/grade-reviewer.ts <run dir>`
+grades them in a finished run. The step takes the run's lease, requires
+`scenario.json` to hash to the manifest's digest and the journal to record
+a complete run (`requireComplete`), and reads each arm's `final-store`,
+the journal, the gateway's `calls.jsonl` and `requests.jsonl`, and Pi's
+transcripts. An arm is a directory of the run and its store a directory
+inside it; an arm without a Kernel store grades nothing and is listed in
+the summary's `without_store`. A store that is no database, a store file
+or directory behind a link, a reviewer receipt that names a commit the
+log lacks, a dispute whose commit marks no row, a contest mark whose
+commit superseded no row, and a completed transcript record that does not
+parse each refuse the pass. The step writes `reviewer-grades.jsonl` whole (one row per
+change, `sim-reviewer-grade/v1`) and appends new labels to
+`reviewer-judgments.jsonl` and the judge's calls to `judge-calls.jsonl`.
+It writes no other file of the run; a read-only open of a store in WAL
+mode can create the store's `-shm` file, as the evidence readers' opens
+do. It exits 1 when a change the revision grades has no label (the
+summary's `unlabelled`).
+
+A change gets a row with no label, a `reason`, and no judge call when the
+run's records leave its evidence open: its commit time maps to no single
+wall time (two clock offsets claim it after an offset shrank, or none
+does; the same holds for the times of its job's last attempt), the store
+holds no applied proposal and no contesting statement for it (no
+`store.db`, or no receipt for its job), the store holds no finished model
+attempt for its job, or the gateway's record holds no single stage-2
+request for it
+(`requests.jsonl` is absent, the request does not rebuild, a cited alias
+has no label the step reads, a cited byte range lies outside its
+reference, or two requests fit). A row the reviewer created has no
+target that stood before it, which is what the rubric grades, so it gets
+a row with no label and the reason `a created row lies outside the
+revision's property`, and it does not count as unlabelled. The summary
+counts every change without a label under `unjudged` by reason.
+
+The rule a campaign registered before this revision (R1 of the S5
+campaign) read a change by the scenario's value literals in the target
+row's text. A grade row keeps that reading as `R1.v1`
+(`target-literal-status`), computed as registered: a literal matches as a
+substring, its status comes from the ground truth of a probe between the
+same two value events or from the value events, superseded literals alone
+read `right`, in-force literals alone `wrong`, anything else `no truth`,
+and `wrong` wins across fact lines.
+
+### What the judge reads
+
+`changeView` (`src/reviewer/view.ts`) builds one text per change, and
+the judge's prompt is the registered rubric, that text, and the letter
+line. Times are the daemon's clock.
+
+| Part | Source |
+|---|---|
+| The target row: text, writer kind, the writer and time of the message it was captured from, the time it was stored | `decisions` and `commit_log` of `final-store/kernel.sqlite`; the kind is `agent note` for a row a `plugin` commit created, `assistant report` for text that opens `Assistant reported`, `work in progress` for a captured statement of lifetime `current_work`, `user statement` for a row whose text opens `User stated`, that a statement record names, or whose rationale gives the user as speaker, and `assistant report` for any other row; the source line comes from the reference the stage-2 request labels as the memory's source |
+| The change: kind and commit time, and the new text of a revision | the reviewer's receipts in `operation_receipts`: a dispute through the `mark_disputed` admission decision of its commit, a contest mark through the row its commit superseded, a settlement with effect `retired`, `revised`, or `created` (a created row is named by the effect; the job is the one whose receipt selected the settled proposal) |
+| Each cited later source: writer, time, text | the contradiction spans of the proposal the change applied (the selected candidate of its receipt in `store.db`), read in the stage-2 request the gateway recorded: the one completed `memory_reviewer_stage2` call of the arm (status 200, no error) for the row's text that lies inside the job's last attempt (the highest attempt index of the highest generation in `memory_reviewer_attempts` of `store.db`, from its commit to its end, taken back to wall time) and holds every cited alias with the cited byte range inside the reference. A reference's writer (the user, the assistant, a tool, a repository file, or unrecorded), time, and relation come from its line in the request's reference list, read where the host writes it, directly after the memory's own bytes; the host gives a tool output no time. A cited reference the host labels as the row's own source, or as written before it, is shown with that relation |
+| The conversation of the row's project from the row's time to the change | Pi's session transcripts: user messages (3,000 characters each), assistant text (1,800), tool calls (300) and outputs (400); a span over 36,000 characters keeps its first 9,000 and last 18,000 and, between them, the newest of the user's messages that fit 6,000 characters, cut to 500 each. It starts at the row's source message, or 15 minutes before a row without a source was stored, or at a cited source that precedes both |
+| The scenario's record of the row's subject up to the change | the events of each fact line the row restates or whose value literal stands in the row as a whole token, in the order the arm received them (`BeginTurn` or `Event` in the journal), with the plan step each set (`plans`) and a mark on the first event of a fact that supersedes an earlier one |
+
+The view holds nothing written after the change. Every text is blinded
+before it is cut: block tags are removed, an arm's workspace and home
+paths are shortened to their last part (read from at most 64 directories
+back), the run directory's name is replaced where it stands as a name or
+as a part of a path (also of one written with dashes), each arm's name is
+replaced where it stands as a whole name (`host` in `the host arm`, and no part of
+`localhost`), and the arm token is replaced. The row and each cited
+source stand between `<<<` and `>>>`, and a run of three such marks
+inside a text is spaced apart. A line of the row, a revision's new text,
+a contesting statement, a cited source, a conversation entry, or a
+scripted event's text that
+opens as a line of the view does (an entry's or a record's time, a
+section heading, a subject line, the answer line; at the text's start or
+after any line break, behind any blanks, zero-width characters, and
+control characters) is marked with `| `, so text an agent wrote reads as
+that text. A tool's name is written on one line. `VIEW_VERSION` and `VIEW_LIMITS` enter
+the judge's prompt digest, so a view that renders a change as other text
+lapses the stored labels.
+
+### The labels
+
+| Label | Reading | Meaning |
+|---|---|---|
+| R | right | the row no longer held at the time of the change, and a cited source is later evidence of that |
+| P | partly right | one part of the row no longer held, another part still held, and the change took the whole row |
+| W | wrong | the row still held; or no cited source is later evidence about it: it is the row's own source, it is about another subject, or it only repeats or extends the row |
+| U | cannot tell | the record shown does not settle it |
+
+The rubric judges the claim a row makes. Its rulings for the shapes the
+S5 diagnosis found: a status report made false by later work is R
+whatever names it holds; a question, offer, or request the next action
+settled is R; a plan the user closed in a sentence that repeats none of
+its names is R; a guess the later source confirms is W; a line number, a
+count of lines, or a commit id that moved while the code is as the row
+says is W, and a row whose only claim is where a line stands is R once the
+line stands elsewhere; a row disputed on the message it was written from
+is W. A user's rule or value ends only on something the user did later;
+an assistant report or an agent note also ends on a later assistant
+message or tool output.
+
+A reader of the grades reports the right share twice: R / (R + P + W)
+with partly right counted as wrong, and (R + P) / (R + P + W) with it
+counted as right. U has no truth and is counted apart. The step's summary
+holds the counts by label.
+
+### Delivery and statements in force
+
+A grade row reads delivery from the store: `delivery.before` is the
+target's visibility by its last admission decision before the change's
+commit, `delivery.after` the visibility the change's own decision gives
+(for a contest mark and for a revision, the decision on the row that
+supersedes the target: the marked row, the successor row; so a marked
+statement that stays delivered reads `automatic`),
+and `left_automatic` is true when the first is `automatic` and the second
+is another value. A dispute of a row that was `explicit_labeled` before
+changes what no session receives.
+
+For a target that is a user statement (its text opens `User stated`, or a
+statement record names it) the row carries `in_force`
+(`scenario-records-in-force`, `inForceReading`), computed from the
+scenario and the journal with no model call:
+
+- The row restates a scenario statement when a paragraph of a user turn
+  that conveys, updates, or first states a fact contains the row's
+  statement or lies inside it, or when the row's statement contains the
+  fact's statement. The paragraph states the fact when it holds the fact's
+  statement or the turn's role is `update` or `reversal`; a turn that only
+  asks for a committed file to be read or a script to be run states none
+  (`states no fact`).
+- The statement is ended once the arm had received one of: an event of a
+  fact of the same line with a higher revision (the scenario's
+  supersession record); a later step of the fact's plan record with status
+  `revised` or `completed`, which is how a closing turn that names no
+  value counts; or a later statement or committed file of the same fact. A
+  scoped update adds an exception and leaves its rule in force.
+- "Had received" is the journal's wall time of the event's `BeginTurn`
+  (or `Event` for a committed file) against the change's commit time
+  taken back to wall time through the arm's `ClockOffset` entries. A turn
+  can begin later than its scheduled `scenario_ms`, so the delivery
+  decides and the schedule stands aside. A change whose commit time maps
+  to no single wall time carries no `in_force`.
+
+The readings are `in force`, `ended`, `states no fact`, and `no scenario
+statement`. The gate count of the S5 rule, user statements in force that a
+change took out of automatic delivery, is the rows with `user_statement`,
+`left_automatic`, and `in_force.reading` `in force`.
+
+### The judge call
+
+One call per change through a gateway the step starts, to the revision's
+model (`global.openai.gpt-6.2-astra`, 2,048 tokens), which answers one
+letter. The step refuses a judge of the family of any run model and of
+any model the reviewer's own calls used (`memory_reviewer_stage1`,
+`memory_reviewer_stage2` in `calls.jsonl`). A row of
+`reviewer-judgments.jsonl` holds the change's job, the arm, the sequence
+numbers of the calls that made the label, and the judgment: the digest of
+the whole prompt, the digest of the change (`changeDigest`: kind, target,
+target text, commit, applied proposal, and a contest mark's later
+statement), the judge's model with its prompt
+and rubric digests, the revision's digest, and the label. A stored row
+for the same prompt, change, judge, and revision stands (the newest such
+row when several exist), so a later pass calls no judge and writes the
+same grades. A failed call leaves its change without a label (`label`
+null, `reason` `judge call failed`) and counts in `judge_errors`.
+
+### Evidence
+
+The labelled set is the 304 written changes of the five reviewer runs of
+the S5 campaign (registrations W5S, seeds 104, 107, 109, and W5SH, seeds
+614, 617), all disputes: 276 of assistant reports, 15 of captured user
+statements, 8 of work-in-progress statements, 5 of agent notes. Two label
+passes read each change blind to seed and run, shuffled, in the view
+above (`global.openai.gpt-6.2-sol` with the labelling rubric verbatim,
+`global.xai.grok-4.7` with the checks in other words). They agree on 272
+of 304 over the four labels (89.5%) and on 282 over R against the rest
+(92.8%). The audit read 140 changes: fresh-context readers read, in the
+full view, all 67 changes both passes labelled W and a seeded 15% of the
+other agreements (41), and upheld 93 of the 108; the 32 disagreements and
+the 15 reader differences were ruled by hand. Nine rows both passes had
+labelled W as a moved line say only where a line stands, which the rubric
+reads as R.
+
+Labels: R 125, P 113, W 66, U 0.
+
+| Target kind | R | P | W |
+|---|---|---|---|
+| assistant report (276) | 98 | 113 | 65 |
+| user statement (15) | 15 | 0 | 0 |
+| work in progress (8) | 8 | 0 | 0 |
+| agent note (5) | 4 | 0 | 1 |
+
+The 66 W by shape: a moved line 49, a later source that repeats or
+extends the row 8, a confirmed guess 6, the row's own source 1, another
+subject 1, a state that still held 1.
+
+The literal rule against the labels:
+
+| `R1.v1` | R | P | W | all |
+|---|---|---|---|---|
+| right | 21 | 3 | 0 | 24 |
+| wrong | 11 | 9 | 1 | 21 |
+| no truth | 93 | 101 | 65 | 259 |
+
+The literal rule has truth for 45 of 304 changes. Of its 21 `wrong`, the
+labels read 11 as R and 9 as P: six status reports and one answered
+question whose named value is in force, three plan statements the user
+had closed in a sentence without a literal, and one scoped rule the user
+had replaced. Its one true `wrong` is a moved line. Of the 66 W, 65 read
+`no truth`, among them the one statement in force that was disputed (an
+agent note disputed on the message it was written from). Its reading
+equals the label (right with R, wrong with W) on 22 of 304 changes.
+
+The in-harness judge was designed on W5S (167 changes) and run once on
+W5SH (137). Agreement with the labels over the four classes:
+
+| Judge | Rubric | W5S (design) | W5SH (test) |
+|---|---|---|---|
+| `gpt-6.2-astra` | v2 (registered) | 154 (92.2%) | 124 (90.5%) |
+| `gpt-6.2-astra` | v1 | 152 (91.0%) | 113 (82.5%) |
+| `gpt-5.6-luna` | v2 | 137 (82.0%) | 111 (81.0%) |
+| `gpt-5.6-luna` | v1 | 139 (83.2%) | 107 (78.1%) |
+
+The registered pair was fixed by its design agreement before any test
+run. Rubric v2 carries rulings from the label audit (the assertion split
+between R and P, rows that state only a position), so it has seen the
+shapes of both splits. After the review of this change an arm's name is
+replaced whole, which moved the count inside a cut marker in 10 views of
+the design split and left every other character of the 304 views as
+labelled; the registered judge gave those 10 prompts the labels it had
+given before.
+
+### Residual error
+
+Over both splits the registered judge agrees on 278 of 304 (91.4%) and
+errs toward P: it reads 14 R and 8 W as P, 2 P and 1 W as R, and 1 P as
+W. Its label counts are R 114, P 132, W 58 against the labels' 125, 113,
+66, so it understates both the right share with P as wrong (37.5% against
+41.1%) and the wrong count. Agreement over W against the rest is 294 of
+304. The labelled set holds one campaign, one build, one host, and
+disputes only; a contest mark, a retirement, and a revision have a view
+and no labelled example. The boundary between R and P rests on whether a
+remaining clause stands on its own, and the two label passes disagreed
+there most (17 of their 32 disagreements).
+
+Bounds of the view: Pi's transcripts lie in the arm's home, which the
+agent can write, so a transcript file an agent wrote would be read as the
+conversation; the user's turns are not checked against the harness's own
+record of them. The path rule shortens a path that continues past
+`/r/workspaces/` or `/r/home/`, so a path that ends at `/r/home` keeps its
+directories with the run's and the arm's names replaced. An arm's name
+inside a longer name (`eidnara-reviewer-2`, `sim-host`) is read by the
+token rule alone. The branch that drops a pass's new rows when the call
+log lost a write has no test, and neither has the script's exit code. A
+stored label stands on its row of `reviewer-judgments.jsonl` as a probe's
+judged label stands on its own log; the row's call numbers are not
+checked against `judge-calls.jsonl`. Pi's transcripts are read whole, as
+the evidence readers read them, so their size is bounded by the arm's
+disk and no limit of the step.
+
+### Measurement paths
+
+The revision file lies under `prereg/` and its validator under
+`src/prereg/`, which `MEASUREMENT_PATHS` lists, so a `--sim-upgrade`
+resume across this commit is refused for a run started before it. The
+change alters nothing a run shows an arm or records: no driver, scenario,
+proxy, user-sim, or clock code. A campaign pinned earlier keeps its pin
+to run and resume, and its finished runs are graded for reviewer changes
+from a checkout at or after this commit. `graderDigest` leaves
+`src/prereg/reviewer.ts`, `prereg/G16.json`, and `src/reviewer/` out, so
+the probe grades of a finished run stand and `grade-run.ts` regrades
+nothing.
+
 ## Rule revision 8
 
 [Grading revision 12](#grading-revision-12) replaces this rule's third

@@ -193,6 +193,15 @@ rule of revision 13 failed all of them; the registered deferral of
 revision 12, extended to P1, agrees with the labels on 105 of the 108
 design turns and 49 of the 49 test turns, and defers 18.1% of the host's
 graded P1 turns and 18.0% of the Eidnara arms'.
+The memory reviewer's written changes are the sixth case (Grading revision
+16), and the first whose unit is a change to stored memory and no probe
+turn. The registered rule read the scenario's value literals in the
+target row. It had truth for 45 of 304 changes, and of the 21 it read as
+wrong the blind labels read 20 as right or partly right: a status report,
+a question, and a closed plan each name a value that is still in force.
+The labels read 66 changes as wrong, 65 of them outside the registered
+rule's reach. A rule that reads names in a text measures which names the
+text holds, and the claim the text makes needs a reader of the claim.
 
 - State the property in one sentence and write the rubric from it before
   any answer is labelled. Give every class a label, the passing one and each

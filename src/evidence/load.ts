@@ -303,7 +303,7 @@ export function readPiTranscripts(
 }
 
 /** The `.jsonl` files two levels under Pi's sessions directory, in walk order; null when it is absent. */
-function piSessionFiles(sessionsDir: string, within: string): string[] | null {
+export function piSessionFiles(sessionsDir: string, within: string): string[] | null {
     // Every directory from `within` down is the run's own: a link on the way reads as absent.
     let dir = within;
     for (const part of relative(within, sessionsDir).split(sep).filter(Boolean)) {
@@ -404,7 +404,7 @@ const blobText = (v: unknown): string =>
 
 class StoreUnreadable extends Error {}
 
-const isSqliteError = (e: unknown) =>
+export const isSqliteError = (e: unknown) =>
     e instanceof Error &&
     (e.name === "SQLiteError" || /^SQLITE_/.test(String((e as { code?: unknown }).code)));
 

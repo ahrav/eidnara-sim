@@ -15,6 +15,11 @@ import {
     ruleRevisionHash,
 } from "../src/prereg/grading";
 import { QUALIFICATIONS, qualificationHash, referenceErrors } from "../src/prereg/qualification";
+import {
+    loadReviewerRevision,
+    REVIEWER_REVISIONS,
+    reviewerRevisionHash,
+} from "../src/prereg/reviewer";
 import { type Preregistration, TIERS } from "../src/prereg/schema";
 import { preregistrationHash, validatePreregistration } from "../src/prereg/validate";
 import { loadQualification } from "../src/scenario/inputs";
@@ -91,6 +96,12 @@ for (const id of POSITIVE_REVISIONS) {
     report(id, () => {
         const revision = loadPositiveRevision(id, dir);
         return `${positiveRevisionHash(revision)} over ${revision.probes.join(", ")}`;
+    });
+}
+for (const id of REVIEWER_REVISIONS) {
+    report(id, () => {
+        const revision = loadReviewerRevision(id, dir);
+        return `${reviewerRevisionHash(revision)} over ${revision.subject}`;
     });
 }
 process.exit(failed ? 1 : 0);
