@@ -155,7 +155,8 @@ export interface Spoken {
 /**
  * Pi's session transcripts under `sessionsDir` as entries in time order: user messages, assistant
  * text, tool calls with their arguments, and tool outputs, each with the time Pi recorded. Null
- * when the directory is absent or lies behind a link.
+ * when the directory is absent or lies behind a link. A completed record that does not parse
+ * refuses the read, so a view never rests on a transcript with a hole in it.
  */
 export function readConversation(sessionsDir: string, within: string): Spoken[] | null {
     const files = piSessionFiles(sessionsDir, within);
@@ -164,13 +165,16 @@ export function readConversation(sessionsDir: string, within: string): Spoken[] 
     for (const path of files) {
         const session = /_sim-(.+)\.jsonl$/.exec(basename(path))?.[1];
         if (!session) continue;
-        for (const line of readFileSync(path, "utf8").split("\n")) {
+        const lines = readFileSync(path, "utf8").split("\n");
+        for (const [n, line] of lines.entries()) {
             if (!line.includes('"message"')) continue;
             let entry: { type?: unknown; timestamp?: unknown; message?: Record<string, unknown> };
             try {
                 entry = JSON.parse(line);
             } catch {
-                continue;
+                // The text after the last line feed is a record a kill cut; a completed record parses.
+                if (n === lines.length - 1) continue;
+                throw new Error(`${path}: line ${n + 1} is no transcript record`);
             }
             const m = entry.message;
             const at =
@@ -247,7 +251,13 @@ export function blindText(text: string, names: readonly string[]): string {
                 : line,
         )
         .join("\n");
-    if (run !== "") out = out.replaceAll(run, "run");
+    // The run's name is replaced where it stands as a name or as a part of a path, also of one written with dashes.
+    if (run !== "") {
+        out = out.replace(
+            new RegExp(`(?<![A-Za-z0-9_])${escaped(run)}(?![A-Za-z0-9_])`, "g"),
+            "run",
+        );
+    }
     // A longer arm name goes first, so `eidnara-reviewer` is replaced before `eidnara`.
     for (const arm of [...arms].sort((a, b) => b.length - a.length)) {
         if (arm === "") continue;
@@ -278,6 +288,10 @@ const KIND_TEXT: Record<ChangeKind, string> = {
     revised: "revision (the row's text is replaced)",
     created: "new row (the reviewer wrote a row of its own)",
 };
+const RELATION_TEXT = {
+    source: "this is the message the row cites as its own source",
+    earlier: "written before the row's source",
+} as const;
 const WRITER_TEXT: Record<Reference["writer"], string> = {
     user: "user message",
     assistant: "assistant message",
@@ -424,7 +438,7 @@ export function scenarioRecord(
                     : []),
             ];
             const at = iso(clock.daemon(received(e.id)));
-            const body = clip(blinded(eventText(e)), VIEW_LIMITS.scenario_event);
+            const body = clip(markedAfter(blinded(eventText(e))), VIEW_LIMITS.scenario_event);
             out.push(`[${at}] ${what}${marks.length > 0 ? ` (${marks.join("; ")})` : ""}: ${body}`);
         }
     }
@@ -506,6 +520,10 @@ export function changeView(o: ViewInputs): string {
             `CITED LATER SOURCE ${i + 1} of ${cited.length}`,
             `Writer: ${WRITER_TEXT[ref.writer]}`,
             `Time: ${ref.at_ms === null ? none : iso(ref.at_ms)}`,
+            // The host calls a cited reference written after the row's source; any other relation is stated.
+            ...(ref.relation === "later"
+                ? []
+                : [`Relation by the host's record: ${RELATION_TEXT[ref.relation]}`]),
             `Text${length}:\n<<<\n${clip(asText(text), VIEW_LIMITS.cited)}\n>>>`,
         );
     });

@@ -123,12 +123,12 @@ describe("grading the reviewer's changes of a finished run", () => {
         const dir = run({ extra: true });
         const upstream = judgeSays(fair);
         const summary = await gradeReviewer(dir, null, upstream);
-        expect(summary.changes).toEqual({ [ARM]: 7 });
+        expect(summary.changes).toEqual({ [ARM]: 8 });
         // A row the reviewer created has no target the rubric grades: no judge call, and no missing label.
-        expect(summary.labels).toEqual({ R: 5, W: 1, none: 1 });
+        expect(summary.labels).toEqual({ R: 6, W: 1, none: 1 });
         expect(summary.unjudged).toEqual({ [OUTSIDE]: 1 });
         expect(summary.unlabelled).toBe(0);
-        expect(upstream.prompts).toHaveLength(6);
+        expect(upstream.prompts).toHaveLength(7);
         const rows = grades(dir);
         expect(rows.slice(4).map((r) => [r.kind, r.target, r.change, r.delivery])).toEqual([
             [
@@ -141,7 +141,7 @@ describe("grading the reviewer's changes of a finished run", () => {
                 "revised",
                 EXTRA.revised.id,
                 EXTRA.revised.job,
-                { before: "explicit_labeled", after: "explicit_labeled", left_automatic: false },
+                { before: "explicit_labeled", after: "automatic", left_automatic: false },
             ],
             [
                 "created",
@@ -149,9 +149,16 @@ describe("grading the reviewer's changes of a finished run", () => {
                 EXTRA.created.job,
                 { before: null, after: "explicit_labeled", left_automatic: false },
             ],
+            [
+                "retired",
+                EXTRA.retired.id,
+                EXTRA.retired.job,
+                { before: "automatic", after: "none", left_automatic: true },
+            ],
         ]);
         expect(upstream.prompts[5]).toContain(`New text:\n<<<\n${EXTRA.revised.revised}\n>>>`);
-        expect(summary.left_automatic).toEqual({ ended: 2 });
+        // The retired statement left delivery, and the scenario scripts no statement for it.
+        expect(summary.left_automatic).toEqual({ ended: 2, "no scenario statement": 1 });
     });
 
     test("a judgment is stored with the digests of its prompt and its change and the calls that made it, and a later pass reads it without a call", async () => {
@@ -175,6 +182,18 @@ describe("grading the reviewer's changes of a finished run", () => {
             expect(s.judgment.judge).toEqual(changeIdentity(revision));
             expect(s.judgment.revision).toBe(reviewerRevisionHash(revision));
         });
+        // The digest names one written change: another target, commit, text, proposal, or contesting statement is another.
+        const plan = changes[0] as (typeof changes)[number];
+        const digests = [
+            plan,
+            { ...plan, target: "mem_other" },
+            { ...plan, commit_seq: plan.commit_seq + 1 },
+            { ...plan, text: `${plan.text} ` },
+            { ...plan, kind: "retired" as const },
+            { ...plan, proposal: null },
+            { ...plan, contested_by: { memory: "mem_x", text: "x" } },
+        ].map(changeDigest);
+        expect(new Set(digests).size).toBe(digests.length);
         expect(upstream.prompts[0]).toStartWith(`${revision.rubric}\n\nTARGET ROW\n`);
         expect(upstream.prompts[0]).toEndWith("\n\nAnswer with exactly one letter: R, P, W, or U.");
         const calls = readFileSync(join(dir, "judge-calls.jsonl"), "utf8").trim().split("\n");
@@ -210,7 +229,19 @@ describe("grading the reviewer's changes of a finished run", () => {
         appendFileSync(log, '{"change":"cut');
         const third = await gradeReviewer(dir, null);
         expect(third).toMatchObject({ labels: { R: 2, P: 1, W: 1 }, judge_calls: 0 });
-        expect(readFileSync(log, "utf8").split("\n").slice(0, -1)).toHaveLength(5);
+        // A label made by another judge lapses too, and the next append starts on a line of its own after the cut text.
+        const kept = readFileSync(log, "utf8")
+            .split("\n")
+            .slice(0, 5)
+            .map((l) => JSON.parse(l));
+        kept[0].judgment.judge.model = "global.openai.another-judge";
+        writeFileSync(log, `${kept.map((r) => `${JSON.stringify(r)}\n`).join("")}{"change":"cut`);
+        const relabel = judgeSays(() => "W");
+        const fourth = await gradeReviewer(dir, null, relabel);
+        expect(relabel.prompts).toHaveLength(1);
+        expect(fourth.labels).toEqual({ R: 1, P: 1, W: 2 });
+        expect(judgments(dir)).toHaveLength(6);
+        expect(await gradeReviewer(dir, null)).toMatchObject({ judge_calls: 0, judge_errors: 0 });
     });
 
     test("a reply that is no label leaves its change without one and counts an error", async () => {

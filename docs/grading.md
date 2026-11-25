@@ -1703,8 +1703,9 @@ the journal, the gateway's `calls.jsonl` and `requests.jsonl`, and Pi's
 transcripts. An arm is a directory of the run and its store a directory
 inside it; an arm without a Kernel store grades nothing and is listed in
 the summary's `without_store`. A store that is no database, a store file
-or directory behind a link, and a reviewer receipt that names a commit
-the log lacks each refuse the pass. The step writes `reviewer-grades.jsonl` whole (one row per
+or directory behind a link, a reviewer receipt that names a commit the
+log lacks, a contest mark whose commit superseded no row, and a completed
+transcript record that does not parse each refuse the pass. The step writes `reviewer-grades.jsonl` whole (one row per
 change, `sim-reviewer-grade/v1`) and appends new labels to
 `reviewer-judgments.jsonl` and the judge's calls to `judge-calls.jsonl`.
 It writes no other file of the run; a read-only open of a store in WAL
@@ -1747,19 +1748,21 @@ line. Times are the daemon's clock.
 |---|---|
 | The target row: text, writer kind, the writer and time of the message it was captured from, the time it was stored | `decisions` and `commit_log` of `final-store/kernel.sqlite`; the kind is `agent note` for a row a `plugin` commit created, `assistant report` for text that opens `Assistant reported`, `work in progress` for a captured statement of lifetime `current_work`, `user statement` for a row whose text opens `User stated`, that a statement record names, or whose rationale gives the user as speaker, and `assistant report` for any other row; the source line comes from the reference the stage-2 request labels as the memory's source |
 | The change: kind and commit time, and the new text of a revision | the reviewer's receipts in `operation_receipts`: a dispute through the `mark_disputed` admission decision of its commit, a contest mark through the row its commit superseded, a settlement with effect `retired`, `revised`, or `created` (a created row is named by the effect; the job is the one whose receipt selected the settled proposal) |
-| Each cited later source: writer, time, text | the contradiction spans of the proposal the change applied (the selected candidate of its receipt in `store.db`), read in the stage-2 request the gateway recorded: the one completed `memory_reviewer_stage2` call of the arm (status 200, no error) for the row's text that lies inside the job's last attempt (`memory_reviewer_attempts` in `store.db`, from its commit to its end, taken back to wall time) and holds every cited alias with the cited byte range inside the reference. A reference's writer (the user, the assistant, a tool, a repository file, or unrecorded), time, and relation come from its line in the request's reference list, read where the host writes it, directly after the memory's own bytes; the host gives a tool output no time |
+| Each cited later source: writer, time, text | the contradiction spans of the proposal the change applied (the selected candidate of its receipt in `store.db`), read in the stage-2 request the gateway recorded: the one completed `memory_reviewer_stage2` call of the arm (status 200, no error) for the row's text that lies inside the job's last attempt (the highest attempt index of the highest generation in `memory_reviewer_attempts` of `store.db`, from its commit to its end, taken back to wall time) and holds every cited alias with the cited byte range inside the reference. A reference's writer (the user, the assistant, a tool, a repository file, or unrecorded), time, and relation come from its line in the request's reference list, read where the host writes it, directly after the memory's own bytes; the host gives a tool output no time. A cited reference the host labels as the row's own source, or as written before it, is shown with that relation |
 | The conversation of the row's project from the row's time to the change | Pi's session transcripts: user messages (3,000 characters each), assistant text (1,800), tool calls (300) and outputs (400); a span over 36,000 characters keeps its first 9,000 and last 18,000 and, between them, the newest of the user's messages that fit 6,000 characters, cut to 500 each. It starts at the row's source message, or 15 minutes before a row without a source was stored, or at a cited source that precedes both |
 | The scenario's record of the row's subject up to the change | the events of each fact line the row restates or whose value literal stands in the row as a whole token, in the order the arm received them (`BeginTurn` or `Event` in the journal), with the plan step each set (`plans`) and a mark on the first event of a fact that supersedes an earlier one |
 
 The view holds nothing written after the change. Every text is blinded
 before it is cut: block tags are removed, an arm's workspace and home
 paths are shortened to their last part (read from at most 64 directories
-back), the run directory's name is replaced, each arm's name is replaced
-where it stands as a whole name (`host` in `the host arm`, and no part of
+back), the run directory's name is replaced where it stands as a name or
+as a part of a path (also of one written with dashes), each arm's name is
+replaced where it stands as a whole name (`host` in `the host arm`, and no part of
 `localhost`), and the arm token is replaced. The row and each cited
 source stand between `<<<` and `>>>`, and a run of three such marks
 inside a text is spaced apart. A line of the row, a revision's new text,
-a contesting statement, a cited source, or a conversation entry that
+a contesting statement, a cited source, a conversation entry, or a
+scripted event's text that
 opens as a line of the view does (an entry's or a record's time, a
 section heading, a subject line, the answer line; at the text's start or
 after any line break, behind any blanks, zero-width characters, and

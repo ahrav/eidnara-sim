@@ -172,7 +172,7 @@ export const ROWS = {
 } as const;
 export type RowName = keyof typeof ROWS;
 
-/** The rows the `extra` option adds: a contested statement, a revised report, and a created row. */
+/** The rows the `extra` option adds: a contested statement, a revised report, a created row, and a retired statement. */
 export const EXTRA = {
     contest: {
         id: "mem_quote",
@@ -190,6 +190,13 @@ export const EXTRA = {
         revised: "Assistant reported: 20 cookie tests fail.",
         cited: "I counted again: 20 cookie tests fail, not 21.",
     },
+    retired: {
+        id: "mem_old",
+        job: "aaaaaaaaaaaaaaa8",
+        proposal: "review-result:retired",
+        text: "User stated: deploys go out on Fridays.",
+        cited: "Scratch that: deploys no longer go out on Fridays.",
+    },
     created: {
         id: "mem_made",
         job: "aaaaaaaaaaaaaaa7",
@@ -201,7 +208,7 @@ export const EXTRA = {
 
 /** What a test changes in the fixture run. */
 export interface RunOptions {
-    /** Adds a contest mark with a marked row, a settlement that revised a row, and one that created a row. */
+    /** Adds a contest mark with a marked row and settlements that revised, created, and retired a row. */
     extra?: boolean;
     /** Adds a reviewer receipt that names a commit the log lacks. */
     orphan?: boolean;
@@ -329,7 +336,7 @@ export function reviewerRun(o: RunOptions = {}): string {
     kernel.run("begin");
     daemon.run("begin");
     daemon.run(
-        "create table memory_reviewer_attempts(causal_identity text, attempt_index integer, committed_at_ms integer, terminal_at_ms integer)",
+        "create table memory_reviewer_attempts(causal_identity text, generation integer, attempt_index integer, committed_at_ms integer, terminal_at_ms integer)",
     );
     const commit = (seq: number, s: number, producer: string, key = `op-${seq}`) =>
         kernel.run("insert into commit_log values (?, ?, ?, ?)", [seq, daemonAt(s), key, producer]);
@@ -399,12 +406,12 @@ export function reviewerRun(o: RunOptions = {}): string {
             // The job's two attempts, on the daemon's clock: stage 1, then the stage-2 attempt
             // whose request the gateway recorded between its commit and its end.
             const end = daemonAt(r.endedAt);
-            daemon.run("insert into memory_reviewer_attempts values (?, 0, ?, ?)", [
+            daemon.run("insert into memory_reviewer_attempts values (?, 1, 0, ?, ?)", [
                 identity,
                 end - 6_000,
                 end - 2_000,
             ]);
-            daemon.run("insert into memory_reviewer_attempts values (?, 1, ?, ?)", [
+            daemon.run("insert into memory_reviewer_attempts values (?, 1, 1, ?, ?)", [
                 identity,
                 end - 1_900,
                 end - 50,
@@ -598,7 +605,8 @@ export function reviewerRun(o: RunOptions = {}): string {
             ),
             89,
         );
-        admit(settled, report.successor, "other", "explicit_labeled");
+        // The successor is delivered where the row it replaced was search-only.
+        admit(settled, report.successor, "approve", "automatic");
         review({
             job: report.job,
             candidate: report.proposal,
@@ -646,6 +654,37 @@ export function reviewerRun(o: RunOptions = {}): string {
             citedAt: 90,
             source: null,
             endedAt: 91,
+        });
+        // A settlement that retired a delivered row.
+        const old = EXTRA.retired;
+        commit(++seq, 92, "memory_capture");
+        decide(old.id, old.text, { source: "memory_capture", speaker: "user" }, seq);
+        admit(seq, old.id, "approve", "automatic");
+        const retiring = ++seq;
+        commit(
+            retiring,
+            94,
+            "eidnara-daemon/review-accept",
+            `project#${old.job}${"0".repeat(48)}#digest`,
+        );
+        receipt(
+            PRODUCER_SETTLEMENT,
+            `memory-reviewer-settlement-v1:64#${"d".repeat(64)}:78#${old.proposal}`,
+            retiring,
+            settlement(old.proposal, { kind: "memory", object_id: old.id }, { kind: "retired" }),
+            94,
+        );
+        admit(retiring, old.id, "retire", "none");
+        review({
+            job: old.job,
+            candidate: old.proposal,
+            text: old.text,
+            body: { action: "retire", contradictions: cite(old.cited) },
+            cited: old.cited,
+            citedBy: "user",
+            citedAt: 93,
+            source: null,
+            endedAt: 94,
         });
     }
     kernel.run("commit");

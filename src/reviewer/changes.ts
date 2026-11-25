@@ -168,7 +168,8 @@ interface Written {
  * The changes the reviewer's receipts name, in receipt order. A dispute names its target through
  * the `mark_disputed` admission decision of its commit. A later-statement receipt whose result is
  * a row id is a contested mark: its target is the statement that commit superseded by the result
- * row, and an empty result is a statement left standing. A settlement's result names the target
+ * row (a mark whose commit superseded no row is damaged evidence and refuses the read), and an
+ * empty result is a statement left standing. A settlement's result names the target
  * and the effect; `retired`, `revised` and `created` are changes, a created row is named by the
  * effect, and the job is the one whose receipt selected the settled proposal. A receipt names a
  * commit of the log; one that names another is damaged evidence and refuses the read.
@@ -200,10 +201,13 @@ function writtenChanges(
             const superseded = [...decisions.values()].find(
                 (d) => d.invalidated === seq && d.superseded === result,
             );
+            if (!superseded) {
+                throw new Error(`the contest mark of commit ${seq} supersedes no stored row`);
+            }
             out.push({
                 kind: "contested",
                 identity: keyed,
-                target: superseded?.id ?? result,
+                target: superseded.id,
                 seq,
                 at,
                 successor: result,
@@ -320,7 +324,7 @@ export function readChanges(storeDir: string): ReviewerChange[] | null {
                       daemon,
                       `select committed_at_ms as committed, terminal_at_ms as terminal
                        from memory_reviewer_attempts where substr(causal_identity, 1, 16) = ?
-                       order by committed_at_ms desc limit 1`,
+                       order by generation desc, attempt_index desc limit 1`,
                       job,
                   )[0]
                 : undefined;
