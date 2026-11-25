@@ -1704,8 +1704,9 @@ transcripts. An arm is a directory of the run and its store a directory
 inside it; an arm without a Kernel store grades nothing and is listed in
 the summary's `without_store`. A store that is no database, a store file
 or directory behind a link, a reviewer receipt that names a commit the
-log lacks, a contest mark whose commit superseded no row, and a completed
-transcript record that does not parse each refuse the pass. The step writes `reviewer-grades.jsonl` whole (one row per
+log lacks, a dispute whose commit marks no row, a contest mark whose
+commit superseded no row, and a completed transcript record that does not
+parse each refuse the pass. The step writes `reviewer-grades.jsonl` whole (one row per
 change, `sim-reviewer-grade/v1`) and appends new labels to
 `reviewer-judgments.jsonl` and the judge's calls to `judge-calls.jsonl`.
 It writes no other file of the run; a read-only open of a store in WAL
@@ -1944,7 +1945,12 @@ record of them. The path rule shortens a path that continues past
 directories with the run's and the arm's names replaced. An arm's name
 inside a longer name (`eidnara-reviewer-2`, `sim-host`) is read by the
 token rule alone. The branch that drops a pass's new rows when the call
-log lost a write has no test, and neither has the script's exit code.
+log lost a write has no test, and neither has the script's exit code. A
+stored label stands on its row of `reviewer-judgments.jsonl` as a probe's
+judged label stands on its own log; the row's call numbers are not
+checked against `judge-calls.jsonl`. Pi's transcripts are read whole, as
+the evidence readers read them, so their size is bounded by the arm's
+disk and no limit of the step.
 
 ### Measurement paths
 

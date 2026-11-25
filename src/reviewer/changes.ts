@@ -166,7 +166,8 @@ interface Written {
 
 /**
  * The changes the reviewer's receipts name, in receipt order. A dispute names its target through
- * the `mark_disputed` admission decision of its commit. A later-statement receipt whose result is
+ * the `mark_disputed` admission decision of its commit, and a dispute whose commit holds none is
+ * damaged evidence and refuses the read. A later-statement receipt whose result is
  * a row id is a contested mark: its target is the statement that commit superseded by the result
  * row (a mark whose commit superseded no row is damaged evidence and refuses the read), and an
  * empty result is a statement left standing. A settlement's result names the target
@@ -195,7 +196,10 @@ function writtenChanges(
             r.result === null || r.result === '""' || r.result === "null" ? "" : r.result;
         if (r.producer === PRODUCER_DISPUTE) {
             const target = disputed.get(seq);
-            if (target) out.push({ kind: "disputed", identity: keyed, target, seq, at });
+            if (!target) {
+                throw new Error(`the dispute of commit ${seq} marks no stored row`);
+            }
+            out.push({ kind: "disputed", identity: keyed, target, seq, at });
         } else if (r.producer === PRODUCER_CONTEST) {
             if (result === "") continue;
             const superseded = [...decisions.values()].find(

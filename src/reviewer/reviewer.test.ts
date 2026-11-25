@@ -115,6 +115,12 @@ describe("the reviewer's changes in the final store", () => {
         expect(() => readChanges(linked)).toThrow("is no regular file");
         const orphan = join(reviewerRun({ orphan: true }), ARM, "final-store");
         expect(() => readChanges(orphan)).toThrow("names commit 9999, which the log lacks");
+        // A dispute whose commit holds no `mark_disputed` decision names no target.
+        const unadmitted = join(reviewerRun(), ARM, "final-store");
+        const store = new Database(join(unadmitted, "kernel.sqlite"));
+        store.run("delete from admission_decisions where event_kind = 'mark_disputed'");
+        store.close();
+        expect(() => readChanges(unadmitted)).toThrow("marks no stored row");
         // A contest mark whose commit superseded no row names no target.
         const unmarked = join(reviewerRun({ extra: true }), ARM, "final-store");
         const kernel = new Database(join(unmarked, "kernel.sqlite"));

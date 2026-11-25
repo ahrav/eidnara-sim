@@ -133,7 +133,10 @@ export interface ReviewerSummary {
     grader: { digest: string; sim_commit: string; sim_worktree: string };
 }
 
-/** A digest over the step's own source files and its revision, so a row names the implementation that made it. */
+/**
+ * A digest over the step's source files, the readers and matchers it builds a view and a grade
+ * with, and its revision, so a row names the implementation that made it.
+ */
 export const reviewerGraderDigest = (): string =>
     sha256Hex(
         [
@@ -142,7 +145,14 @@ export const reviewerGraderDigest = (): string =>
             "../src/reviewer/view.ts",
             "../src/reviewer/judge.ts",
             "../src/prereg/reviewer.ts",
+            "../src/prereg/canonical.ts",
             "../prereg/G16.json",
+            "../src/grade/text.ts",
+            "../src/grade/judge.ts",
+            "../src/evidence/load.ts",
+            "../src/run/calllog.ts",
+            "../src/run/journal.ts",
+            "../src/proxy/requests.ts",
             "grade-reviewer.ts",
         ]
             .map((f) => readFileSync(join(import.meta.dir, f), "utf8"))
