@@ -1,0 +1,68 @@
+{
+    "schema": "sim-reviewer-change-revision/v1",
+    "id": "G16",
+    "revision": 16,
+    "frozen": true,
+    "subject": "reviewer-change",
+    "property": "a written change of the memory reviewer targets a row that no longer held at the time of the change, on a cited source that is later evidence about it",
+    "change_rule": "judged-row-ended",
+    "delivery_rule": "scenario-records-in-force",
+    "secondary_metric": {
+        "name": "R1.v1",
+        "rule": "target-literal-status"
+    },
+    "labels": [
+        "R",
+        "P",
+        "W",
+        "U"
+    ],
+    "right_labels": [
+        "R"
+    ],
+    "partial_labels": [
+        "P"
+    ],
+    "wrong_labels": [
+        "W"
+    ],
+    "judge": {
+        "model": "global.openai.gpt-6.2-astra",
+        "max_tokens": 2048,
+        "calls": 1
+    },
+    "rubric": "You grade one change that a memory reviewer wrote to the long-term memory of a coding assistant. The memory holds rows: single statements that later sessions are shown. The reviewer marked or removed one row because, in its view, something written later made the row out of date. Decide whether that was correct at the time the change was written.\n\nYou see the TARGET ROW (its text, the kind of writer, the message it was captured from, when it was stored), the CHANGE (its kind and time), each CITED LATER SOURCE the reviewer relied on (writer, time, text), the CONVERSATION of the same project from the row's time to the change, and the SCENARIO RECORD: what the scripted user said on the row's subject up to the change, with the scenario's marks for a statement that replaces an earlier one and for a plan that was revised or completed (it can be \"none\"). Nothing written after the change is shown, and nothing after it counts.\n\nJudge the claim the row makes. A name or a number that stands in the row is not the claim. A row \"Should I commit it as [tag] ...?\" claims that a question is open. A row \"the change is uncommitted\" or \"nothing reads the constant yet\" claims a state of the work. A row \"21 tests fail\" claims a count. Whether the tag, the constant or another value named in such a row is still valid does not decide the label.\n\nLabels:\nR: the row no longer held at the time of the change, and a cited source is later evidence of that. The whole claim was replaced, completed, closed, answered, withdrawn or contradicted.\nP: one part of the row no longer held, another part still held, and the change took the whole row.\nW: the row still held at the time of the change; or no cited source is later evidence about the row.\nU: the record shown does not settle whether the row held.\n\nStep 1. Is any cited source later evidence about this row? A cited source is later evidence when it was written after the row's own source, is about the same subject as the row (the same setting, the same kind of name in the same place, the same piece of work, the same file and claim), and does more than repeat or extend the row. A cited source that the row restates or quotes and that was written before the row was stored is the row's own origin, not later evidence; this is so for a note the assistant saved with the memory tool, which records no source, and for a captured row with no source recorded. If no cited source is later evidence, answer W.\n\nStep 2. Who can end the row. A row that records what the user said (a rule, a value) ends only on something the user did later: a user message that withdraws, replaces, narrows or finishes it, or a file the user committed that replaces the value. An assistant message or a tool output alone does not end it. A row that records the user's plan, next step or open items ends when a later user message replaces, drops, finishes, closes or sets it aside, or when the record shows the planned step done. The user does not have to repeat the row's names: \"consider them closed\" or \"consider that plan finished\" ends the plan row, and so does the scenario record's mark that the plan was completed. A row that records what the assistant reported, or a note the assistant saved, also ends on a later assistant message or tool output that shows the new state. A saved note that records a user's rule ends as a user's rule does.\n\nStep 3. What had become of the claim by the time of the change. Split the row into its assertions first: each state of the work it reports, each fact about the code or the project it gives, each open question or item, each figure. An explanation of why something is so (\"because the comments pushed it down\", \"the code itself didn't change\") and a pointer to where something sits (a line number, a commit id) are not assertions of their own.\n- Every assertion stopped holding: answer R. Cases: a reported state changed through later work (the uncommitted change was committed, the constant is now read, the failing test passes, the unfixed bug is fixed); an open question, offer or request was answered, carried out or declined; the user closed, finished, dropped or replaced the plan or next step the row records (\"Change of plan ...: drop X; the next step is Y instead\" ends a row whose next step is X); the user gave another value for the same slot; the writer withdrew the claim or a tool output showed the opposite; the row only says where a line stands or that it moved, and the line later stands elsewhere.\n- At least one assertion stopped holding and at least one other assertion, which a later session could still use on its own, still held: answer P. Cases: a list of open questions of which some were answered and some are still open; \"X is not done yet\" beside a fact or an explanation of how X would be done that is still true, after X was done; a test result whose counts changed while the suite as a whole still passes or still fails as before; a count or one figure corrected while the cause, the named items or another figure stand; a general rule that the user later changed for one directory only; a claim of which one clause was corrected.\n- Every assertion still held: answer W. Cases: the later source confirms what the row said as a guess or as unverified (the hedge is out of date, the fact stands); only a line number, a line range, a count of lines, or a commit id moved while the code is otherwise as the row says; the later source restates the row, measures the same thing again with about the same result, or adds further work or further cases of the same kind; the row states the value in force and names the value it replaced.\n- The deciding passage is cut out, or the conversation does not show what became of the row's subject: answer U.\n\nA row that held at the time of the change and stopped holding later is W. Between R and P: answer P only when what still held is an assertion of the row that stands on its own; a leftover that only explained the ended part leaves the answer R.",
+    "validation": {
+        "labelled_changes": 304,
+        "label_counts": {
+            "R": 125,
+            "P": 113,
+            "W": 66,
+            "U": 0
+        },
+        "label_passes": 2,
+        "label_pass_agreement": {
+            "four_class": "0.895",
+            "right_rest": "0.928"
+        },
+        "hand_audited": 140,
+        "design": {
+            "campaigns": [
+                "W5S"
+            ],
+            "changes": 167,
+            "agreed": 154
+        },
+        "test": {
+            "campaigns": [
+                "W5SH"
+            ],
+            "changes": 137,
+            "agreed": 124
+        },
+        "literal_rule": {
+            "changes": 304,
+            "agreed": 22
+        }
+    }
+}
