@@ -155,6 +155,8 @@ interface Written {
     identity: string;
     target: string;
     seq: number;
+    /** The commit's time on the daemon's clock. */
+    at: number;
     /**
      * The row whose admission the change's commit made, when it is another row than the target:
      * the marked row of a contest mark, the successor row of a revision.
@@ -180,18 +182,19 @@ function writtenChanges(
 ): Written[] {
     const out: Written[] = [];
     for (const r of receipts) {
-        if (r.seq === null || !commits.has(r.seq)) {
+        const made = r.seq === null ? undefined : commits.get(r.seq);
+        if (!made) {
             throw new Error(
                 `a reviewer receipt names commit ${String(r.seq)}, which the log lacks`,
             );
         }
-        const seq = r.seq;
+        const { seq, at } = made;
         const keyed = r.key.split("#").at(-1) ?? "";
         const result =
             r.result === null || r.result === '""' || r.result === "null" ? "" : r.result;
         if (r.producer === PRODUCER_DISPUTE) {
             const target = disputed.get(seq);
-            if (target) out.push({ kind: "disputed", identity: keyed, target, seq });
+            if (target) out.push({ kind: "disputed", identity: keyed, target, seq, at });
         } else if (r.producer === PRODUCER_CONTEST) {
             if (result === "") continue;
             const superseded = [...decisions.values()].find(
@@ -202,6 +205,7 @@ function writtenChanges(
                 identity: keyed,
                 target: superseded?.id ?? result,
                 seq,
+                at,
                 successor: result,
             });
         } else {
@@ -214,13 +218,14 @@ function writtenChanges(
             const target = typeof named === "string" ? named : effect.object_id;
             if (typeof target !== "string") continue;
             const proposal = typeof settled.proposal_id === "string" ? settled.proposal_id : "";
-            const identity = identityOf(proposal) ?? commits.get(seq)?.key.split("#")[1] ?? keyed;
+            const identity = identityOf(proposal) ?? made.key.split("#")[1] ?? keyed;
             const successor = name === "revised" ? effect.object_id : undefined;
             out.push({
                 kind: name,
                 identity,
                 target,
                 seq,
+                at,
                 ...(typeof successor === "string" ? { successor } : {}),
             });
         }
@@ -341,7 +346,7 @@ export function readChanges(storeDir: string): ReviewerChange[] | null {
                 target_kind: targetKind(summary, rationale, created?.producer, statement),
                 user_statement: statement,
                 commit_seq: w.seq,
-                recorded_ms: (commits.get(w.seq) as Commit).at,
+                recorded_ms: w.at,
                 stored_ms: created?.at ?? null,
                 delivery: {
                     before: before.at(-1)?.visibility ?? null,

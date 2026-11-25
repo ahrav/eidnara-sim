@@ -239,16 +239,14 @@ const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 export function blindText(text: string, names: readonly string[]): string {
     const [run = "", ...arms] = names;
     let out = text.replace(/§\d+§ ?/g, "");
-    if (out.includes("/r/workspaces/") || out.includes("/r/home/")) {
-        out = out
-            .split("\n")
-            .map((line) =>
-                line.includes("/r/workspaces/") || line.includes("/r/home/")
-                    ? line.replace(ARM_PATH, "/$1/")
-                    : line,
-            )
-            .join("\n");
-    }
+    out = out
+        .split("\n")
+        .map((line) =>
+            line.includes("/r/workspaces/") || line.includes("/r/home/")
+                ? line.replace(ARM_PATH, "/$1/")
+                : line,
+        )
+        .join("\n");
     if (run !== "") out = out.replaceAll(run, "run");
     // A longer arm name goes first, so `eidnara-reviewer` is replaced before `eidnara`.
     for (const arm of [...arms].sort((a, b) => b.length - a.length)) {
@@ -290,13 +288,17 @@ const WRITER_TEXT: Record<Reference["writer"], string> = {
 /**
  * A line inside a text an agent could have written that opens as one of the view's own lines
  * does: an entry's or a record's time, a section's heading, a subject line, or the answer line,
- * after any line break and any blanks. Such a line is marked, so the text reads as its entry's or
- * its frame's text and never as a turn of the user, a record of the scenario, or a section.
+ * at the text's start or after any line break, behind any run of blanks, zero-width characters,
+ * and control characters. Such a line is marked, so the text reads as its entry's or its frame's
+ * text and never as a turn of the user, a record of the scenario, or a section.
  */
 const FRAME_LINE =
-    /(?<=[\n\r\f\v\u0085\u2028\u2029])[ \t]*(?=\[\d{4}-\d\d-\d\dT[\d:]{8}Z\] |(?:TARGET ROW|CHANGE)(?=\s|$)|CITED LATER (?:SOURCE|STATEMENT)|CONVERSATION \(|SCENARIO RECORD \(|Subject |Answer with exactly one letter)/g;
-/** `text` with each line that opens as a line of the view marked as text. */
-const marked = (text: string) => text.replace(FRAME_LINE, "$&| ");
+    /(?<=[\n\r\f\v\u0085\u2028\u2029])(?:(?![\n\r\f\v\u0085])[\p{Zs}\p{Cf}\p{Cc}])*(?=\[\d{4}-\d\d-\d\dT[\d:]{8}Z\] |(?:TARGET ROW|CHANGE)(?=\s|$)|CITED LATER (?:SOURCE|STATEMENT)|CONVERSATION \(|SCENARIO RECORD \(|Subject |Answer with exactly one letter)/gu;
+/** `text`, which opens a line of the view, with each of its lines that opens as a line of the view marked as text. */
+const marked = (text: string) => `\n${text}`.replace(FRAME_LINE, "$&| ").slice(1);
+/** `text`, which follows an entry's own opening on its line, with each later line of that shape marked. */
+const markedAfter = (text: string) => text.replace(FRAME_LINE, "$&| ");
+const LINE_BREAKS = /[\n\r\f\v\u0085\u2028\u2029]+/g;
 
 /** The passage of a reference a span cites: its byte range, or the whole text without one. */
 function passage(text: string, span: CitedSpan): { text: string; whole: boolean } {
@@ -315,13 +317,15 @@ function conversationText(entries: readonly Spoken[]): string {
     const L = VIEW_LIMITS;
     const line = (e: Spoken, userMax: number = L.user): string => {
         const at = `[${iso(e.at_ms)}]`;
-        const text = marked(e.text);
+        const text = markedAfter(e.text);
+        // A tool's name stands inside the entry's opening, on one line.
+        const name = (e.name ?? "").replace(LINE_BREAKS, " ");
         if (e.speaker === "user") return `${at} USER: ${clip(text, userMax)}`;
         if (e.speaker === "assistant") return `${at} ASSISTANT: ${clip(text, L.assistant)}`;
         if (e.speaker === "tool call") {
-            return `${at} ASSISTANT CALLED ${e.name}: ${clip(text, L.tool_call)}`;
+            return `${at} ASSISTANT CALLED ${name}: ${clip(text, L.tool_call)}`;
         }
-        return `${at} TOOL OUTPUT (${e.name}): ${clip(text, L.tool_output)}`;
+        return `${at} TOOL OUTPUT (${name}): ${clip(text, L.tool_output)}`;
     };
     const lines = entries.map((e) => line(e));
     const total = lines.reduce((n, l) => n + l.length + 1, 0);
@@ -457,7 +461,7 @@ export interface ViewInputs {
 export function changeView(o: ViewInputs): string {
     const { change, request, scenario, clock } = o;
     // A row, a source, and a statement are texts an agent or a tool wrote, read as text.
-    const blinded = (text: string) => marked(o.blinded(text));
+    const asText = (text: string) => marked(o.blinded(text));
     const source = [...request.references.values()].find((r) => r.relation === "source");
     const cited = (change.proposal?.contradictions ?? []).flatMap((span) => {
         const ref = request.references.get(span.alias);
@@ -475,20 +479,20 @@ export function changeView(o: ViewInputs): string {
         `Writer kind: ${change.target_kind}`,
         `Captured from: ${from}`,
         `Stored at: ${change.stored_ms === null ? "not recorded" : iso(change.stored_ms)}`,
-        `Text:\n<<<\n${clip(blinded(change.text), VIEW_LIMITS.row)}\n>>>`,
+        `Text:\n<<<\n${clip(asText(change.text), VIEW_LIMITS.row)}\n>>>`,
         "",
         "CHANGE",
         `Kind: ${KIND_TEXT[change.kind]}`,
         `Written at: ${iso(change.recorded_ms)}`,
         ...(change.kind === "revised" && change.proposal?.new_text
-            ? [`New text:\n<<<\n${clip(blinded(change.proposal.new_text), VIEW_LIMITS.row)}\n>>>`]
+            ? [`New text:\n<<<\n${clip(asText(change.proposal.new_text), VIEW_LIMITS.row)}\n>>>`]
             : []),
     ];
     if (change.contested_by) {
         parts.push(
             "",
             "CITED LATER STATEMENT (the row the mark names)",
-            `<<<\n${clip(blinded(change.contested_by.text), VIEW_LIMITS.cited)}\n>>>`,
+            `<<<\n${clip(asText(change.contested_by.text), VIEW_LIMITS.cited)}\n>>>`,
         );
     }
     cited.forEach(({ ref, text, whole }, i) => {
@@ -502,7 +506,7 @@ export function changeView(o: ViewInputs): string {
             `CITED LATER SOURCE ${i + 1} of ${cited.length}`,
             `Writer: ${WRITER_TEXT[ref.writer]}`,
             `Time: ${ref.at_ms === null ? none : iso(ref.at_ms)}`,
-            `Text${length}:\n<<<\n${clip(blinded(text), VIEW_LIMITS.cited)}\n>>>`,
+            `Text${length}:\n<<<\n${clip(asText(text), VIEW_LIMITS.cited)}\n>>>`,
         );
     });
     if (cited.length === 0 && !change.contested_by) {

@@ -71,6 +71,7 @@ const JUDGE_CALLS = "judge-calls.jsonl";
 export const UNJUDGED = {
     clock: "the commit time maps to no single wall time",
     proposal: "no applied proposal recorded for the change",
+    attempt: "no finished model attempt recorded for the change's job",
     request: "no single stage-2 request recorded for the change",
     judge: "judge call failed",
 } as const;
@@ -456,9 +457,11 @@ export async function gradeReviewer(
                             ? OUTSIDE
                             : !timed
                               ? UNJUDGED.clock
-                              : cites
-                                ? UNJUDGED.request
-                                : UNJUDGED.proposal;
+                              : !cites
+                                ? UNJUDGED.proposal
+                                : !change.attempt
+                                  ? UNJUDGED.attempt
+                                  : UNJUDGED.request;
                     items.push({ ...item, unjudged });
                     continue;
                 }

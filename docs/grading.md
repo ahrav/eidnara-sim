@@ -1694,7 +1694,8 @@ host turns names the identity.
 `prereg/G16.json` (`sim-reviewer-change-revision/v1`) grades the written
 changes of Eidnara's memory reviewer: a dispute, a contest mark, a
 retirement, or a revision of one stored memory row, which the reviewer
-justifies by a later source, and a row the reviewer created. `bun scripts/grade-reviewer.ts <run dir>`
+justifies by a later source. A row the reviewer created is listed
+without a label. `bun scripts/grade-reviewer.ts <run dir>`
 grades them in a finished run. The step takes the run's lease, requires
 `scenario.json` to hash to the manifest's digest and the journal to record
 a complete run (`requireComplete`), and reads each arm's `final-store`,
@@ -1715,8 +1716,10 @@ A change gets a row with no label, a `reason`, and no judge call when the
 run's records leave its evidence open: its commit time maps to no single
 wall time (two clock offsets claim it after an offset shrank, or none
 does; the same holds for the times of its job's last attempt), the store
-holds no applied proposal for it (no `store.db`, or no receipt for its
-job), or the gateway's record holds no single stage-2 request for it
+holds no applied proposal and no contesting statement for it (no
+`store.db`, or no receipt for its job), the store holds no finished model
+attempt for its job, or the gateway's record holds no single stage-2
+request for it
 (`requests.jsonl` is absent, the request does not rebuild, a cited alias
 has no label the step reads, a cited byte range lies outside its
 reference, or two requests fit). A row the reviewer created has no
@@ -1755,11 +1758,13 @@ back), the run directory's name is replaced, each arm's name is replaced
 where it stands as a whole name (`host` in `the host arm`, and no part of
 `localhost`), and the arm token is replaced. The row and each cited
 source stand between `<<<` and `>>>`, and a run of three such marks
-inside a text is spaced apart. A line inside the row, a cited source, or
-a conversation entry that opens as a line of the view does (an entry's or
-a record's time, a section heading, a subject line, the answer line,
-after any line break and any blanks) is marked with `| `, so text an
-agent wrote reads as that text. `VIEW_VERSION` and `VIEW_LIMITS` enter
+inside a text is spaced apart. A line of the row, a revision's new text,
+a contesting statement, a cited source, or a conversation entry that
+opens as a line of the view does (an entry's or a record's time, a
+section heading, a subject line, the answer line; at the text's start or
+after any line break, behind any blanks, zero-width characters, and
+control characters) is marked with `| `, so text an agent wrote reads as
+that text. A tool's name is written on one line. `VIEW_VERSION` and `VIEW_LIMITS` enter
 the judge's prompt digest, so a view that renders a change as other text
 lapses the stored labels.
 
@@ -1933,8 +1938,10 @@ agent can write, so a transcript file an agent wrote would be read as the
 conversation; the user's turns are not checked against the harness's own
 record of them. The path rule shortens a path that continues past
 `/r/workspaces/` or `/r/home/`, so a path that ends at `/r/home` keeps its
-directories with the run's and the arm's names replaced. The branch that
-drops a pass's new rows when the call log lost a write has no test.
+directories with the run's and the arm's names replaced. An arm's name
+inside a longer name (`eidnara-reviewer-2`, `sim-host`) is read by the
+token rule alone. The branch that drops a pass's new rows when the call
+log lost a write has no test, and neither has the script's exit code.
 
 ### Measurement paths
 

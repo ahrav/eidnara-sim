@@ -325,6 +325,9 @@ export function reviewerRun(o: RunOptions = {}): string {
         "create table memory_reviewer_receipts(causal_identity text, selected_candidate_id text)",
     );
     daemon.run("create table memory_reviewer_jobs(causal_identity text, project text)");
+    // One transaction per store: a row per commit would cost a disk sync each.
+    kernel.run("begin");
+    daemon.run("begin");
     daemon.run(
         "create table memory_reviewer_attempts(causal_identity text, attempt_index integer, committed_at_ms integer, terminal_at_ms integer)",
     );
@@ -645,6 +648,8 @@ export function reviewerRun(o: RunOptions = {}): string {
             endedAt: 91,
         });
     }
+    kernel.run("commit");
+    daemon.run("commit");
     kernel.close();
     daemon.close();
     calls.sort((a, b) => (a.wall_ms as number) - (b.wall_ms as number));

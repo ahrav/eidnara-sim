@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
     appendFileSync,
@@ -260,7 +261,7 @@ describe("grading the reviewer's changes of a finished run", () => {
         expect(existsSync(join(dir, REVIEWER_JUDGMENTS))).toBe(false);
     });
 
-    test("a change without an applied proposal on record, and a change whose commit time two clock offsets claim, get no judge call and no label", async () => {
+    test("a change without an applied proposal on record, without a model attempt on record, or with a commit time two clock offsets claim gets no judge call and no label", async () => {
         const bare = run();
         rmSync(join(bare, ARM, "final-store", "store.db"));
         const upstream = judgeSays(fair);
@@ -271,6 +272,13 @@ describe("grading the reviewer's changes of a finished run", () => {
             unjudged: { [UNJUDGED.proposal]: 4 },
             unlabelled: 4,
         });
+        // A store that holds the proposals and no model attempt names that gap, with the requests on record.
+        const unbound = run();
+        const store = new Database(join(unbound, ARM, "final-store", "store.db"));
+        store.run("drop table memory_reviewer_attempts");
+        store.close();
+        const third = await gradeReviewer(unbound, null, judgeSays(fair));
+        expect(third).toMatchObject({ labels: { none: 4 }, unjudged: { [UNJUDGED.attempt]: 4 } });
         // The arm's offset shrinks by 30 s at wall second 77, so daemon times from wall second 47 to 107 are
         // read twice: three commit times, and the last change's attempt, map to no single wall time.
         const shrunk = run({ shrinkAt: 77 });
