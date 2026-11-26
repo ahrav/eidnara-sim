@@ -855,6 +855,82 @@ test("a signal to the supervisor kills its finalize steps and their helpers befo
     expect(alive).toBe(false);
 });
 
+test("a finalize step that holds the run's lease across a poll and then lingers leaves the run with one finalize pass", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
+    const out = join(dir, "runs");
+    const fake = join(dir, "fake-run.ts");
+    writeFileSync(fake, FAKE_RUN);
+    // The hold step uses `campaign-status.json` updates to bracket its lease release: one poll
+    // while it holds the lease, and one after the release while the step still runs.
+    const hold = join(dir, "hold.ts");
+    writeFileSync(
+        hold,
+        `import { appendFileSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { releaseLease, takeLease } from "${ROOT}/src/run/journal";
+const dir = process.argv[2] as string;
+appendFileSync(join(dir, "passes.txt"), "hold\\n");
+const polledAfter = async (since: number) => {
+    const deadline = Date.now() + 20_000;
+    for (;;) {
+        try {
+            const status = JSON.parse(readFileSync(join(dir, "..", "campaign-status.json"), "utf8"));
+            if (Date.parse(status.updated_at) > since) return;
+        } catch {}
+        if (Date.now() > deadline) process.exit(9);
+        await Bun.sleep(10);
+    }
+};
+const lease = takeLease(dir);
+await polledAfter(Date.now());
+releaseLease(dir, lease);
+await polledAfter(Date.now());
+await Bun.sleep(300);
+`,
+    );
+    const after = join(dir, "after.ts");
+    writeFileSync(
+        after,
+        `require("node:fs").appendFileSync(require("node:path").join(process.argv[2], "passes.txt"), "after\\n");\n`,
+    );
+    const spec = {
+        schema: "sim-campaign/v1",
+        out,
+        poll_ms: 50,
+        inode_paths: [],
+        relaunch_backoff_ms: 20,
+        run_command: ["bun", fake],
+        finalize_commands: [
+            ["bun", hold, "{dir}"],
+            ["bun", after, "{dir}"],
+        ],
+        runs: [{ name: "good", args: ["--mode", "ok"] }],
+    };
+    writeFileSync(join(dir, "campaign.json"), JSON.stringify(spec));
+    try {
+        const r = Bun.spawnSync(
+            [process.execPath, "scripts/campaign.ts", join(dir, "campaign.json")],
+            { cwd: ROOT, timeout: 60_000 },
+        );
+        const status = JSON.parse(readFileSync(join(out, "campaign-status.json"), "utf8"));
+        expect(status.runs[0]).toMatchObject({
+            state: "finalized",
+            finalize: [
+                { command: "hold", exit: 0 },
+                { command: "after", exit: 0 },
+            ],
+        });
+        expect(readFileSync(join(out, "good", "passes.txt"), "utf8")).toBe("hold\nafter\n");
+        const log = readFileSync(join(out, "campaign.log"), "utf8");
+        expect(log.match(/ good finalized: /g)).toHaveLength(1);
+        expect(log).toContain("good finalized: hold=0 after=0");
+        expect(leaseHeld(join(out, "good"))).toBe(false);
+        expect(r.exitCode).toBe(0);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 test("runProgress counts an interrupted turn as failed and an interrupted session_end as no turn", () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
     writeFileSync(join(dir, "manifest.json"), JSON.stringify({ events: 3, order: ["a"] }));
