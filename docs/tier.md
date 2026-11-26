@@ -46,7 +46,7 @@ longer hashes to its `scenario_hash`, or compiled from another generator
 version, pre-registration, or corpus (the bytes of the manifest, fact
 bank, repository list, distributions, and tool outputs, as one digest of
 the bytes the compiler read), is refused. The libfaketime build's
-download, extraction, and compilation each end within ten minutes; each
+download, extraction, patch, and compilation each end within ten minutes; each
 build runs in a staging directory of its own under `vendor/build` and
 renames the finished library into place, so another command sees a
 complete library or none. The embedding cache's

@@ -36,10 +36,18 @@ lines match.
 ## Interposer
 
 `buildFaketime()` downloads libfaketime 0.9.10, checks its sha256 against the
-pinned digest, builds `libfaketimeMT.so.1`, the thread-safe build, in a
+pinned digest, applies `vendor/patches/libfaketime-0.9.10-pre-init.patch`
+with `patch`, builds `libfaketimeMT.so.1`, the thread-safe build, in a
 staging directory under `vendor/build/` (ignored by git), and renames the
 finished library into place, so the published path holds only a complete
-build. `faketimeEnv(file)` preloads it with these settings:
+build. The published directory is named `libfaketime-0.9.10-<digest>`, with
+the first 12 hex digits of the patch file's sha256, so each revision of the
+patch builds at a path of its own and the manifest's `binaries.faketime`
+digest names the library a run loaded. After an edit of the patch, `bun
+scripts/build-faketime.ts` builds the library at its new path; the tests
+that run the interposer run when that library exists, and
+`src/run/preload.test.ts` fails while `vendor/build` holds a library of
+another revision alone. `faketimeEnv(file)` preloads it with these settings:
 
 | Variable | Value | Effect |
 |---|---|---|
@@ -64,6 +72,46 @@ Between
 jumps the offset holds, so host clocks run at wall pace while scenario time
 holds and lead it by the idle wall time since the last jump; the preflight
 distortions record this.
+
+### Calls ahead of the library's constructor
+
+The dynamic loader runs the constructors of a program's own libraries ahead
+of the preload's constructor, so a call can reach the interposer while
+`ftpl_init()` is still to run. Upstream 0.9.10 answers such a call by running
+`ftpl_init()` inside it, and `ftpl_init()` allocates. rustc, rustdoc, and
+clippy-driver link jemalloc, whose initialization starts at the first
+allocation (in the C++ runtime's constructor), holds jemalloc's
+initialization lock, reads `CLOCK_MONOTONIC_COARSE` (`arena_new`), and
+creates a condition variable with default attributes
+(`background_thread_boot1`). Under upstream 0.9.10 either call entered
+`ftpl_init()`, its allocation re-entered jemalloc's initialization on the
+same thread, and the process waited on the lock it held, before `main`
+(`__lll_lock_wait` under `malloc_init_hard`). `cargo clippy` starts
+clippy-driver itself for each workspace crate, so it ended only at a tool
+timeout or at the turn's 900 s deadline.
+
+The patch sets this contract for a call that arrives ahead of the
+constructor:
+
+| Call | Condition | Answer |
+|---|---|---|
+| `clock_gettime` of `CLOCK_MONOTONIC`, `CLOCK_MONOTONIC_RAW`, `CLOCK_MONOTONIC_COARSE`, or `CLOCK_BOOTTIME` | `FAKETIME_DONT_FAKE_MONOTONIC=1` (the harness always sets it) | The kernel's clock through the `clock_gettime` system call: the value the initialized library returns for these clocks, obtained allocation-free and lock-free |
+| `pthread_cond_init` with a null attribute | always | The static initializer `PTHREAD_COND_INITIALIZER`, which POSIX defines as equal to that call; such a variable waits on `CLOCK_REALTIME` and has no entry in the library's table of monotonic condition variables |
+
+The clock answer is compiled for LP64 Linux builds whose `syscall()` is the
+C library's own (the default build flags). Every other call, and each of
+these two once the constructor has run, takes upstream's path: a wall-clock
+read ahead of the constructor runs `ftpl_init()` and carries the offset, and
+`pthread_cond_destroy` and `pthread_cond_timedwait` run `ftpl_init()` first
+when they arrive ahead of the constructor, so a variable created through
+the static initializer reaches the C library's functions. The constructor
+runs `ftpl_init()` before `main`, so wall-clock reads carry the offset from
+the program's first statement. `src/run/preload.test.ts` holds the contract
+with a C program whose allocator makes both calls ahead of the constructor
+and whose library constructor then reads the wall clock, and runs `cargo
+clippy` through the launcher at the starting offset and after a clock jump
+in each direction, with an edit before each run so the driver starts each
+time.
 
 ## Eidnara's timed rules under the simulator's clocks
 

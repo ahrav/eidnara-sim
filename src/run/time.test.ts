@@ -194,9 +194,11 @@ describe("time injection", () => {
                 opencode: "/bin/true",
                 daemon: join(linkDir, "daemon"),
             });
+            // The probe runs node at the daemon's path, so it expects node's exit status.
             const probe = {
                 ...(daemon as BinaryProbe),
                 argv: [(daemon as BinaryProbe).path, "-e", "1"],
+                expect: { exit: 0 },
             };
             const [result] = interceptionTest(writeLauncher(root), root, [probe]);
             expect(result?.intercepted).toBe(true);

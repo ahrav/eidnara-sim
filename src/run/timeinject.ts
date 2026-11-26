@@ -14,20 +14,32 @@ import { writeExclusive } from "./atomic";
 export const FAKETIME_VERSION = "0.9.10";
 export const FAKETIME_SHA256 = "729ad33b9c750a50d9c68e97b90499680a74afd1568d859c574c0fe56fe7947f";
 export const VENDOR = resolve(import.meta.dir, "../../vendor/build");
-export const FAKETIME_LIB = join(
-    VENDOR,
-    `libfaketime-${FAKETIME_VERSION}`,
-    "src",
-    "libfaketimeMT.so.1",
+/**
+ * The change this tree applies to the pinned source: a monotonic clock read and a default
+ * condition-variable initialization that arrive ahead of the library's constructor are answered
+ * allocation-free, so an allocator that makes them while it initializes (jemalloc in rustc,
+ * rustdoc, and clippy-driver) completes its initialization (`docs/time.md`, Interposer).
+ */
+const FAKETIME_PATCH = resolve(
+    import.meta.dir,
+    `../../vendor/patches/libfaketime-${FAKETIME_VERSION}-pre-init.patch`,
 );
+/** The patch as read once at load: the bytes the build applies are the bytes the path names. */
+const PATCH_BYTES = readFileSync(FAKETIME_PATCH);
+/** The published path names the patch content, so each patch revision builds at a path of its own. */
+const FAKETIME_BUILD = `libfaketime-${FAKETIME_VERSION}-${createHash("sha256")
+    .update(PATCH_BYTES)
+    .digest("hex")
+    .slice(0, 12)}`;
+export const FAKETIME_LIB = join(VENDOR, FAKETIME_BUILD, "src", "libfaketimeMT.so.1");
 
-/** Each download, extraction, and build step of the vendored libfaketime ends within this. */
+/** Each download, extraction, patch, and build step of the vendored libfaketime ends within this. */
 const BUILD_STEP_MS = 600_000;
 
 /**
- * Builds the vendored libfaketime in a staging directory of its own and renames the library
- * into place, so concurrent builders each publish a complete build at `FAKETIME_LIB` and a
- * reader sees either no library or a complete one.
+ * Builds the vendored libfaketime with `FAKETIME_PATCH` applied in a staging directory of its
+ * own and renames the library into place, so concurrent builders each publish a complete build
+ * at `FAKETIME_LIB` and a reader sees either no library or a complete one.
  */
 export async function buildFaketime(): Promise<string> {
     if (existsSync(FAKETIME_LIB)) return FAKETIME_LIB;
@@ -44,9 +56,13 @@ export async function buildFaketime(): Promise<string> {
     try {
         const archive = join(staging, `libfaketime-${FAKETIME_VERSION}.tar.gz`);
         writeFileSync(archive, tarball);
-        const src = join(staging, `libfaketime-${FAKETIME_VERSION}`, "src");
+        const patch = join(staging, "pre-init.patch");
+        writeFileSync(patch, PATCH_BYTES);
+        const tree = join(staging, `libfaketime-${FAKETIME_VERSION}`);
+        const src = join(tree, "src");
         for (const argv of [
             ["tar", "xzf", archive, "-C", staging],
+            ["patch", "-p1", "-d", tree, "-i", patch],
             ["make", "-C", src, "libfaketimeMT.so.1"],
         ]) {
             // Async with a timeout, so a signal to the caller is handled and a stalled step ends.
@@ -55,11 +71,15 @@ export async function buildFaketime(): Promise<string> {
                 stderr: "pipe",
                 timeout: BUILD_STEP_MS,
             });
-            const [code, stderr] = await Promise.all([
+            // patch reports a rejected hunk on stdout, tar and make report on stderr.
+            const [code, stdout, stderr] = await Promise.all([
                 child.exited,
+                new Response(child.stdout).text(),
                 new Response(child.stderr).text(),
             ]);
-            if (code !== 0) throw new Error(`${argv.join(" ")}: ${stderr || `exit ${code}`}`);
+            if (code !== 0) {
+                throw new Error(`${argv.join(" ")}: ${stderr || stdout || `exit ${code}`}`);
+            }
         }
         mkdirSync(dirname(FAKETIME_LIB), { recursive: true });
         renameSync(join(src, "libfaketimeMT.so.1"), FAKETIME_LIB);

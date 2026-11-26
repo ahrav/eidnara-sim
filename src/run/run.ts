@@ -666,7 +666,7 @@ const CLEAN_WORKTREE = createHash("sha256").digest("hex");
  * pre-registration and its schema, the scenario compiler and corpus, the user-sim (persona,
  * behaviour plan, tape and pairing), the seeded generator, the oracle note, the host driver,
  * arm profiles, workspace snapshots, and store checks, call classification, records, and fault
- * injection, the clock and its injection, and the resource sampler.
+ * injection, the clock, its injection, and the interposer's patch, and the resource sampler.
  */
 export const MEASUREMENT_PATHS = [
     "prereg",
@@ -688,6 +688,7 @@ export const MEASUREMENT_PATHS = [
     "src/proxy/inject.ts",
     "src/run/clock.ts",
     "src/run/timeinject.ts",
+    "vendor/patches",
     "src/run/sampler.ts",
 ];
 
