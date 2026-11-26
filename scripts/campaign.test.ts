@@ -18,7 +18,9 @@ import {
     alertKey,
     alerts,
     C7_PRICES,
+    DEFAULT_FINALIZE,
     decide,
+    finalizeArgv,
     groupKey,
     noSpend,
     openLog,
@@ -30,7 +32,8 @@ import {
     runProgress,
     sameLaunch,
 } from "../src/run/campaign";
-import { Journal } from "../src/run/journal";
+import { Journal, leaseHeld } from "../src/run/journal";
+import { reviewerRun, unreviewedRun } from "../tests/reviewer-run";
 
 const ROOT = resolve(import.meta.dir, "..");
 
@@ -864,4 +867,128 @@ test("runProgress counts an interrupted turn as failed and an interrupted sessio
     j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-2", ...cut });
     j.close();
     expect(runProgress(dir).failed_turns).toBe(1);
+});
+
+/** The finalize steps of a campaign that grades the memory reviewer's changes (`docs/run-command.md`). */
+const REVIEWER_FINALIZE = [
+    ["bun", "scripts/grade-run.ts", "{dir}"],
+    ["bun", "scripts/evidence-run.ts", "{dir}"],
+    ["bun", "scripts/pairing-check.ts", "{dir}"],
+    ["bun", "scripts/grade-reviewer.ts", "{dir}"],
+];
+
+test("a reviewer campaign's four finalize steps run on each run's own directory, the reviewer grades last", () => {
+    const base = {
+        schema: "sim-campaign/v1",
+        out: "/abs/campaign/M",
+        runs: [
+            { name: "WM-M-213-eidnara-reviewer", args: ["--seed", "213"], config: "/abs/b17.json" },
+            { name: "WM-M-213-eidnara-ref", args: ["--seed", "213"], config: "/abs/b12.json" },
+        ],
+    };
+    const spec = parseCampaign({ ...base, finalize_commands: REVIEWER_FINALIZE });
+    expect(finalizeArgv(spec, "WM-M-213-eidnara-reviewer")).toEqual([
+        ["bun", "scripts/grade-run.ts", "/abs/campaign/M/WM-M-213-eidnara-reviewer"],
+        ["bun", "scripts/evidence-run.ts", "/abs/campaign/M/WM-M-213-eidnara-reviewer"],
+        ["bun", "scripts/pairing-check.ts", "/abs/campaign/M/WM-M-213-eidnara-reviewer"],
+        ["bun", "scripts/grade-reviewer.ts", "/abs/campaign/M/WM-M-213-eidnara-reviewer"],
+    ]);
+    // Every run of the campaign gets the same four steps on its own directory, and each step
+    // runs under the run's own config.
+    const reference = finalizeArgv(spec, "WM-M-213-eidnara-ref");
+    expect(reference.map((command) => command.slice(0, 2))).toEqual(
+        REVIEWER_FINALIZE.map((command) => command.slice(0, 2)),
+    );
+    expect(
+        reference.every((command) => command[2] === "/abs/campaign/M/WM-M-213-eidnara-ref"),
+    ).toBe(true);
+    expect(runEnv(spec.runs[1], { SIM_CONFIG: "/abs/supervisor.json" }).SIM_CONFIG).toBe(
+        "/abs/b12.json",
+    );
+    // The list is the default three steps with the reviewer grades after them; a campaign file
+    // that names none keeps the three.
+    expect(REVIEWER_FINALIZE.slice(0, 3)).toEqual(DEFAULT_FINALIZE);
+    expect(finalizeArgv(parseCampaign(base), "WM-M-213-eidnara-ref")).toHaveLength(3);
+    // The file names stay as written: a placeholder is filled inside an argument, and nowhere else.
+    expect(REVIEWER_FINALIZE.flat().filter((a) => a.includes("{"))).toEqual(Array(4).fill("{dir}"));
+});
+
+test("the reviewer grade step finalizes a run without a reviewer arm cleanly, and a change without a label ends it nonzero with an alert", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-campaign-"));
+    // Two finished run directories the fake run command copies into place: a host arm alone, and
+    // a reviewer arm whose changes have no stage-2 request on record, so each stays without a label.
+    const quiet = unreviewedRun("host", "none");
+    const unlabelled = reviewerRun();
+    rmSync(join(unlabelled, "requests.jsonl"));
+    const fake = join(dir, "fake-run.ts");
+    writeFileSync(
+        fake,
+        `import { cpSync } from "node:fs";
+const at = (flag: string) => process.argv[process.argv.indexOf(flag) + 1] as string;
+cpSync(at("--from"), at("--out"), { recursive: true });
+`,
+    );
+    const out = join(dir, "runs");
+    const spec = {
+        schema: "sim-campaign/v1",
+        out,
+        poll_ms: 50,
+        inode_paths: [],
+        run_command: ["bun", fake],
+        // The step before it holds and frees the run's lease, as grade-run does.
+        finalize_commands: [
+            [
+                "bun",
+                "-e",
+                `import { takeLease, releaseLease } from "${ROOT}/src/run/journal"; releaseLease(process.argv[1], takeLease(process.argv[1]));`,
+                "{dir}",
+            ],
+            ["bun", "scripts/grade-reviewer.ts", "{dir}"],
+        ],
+        runs: [
+            { name: "quiet", args: ["--from", quiet] },
+            { name: "unlabelled", args: ["--from", unlabelled] },
+        ],
+    };
+    writeFileSync(join(dir, "campaign.json"), JSON.stringify(spec));
+    try {
+        const r = Bun.spawnSync(
+            [process.execPath, "scripts/campaign.ts", join(dir, "campaign.json")],
+            { cwd: ROOT, timeout: 120_000 },
+        );
+        const status = JSON.parse(readFileSync(join(out, "campaign-status.json"), "utf8"));
+        const record = (name: string) => status.runs.find((x: { name: string }) => x.name === name);
+        expect(record("quiet")).toMatchObject({
+            state: "finalized",
+            finalize: [
+                { command: "-e", exit: 0 },
+                { command: "grade-reviewer", exit: 0 },
+            ],
+        });
+        expect(readFileSync(join(out, "quiet", "reviewer-grades.jsonl"), "utf8")).toBe("");
+        const summary = JSON.parse(
+            readFileSync(join(out, "quiet", "reviewer-grade-summary.json"), "utf8"),
+        );
+        expect(summary.pass).toMatchObject({ changes: { host: 0 }, without_store: ["host"] });
+        // The step released the lease it took, so a later step or a regrade can take it.
+        expect(readdirSync(join(out, "quiet")).some((f) => /^lease\.\d+\.json$/.test(f))).toBe(
+            true,
+        );
+        expect(leaseHeld(join(out, "quiet"))).toBe(false);
+        expect(leaseHeld(join(out, "unlabelled"))).toBe(false);
+        // Four changes without a label: the grades are written, the step exits 1, and the supervisor alerts.
+        expect(record("unlabelled").finalize).toEqual([
+            { command: "-e", exit: 0 },
+            { command: "grade-reviewer", exit: 1 },
+        ]);
+        const graded = readFileSync(join(out, "unlabelled", "reviewer-grades.jsonl"), "utf8");
+        expect(graded.trim().split("\n")).toHaveLength(4);
+        expect(status.alerts).toContain("run unlabelled finalize: grade-reviewer exit 1");
+        expect(status.alerts.some((a: string) => a.startsWith("run quiet"))).toBe(false);
+        expect(r.exitCode).toBe(1);
+        const log = readFileSync(join(out, "logs", "unlabelled.grade-reviewer.log"), "utf8");
+        expect(JSON.parse(log)).toMatchObject({ unlabelled: 4, judge_calls: 0 });
+    } finally {
+        for (const d of [dir, quiet, unlabelled]) rmSync(d, { recursive: true, force: true });
+    }
 });

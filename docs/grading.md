@@ -1709,10 +1709,41 @@ commit superseded no row, and a completed transcript record that does not
 parse each refuse the pass. The step writes `reviewer-grades.jsonl` whole (one row per
 change, `sim-reviewer-grade/v1`) and appends new labels to
 `reviewer-judgments.jsonl` and the judge's calls to `judge-calls.jsonl`.
-It writes no other file of the run; a read-only open of a store in WAL
+It also writes `reviewer-grade-summary.json` whole (below). It writes no
+other file of the run; a read-only open of a store in WAL
 mode can create the store's `-shm` file, as the evidence readers' opens
 do. It exits 1 when a change the revision grades has no label (the
 summary's `unlabelled`).
+
+A run whose arms hold no change of the reviewer is graded by the same
+rule: a host arm has no store and is listed in `without_store`; an Eidnara
+arm with the reviewer switch off has a store without a reviewer receipt,
+and a store of a build from before the reviewer lacks the reviewer's
+tables, which reads as no receipt. The step then writes an empty
+`reviewer-grades.jsonl` and a summary of zero counts, makes no judge call,
+opens neither judge log, and exits 0. A campaign therefore runs the step
+on every run, as its last finalize step (`docs/run-command.md`, Campaign
+supervisor).
+
+`reviewer-grade-summary.json` (`sim-reviewer-grade-summary/v1`) holds the
+grade rows of the run as counts, so an analysis reads one file per run.
+`primary` names the revision's rule (`judged-row-ended`) and its labels,
+`secondary` the stored metric (`R1.v1`, `target-literal-status`), and
+`delivery_rule` the in-force reading (`scenario-records-in-force`).
+`arms.<arm>` holds, for every arm of the manifest's order, `all` and
+`by_target_kind` (`user statement`, `work in progress`, `agent note`,
+`assistant report`), each with: `changes`; `labels`, the primary reading,
+the changes by judged label (`R`, `P`, `W`, `U`, and `none` for a change
+without one); `literal`, the secondary reading, the changes by the literal
+rule's verdict (`right`, `wrong`, `no truth`); `left_automatic`, the
+changes that took their row out of automatic delivery (visibility
+`automatic` before the change and another one after it); and
+`left_automatic_in_force`, those rows by what the scenario's records say
+of them at the change (`in force`, `ended`, `states no fact`, `no scenario
+statement`, and `no reading` for a row that is no statement of the user or
+whose commit time maps to no single wall time). `pass` is the summary the
+step prints: the changes by arm, `without_store`, the changes without a
+label by reason, `unlabelled`, and the judge calls of this pass.
 
 A change gets a row with no label, a `reason`, and no judge call when the
 run's records leave its evidence open: its commit time maps to no single

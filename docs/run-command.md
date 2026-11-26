@@ -802,6 +802,38 @@ field keeps every record. Every `poll_ms` the supervisor:
   inode use passes 80%, and a total spend past `spend_cap_usd`. The spend
   alert only reports; the supervisor keeps every run going.
 
+A campaign that grades the memory reviewer's written changes names four
+finalize steps, the default three and the reviewer grades after them:
+
+```json
+"finalize_commands": [
+    ["bun", "scripts/grade-run.ts", "{dir}"],
+    ["bun", "scripts/evidence-run.ts", "{dir}"],
+    ["bun", "scripts/pairing-check.ts", "{dir}"],
+    ["bun", "scripts/grade-reviewer.ts", "{dir}"]
+]
+```
+
+The supervisor runs the steps of a run one after another, once the run's
+process has ended, each under the run's own `config`. `grade-run` and
+`grade-reviewer` each take the run directory's lease and release it when
+they end, so the lease is free when the next step starts. `grade-reviewer`
+(`docs/grading.md`, Grading revision 16) reads the manifest, the scenario,
+the journal, `calls.jsonl`, `requests.jsonl`, and each arm's final store
+and transcripts, none of which a later step writes, and writes
+`reviewer-grades.jsonl` and `reviewer-grade-summary.json`; it appends its
+labels to `reviewer-judgments.jsonl` and its judge's calls to
+`judge-calls.jsonl`, which `grade-run` wrote before it, through the
+Bedrock profile and region of the run's config, as `grade-run`'s judge
+does. It runs on every run of the campaign: a run whose arms hold no
+change of the reviewer (a host arm, an Eidnara arm with the switch off,
+the reference arm on an earlier build) gets an empty grade file and a
+summary of zero counts, with exit 0 and no judge call. A change that ends
+without a label makes the step exit 1, which the supervisor records as a
+failed finalize step and raises as an alert; the grade file and the
+summary are written first, and a later pass of the step judges only the
+changes that still lack a label.
+
 A run name may not be `logs`, `evidence`, `campaign.log`, or
 `campaign-status.json`, start with `lease.`, or pass 200 characters. A restarted supervisor restores each run's record from
 `campaign-status.json` (refusing a file of any other shape) only while the

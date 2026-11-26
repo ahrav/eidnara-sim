@@ -298,7 +298,8 @@ such record.
 `sim-evidence-reviewer/v1`, `arms`). The table counts what the reviewer
 did; whether each written change was right is graded by
 `bun scripts/grade-reviewer.ts` (`docs/grading.md`, Grading revision 16),
-which writes `reviewer-grades.jsonl`. An arm with the switch off shows no
+which writes `reviewer-grades.jsonl` and, as counts per arm and target
+kind, `reviewer-grade-summary.json`. An arm with the switch off shows no
 review; a disputed object there comes from the agent's own `eidnara_memory`
 dispute action.
 

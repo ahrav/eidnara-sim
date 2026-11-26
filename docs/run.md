@@ -42,6 +42,13 @@ process's own lease released in place, so the directory keeps its highest
 generation and every later taker targets the next number; a released lease is
 free whichever machine released it.
 
+A finished run's graders take the same lease: `grade-run` and
+`grade-reviewer` each hold it for their pass and release it at their end.
+A campaign runs them as finalize steps, one after another, once the run's
+process has ended, so each finds the lease free; the four-step list of a
+campaign that grades the memory reviewer's changes is in
+`docs/run-command.md` (Campaign supervisor).
+
 ## Journal
 
 `Journal` opens the run directory once, checks that it is the one
