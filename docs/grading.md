@@ -1709,7 +1709,11 @@ commit superseded no row, and a completed transcript record that does not
 parse each refuse the pass. The step writes `reviewer-grades.jsonl` whole (one row per
 change, `sim-reviewer-grade/v1`) and appends new labels to
 `reviewer-judgments.jsonl` and the judge's calls to `judge-calls.jsonl`.
-It also writes `reviewer-grade-summary.json` whole (below). It writes no
+It also writes `reviewer-grade-summary.json` whole (below), in this
+order: it removes the summary of an earlier pass, installs the new grade
+file, then installs the new summary. A summary on disk therefore counts
+the rows beside it, and a pass whose second write fails leaves the new
+rows with the summary absent until the next pass writes both. It writes no
 other file of the run; a read-only open of a store in WAL
 mode can create the store's `-shm` file, as the evidence readers' opens
 do. It exits 1 when a change the revision grades has no label (the

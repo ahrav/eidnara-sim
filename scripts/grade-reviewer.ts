@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, lstatSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig, type SimConfig } from "../src/config/config";
 import { GradeRefused } from "../src/grade/artefacts";
@@ -632,11 +632,12 @@ export async function gradeReviewer(
                 tally(summary.left_automatic, row.in_force.reading);
             }
         }
+        const counts = `${JSON.stringify(summarizeGrades(rows, arms, revision, summary), null, 2)}\n`;
+        // Removing the old summary before replacing the rows keeps a summary on disk consistent
+        // with the grade file. If the summary write fails, only the grade rows remain published.
+        rmSync(join(dir, REVIEWER_GRADE_SUMMARY), { force: true });
         writeAtomic(join(dir, REVIEWER_GRADES), rows.map((r) => `${JSON.stringify(r)}\n`).join(""));
-        writeAtomic(
-            join(dir, REVIEWER_GRADE_SUMMARY),
-            `${JSON.stringify(summarizeGrades(rows, arms, revision, summary), null, 2)}\n`,
-        );
+        writeAtomic(join(dir, REVIEWER_GRADE_SUMMARY), counts);
         return summary;
     } finally {
         parts?.close();

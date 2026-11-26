@@ -354,6 +354,23 @@ describe("grading the reviewer's changes of a finished run", () => {
         expect((await gradeReviewer(dir, null, judgeSays(fair))).labels).toEqual({ R: 3, W: 1 });
     });
 
+    test("a pass whose summary write fails leaves its rows without a summary, and the next pass writes both", async () => {
+        const dir = run();
+        await gradeReviewer(dir, null, judgeSays(fair));
+        expect(existsSync(join(dir, REVIEWER_GRADE_SUMMARY))).toBe(true);
+        rmSync(join(dir, REVIEWER_GRADES));
+        // `writeAtomic` stages the summary under this name and refuses a name that exists.
+        const staging = join(dir, `${REVIEWER_GRADE_SUMMARY}.${process.pid}`);
+        writeFileSync(staging, "");
+        await expect(gradeReviewer(dir, null)).rejects.toThrow("exists or is a link");
+        expect(grades(dir)).toHaveLength(4);
+        expect(existsSync(join(dir, REVIEWER_GRADE_SUMMARY))).toBe(false);
+        rmSync(staging);
+        expect((await gradeReviewer(dir, null)).labels).toEqual({ R: 3, W: 1 });
+        const summary = JSON.parse(readFileSync(join(dir, REVIEWER_GRADE_SUMMARY), "utf8"));
+        expect(summary.pass.labels).toEqual({ R: 3, W: 1 });
+    });
+
     test("a scenario that differs from the manifest's digest, a journal of an unfinished run, and a store that is no database are each refused before anything is written", async () => {
         const changed = run();
         const scenario = JSON.parse(readFileSync(join(changed, "scenario.json"), "utf8"));
