@@ -1575,7 +1575,7 @@ The agent's build tools come from `config.toolchain`: its `bin` directories,
 each under a `keep` path, come first on the host's `PATH`, followed by the
 system directories `/usr/local/bin:/usr/bin:/bin`, the same `PATH` the
 toolchain probe and both hosts use (the probe runs `cargo`, `rustc`,
-`rustdoc`, `bun`, `python3`, which the P12 check scripts need, and `go`,
+`rustdoc`, `clippy-driver`, `bun`, `python3`, which the P12 check scripts need, and `go`,
 which the held-out chi checkout builds with; `go` comes from the system
 directories and needs no module cache, since chi imports only the standard
 library), its `keep` paths (the cargo binaries, registry, and
@@ -1596,7 +1596,7 @@ writable workspace can fetch, and preflight records the distortion in those
 terms.
 
 Every process the host starts inherits the interposer. rustc 1.99 hangs at
-startup under libfaketime 0.9.10: in the first two-arm witness run
+startup under upstream libfaketime 0.9.10: in the first two-arm witness run
 (`witness-5`, 2026-10-16), the agent's `cargo test` sat in `rustc -vV` until
 Pi's 600 s tool timeout, and `LD_PRELOAD=libfaketime.so.1 rustc -vV` hangs
 outside the sandbox too. Each
@@ -1605,10 +1605,22 @@ therefore runs through a wrapper
 in `<run>/toolbin` that drops the preload, and `RUSTC` and `RUSTDOC` point
 cargo at the wrappers, since rustup puts its own toolchain directory first on
 cargo's `PATH`. Those tools read wall-clock time, and preflight records that
-distortion. Preflight writes the wrappers, then runs `cargo --version`,
-`"${RUSTC:-rustc}" -vV`, `"${RUSTDOC:-rustdoc}" --version`, and `bun --version` under the interposer through the
+distortion. `cargo clippy` starts `clippy-driver` from the directory of
+cargo-clippy for each workspace crate, with the interposer in its
+environment; clippy-driver links the same allocator as rustc, and through
+the S3, S4, S5, and c8 campaigns it hung the same way, so a turn that ran
+`cargo clippy` ended at a tool timeout or at its 900 s deadline. The
+interposer the harness builds carries a patch for the cause
+(`docs/time.md`, Calls ahead of the library's constructor): rustc, rustdoc,
+and clippy-driver start under it, and clippy-driver reads scenario time. The
+configured wrappers stay in use, so rustc and rustdoc read wall-clock time as
+they did in the earlier campaigns.
+Preflight writes the wrappers, then runs `cargo --version`,
+`"${RUSTC:-rustc}" -vV`, `"${RUSTDOC:-rustdoc}" --version`,
+`clippy-driver --version`, and `bun --version` under the interposer through the
 launcher, so the rustc check goes through the same wrapper cargo uses (or
-`rustc` on `PATH` when no wrapper is configured), and
+`rustc` on `PATH` when no wrapper is configured), the clippy check starts
+the driver under the interposer as `cargo clippy` does, and preflight
 records each version line, which must name the tool's version (`rustdoc
 --version` runs too, through its wrapper); a tool that
 fails, prints no version, or runs past 60 s has its tree

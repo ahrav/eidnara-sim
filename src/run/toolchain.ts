@@ -13,11 +13,16 @@ export interface ToolchainProbe {
     version: string;
 }
 
-/** `RUSTC` names a wall-clock wrapper only when the config asks for one; cargo falls back the same way. */
+/**
+ * `RUSTC` names a wall-clock wrapper only when the config asks for one; cargo falls back the same
+ * way. `clippy-driver` starts under the interposer, the way `cargo clippy` starts it beside
+ * cargo-clippy for each workspace crate.
+ */
 export const TOOLCHAIN_PROBES: [string, string][] = [
     ["cargo", "exec cargo --version"],
     ["rustc", 'exec "${RUSTC:-rustc}" -vV'],
     ["rustdoc", 'exec "${RUSTDOC:-rustdoc}" --version'],
+    ["clippy-driver", "exec clippy-driver --version"],
     ["bun", "exec bun --version"],
     ["python3", "exec python3 --version"],
     ["go", "exec go version"],
@@ -105,6 +110,7 @@ const VERSION: Record<string, RegExp> = {
     cargo: /^cargo \d+\.\d+/,
     rustc: /^rustc \d+\.\d+/,
     rustdoc: /^rustdoc \d+\.\d+/,
+    "clippy-driver": /^clippy \d+\.\d+/,
     bun: /^\d+\.\d+\.\d+/,
     python3: /^Python 3\.\d+/,
     go: /^go version go1\.\d+/,

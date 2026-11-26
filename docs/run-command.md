@@ -49,7 +49,8 @@ descends from it, and no path in `MEASUREMENT_PATHS` (`src/run/run.ts`: the
 pre-registration and its schema, the scenario compiler and corpus, the
 user-sim, the seeded generator, the oracle note, the host driver, arm
 profiles, workspace snapshots, and store checks, call classification, records,
-and fault injection, the clock and its injection, and the resource sampler)
+and fault injection, the clock, its injection, and the interposer's patch
+under `vendor/patches`, and the resource sampler)
 differs between them; every link of a recorded `sim_revisions` chain is
 checked again on each resume, since the field lies outside the execution
 digest, and a checkout back at an earlier revision counts as a move; every

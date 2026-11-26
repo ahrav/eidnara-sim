@@ -1,0 +1,109 @@
+--- a/src/libfaketime.c
++++ b/src/libfaketime.c
+@@ -2252,6 +2252,37 @@
+   return result;
+ }
+ 
++/*
++ * The direct system call serves LP64 Linux builds whose syscall() is the C library's own.
++ */
++#if defined(__linux__) && defined(__LP64__) && !defined(INTERCEPT_SYSCALL)
++#define FT_EARLY_MONOTONIC_READ
++#include <sys/syscall.h>
++
++/*
++ * Under FAKETIME_DONT_FAKE_MONOTONIC=1 a monotonic-family clock is the kernel's clock at
++ * every call, before and after ftpl_init().
++ */
++static bool ft_clock_stays_real(clockid_t clk_id)
++{
++  int fake = fake_monotonic_clock;
++
++  if (clk_id != CLOCK_MONOTONIC && clk_id != CLOCK_MONOTONIC_RAW
++#ifdef CLOCK_MONOTONIC_COARSE
++      && clk_id != CLOCK_MONOTONIC_COARSE
++#endif
++#ifdef CLOCK_BOOTTIME
++      && clk_id != CLOCK_BOOTTIME
++#endif
++      )
++  {
++    return false;
++  }
++  get_fake_monotonic_setting(&fake);
++  return !fake;
++}
++#endif
++
+ #ifdef MACOS_DYLD_INTERPOSE
+ int macos_clock_gettime(clockid_t clk_id, struct timespec *tp)
+ #else
+@@ -2261,6 +2292,21 @@
+   int result;
+   static int recursion_depth = 0;
+ 
++#ifdef FT_EARLY_MONOTONIC_READ
++  /*
++   * An allocator that reads a monotonic clock while it initializes (jemalloc's arena setup in
++   * rustc, rustdoc, and clippy-driver) calls in here ahead of this library's constructor, on
++   * the thread that holds the allocator's initialization lock. ftpl_init() allocates, so the
++   * kernel answers this read through a system call, which is allocation-free, and the
++   * constructor runs ftpl_init() afterwards. The value is the one the initialized library
++   * returns for the same clock.
++   */
++  if (!initialized && ft_clock_stays_real(clk_id))
++  {
++    return (int) syscall(SYS_clock_gettime, clk_id, tp);
++  }
++#endif
++
+   if (!initialized)
+   {
+     recursion_depth++;
+@@ -3520,6 +3566,20 @@
+   clockid_t clock_id;
+   int result;
+ 
++  /*
++   * A condition variable with default attributes waits on CLOCK_REALTIME and has no entry in
++   * monotonic_conds, and POSIX defines its initialization as equal to the static initializer.
++   * An allocator that creates one while it initializes (jemalloc's background-thread setup)
++   * calls in here ahead of this library's constructor, on the thread that holds the
++   * allocator's initialization lock. ftpl_init() allocates, so the static initializer serves
++   * this call, and the constructor runs ftpl_init() afterwards.
++   */
++  if (!initialized && attr == NULL)
++  {
++    *cond = (pthread_cond_t) PTHREAD_COND_INITIALIZER;
++    return 0;
++  }
++
+   if (!initialized)
+   {
+     ftpl_init();
+@@ -3551,6 +3611,12 @@
+ {
+   struct pthread_cond_monotonic* e;
+ 
++  /* A variable created ahead of the constructor reaches the C library's function from here. */
++  if (!initialized)
++  {
++    ftpl_init();
++  }
++
+   if (pthread_rwlock_wrlock(&monotonic_conds_lock) != 0) {
+     fprintf(stderr,"can't acquire write monotonic_conds_lock\n");
+     exit(-1);
+@@ -3633,6 +3699,12 @@
+   clockid_t clk_id;
+   int result = 0;
+ 
++  /* A variable created ahead of the constructor reaches the C library's function from here. */
++  if (!initialized)
++  {
++    ftpl_init();
++  }
++
+   if (abstime != NULL)
+   {
+     if (pthread_rwlock_rdlock(&monotonic_conds_lock) != 0) {
