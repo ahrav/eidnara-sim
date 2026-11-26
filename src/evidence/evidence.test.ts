@@ -40,9 +40,12 @@ import { armAnswers, armComparison, renderEvidence } from "./report";
 import {
     blockMarks,
     bodyText,
+    CONSUMER_BEHIND_NOTE,
     carriesLiteral,
     findGroups,
     injectedBlocks,
+    LAG_ERROR,
+    NO_CONSUMER_NOTE,
     PROJECT_MEMORY_NOTE,
     type ProbeEvidence,
     partText,
@@ -477,6 +480,44 @@ describe("evidence stages on a memory arm", () => {
         ]);
     });
 
+    test("a search read from the canonical tip while a consumer lagged is an answered search that records its note, and the lag error records itself", () => {
+        const scan =
+            "Memory: the fused search route is unavailable (disabled); results come from the legacy snapshot scan.";
+        const answered = `${scan}\n${CONSUMER_BEHIND_NOTE}\n\nFound 1 result for "error tag":\n\n[1] [memory] error strings use TAG_X`;
+        const p = evidence(
+            build({ calls: [SOURCE_READ, CAPTURED, searchTurn(answered)], objects: [STORED] }),
+        );
+        // The result is evidence of what the search found, as any answered result is.
+        expect(stage(p, "retrieval")?.status).toBe("ok");
+        expect(p.probe_time.searches).toEqual([
+            expect.objectContaining({
+                tool: "eidnara_search",
+                route: "legacy-scan",
+                fallback: "disabled",
+                tip_note: "consumer_behind",
+                delivered: true,
+            }),
+        ]);
+        const refused = evidence(
+            build({ calls: [SOURCE_READ, CAPTURED, searchTurn(LAG_ERROR)], objects: [STORED] }),
+        );
+        expect(refused.attributed).toMatchObject({ cause: "retrieval", status: "failed" });
+        expect(refused.probe_time.searches).toEqual([
+            expect.objectContaining({ route: "errored", lag_error: true }),
+        ]);
+        // A result without a note names none.
+        const plain = evidence(
+            build({
+                calls: [SOURCE_READ, CAPTURED, searchTurn(`${scan}\n\n1. TAG_X`)],
+                objects: [STORED],
+            }),
+        );
+        const [unmarked] = plain.probe_time.searches as Record<string, unknown>[];
+        expect(unmarked).toMatchObject({ route: "legacy-scan", fallback: "disabled" });
+        expect(unmarked).not.toHaveProperty("tip_note");
+        expect(unmarked).not.toHaveProperty("lag_error");
+    });
+
     test("a result the tool returned but the request never carried fails delivery", () => {
         const transcripts = new Map([
             [
@@ -665,6 +706,27 @@ describe("evidence stages on a memory arm", () => {
         );
         expect(stage(p, "retrieval")?.status).toBe("failed");
         expect(p.probe_time.searches).toEqual([expect.objectContaining({ route: "errored" })]);
+        // For request-body results, `searchRoute` recognizes an `Error:` prefix after the daemon's
+        // `§9§` block tag when the error flag is false.
+        const tagged = (text: string) =>
+            evidence(
+                build({
+                    calls: [SOURCE_READ, CAPTURED, searchTurn(`\u00a79\u00a7 ${text}`)],
+                    objects: [STORED],
+                }),
+            );
+        const echoed = tagged("Error: search for TAG_X failed");
+        expect(stage(echoed, "retrieval")?.status).toBe("failed");
+        expect(echoed.probe_time.searches).toEqual([
+            expect.objectContaining({ route: "errored", returned_from: "request" }),
+        ]);
+        expect(tagged(LAG_ERROR).probe_time.searches).toEqual([
+            expect.objectContaining({
+                route: "errored",
+                lag_error: true,
+                returned_from: "request",
+            }),
+        ]);
     });
 
     test("without the probe's BeginTurn the timed stages are unobserved", () => {
@@ -1277,6 +1339,87 @@ test("request text, injected blocks, and search routes read as documented", () =
     expect(searchRoute("1. hit", false)).toEqual({ route: "fused" });
 });
 
+test("a search result's freshness note is read among its opening notes, and the lag error as a whole result", () => {
+    // The plugin's texts at eval/wM (`eidnara-search/execute.ts` 307, 341, 344, and 303;
+    // `shared/kernel-client/state.ts` 89 and 107), as the stages module holds them.
+    expect(CONSUMER_BEHIND_NOTE).toBe(
+        "Memory: a search consumer is behind recent changes. These results are read from the canonical tip and include them.",
+    );
+    expect(NO_CONSUMER_NOTE).toBe(
+        "Memory: Memory freshness cannot be judged because no consumer is registered. Results are read from the canonical tip.",
+    );
+    expect(LAG_ERROR).toBe(
+        "Error: Memory results may lag recent changes; the projector has not caught up.",
+    );
+    const scan =
+        "Memory: the fused search route is unavailable (disabled); results come from the legacy snapshot scan.";
+    const found = 'Found 1 result for "deploy":\n\n[1] [memory] x';
+    const legacy = { route: "legacy-scan", fallback: "disabled" };
+    // The result of a reviewer-off search on every build since eval/w2, as S5 recorded it.
+    expect(searchRoute(`${scan}\n${NO_CONSUMER_NOTE}\n\n${found}`, false)).toEqual({
+        ...legacy,
+        tip_note: "no_consumer",
+    });
+    expect(searchRoute(`${scan}\n${CONSUMER_BEHIND_NOTE}\n\n${found}`, false)).toEqual({
+        ...legacy,
+        tip_note: "consumer_behind",
+    });
+    // A request body carries the daemon's block tag ahead of the tool output.
+    expect(
+        searchRoute(`\u00a74\u00a7 ${scan}\n${CONSUMER_BEHIND_NOTE}\n\n${found}`, false),
+    ).toEqual({
+        ...legacy,
+        tip_note: "consumer_behind",
+    });
+    // The note alone, with the notes as the whole text.
+    expect(searchRoute(`${scan}\n${CONSUMER_BEHIND_NOTE}`, false)).toEqual({
+        ...legacy,
+        tip_note: "consumer_behind",
+    });
+    // A note past the first empty line belongs to a memory or a query, and a longer line is another line.
+    expect(searchRoute(`${scan}\n\n${found}\n${CONSUMER_BEHIND_NOTE}`, false)).toEqual(legacy);
+    expect(searchRoute(`${scan}\n${CONSUMER_BEHIND_NOTE} More.\n\n${found}`, false)).toEqual(
+        legacy,
+    );
+    expect(searchRoute(`${scan}\n  ${NO_CONSUMER_NOTE}\n\n${found}`, false)).toEqual(legacy);
+    // A ranked answer opens with its header, so a query that quotes a note names none.
+    expect(
+        searchRoute(`Found 1 result for "x\n${CONSUMER_BEHIND_NOTE}\n":\n\n[1] [memory] x`, false),
+    ).toEqual({ route: "fused" });
+    // A ranked answer whose notes hold the note carries it under its own route.
+    expect(
+        searchRoute(
+            `Memory: the fused ranking was truncated at the route's result bound.\n${CONSUMER_BEHIND_NOTE}\n\n${found}`,
+            false,
+        ),
+    ).toEqual({ route: "fused", tip_note: "consumer_behind" });
+    // The lag error is the whole result, in a transcript and behind a block tag; Pi marks it as no error.
+    expect(searchRoute(LAG_ERROR, false)).toEqual({ route: "errored", lag_error: true });
+    expect(searchRoute(`\u00a79\u00a7 ${LAG_ERROR}\n`, true)).toEqual({
+        route: "errored",
+        lag_error: true,
+    });
+    expect(searchRoute(`\u00a79\u00a7 ${LAG_ERROR}`, false)).toEqual({
+        route: "errored",
+        lag_error: true,
+    });
+    expect(searchRoute("\u00a79\u00a7 Error: no store", false)).toEqual({ route: "errored" });
+    expect(searchRoute("\u00a79\u00a7 1. Error handling uses TAG_X", false)).toEqual({
+        route: "fused",
+    });
+    expect(searchRoute(`${LAG_ERROR} Retry.`, false)).toEqual({ route: "errored" });
+    expect(
+        searchRoute(
+            "Error: Memory is unavailable because the store is busy; the next natural request re-probes.",
+            false,
+        ),
+    ).toEqual({ route: "errored" });
+    // An errored result names no note, whatever it quotes.
+    expect(searchRoute(`Error: refused\n${CONSUMER_BEHIND_NOTE}`, true)).toEqual({
+        route: "errored",
+    });
+});
+
 test("evidence-run reads a run directory and writes only under --out", () => {
     const root = mkdtempSync(join(tmpdir(), "sim-evidence-"));
     const dir = join(root, "run");
@@ -1456,9 +1599,18 @@ test("evidence-run reads a run directory and writes only under --out", () => {
         drains: { calls: 1, settled_runs: 2, total_wall_ms: 2_500, errors: 0 },
         calls: { memory_reviewer_stage1: 1, memory_reviewer_stage2: 0 },
         status: null,
+        // The arm directory holds no transcript, so the arm's searches read as none.
+        search: {
+            legacy_scan: [],
+            fused: 0,
+            errored: 0,
+            contested: 0,
+            tip_notes: { consumer_behind: 0, no_consumer: 0 },
+            errored_lag: 0,
+        },
     });
     expect(report).toContain(
-        `| run | eidnara | off | later_statement 1 | 0 | chat_model: 0 keep, 1 flagged (${haiku}) | 0 | 0 | 0 | disputed 1 | 0 left for a reader, 0 unapplied | 0 | 1 steps (1 at session ends, 0 before clock advances), 2 runs settled, 2.5 s in all, 2.5 s the longest, 0 with an error | 0 | memory_reviewer_stage1 1 | no reading |`,
+        `| run | eidnara | off | later_statement 1 | 0 | 0 quota lines; projects at quota: no reading | 0 | chat_model: 0 keep, 1 flagged (${haiku}) | 0 | 0 | 0 | disputed 1 | 0 left for a reader, 0 unapplied | 0 | 1 steps (1 at session ends, 0 before clock advances), 2 runs settled, 2.5 s in all, 2.5 s the longest, 0 with an error | 0 | memory_reviewer_stage1 1 | no reading |`,
     );
     expect(report).toContain("| run | eidnara | q-1 | P1 | fail |");
     // The loaded records hold each request's digest and length; the log supplies the part ids.
@@ -1604,7 +1756,7 @@ test("the report counts a fused arm's degraded search answers from its capabilit
     const rows = (report: string) => {
         const lines = report.split("\n");
         const at = lines.indexOf("### Search route answers");
-        return lines.slice(at + 6, lines.indexOf("### Memory reviewer", at) - 1);
+        return lines.slice(at + 6, lines.indexOf("### Explicit search answers", at) - 1);
     };
     const results = (legacy_scan: string[], fused = 42) => ({ legacy_scan, fused, errored: 2 });
     expect(
@@ -1907,6 +2059,123 @@ describe("the statements of a <project-memory> block", () => {
     });
 });
 
+test("an arm whose runtime root is a link has its search transcripts refused", () => {
+    const root = mkdtempSync(join(tmpdir(), "sim-evidence-search-"));
+    try {
+        const sessions = join(root, "elsewhere", "home", ".pi", "agent", "sessions", "--ws--");
+        mkdirSync(sessions, { recursive: true });
+        writeFileSync(
+            join(sessions, "2026_sim-s-0000.jsonl"),
+            JSON.stringify({
+                type: "message",
+                message: {
+                    role: "toolResult",
+                    toolName: "eidnara_search",
+                    content: [
+                        { type: "text", text: 'Found 1 result for "deploy":\n\n[1] [memory] x' },
+                    ],
+                },
+            }),
+        );
+        const arm = join(root, "eidnara");
+        mkdirSync(arm);
+        symlinkSync(join(root, "elsewhere"), join(arm, "r"));
+        expect(() => reviewerEvidence(arm, { plugin: true }, {})).toThrow(
+            `${join(arm, "r")} is a link or not a directory; transcripts need a real one`,
+        );
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("the report lists every arm's explicit search answers by route, freshness note, and lag error", () => {
+    const root = mkdtempSync(join(tmpdir(), "sim-evidence-search-"));
+    try {
+        const scan =
+            "Memory: the fused search route is unavailable (disabled); results come from the legacy snapshot scan.";
+        const found = 'Found 1 result for "deploy":\n\n[1] [memory] x';
+        const armWith = (name: string, results: string[]) => {
+            const sessions = join(root, name, "r", "home", ".pi", "agent", "sessions", "--ws--");
+            mkdirSync(sessions, { recursive: true });
+            writeFileSync(
+                join(sessions, "2026_sim-s-0000.jsonl"),
+                results
+                    .map((text) =>
+                        JSON.stringify({
+                            type: "message",
+                            message: {
+                                role: "toolResult",
+                                toolName: "eidnara_search",
+                                content: [{ type: "text", text }],
+                            },
+                        }),
+                    )
+                    .join("\n"),
+            );
+            return join(root, name);
+        };
+        const reviewer = reviewerEvidence(
+            armWith("eidnara-reviewer", [
+                `${scan}\n${CONSUMER_BEHIND_NOTE}\n\n${found}`,
+                `${scan}\n${CONSUMER_BEHIND_NOTE}\n\n${found}`,
+                `${scan}\n${NO_CONSUMER_NOTE}\n\n${found}`,
+                `${scan}\n\n${found}`,
+                LAG_ERROR,
+            ]),
+            { plugin: true, memory_reviewer: true },
+            {},
+        );
+        expect(reviewer.search).toEqual({
+            legacy_scan: ["disabled", "disabled", "disabled", "disabled"],
+            fused: 0,
+            errored: 1,
+            contested: 0,
+            tip_notes: { consumer_behind: 2, no_consumer: 1 },
+            errored_lag: 1,
+        });
+        const plain = reviewerEvidence(
+            armWith("eidnara", [`${scan}\n${NO_CONSUMER_NOTE}\n\n${found}`]),
+            { plugin: true },
+            {},
+        );
+        // A host whose transcripts hold no such record reads as unread, and an arm without a search has no row.
+        const other = reviewerEvidence(
+            join(root, "eidnara-reviewer"),
+            { plugin: true },
+            {},
+            "opencode",
+        );
+        expect(other.search).toBeNull();
+        const silent = reviewerEvidence(join(root, "absent"), { plugin: false }, {});
+        const run = (name: string, armName: string, evidence: ArmData["reviewer"]) => {
+            const r = build({ arm: armName });
+            (r.arms.get(armName) as ArmData).reviewer = evidence;
+            return { name, run: r, probes: [], sessions: [] };
+        };
+        // Evidence written before the notes were read holds the route counts alone.
+        const {
+            tip_notes: _notes,
+            errored_lag: _lag,
+            ...counts
+        } = plain.search as NonNullable<typeof plain.search>;
+        const report = renderEvidence([
+            run("A", "eidnara-reviewer", reviewer),
+            run("B", "eidnara", plain),
+            run("C", "eidnara", other),
+            run("D", "host", silent),
+            run("E", "eidnara", { ...plain, search: counts }),
+        ]).split("\n");
+        const at = report.indexOf("### Explicit search answers");
+        expect(report.slice(at + 6, report.indexOf("### Memory reviewer", at) - 1)).toEqual([
+            "| A | eidnara-reviewer | 5 | 4 (disabled) | 0 | 2 | 1 | 1 | 1 | 20.0% |",
+            "| B | eidnara | 1 | 1 (disabled) | 0 | 0 | 1 | 0 | 0 | 0.0% |",
+            "| E | eidnara | 1 | 1 (disabled) | 0 | unread | unread | 0 | unread | 0.0% |",
+        ]);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test("the report's reviewer section renders each arm's log, settle steps, gateway calls, and status", () => {
     const root = mkdtempSync(join(tmpdir(), "sim-evidence-reviewer-"));
     try {
@@ -2019,6 +2288,46 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
             (r.arms.get(armName) as ArmData).reviewer = reviewer;
             return { name, run: r, probes: [], sessions: [] };
         };
+        // A reviewer arm on eval/wM: its `enqueued` lines name the delivery group
+        // (`memory_reviewer/review_cycle.rs` 1069), a project reached its review-metadata quota
+        // (1046), a `revise` of an assistant report wrote nothing (`worker.rs` 898), and the
+        // status block carries the count of projects at the quota (`memory-store/src/lib.rs` 778).
+        const wm = join(root, "wm");
+        mkdirSync(wm);
+        writeFileSync(
+            join(wm, "daemon.log"),
+            [
+                "daemon: memory_reviewer enqueued job=1e272ec4862b8c69 trigger=later_statement later=1 source=1 delivery=automatic",
+                "daemon: memory_reviewer enqueued job=27db22ce85452690 trigger=later_statement later=1 source=1 delivery=automatic",
+                "daemon: memory_reviewer enqueued job=88e03198394a9259 trigger=later_message later=2 source=0 delivery=search",
+                "daemon: memory_reviewer selection queues no new review for a project: the store's review metadata quota refused the reservation (67108864 bytes a project, 268435456 a host)",
+                "daemon: memory_reviewer applied a proposal: job=88e03198394a9259 standing",
+                "",
+            ].join("\n"),
+        );
+        const counted = (atQuota: number) =>
+            JSON.stringify({
+                pid: 7,
+                daemon_status: {
+                    pid: 7,
+                    start: "1",
+                    process_memory: null,
+                    memory_reviewer: {
+                        activation_state: "open",
+                        projects_at_metadata_quota: atQuota,
+                    },
+                    search: null,
+                    error: null,
+                },
+            });
+        writeFileSync(join(wm, "resources.jsonl"), `${[0, 2, 1].map(counted).join("\n")}\n`);
+        const delivered = reviewerEvidence(wm, { plugin: true, memory_reviewer: true }, {});
+        // The same arm as evidence written before the two counts existed.
+        const {
+            enqueued_by_delivery: _groups,
+            quota_refused: _quota,
+            ...earlierLog
+        } = delivered.log;
         const quiet = reviewerEvidence(join(root, "absent"), { plugin: true }, {});
         const withStore = {
             ...quiet,
@@ -2042,13 +2351,34 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
                     },
                 ),
             ),
+            run("F", "eidnara-reviewer", delivered),
+            run("G", "eidnara-reviewer", { ...delivered, log: earlierLog }),
         ]).split("\n");
         const at = report.indexOf("### Memory reviewer");
         expect(report.slice(at + 6, report.indexOf("### Context health", at) - 1)).toEqual([
-            `| A | eidnara-reviewer | on | current_work 1, later_statement 1 | 1 | chat_model: 0 keep, 1 flagged (${haiku}); none: 1 keep, 0 flagged (none) | 1 | fenced 1 | 0 | contested 1 | 0 left for a reader, 0 unapplied | 0 | 3 steps (2 at session ends, 1 before clock advances), 3 runs settled, 5.0 s in all, 6.0 s the longest, 1 with an error, 1 drains answered after their step | 2, oldest unconsumed commit 543.7 s at most | memory_reviewer_stage1 1, memory_reviewer_stage2 1 | open in 1 of 2 readings, last open | unread | unread |`,
-            "| B | eidnara | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | 0 | no reading | 2 live, 1 retired | 0 live, 0 retired |",
-            "| D | host | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | memory_reviewer_stage1 3 | no reading | unread | unread |",
+            `| A | eidnara-reviewer | on | current_work 1, later_statement 1 | 0 | 0 quota lines; projects at quota: no reading | 1 | chat_model: 0 keep, 1 flagged (${haiku}); none: 1 keep, 0 flagged (none) | 1 | fenced 1 | 0 | contested 1 | 0 left for a reader, 0 unapplied | 0 | 3 steps (2 at session ends, 1 before clock advances), 3 runs settled, 5.0 s in all, 6.0 s the longest, 1 with an error, 1 drains answered after their step | 2, oldest unconsumed commit 543.7 s at most | memory_reviewer_stage1 1, memory_reviewer_stage2 1 | open in 1 of 2 readings, last open | unread | unread |`,
+            "| B | eidnara | off | 0 | 0 | 0 quota lines; projects at quota: no reading | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | 0 | no reading | 2 live, 1 retired | 0 live, 0 retired |",
+            "| D | host | off | 0 | 0 | 0 quota lines; projects at quota: no reading | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | memory_reviewer_stage1 3 | no reading | unread | unread |",
+            "| F | eidnara-reviewer | on | later_statement 2, later_message 1 | automatic 2, search 1 | 1 quota lines; projects at quota: last 1, largest 2, above zero in 2 of 3 readings | 0 | 0 | 0 | 0 | 0 | standing 1 | 0 left for a reader, 0 unapplied | 0 | none | 0 | 0 | open in 3 of 3 readings, last open | unread | unread |",
+            "| G | eidnara-reviewer | on | later_statement 2, later_message 1 | unread | unread | 0 | 0 | 0 | 0 | 0 | standing 1 | 0 left for a reader, 0 unapplied | 0 | none | 0 | 0 | open in 3 of 3 readings, last open | unread | unread |",
         ]);
+        // The record evidence-reviewer.json holds for the arm carries the same counts.
+        expect(delivered).toMatchObject({
+            log: {
+                enqueued: { later_statement: 2, later_message: 1 },
+                enqueued_by_delivery: { automatic: 2, search: 1 },
+                quota_refused: 1,
+                applied: { standing: 1 },
+            },
+            status: {
+                readings: 3,
+                open: 3,
+                metadata_quota: { readings: 3, last: 1, max: 2, above_zero: 2 },
+            },
+        });
+        // The eval/w9 arm above reports neither a delivery group nor the counter.
+        expect(seen.log.enqueued_by_delivery).toEqual({ automatic: 0, search: 0 });
+        expect(seen.status).not.toHaveProperty("metadata_quota");
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

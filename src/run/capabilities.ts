@@ -78,6 +78,20 @@ export interface ArmObservation {
         errored: number;
         /** Results holding a `Contested by` line; absent on observations recorded before it was read. */
         contested?: number;
+        /**
+         * Answered results by the freshness note they open with (`searchRoute`):
+         * `consumer_behind`, a result read from the canonical tip while a consumer a search
+         * serves from lagged, and `no_consumer`, a result read from the tip on a host with no
+         * such consumer. Each is counted under its route as well. Absent on observations
+         * recorded before the notes were read.
+         */
+        tip_notes?: { consumer_behind: number; no_consumer: number };
+        /**
+         * Of `errored`, the results whose text is the lag error (`LAG_ERROR`): a gated read that
+         * answered `stale` on a build that repeats no read, or in a state the build's repeated
+         * read leaves an error. Absent on observations recorded before it was read.
+         */
+        errored_lag?: number;
     } | null;
     /** Proxy call records of the arm, by component. */
     components: Record<string, number>;
@@ -115,6 +129,19 @@ export interface Stage1Count {
 export interface ReviewerLogObservation {
     /** `enqueued job=` lines by trigger (`contested`, `current_work`, `later_statement`, `later_message`): one review job each. */
     enqueued: Record<string, number>;
+    /**
+     * The `enqueued job=` lines that end with a `delivery` field, by its value: `automatic` for
+     * a memory of the delivered block, `search` for one served on explicit search alone (Eidnara
+     * `memory_reviewer/review_cycle.rs`, from `eval/wM` on). A line without the field is counted
+     * under its trigger alone. Absent on observations recorded before the field was read.
+     */
+    enqueued_by_delivery?: Record<string, number>;
+    /**
+     * `selection queues no new review for a project` lines: a project whose reservation the
+     * store's review-metadata quota refused, logged once per project and daemon process. Absent
+     * on observations recorded before it was read.
+     */
+    quota_refused?: number;
     /** `selected <n> of <m> memories for review` lines: one selection pass each. */
     selections: number;
     /** `stage 1 job=` lines by decider (`chat_model`, `classifier`, and `none` for a decision the host made without a request). */
@@ -213,7 +240,8 @@ export function reviewLines(log: ReviewerLogObservation): number {
         log.unapplied +
         log.stage1_default_failed +
         sum(log.waits) +
-        sum(log.unsettled ?? {})
+        sum(log.unsettled ?? {}) +
+        (log.quota_refused ?? 0)
     );
 }
 
@@ -224,7 +252,20 @@ const DERIVED_LAG_AGE = /(?:^| )oldest_unconsumed_age_ms=(\d+)(?: |$)/;
 const STAGE1_DECISION =
     /^stage 1 job=\S+ decider=(\S+) model=(\S+) request=\S+ decision=(\S+)(?: |$)/;
 const APPLIED_PROPOSAL = /^applied a proposal: job=\S+ (\S+)$/;
-const ENQUEUED_JOB = /^enqueued job=\S+ trigger=(\S+) later=\d+ source=\d+$/;
+/**
+ * An `enqueued` line: it ends at its `source=` field on `eval/w9` and names the delivery group
+ * after it from `eval/wM` on (Eidnara `memory_reviewer/review_cycle.rs`).
+ */
+const ENQUEUED_JOB = /^enqueued job=\S+ trigger=(\S+) later=\d+ source=\d+(?: delivery=(\S+))?$/;
+/**
+ * The line a selection writes once per project whose store holds more claim descriptors than one
+ * walk examines, in the `eval/w9` wording and in the `eval/wM` wording.
+ */
+const SELECTION_RESUMED =
+    /^selection examines (?:at most )?\d+ claim descriptors a pass(?:, fewer where its statements share many terms,)? and the store holds more; /;
+/** The line a selection writes once per project and daemon process when the store's review-metadata quota refuses a reservation. */
+const QUOTA_REFUSED =
+    "selection queues no new review for a project: the store's review metadata quota refused the reservation (";
 const UNSETTLED_RUN = /^run ended without settlement: (\S+)/;
 /** The models one decider's tally keeps by name. */
 const STAGE1_MODELS = 8;
@@ -240,6 +281,8 @@ export function readReviewerLog(path: string): ReviewerLogObservation {
     const decider = (): Stage1Count => ({ keep: 0, flagged: 0, other: 0, models: [] });
     const out: ReviewerLogObservation = {
         enqueued: tally("contested", "current_work", "later_statement", "later_message"),
+        enqueued_by_delivery: tally("automatic", "search"),
+        quota_refused: 0,
         selections: 0,
         stage1: Object.assign(Object.create(null), {
             chat_model: decider(),
@@ -276,6 +319,7 @@ export function readReviewerLog(path: string): ReviewerLogObservation {
         derived_lag: { lines: 0, max_age_ms: 0 },
     };
     const ended = out.unsettled as Record<string, number>;
+    const byDelivery = out.enqueued_by_delivery as Record<string, number>;
     const lag = out.derived_lag as { lines: number; max_age_ms: number };
     eachLine(path, (line) => {
         if (line.startsWith(DERIVED_LAG_PREFIX)) {
@@ -293,6 +337,8 @@ export function readReviewerLog(path: string): ReviewerLogObservation {
         if (enqueued) {
             const trigger = enqueued[1] as string;
             out.enqueued[trigger] = (out.enqueued[trigger] ?? 0) + 1;
+            const delivery = enqueued[2];
+            if (delivery !== undefined) byDelivery[delivery] = (byDelivery[delivery] ?? 0) + 1;
         } else if (/^selected \d+ of \d+ memories for review: /.test(rest)) {
             out.selections++;
         } else if (decision) {
@@ -324,10 +370,10 @@ export function readReviewerLog(path: string): ReviewerLogObservation {
             out.waits.hold_bound++;
         } else if (rest.startsWith("kept the review hold of a settled proposal: ")) {
             out.waits.kept_hold++;
-        } else if (
-            /^selection examines \d+ claim descriptors a pass and the store holds more; /.test(rest)
-        ) {
+        } else if (SELECTION_RESUMED.test(rest)) {
             out.waits.selection_resumed++;
+        } else if (rest.startsWith(QUOTA_REFUSED)) {
+            out.quota_refused = (out.quota_refused ?? 0) + 1;
         } else if (unsettled) {
             const reason = unsettled[1] as string;
             ended[reason] = (ended[reason] ?? 0) + 1;
@@ -713,6 +759,14 @@ export interface ReviewerStatusObservation {
      * reading: a replacement daemon reads `missing` until a session binds its project again.
      */
     last_after_open: boolean;
+    /**
+     * The block's `projects_at_metadata_quota` over the readings that report it: how many do,
+     * the last reading's count, the largest count, and the readings whose count is above zero.
+     * A project counts while its review metadata leaves less room than one job under the
+     * per-project quota, so the reviewer queues no new review for it. Absent when no reading
+     * reports the counter, as on a build before `eval/wM`.
+     */
+    metadata_quota?: { readings: number; last: number; max: number; above_zero: number };
 }
 
 /**
@@ -1297,7 +1351,14 @@ export function readPluginLog(
  * walk enters only real subdirectories; an absent directory holds no results.
  */
 export function readPiSearches(root: string, rel: string): NonNullable<ArmObservation["search"]> {
-    const search = { legacy_scan: [] as string[], fused: 0, errored: 0, contested: 0 };
+    const search = {
+        legacy_scan: [] as string[],
+        fused: 0,
+        errored: 0,
+        contested: 0,
+        tip_notes: { consumer_behind: 0, no_consumer: 0 },
+        errored_lag: 0,
+    };
     let sessionsDir = root;
     for (const part of rel.split("/")) {
         sessionsDir = join(sessionsDir, part);
@@ -1344,10 +1405,13 @@ export function readPiSearches(root: string, rel: string): NonNullable<ArmObserv
                 // The plugin opens every legacy-scan answer with the fallback note and no answer
                 // the fused route ranked; a refusal is an error result.
                 if (/^Contested by /m.test(text)) search.contested++;
-                const { route, fallback } = searchRoute(text, m.isError === true);
+                const reading = searchRoute(text, m.isError === true);
+                const { route, fallback } = reading;
                 if (fallback !== undefined) search.legacy_scan.push(fallback);
                 else if (route === "errored") search.errored++;
                 else search.fused++;
+                if (reading.tip_note) search.tip_notes[reading.tip_note]++;
+                if (reading.lag_error) search.errored_lag++;
             });
         }
     };
@@ -1683,7 +1747,21 @@ export function readDaemonStatus(path: string): DaemonStatusObservation {
             if (anon !== null) out.max_rss_anon_bytes = Math.max(out.max_rss_anon_bytes ?? 0, anon);
             out.c_heap_releases = count(memory.c_heap_releases) ?? out.c_heap_releases;
         }
-        const state = reviewerBlock(reading.memory_reviewer)?.activation_state;
+        const block = reviewerBlock(reading.memory_reviewer);
+        const state = block?.activation_state;
+        const atQuota = block?.projects_at_metadata_quota;
+        if (atQuota !== undefined) {
+            const quota = (reviewer.metadata_quota ??= {
+                readings: 0,
+                last: 0,
+                max: 0,
+                above_zero: 0,
+            });
+            quota.readings++;
+            quota.last = atQuota;
+            quota.max = Math.max(quota.max, atQuota);
+            if (atQuota > 0) quota.above_zero++;
+        }
         if (state !== undefined) {
             const process = `${String(reading.pid)} ${String(reading.start)}`;
             reviewer.readings++;
@@ -2038,7 +2116,9 @@ export function capabilityRecord<B>(
  * status reading that reports the worker `open` each contradict the profile. On the arm with the
  * switch, on a build that declares `memory_review`, the daemon's status must carry the reviewer's
  * block and report `open`, the last reading of a daemon process that was under review must still
- * report it, and every stage-1 decision of the chat model must name the registered stage-1 model.
+ * report it, every `enqueued` line must name its delivery group on a build that declares
+ * `review_selection_by_delivery` and none on a build that lacks it, and every stage-1 decision of
+ * the chat model must name the registered stage-1 model.
  * A replacement daemon reads `missing` until a session binds its project again, so a last reading
  * of a process that never reported `open` stands.
  */
@@ -2092,6 +2172,24 @@ function reviewerMismatches(
         } else if (state.last !== "open" && state.last_after_open) {
             out.push(
                 `the last daemon status reading reports the memory reviewer ${state.last}, after the same daemon process reported it open`,
+            );
+        }
+    }
+    // A build whose selection names the delivery group names it on every job it enqueues.
+    const byDelivery = r?.log.enqueued_by_delivery;
+    if (caps && r && byDelivery) {
+        const total = (counts: Record<string, number>) =>
+            Object.values(counts).reduce((sum, n) => sum + n, 0);
+        const enqueued = total(r.log.enqueued);
+        const named = total(byDelivery);
+        if (caps.review_selection_by_delivery && named < enqueued) {
+            out.push(
+                `${enqueued - named} of ${enqueued} enqueued review jobs in daemon.log name no delivery group, which ${label} declares for every job`,
+            );
+        }
+        if (!caps.review_selection_by_delivery && named > 0) {
+            out.push(
+                `${named} enqueued review jobs in daemon.log name a delivery group, which ${label} does not declare`,
             );
         }
     }
@@ -2242,7 +2340,8 @@ export function fusedAnswerShare(search: ArmObservation["search"], unranked = 0)
  * counter, the lifetime classes of captured facts, the `<CURRENT_WORK>` element and ended work,
  * the block's closing sentence, its `<NAMED_FILES>` element, and its dated replacement mark,
  * failed-command records in the final store,
- * contested statements in the block and in search results, waiting lines outside a history
+ * contested statements in the block and in search results, the consumer-behind note of a search
+ * result, waiting lines outside a history
  * block's newest summarized segment, the `process_memory` block in the daemon's status, and the
  * lifecycle progress block on the fused route.
  */
@@ -2347,6 +2446,13 @@ function buildMismatches(
     if (!caps.contested_statements && contested > 0) {
         out.push(
             `${o.delivery?.contested_blocks ?? 0} agent requests and ${o.search?.contested ?? 0} eidnara_search results render a contested statement, which ${label} does not declare`,
+        );
+    }
+    // The lag error stands on every build: a state other than a lagging consumer can answer it.
+    const behind = o.search?.tip_notes?.consumer_behind ?? 0;
+    if (!caps.search_tip_read_while_lagging && behind > 0) {
+        out.push(
+            `${behind} eidnara_search results carry the note of a read from the canonical tip while a search consumer lagged, which ${label} does not declare`,
         );
     }
     const items = o.delivery?.open_items;

@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, lstatSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig, type SimConfig } from "../src/config/config";
 import { GradeRefused } from "../src/grade/artefacts";
@@ -66,6 +66,15 @@ import { scenarioHash } from "../src/scenario/compile";
 export const REVIEWER_JUDGMENTS = "reviewer-judgments.jsonl";
 export const REVIEWER_GRADES = "reviewer-grades.jsonl";
 export const REVIEWER_GRADE_SCHEMA = "sim-reviewer-grade/v1";
+export const REVIEWER_GRADE_SUMMARY = "reviewer-grade-summary.json";
+export const REVIEWER_GRADE_SUMMARY_SCHEMA = "sim-reviewer-grade-summary/v1";
+/** The writer kinds of a target row, in the order the summary lists them. */
+export const TARGET_KINDS: readonly TargetKind[] = [
+    "user statement",
+    "work in progress",
+    "agent note",
+    "assistant report",
+];
 const JUDGE_CALLS = "judge-calls.jsonl";
 /** Why a change carries no label: each is evidence the run lacks, or a judge call that failed. */
 export const UNJUDGED = {
@@ -131,6 +140,89 @@ export interface ReviewerSummary {
     judge_errors: number;
     revision: string;
     grader: { digest: string; sim_commit: string; sim_worktree: string };
+}
+
+/** The changes of one arm and one target kind, or of one arm over every kind. */
+export interface ChangeCounts {
+    changes: number;
+    /** The primary reading: the changes by judged label; `none` counts a change without one. */
+    labels: Record<ChangeLabel | "none", number>;
+    /** The secondary reading: the changes by the registered literal rule's verdict (`R1.v1`). */
+    literal: Record<LiteralReading["verdict"], number>;
+    /** The changes that took their row out of automatic delivery. */
+    left_automatic: number;
+    /**
+     * Of those, the rows by what the scenario's records say of them at the change: `in force`,
+     * `ended`, `states no fact`, `no scenario statement`, and `no reading` for a row that is no
+     * statement of the user or whose commit time maps to no single wall time.
+     */
+    left_automatic_in_force: Record<InForce | "no reading", number>;
+}
+
+/**
+ * `reviewer-grade-summary.json`: the grades of one run as counts, per arm and target kind, with
+ * the judged label as the primary reading and the registered literal rule as the secondary one.
+ */
+export interface ReviewerGradeSummary {
+    schema: typeof REVIEWER_GRADE_SUMMARY_SCHEMA;
+    primary: { rule: ReviewerRevision["change_rule"]; labels: ChangeLabel[] };
+    secondary: ReviewerRevision["secondary_metric"];
+    delivery_rule: ReviewerRevision["delivery_rule"];
+    arms: Record<string, { all: ChangeCounts; by_target_kind: Record<TargetKind, ChangeCounts> }>;
+    /** The pass's own summary: the changes by arm, the arms without a store, and the judge's calls. */
+    pass: ReviewerSummary;
+}
+
+const noCounts = (): ChangeCounts => ({
+    changes: 0,
+    labels: { R: 0, P: 0, W: 0, U: 0, none: 0 },
+    literal: { right: 0, wrong: 0, "no truth": 0 },
+    left_automatic: 0,
+    left_automatic_in_force: {
+        "in force": 0,
+        ended: 0,
+        "states no fact": 0,
+        "no scenario statement": 0,
+        "no reading": 0,
+    },
+});
+
+/** The grade rows of a run as the counts of its summary file; every arm of `arms` has an entry. */
+export function summarizeGrades(
+    rows: readonly ReviewerGrade[],
+    arms: readonly string[],
+    revision: ReviewerRevision,
+    pass: ReviewerSummary,
+): ReviewerGradeSummary {
+    const byArm: ReviewerGradeSummary["arms"] = {};
+    for (const arm of arms) {
+        byArm[arm] = {
+            all: noCounts(),
+            by_target_kind: Object.fromEntries(
+                TARGET_KINDS.map((kind) => [kind, noCounts()]),
+            ) as Record<TargetKind, ChangeCounts>,
+        };
+    }
+    for (const row of rows) {
+        const arm = byArm[row.arm];
+        if (!arm) throw new Error(`a grade row names arm ${row.arm}, which the run's order lacks`);
+        for (const counts of [arm.all, arm.by_target_kind[row.target_kind]]) {
+            counts.changes++;
+            counts.labels[row.label ?? "none"]++;
+            counts.literal[row.metrics["R1.v1"]]++;
+            if (!row.delivery.left_automatic) continue;
+            counts.left_automatic++;
+            counts.left_automatic_in_force[row.in_force?.reading ?? "no reading"]++;
+        }
+    }
+    return {
+        schema: REVIEWER_GRADE_SUMMARY_SCHEMA,
+        primary: { rule: revision.change_rule, labels: revision.labels },
+        secondary: revision.secondary_metric,
+        delivery_rule: revision.delivery_rule,
+        arms: byArm,
+        pass,
+    };
 }
 
 /**
@@ -345,7 +437,10 @@ const tally = (counts: Record<string, number>, key: string) => {
  * directory's lease, requires the scenario to hash to the manifest's digest and the journal to
  * record a complete run, and reads each arm's final store, the journal, the gateway's call and
  * request logs, and Pi's transcripts. It writes `reviewer-grades.jsonl` whole, one row per
- * change, and appends new labels to `reviewer-judgments.jsonl`. A change whose commit time,
+ * change, and `reviewer-grade-summary.json`, the same rows as counts per arm and target kind,
+ * and appends new labels to `reviewer-judgments.jsonl`. A run whose arms hold no change of the
+ * reviewer (a host arm, an Eidnara arm with the switch off) gets an empty grade file, a summary
+ * of zero counts, and no judge call. A change whose commit time,
  * applied proposal, or stage-2 request the run's records leave open gets a row with no label and
  * no judge call, and so does a row the reviewer created, which the revision's rubric leaves out.
  */
@@ -537,7 +632,12 @@ export async function gradeReviewer(
                 tally(summary.left_automatic, row.in_force.reading);
             }
         }
+        const counts = `${JSON.stringify(summarizeGrades(rows, arms, revision, summary), null, 2)}\n`;
+        // Removing the old summary before replacing the rows keeps a summary on disk consistent
+        // with the grade file. If the summary write fails, only the grade rows remain published.
+        rmSync(join(dir, REVIEWER_GRADE_SUMMARY), { force: true });
         writeAtomic(join(dir, REVIEWER_GRADES), rows.map((r) => `${JSON.stringify(r)}\n`).join(""));
+        writeAtomic(join(dir, REVIEWER_GRADE_SUMMARY), counts);
         return summary;
     } finally {
         parts?.close();

@@ -180,6 +180,62 @@ function searchRoutes(runs: RunEvidence[]): string[] {
     return out;
 }
 
+/**
+ * Every arm's `eidnara_search` results, one row per run and arm whose transcripts hold one: the
+ * results by route, the answered ones read from the canonical tip by their freshness note, and
+ * the errored ones with the lag errors among them (`docs/hosts.md`).
+ */
+function searchAnswers(runs: RunEvidence[]): string[] {
+    const head = [
+        "run",
+        "arm",
+        "results",
+        "legacy scan",
+        "fused",
+        "read from the tip while a consumer lagged",
+        "read from the tip with no consumer",
+        "errored",
+        "lag errors",
+        "errored share",
+    ];
+    const out = [
+        "",
+        "### Explicit search answers",
+        "",
+        "Per arm, read by one rule from the host transcripts: the `eidnara_search` results, the ones the legacy snapshot scan answered with their fallback reasons, the ones the fused route ranked, the answered results that carry the note of a read from the canonical tip while a search consumer lagged (an answered search of its route, and a reported degraded note), the answered results that carry the note of a host with no consumer a search serves from, the errored results, the lag errors among them, and the errored share of all results.",
+        "",
+        row(head),
+        row(head.map(() => "---")),
+    ];
+    let any = false;
+    for (const r of runs) {
+        for (const [arm, data] of r.run.arms) {
+            const s = data.reviewer?.search;
+            if (!s) continue;
+            const results = s.legacy_scan.length + s.fused + s.errored;
+            if (results === 0) continue;
+            any = true;
+            const reasons = [...new Set(s.legacy_scan)].sort().join(", ");
+            out.push(
+                row([
+                    r.name,
+                    arm,
+                    results,
+                    s.legacy_scan.length === 0 ? 0 : `${s.legacy_scan.length} (${reasons})`,
+                    s.fused,
+                    s.tip_notes?.consumer_behind ?? "unread",
+                    s.tip_notes?.no_consumer ?? "unread",
+                    s.errored,
+                    s.errored_lag ?? "unread",
+                    `${((100 * s.errored) / results).toFixed(1)}%`,
+                ]),
+            );
+        }
+    }
+    if (!any) out.push(row(["none", ...head.slice(1).map(() => "")]));
+    return out;
+}
+
 /** The non-zero counts of a tally as `name n`, in the tally's order, or `0` with none. */
 const counts = (tally: Readonly<Record<string, number>>): string =>
     Object.entries(tally)
@@ -208,9 +264,17 @@ function reviewerCells(r: ReviewerEvidence): string[] {
         ? `${drains.calls} steps (${kinds.session_end} at session ends, ${kinds.advance} before clock advances)`
         : `${drains.calls} steps`;
     const lag = log.derived_lag;
+    const quota = status?.metadata_quota;
+    const atQuota = quota
+        ? `last ${quota.last}, largest ${quota.max}, above zero in ${quota.above_zero} of ${quota.readings} readings`
+        : "no reading";
     return [
         r.switch === null ? "" : r.switch ? "on" : "off",
         counts(log.enqueued),
+        log.enqueued_by_delivery === undefined ? "unread" : counts(log.enqueued_by_delivery),
+        log.quota_refused === undefined
+            ? "unread"
+            : `${log.quota_refused} quota lines; projects at quota: ${atQuota}`,
         String(log.selections),
         stage1.join("; ") || "0",
         failed,
@@ -245,6 +309,8 @@ function memoryReviewer(runs: RunEvidence[]): string[] {
         "arm",
         "switch",
         "reviews enqueued",
+        "reviews by delivery",
+        "review-metadata quota",
         "selection passes",
         "stage-1 decisions",
         "failed stage-1 requests",
@@ -264,7 +330,7 @@ function memoryReviewer(runs: RunEvidence[]): string[] {
         "",
         "### Memory reviewer",
         "",
-        "Per arm, read by one rule: the reviewer's lines in `daemon.log` over every daemon generation (review jobs enqueued by trigger, selection passes, stage-1 decisions by decider with the models named, failed stage-1 requests, runs that ended without settlement by reason, reviews ended on a later reference the model was not shown, proposals applied by kind, proposals left for a reader or left unapplied, and the lines that report reviews waiting), the settle steps of `review-drain.jsonl` at session ends and before clock advances, the times the daemon logged a project's reads turning to lagging behind a derived consumer with the largest age of the oldest unconsumed commit (an explicit search answers `stale` while reads lag), the gateway's calls of the reviewer's two components, the reviewer's activation state in the daemon's status readings, and the final store's failed-command records and disputed objects (`docs/hosts.md`). An arm with the switch off shows no review; a disputed object there comes from the agent's own `eidnara_memory` dispute.",
+        "Per arm, read by one rule: the reviewer's lines in `daemon.log` over every daemon generation (review jobs enqueued by trigger and, where the line names it, by delivery group, the lines of a project whose review-metadata quota refused a new job beside the status readings' count of projects at that quota, selection passes, stage-1 decisions by decider with the models named, failed stage-1 requests, runs that ended without settlement by reason, reviews ended on a later reference the model was not shown, proposals applied by kind, proposals left for a reader or left unapplied, and the lines that report reviews waiting), the settle steps of `review-drain.jsonl` at session ends and before clock advances, the times the daemon logged a project's reads turning to lagging behind a derived consumer with the largest age of the oldest unconsumed commit (an explicit search answers `stale` while reads lag), the gateway's calls of the reviewer's two components, the reviewer's activation state in the daemon's status readings, and the final store's failed-command records and disputed objects (`docs/hosts.md`). An arm with the switch off shows no review; a disputed object there comes from the agent's own `eidnara_memory` dispute.",
         "",
         row(head),
         row(head.map(() => "---")),
@@ -353,6 +419,7 @@ export function renderEvidence(runs: RunEvidence[]): string {
         }
     }
     out.push(...searchRoutes(runs));
+    out.push(...searchAnswers(runs));
     out.push(...memoryReviewer(runs));
     out.push(
         "",

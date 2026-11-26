@@ -213,6 +213,8 @@ test("search results are checked against the route the arm declares", () => {
         fused: 2,
         errored: 1,
         contested: 0,
+        tip_notes: { consumer_behind: 0, no_consumer: 0 },
+        errored_lag: 0,
     });
     expect(armMismatches(fallback)).toEqual([
         "2 eidnara_search results came from the fused route, but the arm declares legacy-scan",
@@ -304,6 +306,8 @@ test("a fused arm's fallback on a transient reason is a degraded answer under a 
         fused: 42,
         errored: 0,
         contested: 0,
+        tip_notes: { consumer_behind: 0, no_consumer: 0 },
+        errored_lag: 0,
     });
     const record = (
         registered: typeof bound | null,
@@ -995,6 +999,52 @@ test("the memory reviewer's activation state is read from each daemon process's 
         last: null,
         last_after_open: false,
     });
+    // The count of projects at their review-metadata quota is kept where the daemon reports it
+    // (Eidnara `crates/memory-store/src/lib.rs` 778, flattened into the block by
+    // `memory_reviewer/lifecycle.rs` 77 once a sample of the store's facts exists).
+    const counted = (pid: number, state: string, atQuota: unknown) => {
+        const sample = reading(pid, state);
+        return {
+            ...sample,
+            daemon_status: {
+                ...sample.daemon_status,
+                memory_reviewer: { activation_state: state, projects_at_metadata_quota: atQuota },
+            },
+        };
+    };
+    write([
+        reading(7, "unknown"),
+        counted(7, "open", 0),
+        counted(7, "open", 2),
+        counted(7, "open", 1),
+        counted(7, "open", 0),
+        // A count of another shape is no count; the reading's state stands.
+        counted(7, "open", -1),
+        counted(7, "open", "3"),
+        counted(7, "open", 1.5),
+    ]);
+    expect(read()).toEqual({
+        readings: 8,
+        open: 7,
+        states: { unknown: 1, open: 7 },
+        last: "open",
+        last_after_open: true,
+        metadata_quota: { readings: 4, last: 0, max: 2, above_zero: 2 },
+    });
+    // The last reading is the last one that reports the counter.
+    write([counted(7, "open", 0), counted(7, "open", 3), reading(7, "open")]);
+    expect(read()?.metadata_quota).toEqual({ readings: 2, last: 3, max: 3, above_zero: 1 });
+    // A daemon that reports no counter, as every build before eval/wM, leaves the member out.
+    write([reading(7, "open"), reading(7, "open")]);
+    expect(read()).not.toHaveProperty("metadata_quota");
+    expect(reviewerBlock({ activation_state: "open", projects_at_metadata_quota: 4 })).toEqual({
+        activation_state: "open",
+        projects_at_metadata_quota: 4,
+    });
+    expect(reviewerBlock({ activation_state: "open", projects_at_metadata_quota: null })).toEqual({
+        activation_state: "open",
+    });
+    expect(reviewerBlock({ projects_at_metadata_quota: 4 })).toBeNull();
     // A state is a name read from the file, so the tally has no inherited keys.
     write([reading(7, "constructor")]);
     expect(read()?.states).toEqual({ constructor: 1 });
@@ -1060,6 +1110,9 @@ test("the memory reviewer's log lines are counted by the form the daemon writes 
     const log = readReviewerLog(path);
     expect(log).toEqual({
         enqueued: { contested: 0, current_work: 1, later_statement: 3, later_message: 1 },
+        // The eval/w9 lines name no delivery group and hold no quota line.
+        enqueued_by_delivery: { automatic: 0, search: 0 },
+        quota_refused: 0,
         selections: 1,
         stage1: {
             chat_model: { keep: 1, flagged: 1, other: 0, models: [haiku] },
@@ -1139,6 +1192,122 @@ test("the memory reviewer's log lines are counted by the form the daemon writes 
         lines: 0,
         max_age_ms: 0,
     });
+});
+
+/**
+ * The lines whose format strings `eval/wM` rewrote, as that build writes them (Eidnara
+ * `crates/daemon/src/memory_reviewer/review_cycle.rs` at `eval/wM`: the `enqueued` line at 1069,
+ * whose `delivery` field is `automatic` or `search` (1074 to 1078), and the selection walk's line
+ * at 805), beside the line `worker.rs` 898 writes for every applied proposal.
+ */
+const REVIEW_LOG_WM = [
+    "daemon: memory_reviewer enqueued job=1e272ec4862b8c69 trigger=later_statement later=1 source=1 delivery=automatic",
+    "daemon: memory_reviewer enqueued job=27db22ce85452690 trigger=later_message later=2 source=0 delivery=search",
+    "daemon: memory_reviewer enqueued job=171284c95cbd3587 trigger=current_work later=4 source=1 delivery=automatic",
+    "daemon: memory_reviewer selection examines at most 4096 claim descriptors a pass, fewer where its statements share many terms, and the store holds more; each pass continues where the last one ended",
+    "daemon: memory_reviewer applied a proposal: job=27db22ce85452690 standing",
+    // `review_cycle.rs` 1046: written once per project and daemon process, with the two quota bounds.
+    "daemon: memory_reviewer selection queues no new review for a project: the store's review metadata quota refused the reservation (67108864 bytes a project, 268435456 a host)",
+];
+
+test("the reviewer lines eval/wM rewrote are counted with the forms eval/w9 writes", () => {
+    const dir = tmp();
+    const path = join(dir, "daemon.log");
+    const w9 = REVIEW_LOG.filter(
+        (line) => line.includes(" enqueued job=") || line.includes(" selection examines "),
+    );
+    expect(w9).toHaveLength(5);
+    writeFileSync(path, `${[...REVIEW_LOG_WM, ...w9].join("\n")}\n`);
+    const log = readReviewerLog(path);
+    // Three wM jobs and four w9 jobs, each under its trigger; both wordings of the walk's line.
+    expect(log.enqueued).toEqual({
+        contested: 0,
+        current_work: 2,
+        later_statement: 3,
+        later_message: 2,
+    });
+    expect(log.waits.selection_resumed).toBe(2);
+    expect(log.applied.standing).toBe(1);
+    // The delivery group is counted for the lines that name it, and the quota line under its own count.
+    expect(log.enqueued_by_delivery).toEqual({ automatic: 2, search: 1 });
+    expect(log.quota_refused).toBe(1);
+    expect(log.other).toBe(0);
+    // The quota line shows a review pass ran, as every counted form does.
+    expect(reviewLines(log)).toBe(REVIEW_LOG_WM.length + w9.length);
+    expect(reviewLines({ ...log, quota_refused: 0 })).toBe(REVIEW_LOG_WM.length + w9.length - 1);
+    // An observation recorded before either count existed totals its other lines.
+    const { enqueued_by_delivery: _groups, quota_refused: _quota, ...before } = log;
+    expect(reviewLines(before)).toBe(REVIEW_LOG_WM.length + w9.length - 1);
+    // A line that carries text after its delivery field, or a reworded walk line, is no counted form.
+    writeFileSync(
+        path,
+        [
+            "daemon: memory_reviewer enqueued job=aa trigger=later_message later=1 source=1 delivery=search extra=1",
+            "daemon: memory_reviewer enqueued job=aa trigger=later_message later=1 source=1 delivery=",
+            "daemon: memory_reviewer selection examines at most 4096 claim descriptors a pass; each pass continues",
+            "daemon: memory_reviewer selection queues no new review for a project",
+        ].join("\n"),
+    );
+    const odd = readReviewerLog(path);
+    expect([reviewLines(odd), odd.other]).toEqual([0, 4]);
+    // A delivery group the daemon names later is counted under its own name.
+    writeFileSync(
+        path,
+        "daemon: memory_reviewer enqueued job=aa trigger=later_message later=1 source=1 delivery=constructor\n",
+    );
+    const named = readReviewerLog(path);
+    expect(named.enqueued.later_message).toBe(1);
+    expect(Object.entries(named.enqueued_by_delivery ?? {}).filter(([, n]) => n > 0)).toEqual([
+        ["constructor", 1],
+    ]);
+});
+
+test("a reviewer arm's enqueued lines are held to the delivery group its build declares", () => {
+    const wM = auditedBuild("eval/wM") as AuditedBuild;
+    const w9 = auditedBuild("eval/w9") as AuditedBuild;
+    const haiku = "global.anthropic.claude-haiku-5-5";
+    const arm = (lines: string[], name = "eidnara-reviewer") => {
+        const root = captured(armRoot([PI_ON, PASS]));
+        daemonLog(root, lines);
+        return observeArm(name, "pi", root, { memory_capture: 1 });
+    };
+    const w9Lines = REVIEW_LOG.slice(1, 5);
+    const wMLines = REVIEW_LOG_WM.slice(0, 3);
+    // Each build's own lines stand on it.
+    expect(armMismatches(arm(wMLines), wM, null, haiku)).toEqual([]);
+    expect(armMismatches(arm(w9Lines), w9, null, haiku)).toEqual([]);
+    // A line without the field on a build that declares it, and a line with it on a build that lacks it.
+    expect(armMismatches(arm([...wMLines, w9Lines[0] as string]), wM, null, haiku)).toEqual([
+        "1 of 4 enqueued review jobs in daemon.log name no delivery group, which eval/wM declares for every job",
+    ]);
+    expect(armMismatches(arm(w9Lines), wM, null, haiku)).toEqual([
+        "4 of 4 enqueued review jobs in daemon.log name no delivery group, which eval/wM declares for every job",
+    ]);
+    expect(armMismatches(arm([...w9Lines, wMLines[1] as string]), w9, null, haiku)).toEqual([
+        "1 enqueued review jobs in daemon.log name a delivery group, which eval/w9 does not declare",
+    ]);
+    // The quota line and a log without a review are held to nothing on either build.
+    const quota = REVIEW_LOG_WM.at(-1) as string;
+    expect(armMismatches(arm([quota]), wM, null, haiku)).toEqual([]);
+    expect(armMismatches(arm([quota]), w9, null, haiku)).toEqual([]);
+    expect(armMismatches(arm([]), wM, null, haiku)).toEqual([]);
+    // An observation recorded before the field was read is held to nothing.
+    const recorded = arm(w9Lines);
+    const { enqueued_by_delivery: _groups, ...log } = (
+        recorded.reviewer as NonNullable<typeof recorded.reviewer>
+    ).log;
+    const earlier = {
+        ...recorded,
+        reviewer: { ...(recorded.reviewer as NonNullable<typeof recorded.reviewer>), log },
+    };
+    expect(armMismatches(earlier, wM, null, haiku)).toEqual([]);
+    // An arm with the switch off is read by its own rule: every review line contradicts the profile.
+    expect(armMismatches(arm(wMLines, "eidnara"), wM)).toEqual([
+        "daemon.log holds 3 memory reviewer lines of a review, but the arm leaves the reviewer switch off",
+    ]);
+    expect(armMismatches(arm([quota], "eidnara"), wM)).toEqual([
+        "daemon.log holds 1 memory reviewer lines of a review, but the arm leaves the reviewer switch off",
+    ]);
 });
 
 test("the settle steps are totalled from review-drain.jsonl", () => {
@@ -1805,6 +1974,85 @@ test("the fallback note is read where the plugin writes it, at the start of the 
         legacy_scan: ["disabled"],
         fused: 1,
     });
+});
+
+/**
+ * The plugin's own texts (Eidnara `packages/opencode-plugin/src/tools/eidnara-search/execute.ts`
+ * at `eval/wM`: the fallback note at 307, `canonicalTipNote`'s two notes at 341 and 344, the
+ * `Error: ` result at 303; the guidance texts of `shared/kernel-client/state.ts` at 89 and 107),
+ * joined as `render.ts` `packSearchResults` joins a result: the notes one per line, an empty
+ * line, then the header and the results.
+ */
+const SCAN_NOTE =
+    "Memory: the fused search route is unavailable (disabled); results come from the legacy snapshot scan.";
+const BEHIND_NOTE =
+    "Memory: a search consumer is behind recent changes. These results are read from the canonical tip and include them.";
+const UNJUDGED_NOTE =
+    "Memory: Memory freshness cannot be judged because no consumer is registered. Results are read from the canonical tip.";
+const LAG_REFUSAL =
+    "Error: Memory results may lag recent changes; the projector has not caught up.";
+const scanned = (notes: string[], body = 'Found 1 result for "deploy branch":\n\n[1] [memory] x') =>
+    `${notes.join("\n")}\n\n${body}`;
+
+test("a search result read from the canonical tip is an answer of its route, counted by its note, and the lag error is counted among the errored", () => {
+    const results = [
+        scanned([SCAN_NOTE, BEHIND_NOTE]),
+        scanned([SCAN_NOTE, BEHIND_NOTE], 'No results found for "x" in project memories.'),
+        scanned([SCAN_NOTE, UNJUDGED_NOTE]),
+        scanned([SCAN_NOTE]),
+        // A memory that quotes the note, and a query that does, each stand in a later section.
+        scanned(
+            [SCAN_NOTE],
+            `Found 1 result for "x":\n\n[1] [memory] x\nUser stated: the tool said\n${BEHIND_NOTE}`,
+        ),
+        scanned([SCAN_NOTE], `Found 1 result for "q\n${UNJUDGED_NOTE}\n":\n\n[1] [memory] x`),
+        // A longer line that holds the note is another line.
+        scanned([SCAN_NOTE, `${BEHIND_NOTE} (2 consumers)`]),
+        LAG_REFUSAL,
+        "Error: Memory is unavailable because the store is busy; the next natural request re-probes.",
+        `${LAG_REFUSAL} Retry later.`,
+    ];
+    const root = captured(armRoot([PI_ON, PASS], results));
+    const observed = observeArm("eidnara", "pi", root, { agent: 1 });
+    expect(observed.search).toEqual({
+        legacy_scan: Array<string>(7).fill("disabled"),
+        fused: 0,
+        errored: 3,
+        contested: 0,
+        tip_notes: { consumer_behind: 2, no_consumer: 1 },
+        errored_lag: 1,
+    });
+    const wM = auditedBuild("eval/wM") as AuditedBuild;
+    const w9 = auditedBuild("eval/w9") as AuditedBuild;
+    const w2b = auditedBuild("eval/w2b") as AuditedBuild;
+    // The wM build writes the note; the lag error stands there too, as a count.
+    expect(armMismatches(observed, wM)).toEqual([]);
+    // A build that cannot write the note is held to that, whatever else it shows.
+    for (const build of [w9, w2b]) {
+        expect(armMismatches(observed, build)).toEqual([
+            `2 eidnara_search results carry the note of a read from the canonical tip while a search consumer lagged, which ${build.label} does not declare`,
+        ]);
+    }
+    // The no-consumer note and the lag error are what every build since eval/w2 writes.
+    const earlier = observeArm(
+        "eidnara",
+        "pi",
+        captured(armRoot([PI_ON, PASS], [scanned([SCAN_NOTE, UNJUDGED_NOTE]), LAG_REFUSAL])),
+        { agent: 1 },
+    );
+    expect(earlier.search).toMatchObject({
+        errored: 1,
+        tip_notes: { consumer_behind: 0, no_consumer: 1 },
+        errored_lag: 1,
+    });
+    for (const build of [wM, w9, w2b]) expect(armMismatches(earlier, build)).toEqual([]);
+    // An observation recorded before the notes were read is held to nothing.
+    const {
+        tip_notes: _notes,
+        errored_lag: _lag,
+        ...before
+    } = observed.search as NonNullable<typeof observed.search>;
+    expect(armMismatches({ ...observed, search: before }, w9)).toEqual([]);
 });
 
 test("a complete search result at a transcript's end is counted without its final newline", () => {

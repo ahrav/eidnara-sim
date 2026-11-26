@@ -29,6 +29,7 @@ import {
     type ReviewerObservation,
     type ReviewerStatusObservation,
     readDaemonStatus,
+    readPiSearches,
     readStatements,
     type SearchFallbackBound,
 } from "../run/capabilities";
@@ -166,13 +167,24 @@ export interface ReviewerEvidence extends ReviewerObservation {
     status: ReviewerStatusObservation | null;
     failed_commands: { live: number; retired: number } | null;
     disputed: { live: number; retired: number } | null;
+    /**
+     * The arm's `eidnara_search` results in Pi's transcripts, by route, with the freshness notes
+     * of the answered ones and the lag errors among the errored ones (`readPiSearches`, the
+     * capability record's reader); null on a host whose transcripts hold no such record, and
+     * absent on evidence written before it was read.
+     */
+    search?: NonNullable<ArmObservation["search"]> | null;
 }
 
-/** The reviewer evidence of the arm directory `root`, with the arm's call counts by component. */
+/**
+ * The reviewer evidence of the arm directory `root`, with the arm's call counts by component;
+ * `host` is the run's host, whose transcripts hold the arm's search results.
+ */
 export function reviewerEvidence(
     root: string,
     profile: ArmProfileView | null,
     components: Readonly<Record<string, number>>,
+    host = "pi",
 ): ReviewerEvidence {
     const resources = join(root, "resources.jsonl");
     // An entry of any kind goes to the reader, which refuses a link and a non-regular file.
@@ -186,6 +198,7 @@ export function reviewerEvidence(
         status,
         failed_commands: statements?.failed_commands ?? null,
         disputed: statements?.disputed ?? null,
+        search: host === "pi" ? readPiSearches(root, "r/home/.pi/agent/sessions") : null,
     };
 }
 
@@ -756,7 +769,7 @@ export function loadRun(dir: string): RunData {
         }
         for (const [arm, data] of arms) {
             const counts = reviewerCalls.get(arm) ?? {};
-            data.reviewer = reviewerEvidence(join(dir, arm), data.profile, counts);
+            data.reviewer = reviewerEvidence(join(dir, arm), data.profile, counts, manifest.host);
         }
     } catch (caught) {
         // A reviewer artefact that is a link or has a second name is refused; the two open logs close first.

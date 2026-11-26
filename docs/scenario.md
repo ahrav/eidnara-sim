@@ -630,6 +630,37 @@ existed when it was applied. W5P (`prereg/W5P.json`, revision 1,
 | W5SH | 617 | `82be10a9` | 557 | 0.2974 | 0.5583 |
 | W5P | 605 | `3a337f7c` | 1983 | 0.3021 | 0.5913 |
 
+Qualifications WM (`prereg/WM.json`, revision 1, `b7c829b9`, diagnosed
+split, fresh seeds) and WMH (`prereg/WMH.json`, revision 1, `57cd0244`,
+held-out split) run the `eval/wM` build at tier M with prompt caching on.
+Seeds 213, 214, 215, and 216 are the four lowest diagnosed seeds above the
+ones a revision of an M registration has listed (C8's revision 1 listed
+204 to 212), and each compiles at tier M. Seeds 612 and 616 are the two
+lowest held-out seeds that no registration lists, no run used, and tier M
+places: 610 refuses at tier M placement, 613, 614, 615, and 617 are seeds
+of S registrations, and 612 and 616 refuse at tier S alone. The rule read
+no outcome data, and no run of any of the six seeds existed when it was
+applied. A diagnosed scenario holds 300 sessions over four projects (120
+for each main project and 30 for each twin) and 300 probes; a held-out
+one holds 150 sessions over two projects and 150 probes. WMP
+(`prereg/WMP.json`, revision 1, `52bfd1bd`) holds C8's 3,839 events,
+facts, and probes for seed 204, and WMPH (`prereg/WMPH.json`, revision 1,
+`b7102e9c`) holds W5P's 1,983 for seed 605; their hashes differ with the
+registration. `bun scripts/scenario-span.ts` reports how scenario time
+lies in each (`docs/time.md`): the campaign's six scenarios span 14.29 to
+14.78 scenario days.
+
+| Registration | Seed | `scenario_hash` | Events | Largest BM25 ratio | Largest cosine |
+|---|---|---|---|---|---|
+| WM | 213 | `a06f97f7` | 5040 | 0.3570 | 0.5807 |
+| WM | 214 | `75b4fdc7` | 3321 | 0.3188 | 0.5807 |
+| WM | 215 | `9c57e9e0` | 3346 | 0.3259 | 0.5807 |
+| WM | 216 | `60e44d5b` | 6387 | 0.2688 | 0.5807 |
+| WMH | 612 | `97b92d35` | 1924 | 0.2967 | 0.5913 |
+| WMH | 616 | `60530f39` | 2410 | 0.3062 | 0.5913 |
+| WMP | 204 | `5a05950b` | 3839 | 0.3335 | 0.5807 |
+| WMPH | 605 | `abace4b6` | 1983 | 0.3021 | 0.5913 |
+
 ## Known limits
 
 - A revised decision (P3) asks its task again in the workspace the agent

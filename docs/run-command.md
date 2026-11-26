@@ -176,8 +176,9 @@ also carry these optional sections and fields:
   id, an unknown role, and an id that is empty or carries a provider
   prefix. Under `off` the `v1` table holds one set of rates for every
   model. The section is part of the registration's hash when present.
-  W5S, W5SH, and W5P name `global.anthropic.claude-haiku-5-5`, the stage-1
-  model of their `eidnara-reviewer` arm. Every registration through W4P
+  W5S, W5SH, W5P, WM, WMH, WMP, and WMPH name
+  `global.anthropic.claude-haiku-5-5`, the stage-1 model of their
+  `eidnara-reviewer` arm. Every registration through W4P
   names none, so its hash, its model list, and its price table are what
   they were.
 - `search_fallback` (`max_degraded_share`): the bound on a fused-route
@@ -194,7 +195,8 @@ also carry these optional sections and fields:
   digits. Every
   registration names none: each hash through W4P stands, each fused arm of
   those registrations is refused for any legacy-scan answer, as it ran, and
-  W5S, W5SH, and W5P run arms of the legacy-scan route alone. The rate
+  W5S, W5SH, W5P, WM, WMH, WMP, and WMPH run arms of the legacy-scan route
+  alone. The rate
   behind a bound of `0.1`: the fused arms of the W2S2, W3S, and W4S
   campaigns (15 runs with their held-out seeds) returned 536 answered
   `eidnara_search` results, 17 to 59 a run, 1 of them a transient fallback
@@ -357,6 +359,39 @@ and 557 events.
 `--qualification W5P` (`prereg/W5P.json`, revision 1) is that campaign's
 pilot: W4P's scenario (tier M, held-out seed 605, C8H's control) with
 W5S's arms, contrasts, build contrast, and side model.
+
+`--qualification WM` (`prereg/WM.json`, revision 1) and
+`--qualification WMH` (`prereg/WMH.json`, revision 1) run the `eval/wM`
+build (`26fa24760`) against the `eval/w2b` build (`ae1b673b7`) at tier M
+on Pi with `prompt_caching: "on"`, with W5S's arms (`host`, `eidnara`,
+`eidnara-reviewer`, all on the plain search route), its three contrasts,
+its control, its no-source control, and its harm probes. The build
+contrast is `eidnara` on `eval/wM` against `eidnara` on `eval/w2b`, the
+base build of the W3 and W4 retests: a build without the lifetime classes,
+the current-work element, the closing sentence, the named files, and the
+reviewer, whose capture and daemon-run calls carry Pi's two cache points.
+Both name `global.anthropic.claude-haiku-5-5` as
+`side_models.memory_reviewer_stage1`. WM runs the fresh diagnosed seeds
+213, 214, 215, and 216 and registers `replicates` of `eidnara` on 213 and
+214: a second `eidnara` run on `eval/wM` for each of those seeds, in its
+own run directory, launched with the seed's other runs. WMH runs the
+held-out seeds 612 and 616 and reports apart from WM. No campaign ran any
+of the six seeds before (`docs/scenario.md`). Every arm runs at the
+campaign's sim revision under the caching condition and grading revisions
+10 to 16, `host` and the reference arm included; each run's finalize steps
+end with `grade-reviewer` (Campaign supervisor, below). A seed is four
+runs launched together, or five on a replicate seed: `host`, `eidnara`,
+and `eidnara-reviewer` on `eval/wM`, and `eidnara` on `eval/w2b` through
+its own `config`. The budget is $12k to $45k for WM's eighteen runs, at
+$700, $1,300, and $1,500 an arm and seed for `host`, `eidnara`, and
+`eidnara-reviewer`, and $3k to $12k for WMH's eight, at $350, $650, and
+$750, at the `v3` table.
+
+`--qualification WMP` (`prereg/WMP.json`, revision 1) and
+`--qualification WMPH` (`prereg/WMPH.json`, revision 1) are that
+campaign's pilots, each WM's arms, contrasts, build contrast, and side
+model over one seed: WMP the diagnosed c8 seed 204 (`fresh_seeds`, C8's
+events for the seed), and WMPH the held-out seed 605 (W5P's events).
 
 `--qualification PCH` (`prereg/PCH.json`, revision 1) is the prompt-caching
 pilot: tier M on Pi over C8H's held-out seed 605 with `host` and `eidnara`
@@ -664,7 +699,10 @@ observational Context route per daemon generation (harness `cli`, session
 `sim-status`, which Eidnara excludes from every background view): the
 `process_memory` block of the module's `status` answer and the
 `activation_state` of its `memory_reviewer` block (`open` while the review
-worker found a project under the reviewer switch in its last passes), and
+worker found a project under the reviewer switch in its last passes) with,
+where the daemon reports it, the block's `projects_at_metadata_quota`
+(the projects whose review metadata is at the per-project quota, from
+`eval/wM` on), and
 on a fused-route arm the lifecycle record state, the admission state, and the `progress`
 block of `search.lifecycle.status` (`tip`, `checkpoint`, `lag_commits`,
 `rebuilds`, `blocked`). The route stays open between reads, so a read binds
@@ -798,6 +836,38 @@ field keeps every record. Every `poll_ms` the supervisor:
   daemon-CPU and settle jobs keep journaling while a turn hangs, a failed finalize step, each `inode_paths` filesystem whose
   inode use passes 80%, and a total spend past `spend_cap_usd`. The spend
   alert only reports; the supervisor keeps every run going.
+
+A campaign that grades the memory reviewer's written changes names four
+finalize steps, the default three and the reviewer grades after them:
+
+```json
+"finalize_commands": [
+    ["bun", "scripts/grade-run.ts", "{dir}"],
+    ["bun", "scripts/evidence-run.ts", "{dir}"],
+    ["bun", "scripts/pairing-check.ts", "{dir}"],
+    ["bun", "scripts/grade-reviewer.ts", "{dir}"]
+]
+```
+
+The supervisor runs the steps of a run one after another, once the run's
+process has ended, each under the run's own `config`. `grade-run` and
+`grade-reviewer` each take the run directory's lease and release it when
+they end, so the lease is free when the next step starts. `grade-reviewer`
+(`docs/grading.md`, Grading revision 16) reads the manifest, the scenario,
+the journal, `calls.jsonl`, `requests.jsonl`, and each arm's final store
+and transcripts, none of which a later step writes, and writes
+`reviewer-grades.jsonl` and `reviewer-grade-summary.json`; it appends its
+labels to `reviewer-judgments.jsonl` and its judge's calls to
+`judge-calls.jsonl`, which `grade-run` wrote before it, through the
+Bedrock profile and region of the run's config, as `grade-run`'s judge
+does. It runs on every run of the campaign: a run whose arms hold no
+change of the reviewer (a host arm, an Eidnara arm with the switch off,
+the reference arm on an earlier build) gets an empty grade file and a
+summary of zero counts, with exit 0 and no judge call. A change that ends
+without a label makes the step exit 1, which the supervisor records as a
+failed finalize step and raises as an alert; the grade file and the
+summary are written first, and a later pass of the step judges only the
+changes that still lack a label.
 
 A run name may not be `logs`, `evidence`, `campaign.log`, or
 `campaign-status.json`, start with `lease.`, or pass 200 characters. A restarted supervisor restores each run's record from

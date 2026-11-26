@@ -15,14 +15,26 @@ import { loadReviewerRevision, reviewerRevisionHash } from "../src/prereg/review
 import type { Upstream } from "../src/proxy/gateway";
 import { readChanges } from "../src/reviewer/changes";
 import { changeDigest, changeIdentity, proxyChangeJudge } from "../src/reviewer/judge";
-import { ARM, EXTRA, OTHER_ARM, ROWS, type RunOptions, reviewerRun } from "../tests/reviewer-run";
 import {
+    ARM,
+    EXTRA,
+    OTHER_ARM,
+    ROWS,
+    type RunOptions,
+    reviewerRun,
+    unreviewedRun,
+} from "../tests/reviewer-run";
+import {
+    type ChangeCounts,
     gradeReviewer,
     OUTSIDE,
+    REVIEWER_GRADE_SUMMARY,
     REVIEWER_GRADES,
     REVIEWER_JUDGMENTS,
     type ReviewerGrade,
+    type ReviewerGradeSummary,
     reviewerGraderDigest,
+    TARGET_KINDS,
     UNJUDGED,
 } from "./grade-reviewer";
 
@@ -342,6 +354,23 @@ describe("grading the reviewer's changes of a finished run", () => {
         expect((await gradeReviewer(dir, null, judgeSays(fair))).labels).toEqual({ R: 3, W: 1 });
     });
 
+    test("a pass whose summary write fails leaves its rows without a summary, and the next pass writes both", async () => {
+        const dir = run();
+        await gradeReviewer(dir, null, judgeSays(fair));
+        expect(existsSync(join(dir, REVIEWER_GRADE_SUMMARY))).toBe(true);
+        rmSync(join(dir, REVIEWER_GRADES));
+        // `writeAtomic` stages the summary under this name and refuses a name that exists.
+        const staging = join(dir, `${REVIEWER_GRADE_SUMMARY}.${process.pid}`);
+        writeFileSync(staging, "");
+        await expect(gradeReviewer(dir, null)).rejects.toThrow("exists or is a link");
+        expect(grades(dir)).toHaveLength(4);
+        expect(existsSync(join(dir, REVIEWER_GRADE_SUMMARY))).toBe(false);
+        rmSync(staging);
+        expect((await gradeReviewer(dir, null)).labels).toEqual({ R: 3, W: 1 });
+        const summary = JSON.parse(readFileSync(join(dir, REVIEWER_GRADE_SUMMARY), "utf8"));
+        expect(summary.pass.labels).toEqual({ R: 3, W: 1 });
+    });
+
     test("a scenario that differs from the manifest's digest, a journal of an unfinished run, and a store that is no database are each refused before anything is written", async () => {
         const changed = run();
         const scenario = JSON.parse(readFileSync(join(changed, "scenario.json"), "utf8"));
@@ -388,6 +417,157 @@ describe("grading the reviewer's changes of a finished run", () => {
         await expect(gradeReviewer(linked, null, judgeSays(fair))).rejects.toThrow(
             "is no directory of the run",
         );
+    });
+
+    test("a run without a reviewer change grades nothing: an empty grade file, a summary of zero counts, no judge call, and exit 0 as a step", async () => {
+        const zero: ChangeCounts = {
+            changes: 0,
+            labels: { R: 0, P: 0, W: 0, U: 0, none: 0 },
+            literal: { right: 0, wrong: 0, "no truth": 0 },
+            left_automatic: 0,
+            left_automatic_in_force: {
+                "in force": 0,
+                ended: 0,
+                "states no fact": 0,
+                "no scenario statement": 0,
+                "no reading": 0,
+            },
+        };
+        // A host arm leaves no store; an Eidnara arm with the switch off leaves one whose reviewer
+        // tables hold no row; a build from before the reviewer leaves one without those tables.
+        const cases = [
+            ["host", "none", ["host"]],
+            ["eidnara", "current", []],
+            ["eidnara", "before-reviewer", []],
+        ] as const;
+        for (const [arm, store, withoutStore] of cases) {
+            const dir = unreviewedRun(arm, store);
+            dirs.push(dir);
+            // A judge that is asked anything fails the pass, and no config names a provider.
+            const upstream = judgeSays(() => {
+                throw new Error("the judge was called");
+            });
+            const summary = await gradeReviewer(dir, null, upstream);
+            expect(summary).toEqual({
+                changes: { [arm]: 0 },
+                without_store: [...withoutStore],
+                labels: {},
+                unjudged: {},
+                unlabelled: 0,
+                literal: {},
+                left_automatic: {},
+                judge_calls: 0,
+                judge_errors: 0,
+                revision: reviewerRevisionHash(loadReviewerRevision()),
+                grader: { ...summary.grader, digest: reviewerGraderDigest() },
+            });
+            expect(upstream.prompts).toEqual([]);
+            expect(readFileSync(join(dir, REVIEWER_GRADES), "utf8")).toBe("");
+            const written = JSON.parse(
+                readFileSync(join(dir, REVIEWER_GRADE_SUMMARY), "utf8"),
+            ) as ReviewerGradeSummary;
+            expect(written).toEqual({
+                schema: "sim-reviewer-grade-summary/v1",
+                primary: { rule: "judged-row-ended", labels: ["R", "P", "W", "U"] },
+                secondary: { name: "R1.v1", rule: "target-literal-status" },
+                delivery_rule: "scenario-records-in-force",
+                arms: {
+                    [arm]: {
+                        all: zero,
+                        by_target_kind: Object.fromEntries(TARGET_KINDS.map((k) => [k, zero])),
+                    },
+                },
+                pass: summary,
+            } as ReviewerGradeSummary);
+            // The pass opened no judge log and left the lease free for the next step.
+            expect(existsSync(join(dir, REVIEWER_JUDGMENTS))).toBe(false);
+            expect(existsSync(join(dir, "judge-calls.jsonl"))).toBe(false);
+            await expect(gradeReviewer(dir, null, upstream)).resolves.toMatchObject({
+                changes: { [arm]: 0 },
+            });
+        }
+        // As the finalize step the supervisor runs, under the run's own config file.
+        const dir = unreviewedRun("host", "none");
+        dirs.push(dir);
+        const step = Bun.spawnSync(
+            [process.execPath, join(import.meta.dir, "grade-reviewer.ts"), dir],
+            { env: { ...process.env, SIM_CONFIG: join(import.meta.dir, "..", "sim.config.json") } },
+        );
+        expect([step.exitCode, step.stderr.toString()]).toEqual([0, ""]);
+        expect(JSON.parse(step.stdout.toString())).toMatchObject({
+            changes: { host: 0 },
+            without_store: ["host"],
+            unlabelled: 0,
+        });
+        expect(readFileSync(join(dir, REVIEWER_GRADES), "utf8")).toBe("");
+    });
+
+    test("the summary file counts each arm's changes by target kind, with the judged label first, the literal rule second, and the in-force rows that left automatic delivery", async () => {
+        const dir = run({ extra: true, otherArm: true });
+        const summary = await gradeReviewer(dir, null, judgeSays(fair));
+        const written = JSON.parse(
+            readFileSync(join(dir, REVIEWER_GRADE_SUMMARY), "utf8"),
+        ) as ReviewerGradeSummary;
+        expect(written.pass).toEqual(summary);
+        expect(Object.keys(written.arms)).toEqual([OTHER_ARM, ARM]);
+        expect(written.arms[OTHER_ARM]?.all.changes).toBe(0);
+        const rows = grades(dir);
+        const arm = written.arms[ARM] as ReviewerGradeSummary["arms"][string];
+        // Every row is counted once under its kind and once over all kinds.
+        expect(arm.all.changes).toBe(rows.length);
+        expect(TARGET_KINDS.map((k) => arm.by_target_kind[k].changes)).toEqual(
+            TARGET_KINDS.map((k) => rows.filter((r) => r.target_kind === k).length),
+        );
+        expect(Object.keys(arm.by_target_kind)).toEqual([...TARGET_KINDS]);
+        // The fixture's eight changes: the judged labels, then the literal rule's readings.
+        expect(arm.all).toEqual({
+            changes: 8,
+            labels: { R: 6, P: 0, W: 1, U: 0, none: 1 },
+            literal: {
+                right: rows.filter((r) => r.metrics["R1.v1"] === "right").length,
+                wrong: rows.filter((r) => r.metrics["R1.v1"] === "wrong").length,
+                "no truth": rows.filter((r) => r.metrics["R1.v1"] === "no truth").length,
+            },
+            // The plan, the first tag, and the retired statement left automatic delivery.
+            left_automatic: 3,
+            left_automatic_in_force: {
+                "in force": 0,
+                ended: 2,
+                "states no fact": 0,
+                "no scenario statement": 1,
+                "no reading": 0,
+            },
+        });
+        // The note the agent saved was disputed wrongly and was served on search alone.
+        expect(arm.by_target_kind["agent note"]).toMatchObject({
+            changes: 1,
+            labels: { R: 0, P: 0, W: 1, U: 0, none: 0 },
+            literal: { right: 0, wrong: 0, "no truth": 1 },
+            left_automatic: 0,
+        });
+        // Per kind, the labels and the readings add up to the kind's changes.
+        for (const kind of TARGET_KINDS) {
+            const counts = arm.by_target_kind[kind];
+            const total = (tally: Record<string, number>) =>
+                Object.values(tally).reduce((sum, n) => sum + n, 0);
+            expect([kind, total(counts.labels), total(counts.literal)]).toEqual([
+                kind,
+                counts.changes,
+                counts.changes,
+            ]);
+            expect(total(counts.left_automatic_in_force)).toBe(counts.left_automatic);
+        }
+        // A row that left automatic delivery in force is counted as such: the tag disputed
+        // before the arm saw it replaced.
+        const early = run({ tagAt: 79 });
+        await gradeReviewer(early, null, judgeSays(fair));
+        const inForce = JSON.parse(
+            readFileSync(join(early, REVIEWER_GRADE_SUMMARY), "utf8"),
+        ) as ReviewerGradeSummary;
+        expect(inForce.arms[ARM]?.all.left_automatic_in_force).toMatchObject({
+            "in force": 1,
+            ended: 1,
+        });
     });
 
     test("the judge is of another family than the run's models and than the models the reviewer called", async () => {

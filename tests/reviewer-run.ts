@@ -754,3 +754,95 @@ export function reviewerRun(o: RunOptions = {}): string {
     );
     return dir;
 }
+
+/**
+ * A finished run directory of one arm in which the memory reviewer wrote no change: the fixture's
+ * scenario, a complete journal, and empty gateway logs. `store` is what the arm left behind:
+ * `none` for an arm without a daemon (a host arm); `current` for an Eidnara arm with the reviewer
+ * switch off on a build that has the reviewer's tables, holding one captured memory and the
+ * tables with no row; `before-reviewer` for a build whose stores predate the reviewer, holding
+ * the commit log and the decisions alone.
+ */
+export function unreviewedRun(arm: string, store: "none" | "current" | "before-reviewer"): string {
+    const dir = mkdtempSync(join(tmpdir(), "unreviewed-run-"));
+    const scenario = reviewerScenario();
+    writeFileSync(join(dir, "scenario.json"), `${canonicalJson(scenario)}\n`);
+    writeFileSync(
+        join(dir, "manifest.json"),
+        JSON.stringify({
+            schema: "sim-run-manifest/v3",
+            tier: "S",
+            seed: 101,
+            host: "pi",
+            order: [arm],
+            events: scenario.events.length,
+            models: ["global.anthropic.claude-opus-5-5"],
+            scenario_hash: scenario.scenario_hash,
+            base_wall_ms: WALL0,
+        }),
+    );
+    const journal: Record<string, unknown>[] = [
+        { kind: "StartRun", arm: null, order: [arm], scenario_ms: 0, wall_ms: WALL0 },
+        { kind: "ClockOffset", arm, offset_s: 0, scenario_ms: 0, wall_ms: WALL0 },
+    ];
+    for (const [n, e] of scenario.events.entries()) {
+        const entry = { arm, event: e.id, scenario_ms: n * 1_000, wall_ms: WALL0 + n * 1_000 };
+        if (e.kind === "user_turn") journal.push({ kind: "BeginTurn", probe: null, ...entry });
+        journal.push({ kind: "Event", outcome: "ok", ...entry });
+    }
+    const end = WALL0 + scenario.events.length * 1_000;
+    journal.push({ kind: "EndArm", arm, scenario_ms: 200_000, wall_ms: end });
+    journal.push({ kind: "EndRun", arm: null, scenario_ms: 0, wall_ms: end });
+    writeFileSync(
+        join(dir, "journal.jsonl"),
+        journal.map((e, seq) => `${JSON.stringify({ ...e, seq })}\n`).join(""),
+    );
+    writeFileSync(join(dir, "calls.jsonl"), "");
+    writeFileSync(join(dir, "requests.jsonl"), "");
+    mkdirSync(join(dir, arm));
+    if (store === "none") return dir;
+    const final = join(dir, arm, "final-store");
+    mkdirSync(final);
+    const kernel = new Database(join(final, "kernel.sqlite"));
+    kernel.run(
+        "create table commit_log(commit_seq integer primary key, recorded_at integer, operation_key text, producer text)",
+    );
+    kernel.run(
+        "create table decisions(object_id text primary key, decision_payload blob, created_commit_seq integer, invalidated_commit_seq integer, superseded_by text)",
+    );
+    kernel.run("insert into commit_log values (1, ?, 'op-1', 'memory_capture')", [WALL0 + 2_500]);
+    kernel.run("insert into decisions values ('mem_tag0', ?, 1, null, null)", [
+        JSON.stringify({ summary: `User stated: ${TAG0}.`, rationale: "{}" }),
+    ]);
+    const daemon = new Database(join(final, "store.db"));
+    daemon.run("create table meta(key text primary key, value text)");
+    if (store === "current") {
+        kernel.run(
+            "create table operation_receipts(producer text, operation_key text, commit_seq integer, result_payload blob, created_at integer)",
+        );
+        kernel.run(
+            "create table admission_decisions(admission_decision_id text primary key, subject_object_id text, event_kind text, visibility text, commit_seq integer, decided_at integer)",
+        );
+        kernel.run(
+            "create table candidates(candidate_id text primary key, candidate_kind text, payload blob)",
+        );
+        kernel.run(
+            "insert into admission_decisions values ('adm-1', 'mem_tag0', 'approve', 'automatic', 1, 1)",
+        );
+        // A receipt of another producer than the reviewer's is no change of the reviewer.
+        kernel.run(
+            "insert into operation_receipts values ('memory_capture', 'capture#1', 1, 'mem_tag0', ?)",
+            [WALL0 + 2_500],
+        );
+        daemon.run(
+            "create table memory_reviewer_receipts(causal_identity text, selected_candidate_id text)",
+        );
+        daemon.run("create table memory_reviewer_jobs(causal_identity text, project text)");
+        daemon.run(
+            "create table memory_reviewer_attempts(causal_identity text, generation integer, attempt_index integer, committed_at_ms integer, terminal_at_ms integer)",
+        );
+    }
+    kernel.close();
+    daemon.close();
+    return dir;
+}

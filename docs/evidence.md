@@ -233,6 +233,28 @@ answered results, the bound the run registered (`search_fallback`,
 results. A record written before the bound existed gives the same counts
 from its `observed.search`.
 
+The `### Explicit search answers` table has one row per run and arm whose
+Pi transcripts hold an `eidnara_search` result, read from the transcripts
+by the capability record's reader (`readPiSearches`, `docs/hosts.md`), so
+every arm of every build is read by one rule and a run without a
+capability record has its row too: the results, the ones the legacy
+snapshot scan answered with their fallback reasons, the ones the fused
+route ranked, the answered results that carry the consumer-behind note
+(`tip_notes.consumer_behind`), the answered results that carry the
+no-consumer note (`tip_notes.no_consumer`), the errored results, the lag
+errors among them (`errored_lag`), and the errored share of all results.
+A result that carries the consumer-behind note is an answered search of
+the route its opening names and is also counted under that note, as a
+reported degraded note; it is no error and adds nothing to the errored
+count or to the errored share. A probe's `probe_time.searches` entry
+carries the same reading of its own result: `route`, `fallback`, and,
+where they apply, `tip_note` (`consumer_behind` or `no_consumer`) and
+`lag_error`.
+The transcripts are read from the arm directory down
+(`r/home/.pi/agent/sessions`): every directory on that path, the runtime
+root `r` included, is a real directory, and a link among them refuses the
+read.
+
 The `### Memory reviewer` table has one row per run and arm that loads the
 Eidnara plugin, sets the reviewer switch, or shows a sign of the reviewer,
 read from the arm's artefacts by one rule (`reviewerEvidence`), so a run
@@ -240,8 +262,13 @@ without a capability record has its row too:
 
 - the arm's switch, from the profile the manifest records;
 - the reviewer's lines in `<arm>/daemon.log` over every daemon generation
-  (`docs/hosts.md`, `reviewer.log`): review jobs enqueued by trigger,
-  selection passes, stage-1 decisions by decider with the models named,
+  (`docs/hosts.md`, `reviewer.log`): review jobs enqueued by trigger and,
+  where the line names it, by delivery group (`enqueued_by_delivery`:
+  `automatic` for a memory of the delivered block, `search` for one served
+  on explicit search alone; `unread` for evidence written before the group
+  was read), the lines of a project whose review-metadata quota refused a
+  new job (`quota_refused`) beside the status readings' count of projects
+  at that quota, selection passes, stage-1 decisions by decider with the models named,
   failed stage-1 requests, runs that ended without settlement by reason
   (`fenced` for a run a clock advance inside an open session ended,
   `docs/hosts.md`), reviews ended on a later reference the model was not
@@ -259,15 +286,24 @@ without a capability record has its row too:
   `memory_reviewer_stage2` in `calls.jsonl`;
 - the reviewer's activation state in the daemon status readings of
   `<arm>/resources.jsonl`: the readings that report `open`, and the last
-  state;
+  state; and, in the quota column, `status.metadata_quota`: the last
+  reading of `projects_at_metadata_quota`, the largest reading, and the
+  readings above zero among those that report the counter (`no reading`
+  on a build before `eval/wM`);
 - the final store's failed-command records and disputed objects, live and
   retired, or `unread` without a readable Kernel store.
+
+The record of each arm also holds `search`, the counts of the explicit
+search table above (`legacy_scan`, `fused`, `errored`, `contested`,
+`tip_notes`, `errored_lag`), or `null` on a host whose transcripts hold no
+such record.
 
 `evidence-reviewer.json` holds the same record per arm (`schema`
 `sim-evidence-reviewer/v1`, `arms`). The table counts what the reviewer
 did; whether each written change was right is graded by
 `bun scripts/grade-reviewer.ts` (`docs/grading.md`, Grading revision 16),
-which writes `reviewer-grades.jsonl`. An arm with the switch off shows no
+which writes `reviewer-grades.jsonl` and, as counts per arm and target
+kind, `reviewer-grade-summary.json`. An arm with the switch off shows no
 review; a disputed object there comes from the agent's own `eidnara_memory`
 dispute action.
 

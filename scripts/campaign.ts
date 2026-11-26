@@ -428,7 +428,10 @@ function step(
         record.gave_up_reason = decision.reason;
         say(`${run.name} GAVE UP: ${decision.reason}`, true);
     }
-    if (decision.action === "wait" && isRunning) record.state = "running";
+    // A finalize step can hold the run's lease across a poll.
+    if (decision.action === "wait" && isRunning && record.state !== "finalizing") {
+        record.state = "running";
+    }
     return progress;
 }
 

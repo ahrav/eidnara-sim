@@ -700,6 +700,131 @@ export function writeHarnessRuntime(args: { dir: string }) {
     return checkout;
 }
 
+/**
+ * The product's configuration keys that set one of its timed rules or limits
+ * (`docs/time.md`, Eidnara's timed rules under the simulator's clocks): the block budget
+ * `memory.injection_budget_tokens` (Eidnara `crates/daemon/src/config.rs` 31 and 1204 at
+ * `eval/wM`) and the Memory Classifier's schedule under `memory_classifier`
+ * (`config.rs` 1209). Every other rule of that table is a constant of the product's source.
+ */
+const TIMED_RULE_KEYS = ["memory.injection_budget_tokens", "memory_classifier"];
+
+/** The leaves of a configuration object as dotted key paths with their values. */
+function leaves(value: unknown, at = ""): [string, unknown][] {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return [[at, value]];
+    return Object.entries(value).flatMap(([key, v]) => leaves(v, at === "" ? key : `${at}.${key}`));
+}
+
+test("no arm's configuration files and no daemon launch environment set one of Eidnara's timed rules", async () => {
+    const reviewer = [
+        "memory_reviewer.enabled",
+        "memory_reviewer.apply",
+        "memory_reviewer.model",
+        "memory_reviewer.stage1_model",
+    ];
+    // Every key an arm writes, as a closed list: a new key is a decision this test asks for.
+    const plugin = [
+        "enabled",
+        "host.connection_file",
+        "compaction.enabled",
+        "execute_threshold_percentage",
+        "protected_tags",
+        "history_budget_percentage",
+        "history_summarizer.model",
+        "context_researcher.model",
+        "memory.enabled",
+        "memory.auto_promote",
+        "memory.auto_capture",
+        "memory.auto_search.enabled",
+        "memory.auto_inject.enabled",
+        "memory.git_commit_indexing.enabled",
+        "source_capture.enabled",
+    ];
+    const daemon = [
+        "history_summarizer.module_model",
+        "memory.auto_inject.enabled",
+        "source_capture.enabled",
+    ];
+    const timed = (path: string) =>
+        TIMED_RULE_KEYS.some((key) => path === key || path.startsWith(`${key}.`));
+    for (const arm of Object.keys(ARM_PROFILES) as ArmName[]) {
+        const reviews = arm === "eidnara-reviewer";
+        const user = leaves(eidnaraUserConfig("c.json", "side", arm, "small"));
+        const own = leaves(fixtureDaemonConfig("side", arm, "small"));
+        expect([arm, user.map(([path]) => path)]).toEqual([
+            arm,
+            [...plugin, ...(reviews ? reviewer : [])],
+        ]);
+        expect([arm, own.map(([path]) => path)]).toEqual([
+            arm,
+            [...daemon, ...(reviews ? reviewer : [])],
+        ]);
+        expect([...user, ...own].filter(([path]) => timed(path))).toEqual([]);
+        // A duration or a limit is a number. The daemon's tier holds none, and the plugin's
+        // holds the three compaction settings every Eidnara arm has had, the same on each arm.
+        expect(own.filter(([, v]) => typeof v === "number")).toEqual([]);
+        expect(user.filter(([, v]) => typeof v === "number")).toEqual([
+            ["execute_threshold_percentage", 65],
+            ["protected_tags", 20],
+            ["history_budget_percentage", 0.15],
+        ]);
+    }
+    // The daemon starts with the harness's time settings and the arm's configuration alone:
+    // its wall clock reads the offset file, and its monotonic clock stays real.
+    const run = runDir();
+    const checkout = fakeDaemonV1(run);
+    writeFileSync(
+        join(checkout, "packages/e2e-tests/src/rust-runner/hermetic-host.ts"),
+        `import { writeFileSync } from "node:fs";
+export class HermeticHostStack {
+    static async start(options: { dataDir: string }) {
+        writeFileSync(options.dataDir + "/../started.json", JSON.stringify(options));
+        return { connectionFile: "c", child: { pid: 1 }, hostLog: () => "", terminateHost: async () => undefined, restartHost: async () => undefined };
+    }
+}
+`,
+    );
+    const root = join(run, "arm");
+    mkdirSync(root);
+    const offsetFile = join(run, "offset");
+    for (const arm of ["eidnara", "eidnara-reviewer"] as const) {
+        await new DaemonStack({
+            config: { ...loadConfig(), eidnara_checkout: checkout },
+            root,
+            dataDir: join(run, "s"),
+            logFile: join(run, "daemon.log"),
+            offsetFile,
+            proxyHttp1: "",
+            proxyHttp2: "",
+            model: "side",
+            arm,
+            reviewerStage1Model: "small",
+        }).start();
+        const started = JSON.parse(readFileSync(join(run, "started.json"), "utf8"));
+        expect(Object.keys(started.daemonEnv)).toEqual([
+            "LD_PRELOAD",
+            "FAKETIME_TIMESTAMP_FILE",
+            "FAKETIME_NO_CACHE",
+            "FAKETIME_DONT_FAKE_MONOTONIC",
+        ]);
+        expect(started.daemonEnv).toMatchObject({
+            FAKETIME_TIMESTAMP_FILE: offsetFile,
+            FAKETIME_DONT_FAKE_MONOTONIC: "1",
+        });
+        expect(started.daemonConfig).toEqual(fixtureDaemonConfig("side", arm, "small"));
+        // The start names no further option that reaches the daemon's rules.
+        expect(Object.keys(started).sort()).toEqual([
+            "credentialSource",
+            "daemonConfig",
+            "daemonEnv",
+            "dataDir",
+            "fixtureBin",
+            "harnessRuntime",
+            "startTimeoutMs",
+        ]);
+    }
+});
+
 test("the daemon stack refuses a symlinked store directory and replaces a symlinked runtime", async () => {
     const run = runDir();
     const checkout = fakeDaemonV1(run);

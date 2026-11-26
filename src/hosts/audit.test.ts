@@ -65,6 +65,8 @@ const VARIANT: VariantRecord = {
     replaced_observation_date: false,
     failed_command_records: false,
     memory_review: false,
+    search_tip_read_while_lagging: false,
+    review_selection_by_delivery: false,
     background_cache_points: "system-and-message",
     evidence: "test",
     sources: ["fixture.rs", "config.rs"],

@@ -19,7 +19,12 @@ export interface Reference {
     writer: "user" | "assistant" | "tool" | "repository file" | "unrecorded";
     /** The time the host gave for the message, on the daemon's clock; null when its label holds none. */
     at_ms: number | null;
-    /** How the host places it against the memory's source: the source itself, written after it, or written before it. */
+    /**
+     * The host's label of the reference relative to the memory's source: `source`, `later`, or
+     * `earlier`. `eval/w9` writes `earlier` as `written before the memory's source`; `eval/wM`
+     * writes it as `written with the memory's source or before it` and includes a message written
+     * at the source's own time.
+     */
     relation: "source" | "later" | "earlier";
     text: string;
 }
@@ -37,7 +42,7 @@ export interface ReviewRequest {
 
 /** A reference's line as the host writes it: the writer, a time when the host knows one, and the relation. */
 const LABEL =
-    /^(?:a message (?:the (user|assistant)|a (tool|repository file)) wrote|a source of (unrecorded) origin)(?: at (\S+))?; (?:(the memory cites it as its source)|written (after|before) the memory's source)$/;
+    /^(?:a message (?:the (user|assistant)|a (tool|repository file)) wrote|a source of (unrecorded) origin)(?: at (\S+))?; (?:(the memory cites it as its source)|written (after|before) the memory's source|written with the memory's source or before it)$/;
 
 /**
  * The references of one stage-2 request text: the bytes between each pair of host markers, and

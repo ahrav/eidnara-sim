@@ -1709,10 +1709,45 @@ commit superseded no row, and a completed transcript record that does not
 parse each refuse the pass. The step writes `reviewer-grades.jsonl` whole (one row per
 change, `sim-reviewer-grade/v1`) and appends new labels to
 `reviewer-judgments.jsonl` and the judge's calls to `judge-calls.jsonl`.
-It writes no other file of the run; a read-only open of a store in WAL
+It also writes `reviewer-grade-summary.json` whole (below), in this
+order: it removes the summary of an earlier pass, installs the new grade
+file, then installs the new summary. A summary on disk therefore counts
+the rows beside it, and a pass whose second write fails leaves the new
+rows with the summary absent until the next pass writes both. It writes no
+other file of the run; a read-only open of a store in WAL
 mode can create the store's `-shm` file, as the evidence readers' opens
 do. It exits 1 when a change the revision grades has no label (the
 summary's `unlabelled`).
+
+A run whose arms hold no change of the reviewer is graded by the same
+rule: a host arm has no store and is listed in `without_store`; an Eidnara
+arm with the reviewer switch off has a store without a reviewer receipt,
+and a store of a build from before the reviewer lacks the reviewer's
+tables, which reads as no receipt. The step then writes an empty
+`reviewer-grades.jsonl` and a summary of zero counts, makes no judge call,
+opens neither judge log, and exits 0. A campaign therefore runs the step
+on every run, as its last finalize step (`docs/run-command.md`, Campaign
+supervisor).
+
+`reviewer-grade-summary.json` (`sim-reviewer-grade-summary/v1`) holds the
+grade rows of the run as counts, so an analysis reads one file per run.
+`primary` names the revision's rule (`judged-row-ended`) and its labels,
+`secondary` the stored metric (`R1.v1`, `target-literal-status`), and
+`delivery_rule` the in-force reading (`scenario-records-in-force`).
+`arms.<arm>` holds, for every arm of the manifest's order, `all` and
+`by_target_kind` (`user statement`, `work in progress`, `agent note`,
+`assistant report`), each with: `changes`; `labels`, the primary reading,
+the changes by judged label (`R`, `P`, `W`, `U`, and `none` for a change
+without one); `literal`, the secondary reading, the changes by the literal
+rule's verdict (`right`, `wrong`, `no truth`); `left_automatic`, the
+changes that took their row out of automatic delivery (visibility
+`automatic` before the change and another one after it); and
+`left_automatic_in_force`, those rows by what the scenario's records say
+of them at the change (`in force`, `ended`, `states no fact`, `no scenario
+statement`, and `no reading` for a row that is no statement of the user or
+whose commit time maps to no single wall time). `pass` is the summary the
+step prints: the changes by arm, `without_store`, the changes without a
+label by reason, `unlabelled`, and the judge calls of this pass.
 
 A change gets a row with no label, a `reason`, and no judge call when the
 run's records leave its evidence open: its commit time maps to no single
@@ -1749,7 +1784,7 @@ line. Times are the daemon's clock.
 |---|---|
 | The target row: text, writer kind, the writer and time of the message it was captured from, the time it was stored | `decisions` and `commit_log` of `final-store/kernel.sqlite`; the kind is `agent note` for a row a `plugin` commit created, `assistant report` for text that opens `Assistant reported`, `work in progress` for a captured statement of lifetime `current_work`, `user statement` for a row whose text opens `User stated`, that a statement record names, or whose rationale gives the user as speaker, and `assistant report` for any other row; the source line comes from the reference the stage-2 request labels as the memory's source |
 | The change: kind and commit time, and the new text of a revision | the reviewer's receipts in `operation_receipts`: a dispute through the `mark_disputed` admission decision of its commit, a contest mark through the row its commit superseded, a settlement with effect `retired`, `revised`, or `created` (a created row is named by the effect; the job is the one whose receipt selected the settled proposal) |
-| Each cited later source: writer, time, text | the contradiction spans of the proposal the change applied (the selected candidate of its receipt in `store.db`), read in the stage-2 request the gateway recorded: the one completed `memory_reviewer_stage2` call of the arm (status 200, no error) for the row's text that lies inside the job's last attempt (the highest attempt index of the highest generation in `memory_reviewer_attempts` of `store.db`, from its commit to its end, taken back to wall time) and holds every cited alias with the cited byte range inside the reference. A reference's writer (the user, the assistant, a tool, a repository file, or unrecorded), time, and relation come from its line in the request's reference list, read where the host writes it, directly after the memory's own bytes; the host gives a tool output no time. A cited reference the host labels as the row's own source, or as written before it, is shown with that relation |
+| Each cited later source: writer, time, text | the contradiction spans of the proposal the change applied (the selected candidate of its receipt in `store.db`), read in the stage-2 request the gateway recorded: the one completed `memory_reviewer_stage2` call of the arm (status 200, no error) for the row's text that lies inside the job's last attempt (the highest attempt index of the highest generation in `memory_reviewer_attempts` of `store.db`, from its commit to its end, taken back to wall time) and holds every cited alias with the cited byte range inside the reference. A reference's writer (the user, the assistant, a tool, a repository file, or unrecorded), time, and relation come from its line in the request's reference list, read where the host writes it, directly after the memory's own bytes; the host gives a tool output no time. A cited reference the host labels as the row's own source, or with the earlier relation (`written before the memory's source` up to `eval/w9`, `written with the memory's source or before it` from `eval/wM` on, where it includes a message of the source's own time), is shown with that relation; the view states the earlier relation as `written before the row's source` |
 | The conversation of the row's project from the row's time to the change | Pi's session transcripts: user messages (3,000 characters each), assistant text (1,800), tool calls (300) and outputs (400); a span over 36,000 characters keeps its first 9,000 and last 18,000 and, between them, the newest of the user's messages that fit 6,000 characters, cut to 500 each. It starts at the row's source message, or 15 minutes before a row without a source was stored, or at a cited source that precedes both |
 | The scenario's record of the row's subject up to the change | the events of each fact line the row restates or whose value literal stands in the row as a whole token, in the order the arm received them (`BeginTurn` or `Event` in the journal), with the plan step each set (`plans`) and a mark on the first event of a fact that supersedes an earlier one |
 
