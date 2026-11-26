@@ -89,7 +89,7 @@ object in the user tier and drops it from a project tier. The enabled
 switch also turns on the daemon's source capture, which the arm has on
 already, and its contradiction-candidate pass, which every other arm leaves
 off. The arm requires `memory_reviewer` and `memory_review` of its variant,
-so it runs on `eval/w9` and is refused on every earlier build, whose
+so it runs on `eval/w9` and `eval/wM` and is refused on every earlier build, whose
 fixture installs no reviewer host. A contrast pairs two arms that differ in
 delivery mode, search route, or reviewer switch (`sameTreatment`), so
 `eidnara-reviewer` against `eidnara` is one. The settle step this arm runs
@@ -497,7 +497,8 @@ the variants read there:
 
 | Build | Commit | Variants | Read for |
 |---|---|---|---|
-| `eval/w9` (`AUDITED_EIDNARA`, the current build) | `4c293f183` | all three | the reviewer campaign (W5S, W5SH, W5P): `main` `ea12bff2a` plus the heads of Eidnara #1236 (the block's closing sentence), #1237 (the dated replacement mark), #1238 (named files), #1232 (failed-command records), #1239 (the durable-text redactor), and #1240 to #1243 (the memory reviewer) |
+| `eval/wM` (`AUDITED_EIDNARA`, the current build) | `f618ce77e` | all three | the tier M campaign (WM, WMH, WMP, WMPH): `main` `21134bc94` (which holds the w9 PRs as merged: #1232, #1236 to #1243) plus the heads of Eidnara #1246 (a read's freshness judged by the consumers a search serves from) and #1247 (a review on evidence written after the memory by a writer who may change it, the delivered block's memories first, and the review-metadata quota in the status block) |
+| `eval/w9` | `4c293f183` | all three | the reviewer campaign (W5S, W5SH, W5P): `main` `ea12bff2a` plus the heads of Eidnara #1236 (the block's closing sentence), #1237 (the dated replacement mark), #1238 (named files), #1232 (failed-command records), #1239 (the durable-text redactor), and #1240 to #1243 (the memory reviewer) |
 | `main-ea12bff2a` | `ea12bff2a` | all three | the reference arm of the reviewer campaign (W5S, W5SH, W5P): `main` with the PRs of `eval/w4` as merged, plus #1233 (general talk classed `status`) and #1235 (a user's sentence approved by the speaker its extractor names) |
 | `eval/w4` | `6aabc77e1` | all three | the correctness retest (W4S, W4SH, W4P): `main` `228f9fb74` (which holds the merged Eidnara #1221 to #1224) plus the open heads of #1230, #1227, #1228, and #1229 |
 | `eval/w3-all` | `a996cc466` | all three | the caching-on retest (W3S, W3SH, W3P): `main` `2fbeb6059` (which holds #1220 as merged, three capture commits past the head in `eval/w2b`) plus the open heads of Eidnara #1223, #1224, #1221, and #1222 |
@@ -517,18 +518,19 @@ capability values of each variant the arms run), a resume must bind the same
 build, and the arm's evidence is checked against that build's values. One
 sim revision therefore runs a campaign's arms on its current build and
 a reference arm on its reference build, each run with its own `SIM_CONFIG`
-(`docs/run-command.md`, campaign `config`). The `eval/w4`, `eval/w3-all`,
-`eval/w2b`, and `eval/w2` entries keep the earlier registrations bound to
-the commits they name. `eval/w9` has the current table (`DAEMON_VARIANTS`),
+(`docs/run-command.md`, campaign `config`). The `eval/w9`, `eval/w4`,
+`eval/w3-all`, `eval/w2b`, and `eval/w2` entries keep the earlier
+registrations bound to the commits they name. `eval/wM` has the current
+table (`DAEMON_VARIANTS`), `eval/w9` has its own (`W9_VARIANTS`),
 `main-ea12bff2a` and `eval/w4` share one (`W4_VARIANTS`), since every probe
 of that table holds at both commits, `eval/w3-all` has its own
 (`W3_VARIANTS`), and the two w2 builds share one (`W2_VARIANTS`). The table
 below holds for every build from `eval/w2` on, except its memory reviewer
-column, which on `eval/w9` reads `yes` for all three variants:
+column, which from `eval/w9` on reads `yes` for all three variants:
 
 | Variant | Search route | Embeddings | Memory reviewer | Side calls | Memory injection | Source capture |
 |---|---|---|---|---|---|---|
-| `direct_host_fixture` | legacy scan (started without `--query-route`) | deterministic 8-dimension engine | before `eval/w9`: none (its `review-witness` control runs reviewer jobs against a scripted local provider on a test's request); on `eval/w9`: a reviewer host over the fixture's own model execution, with the `review-drain` control | through the proxy, by the `--harness-runtime` redirect extension | switchable | on the consent key; its control socket reports the settled `source_capture` counters |
+| `direct_host_fixture` | legacy scan (started without `--query-route`) | deterministic 8-dimension engine | before `eval/w9`: none (its `review-witness` control runs reviewer jobs against a scripted local provider on a test's request); from `eval/w9` on: a reviewer host over the fixture's own model execution, with the `review-drain` control | through the proxy, by the `--harness-runtime` redirect extension | switchable | on the consent key; its control socket reports the settled `source_capture` counters |
 | `direct_host_fixture` fused (`direct-host-fixture-fused`) | fused: `--query-route production --local-embeddings-manifest <payload-manifest.json>` | `gte-modernbert-base-f32`, the payload's local embedding lane | as the legacy fixture | through the proxy | switchable | on the consent key |
 | production `eidnara-host` | fused | `gte-modernbert-base-f32` | yes | straight to Bedrock | switchable | on the consent key |
 
@@ -559,7 +561,7 @@ and every later build keeps both values:
 | `background_cache_points` | `system-and-message`: a background call (memory capture, a daemon-run call) carries Pi's two cache points, after the system prompt and at the end of its one user message | `system`: the capture executor (`packages/pi-plugin/src/memory-capture-native.ts`) and the bundled model-execution hook (`crates/host-runtime/assets/pi-model_execution-extension.mjs`) remove cache markers from user messages, so a background call writes a cache entry for its system prompt alone (Eidnara #1224). #1223, in the same build, starts every Pi model-execution run in one working directory, so the system prompt Pi ends with that directory is the same text on every daemon-run call |
 
 The w4 build differs from the w3 build in one more, on every variant, and
-the main commit `ea12bff2a` and the current build keep its value:
+the main commit `ea12bff2a` and every later build keep its value:
 
 | Capability | `eval/w3-all` (and every earlier build) | `eval/w4` |
 |---|---|---|
@@ -571,9 +573,9 @@ capture sends a source the provider keeps refusing in a request of its own;
 registry still holds it; and a memory call made after another transport
 closed the shared daemon connection dials a new one.
 
-The current build differs from the main commit and from `eval/w4` in five
+The w9 build differs from the main commit and from `eval/w4` in five
 more, on every variant, and its two fixture variants install a reviewer
-host (`memory_reviewer`):
+host (`memory_reviewer`); the current build keeps all six values:
 
 | Capability | `main-ea12bff2a`, `eval/w4` (and every earlier build) | `eval/w9` |
 |---|---|---|
@@ -583,6 +585,20 @@ host (`memory_reviewer`):
 | `failed_command_records` | `false` | `true`: the daemon records a tool result the harness marks as an error as a labeled fact of category `TOOL_FAILURE` on the source lineage `tool_failure:<digest of the command line>`, one live row per command line, under the source-capture consent; the row is served on explicit search and reaches no block (`crates/daemon/src/memory_capture/failures.rs`, Eidnara #1232) |
 | `memory_review` | `false`: the daemon reads no `memory_reviewer` key | `true`: under the user-tier switch the daemon's worker reviews the stored memories of a project in two stages through its host's model execution, and in `contest` mode writes a `disputed` label (the Kernel's `mark_disputed`: the memory leaves the block and stays on explicit search) or a `contested` mark on a user statement (`crates/daemon/src/memory_reviewer/`, Eidnara #1240 to #1243) |
 | `memory_reviewer` | fixture variants `false`, production `eidnara-host` `true` | `true` on all three: the fixture builds its `Handler` `with_memory_reviewer_host`, so the worker runs in it as under `eidnara-host`, and its control socket answers `review-drain` |
+
+The current build differs from the w9 build in two more, on every variant:
+
+| Capability | `eval/w9` (and every earlier build) | `eval/wM` |
+|---|---|---|
+| `search_tip_read_while_lagging` | `false`: a gated `kernel.read` counts every registered outbox consumer, the reviewer's `claim-sources` consumer included, and the snapshot scan reports a lagging one as the error `Memory results may lag recent changes; the projector has not caught up.` | `true`: a gated read is judged by the consumers a search serves from (`unserved_consumers` in `crates/daemon/src/kernel_routes/serving.rs`), which leaves out the claim consumer on a host with no search lifecycle owner, as the legacy fixture is; where a counted consumer lags, the plugin repeats the read ungated and the result carries the note `Memory: a search consumer is behind recent changes. These results are read from the canonical tip and include them.` (`canonicalTipNote` in `packages/opencode-plugin/src/tools/eidnara-search/execute.ts`, Eidnara #1246) |
+| `review_selection_by_delivery` | `false`: a selection enqueues by newest evidence alone, and its `enqueued` log line ends at `source=<n>`; before `eval/w9` the daemon reads no reviewer switch | `true`: a selection enqueues the memories of the delivered block first and logs `enqueued job=<id> trigger=<t> later=<n> source=<n> delivery=<automatic\|search>`; a project at its review-metadata quota logs `selection queues no new review for a project` once per daemon process and counts in `projects_at_metadata_quota` of the status answer's `memory_reviewer` block (`crates/daemon/src/memory_reviewer/review_cycle.rs`, `crates/memory-store/src/lib.rs`, Eidnara #1247) |
+
+#1247 also narrows what a review reads as later evidence: a source written
+after the memory was stated, from the user for a user statement and an
+assistant report, and from any writer for work in progress and a note
+(`takes_evidence` in `stage_one.rs`); a `revise` of an assistant report is
+logged `applied a proposal: job=<id> standing` and writes nothing. Those
+change review counts and no capability value.
 
 The fused fixture's projection is served to readers while it trails the
 kernel tip by at most `FIXTURE_READER_LAG_COMMITS` (1,024) commits, the
@@ -746,6 +762,29 @@ table adds `named_files.rs`, `memory_capture/failures.rs`, and
 `memory_reviewer/worker.rs`, `review_cycle.rs`, `stage_one.rs`, and
 `coordinator.rs` to its audited sources. The other capability values
 stand.
+
+At `f618ce77e` the verdict against `eval/wM` is `unchanged`, and each
+earlier build's commit stays `unchanged` against its own table. From
+`4c293f183` to `f618ce77e` every probe of the w9 table holds except five:
+two whose source text was rewritten with the same behaviour
+(`memory_render.rs` renders the delivered block through `render_block` with
+the closing sentence as its note, and the block is the same text; the
+`enqueued` log line gains its `delivery` field) and the three that read the
+two capabilities above as absent. Seventeen audited sources change:
+`canonical_memory.rs` (one read of the commit times a pass shows),
+`config.rs`, `lib.rs`, `m0_compose.rs`, `memory_capture.rs`,
+`memory_capture/failures.rs`, `memory_render.rs`, `named_files.rs`, and the
+four `memory_reviewer/` sources under `crates/daemon/src/`, the
+model-execution hook and `model_execution/pi.rs`, the shared transform
+client, and the Pi plugin's `index.ts` and `pi-transform.ts`: the merged
+forms of the w9 PRs, #1246, and #1247. The wM table adds
+`eidnara-search/execute.ts`, `kernel_routes/read.rs`,
+`kernel_routes/serving.rs`, and `crates/memory-store/src/lib.rs` to its
+audited sources. Every string a reader of this harness parses reads the
+same at both commits except the `enqueued` line and the line a selection
+writes when a store holds more claim descriptors than one walk examines,
+and `readReviewerLog` reads both forms of each. The other capability
+values stand.
 
 ## Prompt caching
 

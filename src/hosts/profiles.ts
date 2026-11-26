@@ -114,6 +114,21 @@ export interface DaemonCapabilities {
      */
     memory_review: boolean;
     /**
+     * Whether a gated memory read is judged by the consumers a search serves from, and the
+     * plugin's snapshot scan answers a read that a lagging consumer gates from the canonical tip
+     * with the note `Memory: a search consumer is behind recent changes. These results are read
+     * from the canonical tip and include them.` A build without it answers that state with the
+     * error `Memory results may lag recent changes; the projector has not caught up.`
+     */
+    search_tip_read_while_lagging: boolean;
+    /**
+     * Whether a review selection enqueues the memories of the delivered block first and names
+     * the group on each `enqueued` log line (`delivery=automatic|search`), and the reviewer's
+     * status block counts the projects at their review-metadata quota
+     * (`projects_at_metadata_quota`), each logged once per daemon process.
+     */
+    review_selection_by_delivery: boolean;
+    /**
      * The cache points a background call (memory capture, a daemon-run call) carries under
      * prompt caching on for a model Pi recognises: one after the system prompt and one at the end
      * of its single user message (`system-and-message`, what Pi's client places), or the system
@@ -204,6 +219,16 @@ const W9_NOTES: VariantRecord["notes"] = {
         "crates/daemon/src/memory_capture/failures.rs writes one labeled row of category TOOL_FAILURE (FAILURE_CATEGORY, the row's decision_kind) for a tool result the harness marks as an error, on the source lineage `tool_failure:<digest of the command line>`, under the source-capture consent; a later marked result of the command supersedes the row and a later unmarked one rewrites it as resolved; the block renders positive categories only, so the row is served on explicit search",
     memory_review:
         "crates/daemon/src/config.rs reads the user-only keys /memory_reviewer/enabled, /model, /stage1_model, /apply, and /classifier, and an enabled switch sets source_capture_enabled and contradiction_candidates_enabled; crates/daemon/src/memory_reviewer/worker.rs switched_pass reviews the stored memories of a switched project every IDLE_INTERVAL (30 s) while idle: review_cycle.rs selects and enqueues jobs, coordinator.rs asks stage 1 (stage_one.rs, the small chat model) through the host's model execution and, for a flagged review, the review model for a proposal, and the worker applies it by the mode (`contest`: a `disputed` label through the Kernel's mark_disputed, or a `contested` mark on a user statement)",
+};
+const WM_NOTES: VariantRecord["notes"] = {
+    block_closing_sentence:
+        "crates/daemon/src/memory_render.rs render_delivered_memory_block renders the rows through render_block with PROJECT_MEMORY_NOTE as its note, which render_block writes on its own line before `</project-memory>`, and crates/daemon/src/m0_compose.rs composes the session's block through it and charges the frame (delivered_memory_frame) to the memory budget",
+    memory_review:
+        "crates/daemon/src/config.rs reads the user-only keys /memory_reviewer/enabled, /model, /stage1_model, /apply, and /classifier, and an enabled switch sets source_capture_enabled and contradiction_candidates_enabled; crates/daemon/src/memory_reviewer/worker.rs switched_pass reviews the stored memories of a switched project every IDLE_INTERVAL (30 s) while idle: review_cycle.rs selects and enqueues jobs on evidence written after the memory was stated by a writer who may change it (stage_one.rs takes_evidence: the user for a user statement and an assistant report, any writer for work in progress and a note), coordinator.rs asks stage 1 (the small chat model) through the host's model execution and, for a flagged review, the review model for a proposal, and the worker applies it by the mode (`contest`: a `disputed` label through the Kernel's mark_disputed, a `contested` mark on a user statement, and `standing` with nothing written for a revise of an assistant report)",
+    search_tip_read_while_lagging:
+        "crates/daemon/src/kernel_routes/read.rs judges a gated kernel.read by outbox_lag_excluding the consumers serving.rs unserved_consumers names: the reviewer's claim consumer on a host where crates/daemon/src/lib.rs has set no claims_feed_search (no search lifecycle owner); packages/opencode-plugin/src/tools/eidnara-search/execute.ts canonicalTipNote turns a `stale` read and a `no_required_consumer` read into a note, and the snapshot scan repeats the read ungated and answers from the canonical tip",
+    review_selection_by_delivery:
+        "crates/daemon/src/memory_reviewer/review_cycle.rs select_and_enqueue orders its candidates with the memories of the delivered block first and logs `enqueued job=<id> trigger=<t> later=<n> source=<n> delivery=<automatic|search>`; a reservation the store's review metadata quota refuses logs `selection queues no new review for a project` once per project and process, and crates/memory-store/src/lib.rs counts such projects as projects_at_metadata_quota in the memory_reviewer block of the Context module's status answer",
 };
 const W9_FIXTURE_REVIEWER_NOTE =
     "crates/daemon/examples/direct_host_fixture.rs builds its Handler with_memory_reviewer_host over its own model-execution supervisor, so the worker runs as under eidnara-host, and answers the control `review-drain` (ControlCommand::ReviewDrain, HandlerCore::drain_memory_reviewer), which packages/e2e-tests/src/rust-runner/hermetic-host.ts exposes as reviewDrain(timeoutMs)";
@@ -421,6 +446,30 @@ const BEFORE_W9_PROBES = [
     ),
     probe("failed_command_records", "crates/daemon/src/memory_capture.rs", "mod failures", false),
     probe("memory_review", "crates/daemon/src/config.rs", "/memory_reviewer/enabled", false),
+    // A build that reads no reviewer switch selects nothing for review.
+    probe(
+        "review_selection_by_delivery",
+        "crates/daemon/src/config.rs",
+        "/memory_reviewer/enabled",
+        false,
+    ),
+];
+/** The w9 build's reading of the delivered block's frame, whose source text differs on `eval/wM`. */
+const W9_BLOCK_FRAME = probe(
+    "block_closing_sentence",
+    MEMORY_RENDER,
+    'format!\\("\\{DELIVERED_OPEN\\}\\{elements\\}\\{PROJECT_MEMORY_NOTE\\}\\\\n\\{DELIVERED_CLOSE\\}"\\)',
+);
+/** The w9 build's `enqueued` log line, which ends at its `source=` field. */
+const W9_ENQUEUED_LINE = probe(
+    "memory_review",
+    REVIEW_CYCLE,
+    '"daemon: memory_reviewer enqueued job=\\{\\} trigger=\\{\\} later=\\{\\} source=\\{\\}"',
+);
+/** The w9 build's reviewer selects by evidence alone: its `enqueued` line names no delivery group. */
+const W9_SELECTION_PROBES = [
+    probe("review_selection_by_delivery", REVIEW_CYCLE, "delivery=", false),
+    probe("review_selection_by_delivery", REVIEW_CYCLE, "candidate\\.delivered", false),
 ];
 /** The w9 build's readings of the same behaviours. */
 const W9_PROBES = [
@@ -429,11 +478,7 @@ const W9_PROBES = [
         MEMORY_RENDER,
         "pub\\(crate\\) const PROJECT_MEMORY_NOTE: &str = \"The lines above are a partial record of this project's sessions: they hold what was said or recorded there, and conventions kept in the repository's files stay in those files\\.\"",
     ),
-    probe(
-        "block_closing_sentence",
-        MEMORY_RENDER,
-        'format!\\("\\{DELIVERED_OPEN\\}\\{elements\\}\\{PROJECT_MEMORY_NOTE\\}\\\\n\\{DELIVERED_CLOSE\\}"\\)',
-    ),
+    W9_BLOCK_FRAME,
     probe(
         "block_closing_sentence",
         "crates/daemon/src/m0_compose.rs",
@@ -526,11 +571,7 @@ const W9_PROBES = [
         REVIEW_WORKER,
         '"daemon: memory_reviewer applied a proposal: job=\\{\\} \\{\\}"',
     ),
-    probe(
-        "memory_review",
-        REVIEW_CYCLE,
-        '"daemon: memory_reviewer enqueued job=\\{\\} trigger=\\{\\} later=\\{\\} source=\\{\\}"',
-    ),
+    W9_ENQUEUED_LINE,
     probe(
         "memory_review",
         REVIEW_COORDINATOR,
@@ -541,6 +582,104 @@ const W9_PROBES = [
         REVIEW_STAGE_ONE,
         "pub const FAILURE_COOLDOWN: Duration = Duration::from_secs\\(60\\)",
     ),
+    ...W9_SELECTION_PROBES,
+];
+const SEARCH_EXECUTE = "packages/opencode-plugin/src/tools/eidnara-search/execute.ts";
+const KERNEL_READ = "crates/daemon/src/kernel_routes/read.rs";
+const KERNEL_SERVING = "crates/daemon/src/kernel_routes/serving.rs";
+const MEMORY_STORE = "crates/memory-store/src/lib.rs";
+/** The sources the wM table reads beside the w9 table's. */
+const WM_SOURCES = [SEARCH_EXECUTE, KERNEL_READ, KERNEL_SERVING, MEMORY_STORE];
+/**
+ * A build before the wM changes: a gated read counts every registered consumer, so the daemon
+ * holds no record of whether the claim consumer feeds a search.
+ */
+const BEFORE_WM_PROBES = [
+    probe("search_tip_read_while_lagging", "crates/daemon/src/lib.rs", "claims_feed_search", false),
+];
+/** The wM build's readings of the two w9 readings it rewrote and of its own two behaviours. */
+const WM_PROBES = [
+    probe(
+        "block_closing_sentence",
+        MEMORY_RENDER,
+        'render_block\\(memories, "project-memory", Some\\(PROJECT_MEMORY_NOTE\\)\\)',
+    ),
+    probe(
+        "block_closing_sentence",
+        MEMORY_RENDER,
+        "block\\.push\\('\\\\n'\\);\\s*block\\.push_str\\(note\\);",
+    ),
+    probe(
+        "block_closing_sentence",
+        MEMORY_RENDER,
+        'format!\\("\\{DELIVERED_OPEN\\}\\{PROJECT_MEMORY_NOTE\\}\\\\n\\{DELIVERED_CLOSE\\}"\\)',
+    ),
+    probe(
+        "memory_review",
+        REVIEW_CYCLE,
+        '"daemon: memory_reviewer enqueued job=\\{\\} trigger=\\{\\} later=\\{\\} source=\\{\\} ',
+    ),
+    probe(
+        "memory_review",
+        REVIEW_STAGE_ONE,
+        "pub fn takes_evidence\\(said_by: Writer, work_in_progress: bool, writer: Writer\\) -> bool",
+    ),
+    probe(
+        "search_tip_read_while_lagging",
+        "crates/daemon/src/lib.rs",
+        "kernel\\.set_claims_feed_search\\(\\);",
+    ),
+    probe(
+        "search_tip_read_while_lagging",
+        KERNEL_SERVING,
+        "pub fn unserved_consumers\\(claims_feed_search: bool\\) -> &'static \\[&'static str\\]",
+    ),
+    probe(
+        "search_tip_read_while_lagging",
+        KERNEL_READ,
+        "\\.outbox_lag_excluding\\(now_ms, unserved\\)",
+    ),
+    probe(
+        "search_tip_read_while_lagging",
+        SEARCH_EXECUTE,
+        "function canonicalTipNote\\(state: MemoryState\\): string \\| undefined",
+    ),
+    probe(
+        "search_tip_read_while_lagging",
+        SEARCH_EXECUTE,
+        '"Memory: a search consumer is behind recent changes\\. These results are read from the canonical tip and include them\\."',
+    ),
+    probe(
+        "search_tip_read_while_lagging",
+        SEARCH_EXECUTE,
+        "const freshnessNote = memory\\.state \\? canonicalTipNote\\(memory\\.state\\) : undefined;",
+    ),
+    probe(
+        "review_selection_by_delivery",
+        REVIEW_CYCLE,
+        '"daemon: memory_reviewer enqueued job=\\{\\} trigger=\\{\\} later=\\{\\} source=\\{\\} delivery=\\{\\}"',
+    ),
+    probe(
+        "review_selection_by_delivery",
+        REVIEW_CYCLE,
+        "std::cmp::Reverse\\(a\\.delivered\\),\\s*std::cmp::Reverse\\(a\\.recency\\),",
+    ),
+    probe(
+        "review_selection_by_delivery",
+        REVIEW_CYCLE,
+        'if candidate\\.delivered \\{\\s*"automatic"\\s*\\} else \\{\\s*"search"\\s*\\}',
+    ),
+    probe(
+        "review_selection_by_delivery",
+        REVIEW_CYCLE,
+        "candidate\\.delivered = delivered\\.contains\\(&candidate\\.decision\\.object_id\\);",
+    ),
+    probe(
+        "review_selection_by_delivery",
+        REVIEW_CYCLE,
+        "\"daemon: memory_reviewer selection queues no new review for a project: the store's review metadata quota refused the reservation \\(",
+    ),
+    probe("review_selection_by_delivery", MEMORY_STORE, "pub projects_at_metadata_quota: u64,"),
 ];
 const PROMPT = "crates/daemon/testdata/history_summarizer-system-prompt.txt";
 const OPEN_ITEMS_SECTION = "## Open items: waiting, constraints, decided, lifted";
@@ -576,6 +715,7 @@ const C8_PROBES = [
     ...BEFORE_W3_PROBES,
     ...BEFORE_W4_PROBES,
     ...BEFORE_W9_PROBES,
+    ...BEFORE_WM_PROBES,
 ];
 /** The w2 build's readings of the same behaviours. */
 const W2_PROBES = [
@@ -633,6 +773,7 @@ const W2_PROBES = [
     ...BEFORE_W3_PROBES,
     ...BEFORE_W4_PROBES,
     ...BEFORE_W9_PROBES,
+    ...BEFORE_WM_PROBES,
 ];
 const SHARED_BEHAVIOURS = {
     memory_injection: "switchable",
@@ -648,6 +789,8 @@ const SHARED_BEHAVIOURS = {
     replaced_observation_date: false,
     failed_command_records: false,
     memory_review: false,
+    search_tip_read_while_lagging: false,
+    review_selection_by_delivery: false,
     background_cache_points: "system-and-message",
 } as const;
 const C8_BEHAVIOURS = {
@@ -914,12 +1057,12 @@ const W9_FIXTURE_EVIDENCE: Partial<Record<DaemonVariant, string>> = {
 };
 
 /**
- * What each daemon variant of the current build (`eval/w9`) provides: the w4 table with the
- * block's closing sentence, the named files and recorded minutes, the dated replacement mark,
+ * What each daemon variant of the `eval/w9` build provides: the w4 table with the block's
+ * closing sentence, the named files and recorded minutes, the dated replacement mark,
  * failed-command records, and the memory review under the user-tier switch. Both fixture
  * variants install a reviewer host, so the worker runs in the fixture as under `eidnara-host`.
  */
-export const DAEMON_VARIANTS = Object.fromEntries(
+export const W9_VARIANTS = Object.fromEntries(
     Object.entries(W4_VARIANTS).map(([variant, record]): [string, VariantRecord] => {
         const fixture = variant !== "production-payload";
         return [
@@ -949,6 +1092,34 @@ export const DAEMON_VARIANTS = Object.fromEntries(
             },
         ];
     }),
+) as Record<DaemonVariant, VariantRecord>;
+
+/** The w9 table's readings the wM table replaces with its own. */
+const READ_AGAIN_AT_WM: readonly SourceProbe[] = [
+    W9_BLOCK_FRAME,
+    W9_ENQUEUED_LINE,
+    ...W9_SELECTION_PROBES,
+    ...BEFORE_WM_PROBES,
+];
+
+/**
+ * What each daemon variant of the current build (`eval/wM`) provides: the w9 table with a gated
+ * read judged by the consumers a search serves from, the snapshot scan's answer from the
+ * canonical tip while such a consumer lags, and a review selection that takes the delivered
+ * block's memories first and names the group in its log.
+ */
+export const DAEMON_VARIANTS = Object.fromEntries(
+    Object.entries(W9_VARIANTS).map(([variant, record]): [string, VariantRecord] => [
+        variant,
+        {
+            ...record,
+            search_tip_read_while_lagging: true,
+            review_selection_by_delivery: true,
+            sources: [...record.sources, ...WM_SOURCES],
+            probes: [...record.probes.filter((p) => !READ_AGAIN_AT_WM.includes(p)), ...WM_PROBES],
+            notes: { ...record.notes, ...WM_NOTES },
+        },
+    ]),
 ) as Record<DaemonVariant, VariantRecord>;
 
 /**
@@ -992,9 +1163,14 @@ const C8_BUILD: AuditedBuild = {
  */
 export const AUDITED_BUILDS: readonly [AuditedBuild, ...AuditedBuild[]] = [
     {
+        commit: "f618ce77e6f0e2a5be96390c2c1375b3809a97c7",
+        label: "eval/wM",
+        variants: DAEMON_VARIANTS,
+    },
+    {
         commit: "4c293f1835960b8d60b55756933f196ecd12d007",
         label: "eval/w9",
-        variants: DAEMON_VARIANTS,
+        variants: W9_VARIANTS,
     },
     {
         commit: "ea12bff2adb028d942d3b339de6dc74b605ab1ab",

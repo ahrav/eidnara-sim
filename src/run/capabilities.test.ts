@@ -1141,6 +1141,53 @@ test("the memory reviewer's log lines are counted by the form the daemon writes 
     });
 });
 
+/**
+ * The lines whose format strings `eval/wM` rewrote, as that build writes them (Eidnara
+ * `crates/daemon/src/memory_reviewer/review_cycle.rs` at `eval/wM`: the `enqueued` line at 1069,
+ * whose `delivery` field is `automatic` or `search` (1074 to 1078), and the selection walk's line
+ * at 805), beside the line `worker.rs` 898 writes for every applied proposal.
+ */
+const REVIEW_LOG_WM = [
+    "daemon: memory_reviewer enqueued job=1e272ec4862b8c69 trigger=later_statement later=1 source=1 delivery=automatic",
+    "daemon: memory_reviewer enqueued job=27db22ce85452690 trigger=later_message later=2 source=0 delivery=search",
+    "daemon: memory_reviewer enqueued job=171284c95cbd3587 trigger=current_work later=4 source=1 delivery=automatic",
+    "daemon: memory_reviewer selection examines at most 4096 claim descriptors a pass, fewer where its statements share many terms, and the store holds more; each pass continues where the last one ended",
+    "daemon: memory_reviewer applied a proposal: job=27db22ce85452690 standing",
+];
+
+test("the reviewer lines eval/wM rewrote are counted with the forms eval/w9 writes", () => {
+    const dir = tmp();
+    const path = join(dir, "daemon.log");
+    const w9 = REVIEW_LOG.filter(
+        (line) => line.includes(" enqueued job=") || line.includes(" selection examines "),
+    );
+    expect(w9).toHaveLength(5);
+    writeFileSync(path, `${[...REVIEW_LOG_WM, ...w9].join("\n")}\n`);
+    const log = readReviewerLog(path);
+    // Three wM jobs and four w9 jobs, each under its trigger; both wordings of the walk's line.
+    expect(log.enqueued).toEqual({
+        contested: 0,
+        current_work: 2,
+        later_statement: 3,
+        later_message: 2,
+    });
+    expect(log.waits.selection_resumed).toBe(2);
+    expect(log.applied.standing).toBe(1);
+    expect(log.other).toBe(0);
+    expect(reviewLines(log)).toBe(REVIEW_LOG_WM.length + w9.length);
+    // A line that carries text after its delivery field, or a reworded walk line, is no counted form.
+    writeFileSync(
+        path,
+        [
+            "daemon: memory_reviewer enqueued job=aa trigger=later_message later=1 source=1 delivery=search extra=1",
+            "daemon: memory_reviewer enqueued job=aa trigger=later_message later=1 source=1 delivery=",
+            "daemon: memory_reviewer selection examines at most 4096 claim descriptors a pass; each pass continues",
+        ].join("\n"),
+    );
+    const odd = readReviewerLog(path);
+    expect([reviewLines(odd), odd.other]).toEqual([0, 3]);
+});
+
 test("the settle steps are totalled from review-drain.jsonl", () => {
     const dir = tmp();
     const path = join(dir, "review-drain.jsonl");

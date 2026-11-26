@@ -224,7 +224,17 @@ const DERIVED_LAG_AGE = /(?:^| )oldest_unconsumed_age_ms=(\d+)(?: |$)/;
 const STAGE1_DECISION =
     /^stage 1 job=\S+ decider=(\S+) model=(\S+) request=\S+ decision=(\S+)(?: |$)/;
 const APPLIED_PROPOSAL = /^applied a proposal: job=\S+ (\S+)$/;
-const ENQUEUED_JOB = /^enqueued job=\S+ trigger=(\S+) later=\d+ source=\d+$/;
+/**
+ * An `enqueued` line: it ends at its `source=` field on `eval/w9` and names the delivery group
+ * after it from `eval/wM` on (Eidnara `memory_reviewer/review_cycle.rs`).
+ */
+const ENQUEUED_JOB = /^enqueued job=\S+ trigger=(\S+) later=\d+ source=\d+(?: delivery=(\S+))?$/;
+/**
+ * The line a selection writes once per project whose store holds more claim descriptors than one
+ * walk examines, in the `eval/w9` wording and in the `eval/wM` wording.
+ */
+const SELECTION_RESUMED =
+    /^selection examines (?:at most )?\d+ claim descriptors a pass(?:, fewer where its statements share many terms,)? and the store holds more; /;
 const UNSETTLED_RUN = /^run ended without settlement: (\S+)/;
 /** The models one decider's tally keeps by name. */
 const STAGE1_MODELS = 8;
@@ -324,9 +334,7 @@ export function readReviewerLog(path: string): ReviewerLogObservation {
             out.waits.hold_bound++;
         } else if (rest.startsWith("kept the review hold of a settled proposal: ")) {
             out.waits.kept_hold++;
-        } else if (
-            /^selection examines \d+ claim descriptors a pass and the store holds more; /.test(rest)
-        ) {
+        } else if (SELECTION_RESUMED.test(rest)) {
             out.waits.selection_resumed++;
         } else if (unsettled) {
             const reason = unsettled[1] as string;
