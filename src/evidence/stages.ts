@@ -235,6 +235,7 @@ function tipNote(text: string): TipNote | undefined {
  * freshness note an answered result opens with, and whether an errored result is the lag error.
  */
 export function searchRoute(text: string, isError: boolean): SearchReading {
+    const body = text.replace(BLOCK_TAG, "");
     const fallback = FALLBACK.exec(text);
     if (fallback) {
         const note = tipNote(text);
@@ -244,8 +245,8 @@ export function searchRoute(text: string, isError: boolean): SearchReading {
             ...(note ? { tip_note: note } : {}),
         };
     }
-    if (isError || text.startsWith("Error")) {
-        const lag = text.replace(BLOCK_TAG, "").trim() === LAG_ERROR;
+    if (isError || body.startsWith("Error")) {
+        const lag = body.trim() === LAG_ERROR;
         return { route: "errored", ...(lag ? { lag_error: true as const } : {}) };
     }
     const note = tipNote(text);

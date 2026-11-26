@@ -706,6 +706,27 @@ describe("evidence stages on a memory arm", () => {
         );
         expect(stage(p, "retrieval")?.status).toBe("failed");
         expect(p.probe_time.searches).toEqual([expect.objectContaining({ route: "errored" })]);
+        // For request-body results, `searchRoute` recognizes an `Error:` prefix after the daemon's
+        // `§9§` block tag when the error flag is false.
+        const tagged = (text: string) =>
+            evidence(
+                build({
+                    calls: [SOURCE_READ, CAPTURED, searchTurn(`\u00a79\u00a7 ${text}`)],
+                    objects: [STORED],
+                }),
+            );
+        const echoed = tagged("Error: search for TAG_X failed");
+        expect(stage(echoed, "retrieval")?.status).toBe("failed");
+        expect(echoed.probe_time.searches).toEqual([
+            expect.objectContaining({ route: "errored", returned_from: "request" }),
+        ]);
+        expect(tagged(LAG_ERROR).probe_time.searches).toEqual([
+            expect.objectContaining({
+                route: "errored",
+                lag_error: true,
+                returned_from: "request",
+            }),
+        ]);
     });
 
     test("without the probe's BeginTurn the timed stages are unobserved", () => {
@@ -1377,6 +1398,14 @@ test("a search result's freshness note is read among its opening notes, and the 
     expect(searchRoute(`\u00a79\u00a7 ${LAG_ERROR}\n`, true)).toEqual({
         route: "errored",
         lag_error: true,
+    });
+    expect(searchRoute(`\u00a79\u00a7 ${LAG_ERROR}`, false)).toEqual({
+        route: "errored",
+        lag_error: true,
+    });
+    expect(searchRoute("\u00a79\u00a7 Error: no store", false)).toEqual({ route: "errored" });
+    expect(searchRoute("\u00a79\u00a7 1. Error handling uses TAG_X", false)).toEqual({
+        route: "fused",
     });
     expect(searchRoute(`${LAG_ERROR} Retry.`, false)).toEqual({ route: "errored" });
     expect(
