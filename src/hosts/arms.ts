@@ -499,7 +499,7 @@ export class DaemonStack {
     /**
      * Reads the daemon's own status over an observational route (harness `cli`, Eidnara
      * `OBSERVATIONAL_HARNESS`): the `process_memory` block and the memory reviewer's activation
-     * state of the Context module's `status` answer and, with `lifecycle`, the record state, admission, and `progress` block of
+     * state and quota count of the Context module's `status` answer and, with `lifecycle`, the record state, admission, and `progress` block of
      * `search.lifecycle.status`. The route stays open between reads, so a read binds and tears
      * down no session. A failed read closes the connection, and the next read opens a new one.
      */
@@ -658,15 +658,22 @@ export function processMemoryBlock(m: unknown): Record<string, unknown> | null {
 
 /**
  * The `memory_reviewer` block of the Context module's `status` answer as a sample records it: its
- * `activation_state` alone, a short name such as `open` or `missing` (Eidnara
- * `memory_reviewer/lifecycle.rs` `ActivationState`). Any other value is no block.
+ * `activation_state`, a short name such as `open` or `missing` (Eidnara
+ * `memory_reviewer/lifecycle.rs` `ActivationState`), and, when the daemon reports it as a
+ * count, `projects_at_metadata_quota`: the projects whose review metadata leaves less room than
+ * one job under the per-project quota (`crates/memory-store/src/lib.rs`, from `eval/wM` on, once
+ * the block holds a sample of the store's facts). Any other value is no block.
  */
-export function reviewerBlock(m: unknown): { activation_state: string } | null {
+export function reviewerBlock(
+    m: unknown,
+): { activation_state: string; projects_at_metadata_quota?: number } | null {
     if (!isRecord(m)) return null;
     const state = m.activation_state;
-    return typeof state === "string" && /^[a-z_]{1,40}$/.test(state)
+    if (typeof state !== "string" || !/^[a-z_]{1,40}$/.test(state)) return null;
+    const atQuota = uint(m.projects_at_metadata_quota);
+    return atQuota === null
         ? { activation_state: state }
-        : null;
+        : { activation_state: state, projects_at_metadata_quota: atQuota };
 }
 
 /** The `status` answer of `search.lifecycle.status` as a sample records it; a field of another shape reads as null. */

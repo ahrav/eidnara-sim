@@ -1581,7 +1581,7 @@ test("evidence-run reads a run directory and writes only under --out", () => {
         },
     });
     expect(report).toContain(
-        `| run | eidnara | off | later_statement 1 | 0 | chat_model: 0 keep, 1 flagged (${haiku}) | 0 | 0 | 0 | disputed 1 | 0 left for a reader, 0 unapplied | 0 | 1 steps (1 at session ends, 0 before clock advances), 2 runs settled, 2.5 s in all, 2.5 s the longest, 0 with an error | 0 | memory_reviewer_stage1 1 | no reading |`,
+        `| run | eidnara | off | later_statement 1 | 0 | 0 quota lines; projects at quota: no reading | 0 | chat_model: 0 keep, 1 flagged (${haiku}) | 0 | 0 | 0 | disputed 1 | 0 left for a reader, 0 unapplied | 0 | 1 steps (1 at session ends, 0 before clock advances), 2 runs settled, 2.5 s in all, 2.5 s the longest, 0 with an error | 0 | memory_reviewer_stage1 1 | no reading |`,
     );
     expect(report).toContain("| run | eidnara | q-1 | P1 | fail |");
     // The loaded records hold each request's digest and length; the log supplies the part ids.
@@ -2230,6 +2230,46 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
             (r.arms.get(armName) as ArmData).reviewer = reviewer;
             return { name, run: r, probes: [], sessions: [] };
         };
+        // A reviewer arm on eval/wM: its `enqueued` lines name the delivery group
+        // (`memory_reviewer/review_cycle.rs` 1069), a project reached its review-metadata quota
+        // (1046), a `revise` of an assistant report wrote nothing (`worker.rs` 898), and the
+        // status block carries the count of projects at the quota (`memory-store/src/lib.rs` 778).
+        const wm = join(root, "wm");
+        mkdirSync(wm);
+        writeFileSync(
+            join(wm, "daemon.log"),
+            [
+                "daemon: memory_reviewer enqueued job=1e272ec4862b8c69 trigger=later_statement later=1 source=1 delivery=automatic",
+                "daemon: memory_reviewer enqueued job=27db22ce85452690 trigger=later_statement later=1 source=1 delivery=automatic",
+                "daemon: memory_reviewer enqueued job=88e03198394a9259 trigger=later_message later=2 source=0 delivery=search",
+                "daemon: memory_reviewer selection queues no new review for a project: the store's review metadata quota refused the reservation (67108864 bytes a project, 268435456 a host)",
+                "daemon: memory_reviewer applied a proposal: job=88e03198394a9259 standing",
+                "",
+            ].join("\n"),
+        );
+        const counted = (atQuota: number) =>
+            JSON.stringify({
+                pid: 7,
+                daemon_status: {
+                    pid: 7,
+                    start: "1",
+                    process_memory: null,
+                    memory_reviewer: {
+                        activation_state: "open",
+                        projects_at_metadata_quota: atQuota,
+                    },
+                    search: null,
+                    error: null,
+                },
+            });
+        writeFileSync(join(wm, "resources.jsonl"), `${[0, 2, 1].map(counted).join("\n")}\n`);
+        const delivered = reviewerEvidence(wm, { plugin: true, memory_reviewer: true }, {});
+        // The same arm as evidence written before the two counts existed.
+        const {
+            enqueued_by_delivery: _groups,
+            quota_refused: _quota,
+            ...earlierLog
+        } = delivered.log;
         const quiet = reviewerEvidence(join(root, "absent"), { plugin: true }, {});
         const withStore = {
             ...quiet,
@@ -2253,13 +2293,34 @@ test("the report's reviewer section renders each arm's log, settle steps, gatewa
                     },
                 ),
             ),
+            run("F", "eidnara-reviewer", delivered),
+            run("G", "eidnara-reviewer", { ...delivered, log: earlierLog }),
         ]).split("\n");
         const at = report.indexOf("### Memory reviewer");
         expect(report.slice(at + 6, report.indexOf("### Context health", at) - 1)).toEqual([
-            `| A | eidnara-reviewer | on | current_work 1, later_statement 1 | 1 | chat_model: 0 keep, 1 flagged (${haiku}); none: 1 keep, 0 flagged (none) | 1 | fenced 1 | 0 | contested 1 | 0 left for a reader, 0 unapplied | 0 | 3 steps (2 at session ends, 1 before clock advances), 3 runs settled, 5.0 s in all, 6.0 s the longest, 1 with an error, 1 drains answered after their step | 2, oldest unconsumed commit 543.7 s at most | memory_reviewer_stage1 1, memory_reviewer_stage2 1 | open in 1 of 2 readings, last open | unread | unread |`,
-            "| B | eidnara | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | 0 | no reading | 2 live, 1 retired | 0 live, 0 retired |",
-            "| D | host | off | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | memory_reviewer_stage1 3 | no reading | unread | unread |",
+            `| A | eidnara-reviewer | on | current_work 1, later_statement 1 | 0 | 0 quota lines; projects at quota: no reading | 1 | chat_model: 0 keep, 1 flagged (${haiku}); none: 1 keep, 0 flagged (none) | 1 | fenced 1 | 0 | contested 1 | 0 left for a reader, 0 unapplied | 0 | 3 steps (2 at session ends, 1 before clock advances), 3 runs settled, 5.0 s in all, 6.0 s the longest, 1 with an error, 1 drains answered after their step | 2, oldest unconsumed commit 543.7 s at most | memory_reviewer_stage1 1, memory_reviewer_stage2 1 | open in 1 of 2 readings, last open | unread | unread |`,
+            "| B | eidnara | off | 0 | 0 | 0 quota lines; projects at quota: no reading | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | 0 | no reading | 2 live, 1 retired | 0 live, 0 retired |",
+            "| D | host | off | 0 | 0 | 0 quota lines; projects at quota: no reading | 0 | 0 | 0 | 0 | 0 | 0 | 0 left for a reader, 0 unapplied | 0 | none | 0 | memory_reviewer_stage1 3 | no reading | unread | unread |",
+            "| F | eidnara-reviewer | on | later_statement 2, later_message 1 | automatic 2, search 1 | 1 quota lines; projects at quota: last 1, largest 2, above zero in 2 of 3 readings | 0 | 0 | 0 | 0 | 0 | standing 1 | 0 left for a reader, 0 unapplied | 0 | none | 0 | 0 | open in 3 of 3 readings, last open | unread | unread |",
+            "| G | eidnara-reviewer | on | later_statement 2, later_message 1 | unread | unread | 0 | 0 | 0 | 0 | 0 | standing 1 | 0 left for a reader, 0 unapplied | 0 | none | 0 | 0 | open in 3 of 3 readings, last open | unread | unread |",
         ]);
+        // The record evidence-reviewer.json holds for the arm carries the same counts.
+        expect(delivered).toMatchObject({
+            log: {
+                enqueued: { later_statement: 2, later_message: 1 },
+                enqueued_by_delivery: { automatic: 2, search: 1 },
+                quota_refused: 1,
+                applied: { standing: 1 },
+            },
+            status: {
+                readings: 3,
+                open: 3,
+                metadata_quota: { readings: 3, last: 1, max: 2, above_zero: 2 },
+            },
+        });
+        // The eval/w9 arm above reports neither a delivery group nor the counter.
+        expect(seen.log.enqueued_by_delivery).toEqual({ automatic: 0, search: 0 });
+        expect(seen.status).not.toHaveProperty("metadata_quota");
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

@@ -258,8 +258,13 @@ without a capability record has its row too:
 
 - the arm's switch, from the profile the manifest records;
 - the reviewer's lines in `<arm>/daemon.log` over every daemon generation
-  (`docs/hosts.md`, `reviewer.log`): review jobs enqueued by trigger,
-  selection passes, stage-1 decisions by decider with the models named,
+  (`docs/hosts.md`, `reviewer.log`): review jobs enqueued by trigger and,
+  where the line names it, by delivery group (`enqueued_by_delivery`:
+  `automatic` for a memory of the delivered block, `search` for one served
+  on explicit search alone; `unread` for evidence written before the group
+  was read), the lines of a project whose review-metadata quota refused a
+  new job (`quota_refused`) beside the status readings' count of projects
+  at that quota, selection passes, stage-1 decisions by decider with the models named,
   failed stage-1 requests, runs that ended without settlement by reason
   (`fenced` for a run a clock advance inside an open session ended,
   `docs/hosts.md`), reviews ended on a later reference the model was not
@@ -277,7 +282,10 @@ without a capability record has its row too:
   `memory_reviewer_stage2` in `calls.jsonl`;
 - the reviewer's activation state in the daemon status readings of
   `<arm>/resources.jsonl`: the readings that report `open`, and the last
-  state;
+  state; and, in the quota column, `status.metadata_quota`: the last
+  reading of `projects_at_metadata_quota`, the largest reading, and the
+  readings above zero among those that report the counter (`no reading`
+  on a build before `eval/wM`);
 - the final store's failed-command records and disputed objects, live and
   retired, or `unread` without a readable Kernel store.
 

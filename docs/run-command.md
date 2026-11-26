@@ -664,7 +664,10 @@ observational Context route per daemon generation (harness `cli`, session
 `sim-status`, which Eidnara excludes from every background view): the
 `process_memory` block of the module's `status` answer and the
 `activation_state` of its `memory_reviewer` block (`open` while the review
-worker found a project under the reviewer switch in its last passes), and
+worker found a project under the reviewer switch in its last passes) with,
+where the daemon reports it, the block's `projects_at_metadata_quota`
+(the projects whose review metadata is at the per-project quota, from
+`eval/wM` on), and
 on a fused-route arm the lifecycle record state, the admission state, and the `progress`
 block of `search.lifecycle.status` (`tip`, `checkpoint`, `lag_commits`,
 `rebuilds`, `blocked`). The route stays open between reads, so a read binds

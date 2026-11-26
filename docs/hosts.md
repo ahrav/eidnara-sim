@@ -1284,14 +1284,29 @@ complete evidence only when the two agree:
     `open` before. The worker reports `open` while a pass found a project
     under the review switch in the last 300 s of real time, and the state of
     the owner's activation record otherwise, which in a run reads
-    `missing`.
+    `missing`. `daemon_status.memory_reviewer.metadata_quota` totals the
+    block's `projects_at_metadata_quota` over the readings that report it
+    as a count (`eval/wM` on, once the block holds a sample of the store's
+    facts): those readings, the last one's count, the largest count, and
+    the readings whose count is above zero. A project counts while its
+    review metadata leaves less room than one job under the per-project
+    quota, so the reviewer queues no new review for it until pending jobs
+    settle or settled jobs retire. The member is absent when no reading
+    reports the counter, and it decides no mismatch.
 - `reviewer` holds what the arm's artefacts show of the memory reviewer,
   read by one rule on every arm:
   - `reviewer.log` counts the reviewer's lines in `daemon.log` over every
     daemon generation, each by the form the daemon writes it in
     (`readReviewerLog`): `enqueued job=` lines by trigger (`contested`,
     `current_work`, `later_statement`, `later_message`), one review job
-    each; `selected <n> of <m> memories for review` lines, one selection
+    each, the line read with and without its closing `delivery` field;
+    `enqueued_by_delivery`, the same lines by the field's value where they
+    carry one (`automatic` for a memory of the delivered block, `search`
+    for one served on explicit search alone, from `eval/wM` on);
+    `quota_refused`, the lines `selection queues no new review for a
+    project: the store's review metadata quota refused the reservation
+    (...)`, which the daemon writes once per project and process;
+    `selected <n> of <m> memories for review` lines, one selection
     pass each; `stage 1 job=` lines by decider (`chat_model`, `classifier`,
     and `none` for a decision the host made without a request) and decision
     (`keep`, `flagged`), with the models the lines name; `stage 1 request
@@ -1302,7 +1317,8 @@ complete evidence only when the two agree:
     proposal unapplied` lines; the `stage-1 default <model> failed its
     first request` line; and the lines that report reviews waiting (a
     project at its hold bound, a kept hold of a settled proposal, a
-    selection walk that resumes by cursor); and `run ended without
+    selection walk that resumes by cursor, in the `eval/w9` wording and in
+    the `eval/wM` wording); and `run ended without
     settlement: <reason>` lines by the reason's first word (`unsettled`:
     `fenced`, `unavailable`, `refused`, `supervisor`, `store`, `kernel`,
     `conflicting_content`, `binding_mismatch`), each a run whose job stays
@@ -1323,7 +1339,11 @@ complete evidence only when the two agree:
     no mismatch.
     Reviews are the `enqueued` lines, requests the `chat_model` and
     `classifier` decisions, and changes written the `applied` lines of
-    kind `disputed`, `contested`, `retired`, and `revised`.
+    kind `disputed`, `contested`, `retired`, and `revised`. An `applied`
+    line of kind `standing` wrote nothing: a user statement with no later
+    memory to name and, from `eval/wM` on, a `revise` of a memory the
+    assistant reported. The quota line counts among the lines that show a
+    review pass ran (`reviewLines`).
   - `reviewer.drains` totals `review-drain.jsonl`: the settle steps of
     both kinds (`calls`) and the same count by kind (`calls_by_kind`:
     `session_end`, which takes every line without a `before`, and
@@ -1351,7 +1371,11 @@ complete evidence only when the two agree:
     daemon after a restart reads `missing` until a session binds its
     project again, so a last reading of a process that never reported
     `open` stands. The arm is also a mismatch when a stage-1 decision of
-    the chat model names another model than the registered stage-1 model.
+    the chat model names another model than the registered stage-1 model,
+    when its build declares `review_selection_by_delivery` and an
+    `enqueued` line names no delivery group, and when its build lacks that
+    capability and an `enqueued` line names one. An observation recorded
+    before the groups were read is held to neither.
 
 The plugin writes its log inside the arm root, which the agent's tools can
 write too, so the evidence holds against an agent that leaves the log alone;

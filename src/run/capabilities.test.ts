@@ -999,6 +999,52 @@ test("the memory reviewer's activation state is read from each daemon process's 
         last: null,
         last_after_open: false,
     });
+    // The count of projects at their review-metadata quota is kept where the daemon reports it
+    // (Eidnara `crates/memory-store/src/lib.rs` 778, flattened into the block by
+    // `memory_reviewer/lifecycle.rs` 77 once a sample of the store's facts exists).
+    const counted = (pid: number, state: string, atQuota: unknown) => {
+        const sample = reading(pid, state);
+        return {
+            ...sample,
+            daemon_status: {
+                ...sample.daemon_status,
+                memory_reviewer: { activation_state: state, projects_at_metadata_quota: atQuota },
+            },
+        };
+    };
+    write([
+        reading(7, "unknown"),
+        counted(7, "open", 0),
+        counted(7, "open", 2),
+        counted(7, "open", 1),
+        counted(7, "open", 0),
+        // A count of another shape is no count; the reading's state stands.
+        counted(7, "open", -1),
+        counted(7, "open", "3"),
+        counted(7, "open", 1.5),
+    ]);
+    expect(read()).toEqual({
+        readings: 8,
+        open: 7,
+        states: { unknown: 1, open: 7 },
+        last: "open",
+        last_after_open: true,
+        metadata_quota: { readings: 4, last: 0, max: 2, above_zero: 2 },
+    });
+    // The last reading is the last one that reports the counter.
+    write([counted(7, "open", 0), counted(7, "open", 3), reading(7, "open")]);
+    expect(read()?.metadata_quota).toEqual({ readings: 2, last: 3, max: 3, above_zero: 1 });
+    // A daemon that reports no counter, as every build before eval/wM, leaves the member out.
+    write([reading(7, "open"), reading(7, "open")]);
+    expect(read()).not.toHaveProperty("metadata_quota");
+    expect(reviewerBlock({ activation_state: "open", projects_at_metadata_quota: 4 })).toEqual({
+        activation_state: "open",
+        projects_at_metadata_quota: 4,
+    });
+    expect(reviewerBlock({ activation_state: "open", projects_at_metadata_quota: null })).toEqual({
+        activation_state: "open",
+    });
+    expect(reviewerBlock({ projects_at_metadata_quota: 4 })).toBeNull();
     // A state is a name read from the file, so the tally has no inherited keys.
     write([reading(7, "constructor")]);
     expect(read()?.states).toEqual({ constructor: 1 });
@@ -1064,6 +1110,9 @@ test("the memory reviewer's log lines are counted by the form the daemon writes 
     const log = readReviewerLog(path);
     expect(log).toEqual({
         enqueued: { contested: 0, current_work: 1, later_statement: 3, later_message: 1 },
+        // The eval/w9 lines name no delivery group and hold no quota line.
+        enqueued_by_delivery: { automatic: 0, search: 0 },
+        quota_refused: 0,
         selections: 1,
         stage1: {
             chat_model: { keep: 1, flagged: 1, other: 0, models: [haiku] },
@@ -1157,6 +1206,8 @@ const REVIEW_LOG_WM = [
     "daemon: memory_reviewer enqueued job=171284c95cbd3587 trigger=current_work later=4 source=1 delivery=automatic",
     "daemon: memory_reviewer selection examines at most 4096 claim descriptors a pass, fewer where its statements share many terms, and the store holds more; each pass continues where the last one ended",
     "daemon: memory_reviewer applied a proposal: job=27db22ce85452690 standing",
+    // `review_cycle.rs` 1046: written once per project and daemon process, with the two quota bounds.
+    "daemon: memory_reviewer selection queues no new review for a project: the store's review metadata quota refused the reservation (67108864 bytes a project, 268435456 a host)",
 ];
 
 test("the reviewer lines eval/wM rewrote are counted with the forms eval/w9 writes", () => {
@@ -1177,8 +1228,16 @@ test("the reviewer lines eval/wM rewrote are counted with the forms eval/w9 writ
     });
     expect(log.waits.selection_resumed).toBe(2);
     expect(log.applied.standing).toBe(1);
+    // The delivery group is counted for the lines that name it, and the quota line under its own count.
+    expect(log.enqueued_by_delivery).toEqual({ automatic: 2, search: 1 });
+    expect(log.quota_refused).toBe(1);
     expect(log.other).toBe(0);
+    // The quota line shows a review pass ran, as every counted form does.
     expect(reviewLines(log)).toBe(REVIEW_LOG_WM.length + w9.length);
+    expect(reviewLines({ ...log, quota_refused: 0 })).toBe(REVIEW_LOG_WM.length + w9.length - 1);
+    // An observation recorded before either count existed totals its other lines.
+    const { enqueued_by_delivery: _groups, quota_refused: _quota, ...before } = log;
+    expect(reviewLines(before)).toBe(REVIEW_LOG_WM.length + w9.length - 1);
     // A line that carries text after its delivery field, or a reworded walk line, is no counted form.
     writeFileSync(
         path,
@@ -1186,10 +1245,69 @@ test("the reviewer lines eval/wM rewrote are counted with the forms eval/w9 writ
             "daemon: memory_reviewer enqueued job=aa trigger=later_message later=1 source=1 delivery=search extra=1",
             "daemon: memory_reviewer enqueued job=aa trigger=later_message later=1 source=1 delivery=",
             "daemon: memory_reviewer selection examines at most 4096 claim descriptors a pass; each pass continues",
+            "daemon: memory_reviewer selection queues no new review for a project",
         ].join("\n"),
     );
     const odd = readReviewerLog(path);
-    expect([reviewLines(odd), odd.other]).toEqual([0, 3]);
+    expect([reviewLines(odd), odd.other]).toEqual([0, 4]);
+    // A delivery group the daemon names later is counted under its own name.
+    writeFileSync(
+        path,
+        "daemon: memory_reviewer enqueued job=aa trigger=later_message later=1 source=1 delivery=constructor\n",
+    );
+    const named = readReviewerLog(path);
+    expect(named.enqueued.later_message).toBe(1);
+    expect(Object.entries(named.enqueued_by_delivery ?? {}).filter(([, n]) => n > 0)).toEqual([
+        ["constructor", 1],
+    ]);
+});
+
+test("a reviewer arm's enqueued lines are held to the delivery group its build declares", () => {
+    const wM = auditedBuild("eval/wM") as AuditedBuild;
+    const w9 = auditedBuild("eval/w9") as AuditedBuild;
+    const haiku = "global.anthropic.claude-haiku-5-5";
+    const arm = (lines: string[], name = "eidnara-reviewer") => {
+        const root = captured(armRoot([PI_ON, PASS]));
+        daemonLog(root, lines);
+        return observeArm(name, "pi", root, { memory_capture: 1 });
+    };
+    const w9Lines = REVIEW_LOG.slice(1, 5);
+    const wMLines = REVIEW_LOG_WM.slice(0, 3);
+    // Each build's own lines stand on it.
+    expect(armMismatches(arm(wMLines), wM, null, haiku)).toEqual([]);
+    expect(armMismatches(arm(w9Lines), w9, null, haiku)).toEqual([]);
+    // A line without the field on a build that declares it, and a line with it on a build that lacks it.
+    expect(armMismatches(arm([...wMLines, w9Lines[0] as string]), wM, null, haiku)).toEqual([
+        "1 of 4 enqueued review jobs in daemon.log name no delivery group, which eval/wM declares for every job",
+    ]);
+    expect(armMismatches(arm(w9Lines), wM, null, haiku)).toEqual([
+        "4 of 4 enqueued review jobs in daemon.log name no delivery group, which eval/wM declares for every job",
+    ]);
+    expect(armMismatches(arm([...w9Lines, wMLines[1] as string]), w9, null, haiku)).toEqual([
+        "1 enqueued review jobs in daemon.log name a delivery group, which eval/w9 does not declare",
+    ]);
+    // The quota line and a log without a review are held to nothing on either build.
+    const quota = REVIEW_LOG_WM.at(-1) as string;
+    expect(armMismatches(arm([quota]), wM, null, haiku)).toEqual([]);
+    expect(armMismatches(arm([quota]), w9, null, haiku)).toEqual([]);
+    expect(armMismatches(arm([]), wM, null, haiku)).toEqual([]);
+    // An observation recorded before the field was read is held to nothing.
+    const recorded = arm(w9Lines);
+    const { enqueued_by_delivery: _groups, ...log } = (
+        recorded.reviewer as NonNullable<typeof recorded.reviewer>
+    ).log;
+    const earlier = {
+        ...recorded,
+        reviewer: { ...(recorded.reviewer as NonNullable<typeof recorded.reviewer>), log },
+    };
+    expect(armMismatches(earlier, wM, null, haiku)).toEqual([]);
+    // An arm with the switch off is read by its own rule: every review line contradicts the profile.
+    expect(armMismatches(arm(wMLines, "eidnara"), wM)).toEqual([
+        "daemon.log holds 3 memory reviewer lines of a review, but the arm leaves the reviewer switch off",
+    ]);
+    expect(armMismatches(arm([quota], "eidnara"), wM)).toEqual([
+        "daemon.log holds 1 memory reviewer lines of a review, but the arm leaves the reviewer switch off",
+    ]);
 });
 
 test("the settle steps are totalled from review-drain.jsonl", () => {
