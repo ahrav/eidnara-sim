@@ -639,6 +639,72 @@ describe("the labeller's view", () => {
         ]);
     });
 
+    // `WM_EARLIER` matches the `Relation::Earlier` label in Eidnara
+    // `crates/daemon/src/memory_reviewer/coordinator.rs:1589` at `eval/wM`.
+    const WM_EARLIER = "; written with the memory's source or before it";
+    // `WM_SOURCE_EXPIRED` matches `SOURCE_EXPIRED_NOTICE` in Eidnara
+    // `crates/daemon/src/memory_reviewer/coordinator.rs:305` at `eval/wM`.
+    const WM_SOURCE_EXPIRED =
+        "the store no longer retains the message this memory was taken from; the memory is the record of what its author wrote, and every reference above was written after it";
+
+    test("the eval/wM wording of the earlier relation is read as the eval/w9 wording is, and a cited reference under it binds its request", () => {
+        const token = "00ff";
+        const change = byRow("plan");
+        const span = spanOf(change);
+        const labels = [
+            "ref-2: a message the user wrote at 2026-11-24T16:42:30Z; the memory cites it as its source",
+            `ref-3: a message the user wrote at 2026-11-24T16:42:30Z${WM_EARLIER}`,
+            `ref-4: a message the assistant wrote at 2026-11-24T16:40:00Z${WM_EARLIER}`,
+            "ref-5: a message the user wrote at 2026-11-24T16:41:00Z; written before the memory's source",
+        ];
+        const text = (list: string[]) =>
+            [
+                `[ref-1 ${token}]\n${change.text}\n[/ref-1 ${token}]`,
+                ["linked references:", ...list].join("\n"),
+                ...labels.map(
+                    (_, i) => `[ref-${i + 2} ${token}]\ntext ${i + 2}\n[/ref-${i + 2} ${token}]`,
+                ),
+            ].join("\n\n");
+        const read = parseReferences(text(labels));
+        expect(
+            [...(read?.references.values() ?? [])].map((r) => [r.alias, r.writer, r.relation]),
+        ).toEqual([
+            ["ref-2", "user", "source"],
+            ["ref-3", "user", "earlier"],
+            ["ref-4", "assistant", "earlier"],
+            ["ref-5", "user", "earlier"],
+        ]);
+        expect(read?.references.get("ref-3")?.at_ms).toBe(Date.parse("2026-11-24T16:42:30Z"));
+        const cites = {
+            ...change,
+            proposal: {
+                action: "retire",
+                new_text: null,
+                contradictions: [{ alias: "ref-3", start: 0, end: 6 }],
+            },
+        };
+        const request = {
+            seq: 7,
+            started_wall_ms: span.from,
+            ended_wall_ms: span.to,
+            ...(read as NonNullable<typeof read>),
+        };
+        expect(requestOf(cites, [request], span)?.seq).toBe(7);
+        const unsourced = parseReferences(
+            text([
+                "ref-2: a message the user wrote at 2026-11-24T16:44:00Z; written after the memory's source",
+                "ref-3: a message a tool wrote; written after the memory's source",
+                WM_SOURCE_EXPIRED,
+            ]),
+        );
+        expect(
+            [...(unsourced?.references.values() ?? [])].map((r) => [r.alias, r.relation]),
+        ).toEqual([
+            ["ref-2", "later"],
+            ["ref-3", "later"],
+        ]);
+    });
+
     test("a cited byte range gives its passage of the reference, counted in bytes, and a call that failed is no request", () => {
         const change = byRow("plan");
         const request = requestFor(change);
