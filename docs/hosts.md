@@ -497,7 +497,7 @@ the variants read there:
 
 | Build | Commit | Variants | Read for |
 |---|---|---|---|
-| `eval/wM` (`AUDITED_EIDNARA`, the current build) | `f618ce77e` | all three | the tier M campaign (WM, WMH, WMP, WMPH): `main` `21134bc94` (which holds the w9 PRs as merged: #1232, #1236 to #1243) plus the heads of Eidnara #1246 (a read's freshness judged by the consumers a search serves from) and #1247 (a review on evidence written after the memory by a writer who may change it, the delivered block's memories first, and the review-metadata quota in the status block) |
+| `eval/wM` (`AUDITED_EIDNARA`, the current build) | `26fa24760` | all three | the tier M campaign (WM, WMH, WMP, WMPH): `main` `21134bc94` (which holds the w9 PRs as merged: #1232, #1236 to #1243) plus the heads of Eidnara #1246 (a read's freshness judged by the consumers a search serves from) and #1247 (a review on evidence written after the memory by a writer who may change it, the delivered block's memories first, and the review-metadata quota in the status block), and one commit that changes a test of `memory_reviewer/classifier.rs` alone |
 | `eval/w9` | `4c293f183` | all three | the reviewer campaign (W5S, W5SH, W5P): `main` `ea12bff2a` plus the heads of Eidnara #1236 (the block's closing sentence), #1237 (the dated replacement mark), #1238 (named files), #1232 (failed-command records), #1239 (the durable-text redactor), and #1240 to #1243 (the memory reviewer) |
 | `main-ea12bff2a` | `ea12bff2a` | all three | the reference arm of the reviewer campaign (W5S, W5SH, W5P): `main` with the PRs of `eval/w4` as merged, plus #1233 (general talk classed `status`) and #1235 (a user's sentence approved by the speaker its extractor names) |
 | `eval/w4` | `6aabc77e1` | all three | the correctness retest (W4S, W4SH, W4P): `main` `228f9fb74` (which holds the merged Eidnara #1221 to #1224) plus the open heads of #1230, #1227, #1228, and #1229 |
@@ -763,9 +763,9 @@ table adds `named_files.rs`, `memory_capture/failures.rs`, and
 `coordinator.rs` to its audited sources. The other capability values
 stand.
 
-At `f618ce77e` the verdict against `eval/wM` is `unchanged`, and each
+At `26fa24760` the verdict against `eval/wM` is `unchanged`, and each
 earlier build's commit stays `unchanged` against its own table. From
-`4c293f183` to `f618ce77e` every probe of the w9 table holds except five:
+`4c293f183` to `26fa24760` every probe of the w9 table holds except five:
 two whose source text was rewritten with the same behaviour
 (`memory_render.rs` renders the delivered block through `render_block` with
 the closing sentence as its note, and the block is the same text; the

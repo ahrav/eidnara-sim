@@ -174,7 +174,7 @@ test("the registered builds are the wM and w9 builds, the main commit, the w4 an
         throw new Error("the w9, main, w4, and w3 builds are registered");
     // The current build is the wM build; the w9 build keeps its commit and its own table.
     expect(AUDITED_EIDNARA).toBe(wM.commit);
-    expect(wM.commit).toBe("f618ce77e6f0e2a5be96390c2c1375b3809a97c7");
+    expect(wM.commit).toBe("26fa24760dd5544b037fc1515ef889e0e647e9be");
     expect(wM.variants).toBe(DAEMON_VARIANTS);
     expect(auditedBuild("eval/wM")).toBe(wM);
     expect(auditedBuild(wM.commit)).toBe(wM);
