@@ -198,7 +198,7 @@ export function reviewerEvidence(
         status,
         failed_commands: statements?.failed_commands ?? null,
         disputed: statements?.disputed ?? null,
-        search: host === "pi" ? readPiSearches(join(root, "r"), "home/.pi/agent/sessions") : null,
+        search: host === "pi" ? readPiSearches(root, "r/home/.pi/agent/sessions") : null,
     };
 }
 

@@ -2059,6 +2059,35 @@ describe("the statements of a <project-memory> block", () => {
     });
 });
 
+test("an arm whose runtime root is a link has its search transcripts refused", () => {
+    const root = mkdtempSync(join(tmpdir(), "sim-evidence-search-"));
+    try {
+        const sessions = join(root, "elsewhere", "home", ".pi", "agent", "sessions", "--ws--");
+        mkdirSync(sessions, { recursive: true });
+        writeFileSync(
+            join(sessions, "2026_sim-s-0000.jsonl"),
+            JSON.stringify({
+                type: "message",
+                message: {
+                    role: "toolResult",
+                    toolName: "eidnara_search",
+                    content: [
+                        { type: "text", text: 'Found 1 result for "deploy":\n\n[1] [memory] x' },
+                    ],
+                },
+            }),
+        );
+        const arm = join(root, "eidnara");
+        mkdirSync(arm);
+        symlinkSync(join(root, "elsewhere"), join(arm, "r"));
+        expect(() => reviewerEvidence(arm, { plugin: true }, {})).toThrow(
+            `${join(arm, "r")} is a link or not a directory; transcripts need a real one`,
+        );
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test("the report lists every arm's explicit search answers by route, freshness note, and lag error", () => {
     const root = mkdtempSync(join(tmpdir(), "sim-evidence-search-"));
     try {

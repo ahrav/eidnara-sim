@@ -250,6 +250,10 @@ count or to the errored share. A probe's `probe_time.searches` entry
 carries the same reading of its own result: `route`, `fallback`, and,
 where they apply, `tip_note` (`consumer_behind` or `no_consumer`) and
 `lag_error`.
+The transcripts are read from the arm directory down
+(`r/home/.pi/agent/sessions`): every directory on that path, the runtime
+root `r` included, is a real directory, and a link among them refuses the
+read.
 
 The `### Memory reviewer` table has one row per run and arm that loads the
 Eidnara plugin, sets the reviewer switch, or shows a sign of the reviewer,
