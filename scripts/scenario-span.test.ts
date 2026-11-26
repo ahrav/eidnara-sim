@@ -128,6 +128,20 @@ test("a session_end stamped before another event of its session leaves the next 
     expect(span.projects.p?.largest_gap_ms).toBe(100);
 });
 
+test("a whole session stamped before an earlier session's end leaves the next gap measured from the greatest end seen", () => {
+    const span = scenarioSpan({
+        events: [
+            { kind: "session_start", session: "s-0", project: "p", scenario_ms: 0 },
+            { kind: "session_end", session: "s-0", scenario_ms: 100 },
+            { kind: "session_start", session: "s-1", project: "p", scenario_ms: 90 },
+            { kind: "session_end", session: "s-1", scenario_ms: 90 },
+            { kind: "session_start", session: "s-2", project: "p", scenario_ms: 200 },
+        ],
+    });
+    expect(span.largest_session_gap_ms).toBe(100);
+    expect(span.projects.p?.largest_gap_ms).toBe(100);
+});
+
 test("a built tier S scenario's report agrees with the scenario's own session list, and the script prints a row and a JSON line for it", async () => {
     const scenario = await compileScenario(loadCompileInput(101, "S", hashEmbedder, true));
     const span = scenarioSpan(scenario as unknown as SpanScenario);

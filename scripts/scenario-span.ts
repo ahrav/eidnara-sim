@@ -111,7 +111,7 @@ export function scenarioSpan(scenario: SpanScenario): ScenarioSpan {
         } else {
             throw new Error(`event ${String(e.id ?? i)} precedes the start of session ${id}`);
         }
-        if (e.kind === "session_end" && open) lastEnd = open.end;
+        if (e.kind === "session_end" && open) lastEnd = Math.max(lastEnd ?? open.end, open.end);
     }
     const projects: Record<string, ProjectSpan> = {};
     const byProject = new Map<string, { start: number; end: number }[]>();
@@ -122,11 +122,12 @@ export function scenarioSpan(scenario: SpanScenario): ScenarioSpan {
         const ordered = [...own].sort((a, b) => a.start - b.start);
         const gaps = counts();
         let gap = 0;
-        for (const [i, s] of ordered.entries()) {
-            if (i === 0) continue;
-            const idle = Math.max(0, s.start - (ordered[i - 1] as { end: number }).end);
+        let ended = (ordered[0] as { end: number }).end;
+        for (const s of ordered.slice(1)) {
+            const idle = Math.max(0, s.start - ended);
             tally(gaps, idle);
             gap = Math.max(gap, idle);
+            ended = Math.max(ended, s.end);
         }
         const first = (ordered[0] as { start: number }).start;
         const last = Math.max(...ordered.map((s) => s.end));
