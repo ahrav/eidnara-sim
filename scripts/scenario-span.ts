@@ -111,7 +111,7 @@ export function scenarioSpan(scenario: SpanScenario): ScenarioSpan {
         } else {
             throw new Error(`event ${String(e.id ?? i)} precedes the start of session ${id}`);
         }
-        if (e.kind === "session_end") lastEnd = ms;
+        if (e.kind === "session_end" && open) lastEnd = open.end;
     }
     const projects: Record<string, ProjectSpan> = {};
     const byProject = new Map<string, { start: number; end: number }[]>();
