@@ -325,6 +325,20 @@ between two steps therefore age an unconsumed commit by under 30 s in
 all, and the worker's own next pass follows within 30 s of real time, so
 the commit stays under 60 s old.
 
+That reason holds on `eval/w9`. From `eval/wM` on
+(`search_tip_read_while_lagging`) a gated read is judged by the consumers a
+search serves from, and on a host with no search lifecycle owner, as every
+arm on the plain search route is, the `claim-sources` consumer is left out
+(`unserved_consumers` in `crates/daemon/src/kernel_routes/serving.rs`). A
+reviewer arm's explicit search then answers as a search of an arm without
+the switch does: the legacy scan's fallback note and the note `Memory:
+Memory freshness cannot be judged because no consumer is registered.
+Results are read from the canonical tip.` The step runs unchanged on every
+build, at session ends and before clock advances: it still brings the
+reviews of the published messages to their end before scenario time moves
+(the queue lifetime and the review hold read the daemon's wall clock,
+`docs/time.md`), and on `eval/w9` it keeps the reads fresh as well.
+
 The jump of a `laptop_sleep` fault runs with the driver unasked
 (`sleepBefore` in `src/run/scheduler.ts` names the jump's cause before the
 question). The machine is suspended for the gap, so the daemon's worker
@@ -1199,6 +1213,38 @@ complete evidence only when the two agree:
     line. Either above zero is a mismatch on a build without
     `contested_statements`; a build with it may show none, since a contest
     needs an observation that contradicts a delivered statement.
+  - `search.tip_notes` counts the answered `eidnara_search` results by the
+    freshness note they open with, and `search.errored_lag` the errored
+    results whose whole text is the lag error. The plugin writes a result's
+    notes as its first section, one per line, before an empty line
+    (`packSearchResults` in
+    `packages/opencode-plugin/src/tools/eidnara-search/render.ts`), so a
+    note is read as a whole line of the text before the first empty line
+    (`searchRoute` in `src/evidence/stages.ts`); a memory or a query that
+    quotes a note stands in a later section and counts as none.
+    `tip_notes.consumer_behind` is the note `Memory: a search consumer is
+    behind recent changes. These results are read from the canonical tip
+    and include them.`: a consumer a search serves from lagged, and the
+    plugin repeated the read ungated (`canonicalTipNote` in
+    `eidnara-search/execute.ts`, from `eval/wM` on).
+    `tip_notes.no_consumer` is the note `Memory: Memory freshness cannot be
+    judged because no consumer is registered. Results are read from the
+    canonical tip.`, which every audited build from `eval/w2` on writes on
+    a host with no consumer a search serves from. `errored_lag` is the
+    result `Error: Memory results may lag recent changes; the projector has
+    not caught up.`, a subset of `search.errored`. A result that carries
+    the consumer-behind note is an answered search of the route its opening
+    names: it is counted under that route (`legacy_scan` or `fused`) and,
+    beside it, under `tip_notes.consumer_behind` as a reported degraded
+    note. It adds nothing to `search.errored` and nothing to an errored
+    share. A consumer-behind note on a build without
+    `search_tip_read_while_lagging` is a mismatch, since that build's
+    plugin holds no such text. On a build with the capability the three
+    counts decide no mismatch: the lag error can still answer from a state
+    other than a lagging reviewer consumer, so it is reported and the
+    campaign's bound on the errored share judges it. An observation
+    recorded before the counts existed holds neither and is held to
+    nothing.
   - `delivery.open_items` reads the `<session-history>` and
     `<session-history-since>` blocks of each agent request: the blocks with a
     rendered segment, those with a `Waiting on user (key)` line, and those

@@ -78,6 +78,20 @@ export interface ArmObservation {
         errored: number;
         /** Results holding a `Contested by` line; absent on observations recorded before it was read. */
         contested?: number;
+        /**
+         * Answered results by the freshness note they open with (`searchRoute`):
+         * `consumer_behind`, a result read from the canonical tip while a consumer a search
+         * serves from lagged, and `no_consumer`, a result read from the tip on a host with no
+         * such consumer. Each is counted under its route as well. Absent on observations
+         * recorded before the notes were read.
+         */
+        tip_notes?: { consumer_behind: number; no_consumer: number };
+        /**
+         * Of `errored`, the results whose text is the lag error (`LAG_ERROR`): a gated read that
+         * answered `stale` on a build that repeats no read, or in a state the build's repeated
+         * read leaves an error. Absent on observations recorded before it was read.
+         */
+        errored_lag?: number;
     } | null;
     /** Proxy call records of the arm, by component. */
     components: Record<string, number>;
@@ -1305,7 +1319,14 @@ export function readPluginLog(
  * walk enters only real subdirectories; an absent directory holds no results.
  */
 export function readPiSearches(root: string, rel: string): NonNullable<ArmObservation["search"]> {
-    const search = { legacy_scan: [] as string[], fused: 0, errored: 0, contested: 0 };
+    const search = {
+        legacy_scan: [] as string[],
+        fused: 0,
+        errored: 0,
+        contested: 0,
+        tip_notes: { consumer_behind: 0, no_consumer: 0 },
+        errored_lag: 0,
+    };
     let sessionsDir = root;
     for (const part of rel.split("/")) {
         sessionsDir = join(sessionsDir, part);
@@ -1352,10 +1373,13 @@ export function readPiSearches(root: string, rel: string): NonNullable<ArmObserv
                 // The plugin opens every legacy-scan answer with the fallback note and no answer
                 // the fused route ranked; a refusal is an error result.
                 if (/^Contested by /m.test(text)) search.contested++;
-                const { route, fallback } = searchRoute(text, m.isError === true);
+                const reading = searchRoute(text, m.isError === true);
+                const { route, fallback } = reading;
                 if (fallback !== undefined) search.legacy_scan.push(fallback);
                 else if (route === "errored") search.errored++;
                 else search.fused++;
+                if (reading.tip_note) search.tip_notes[reading.tip_note]++;
+                if (reading.lag_error) search.errored_lag++;
             });
         }
     };
@@ -2250,7 +2274,8 @@ export function fusedAnswerShare(search: ArmObservation["search"], unranked = 0)
  * counter, the lifetime classes of captured facts, the `<CURRENT_WORK>` element and ended work,
  * the block's closing sentence, its `<NAMED_FILES>` element, and its dated replacement mark,
  * failed-command records in the final store,
- * contested statements in the block and in search results, waiting lines outside a history
+ * contested statements in the block and in search results, the consumer-behind note of a search
+ * result, waiting lines outside a history
  * block's newest summarized segment, the `process_memory` block in the daemon's status, and the
  * lifecycle progress block on the fused route.
  */
@@ -2355,6 +2380,13 @@ function buildMismatches(
     if (!caps.contested_statements && contested > 0) {
         out.push(
             `${o.delivery?.contested_blocks ?? 0} agent requests and ${o.search?.contested ?? 0} eidnara_search results render a contested statement, which ${label} does not declare`,
+        );
+    }
+    // The lag error stands on every build: a state other than a lagging consumer can answer it.
+    const behind = o.search?.tip_notes?.consumer_behind ?? 0;
+    if (!caps.search_tip_read_while_lagging && behind > 0) {
+        out.push(
+            `${behind} eidnara_search results carry the note of a read from the canonical tip while a search consumer lagged, which ${label} does not declare`,
         );
     }
     const items = o.delivery?.open_items;

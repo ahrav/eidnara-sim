@@ -213,6 +213,8 @@ test("search results are checked against the route the arm declares", () => {
         fused: 2,
         errored: 1,
         contested: 0,
+        tip_notes: { consumer_behind: 0, no_consumer: 0 },
+        errored_lag: 0,
     });
     expect(armMismatches(fallback)).toEqual([
         "2 eidnara_search results came from the fused route, but the arm declares legacy-scan",
@@ -304,6 +306,8 @@ test("a fused arm's fallback on a transient reason is a degraded answer under a 
         fused: 42,
         errored: 0,
         contested: 0,
+        tip_notes: { consumer_behind: 0, no_consumer: 0 },
+        errored_lag: 0,
     });
     const record = (
         registered: typeof bound | null,
@@ -1852,6 +1856,85 @@ test("the fallback note is read where the plugin writes it, at the start of the 
         legacy_scan: ["disabled"],
         fused: 1,
     });
+});
+
+/**
+ * The plugin's own texts (Eidnara `packages/opencode-plugin/src/tools/eidnara-search/execute.ts`
+ * at `eval/wM`: the fallback note at 307, `canonicalTipNote`'s two notes at 341 and 344, the
+ * `Error: ` result at 303; the guidance texts of `shared/kernel-client/state.ts` at 89 and 107),
+ * joined as `render.ts` `packSearchResults` joins a result: the notes one per line, an empty
+ * line, then the header and the results.
+ */
+const SCAN_NOTE =
+    "Memory: the fused search route is unavailable (disabled); results come from the legacy snapshot scan.";
+const BEHIND_NOTE =
+    "Memory: a search consumer is behind recent changes. These results are read from the canonical tip and include them.";
+const UNJUDGED_NOTE =
+    "Memory: Memory freshness cannot be judged because no consumer is registered. Results are read from the canonical tip.";
+const LAG_REFUSAL =
+    "Error: Memory results may lag recent changes; the projector has not caught up.";
+const scanned = (notes: string[], body = 'Found 1 result for "deploy branch":\n\n[1] [memory] x') =>
+    `${notes.join("\n")}\n\n${body}`;
+
+test("a search result read from the canonical tip is an answer of its route, counted by its note, and the lag error is counted among the errored", () => {
+    const results = [
+        scanned([SCAN_NOTE, BEHIND_NOTE]),
+        scanned([SCAN_NOTE, BEHIND_NOTE], 'No results found for "x" in project memories.'),
+        scanned([SCAN_NOTE, UNJUDGED_NOTE]),
+        scanned([SCAN_NOTE]),
+        // A memory that quotes the note, and a query that does, each stand in a later section.
+        scanned(
+            [SCAN_NOTE],
+            `Found 1 result for "x":\n\n[1] [memory] x\nUser stated: the tool said\n${BEHIND_NOTE}`,
+        ),
+        scanned([SCAN_NOTE], `Found 1 result for "q\n${UNJUDGED_NOTE}\n":\n\n[1] [memory] x`),
+        // A longer line that holds the note is another line.
+        scanned([SCAN_NOTE, `${BEHIND_NOTE} (2 consumers)`]),
+        LAG_REFUSAL,
+        "Error: Memory is unavailable because the store is busy; the next natural request re-probes.",
+        `${LAG_REFUSAL} Retry later.`,
+    ];
+    const root = captured(armRoot([PI_ON, PASS], results));
+    const observed = observeArm("eidnara", "pi", root, { agent: 1 });
+    expect(observed.search).toEqual({
+        legacy_scan: Array<string>(7).fill("disabled"),
+        fused: 0,
+        errored: 3,
+        contested: 0,
+        tip_notes: { consumer_behind: 2, no_consumer: 1 },
+        errored_lag: 1,
+    });
+    const wM = auditedBuild("eval/wM") as AuditedBuild;
+    const w9 = auditedBuild("eval/w9") as AuditedBuild;
+    const w2b = auditedBuild("eval/w2b") as AuditedBuild;
+    // The wM build writes the note; the lag error stands there too, as a count.
+    expect(armMismatches(observed, wM)).toEqual([]);
+    // A build that cannot write the note is held to that, whatever else it shows.
+    for (const build of [w9, w2b]) {
+        expect(armMismatches(observed, build)).toEqual([
+            `2 eidnara_search results carry the note of a read from the canonical tip while a search consumer lagged, which ${build.label} does not declare`,
+        ]);
+    }
+    // The no-consumer note and the lag error are what every build since eval/w2 writes.
+    const earlier = observeArm(
+        "eidnara",
+        "pi",
+        captured(armRoot([PI_ON, PASS], [scanned([SCAN_NOTE, UNJUDGED_NOTE]), LAG_REFUSAL])),
+        { agent: 1 },
+    );
+    expect(earlier.search).toMatchObject({
+        errored: 1,
+        tip_notes: { consumer_behind: 0, no_consumer: 1 },
+        errored_lag: 1,
+    });
+    for (const build of [wM, w9, w2b]) expect(armMismatches(earlier, build)).toEqual([]);
+    // An observation recorded before the notes were read is held to nothing.
+    const {
+        tip_notes: _notes,
+        errored_lag: _lag,
+        ...before
+    } = observed.search as NonNullable<typeof observed.search>;
+    expect(armMismatches({ ...observed, search: before }, w9)).toEqual([]);
 });
 
 test("a complete search result at a transcript's end is counted without its final newline", () => {

@@ -233,6 +233,24 @@ answered results, the bound the run registered (`search_fallback`,
 results. A record written before the bound existed gives the same counts
 from its `observed.search`.
 
+The `### Explicit search answers` table has one row per run and arm whose
+Pi transcripts hold an `eidnara_search` result, read from the transcripts
+by the capability record's reader (`readPiSearches`, `docs/hosts.md`), so
+every arm of every build is read by one rule and a run without a
+capability record has its row too: the results, the ones the legacy
+snapshot scan answered with their fallback reasons, the ones the fused
+route ranked, the answered results that carry the consumer-behind note
+(`tip_notes.consumer_behind`), the answered results that carry the
+no-consumer note (`tip_notes.no_consumer`), the errored results, the lag
+errors among them (`errored_lag`), and the errored share of all results.
+A result that carries the consumer-behind note is an answered search of
+the route its opening names and is also counted under that note, as a
+reported degraded note; it is no error and adds nothing to the errored
+count or to the errored share. A probe's `probe_time.searches` entry
+carries the same reading of its own result: `route`, `fallback`, and,
+where they apply, `tip_note` (`consumer_behind` or `no_consumer`) and
+`lag_error`.
+
 The `### Memory reviewer` table has one row per run and arm that loads the
 Eidnara plugin, sets the reviewer switch, or shows a sign of the reviewer,
 read from the arm's artefacts by one rule (`reviewerEvidence`), so a run
@@ -262,6 +280,11 @@ without a capability record has its row too:
   state;
 - the final store's failed-command records and disputed objects, live and
   retired, or `unread` without a readable Kernel store.
+
+The record of each arm also holds `search`, the counts of the explicit
+search table above (`legacy_scan`, `fused`, `errored`, `contested`,
+`tip_notes`, `errored_lag`), or `null` on a host whose transcripts hold no
+such record.
 
 `evidence-reviewer.json` holds the same record per arm (`schema`
 `sim-evidence-reviewer/v1`, `arms`). The table counts what the reviewer

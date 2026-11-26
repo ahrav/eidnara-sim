@@ -175,13 +175,81 @@ export function toolTraffic(body: ConverseBody): {
  */
 const FALLBACK =
     /^(?:\u00a7\d+\u00a7 ?)?Memory: the fused search route is unavailable \(([^)]*)\); results come from the legacy snapshot scan/;
+/** The block tag the daemon puts ahead of a tool output in a request body. */
+const BLOCK_TAG = /^\u00a7\d+\u00a7 ?/;
 
-/** The route an `eidnara_search` result reports, with the legacy scan's fallback reason. */
-export function searchRoute(text: string, isError: boolean): { route: string; fallback?: string } {
+/**
+ * The note of a snapshot-scan answer whose gated read found a consumer a search serves from
+ * behind: the plugin repeated the read ungated and ranked the canonical rows of the tip (Eidnara
+ * `packages/opencode-plugin/src/tools/eidnara-search/execute.ts`, `canonicalTipNote`, from
+ * `eval/wM` on).
+ */
+export const CONSUMER_BEHIND_NOTE =
+    "Memory: a search consumer is behind recent changes. These results are read from the canonical tip and include them.";
+/**
+ * The note of a snapshot-scan answer on a host with no consumer a search serves from, where the
+ * same ungated read answers (the same function, with the guidance text of
+ * `packages/opencode-plugin/src/shared/kernel-client/state.ts`, `unavailable:no_required_consumer`).
+ */
+export const NO_CONSUMER_NOTE =
+    "Memory: Memory freshness cannot be judged because no consumer is registered. Results are read from the canonical tip.";
+/**
+ * The whole text of the result a snapshot scan returns when its gated read answers `stale` and
+ * the build repeats no read (`execute.ts`: `Error: ` and the `stale` guidance text of `state.ts`).
+ */
+export const LAG_ERROR =
+    "Error: Memory results may lag recent changes; the projector has not caught up.";
+
+/** The freshness note an answered `eidnara_search` result opens with. */
+export type TipNote = "consumer_behind" | "no_consumer";
+
+/** What one `eidnara_search` result reports of its route and of the read behind it. */
+export interface SearchReading {
+    route: string;
+    /** The legacy scan's fallback reason. */
+    fallback?: string;
+    /** The freshness note among the result's opening notes; absent on a result that carries none. */
+    tip_note?: TipNote;
+    /** Set on an errored result whose whole text is the lag error. */
+    lag_error?: true;
+}
+
+/**
+ * The freshness note of an answered result. The plugin writes its notes as the result's first
+ * section, one per line, each opening `Memory: `, and separates the sections by an empty line
+ * (`render.ts`, `packSearchResults`), so a note is read as a whole line of the text before the
+ * first empty line, and only where that text opens with a note. A memory or a query that quotes
+ * a note stands in a later section, or inside a longer line, and counts as none.
+ */
+function tipNote(text: string): TipNote | undefined {
+    const body = text.replace(BLOCK_TAG, "");
+    if (!body.startsWith("Memory: ")) return undefined;
+    const end = body.indexOf("\n\n");
+    const notes = (end < 0 ? body : body.slice(0, end)).split("\n");
+    if (notes.includes(CONSUMER_BEHIND_NOTE)) return "consumer_behind";
+    return notes.includes(NO_CONSUMER_NOTE) ? "no_consumer" : undefined;
+}
+
+/**
+ * The route an `eidnara_search` result reports, with the legacy scan's fallback reason, the
+ * freshness note an answered result opens with, and whether an errored result is the lag error.
+ */
+export function searchRoute(text: string, isError: boolean): SearchReading {
     const fallback = FALLBACK.exec(text);
-    if (fallback) return { route: "legacy-scan", fallback: fallback[1] as string };
-    if (isError || text.startsWith("Error")) return { route: "errored" };
-    return { route: "fused" };
+    if (fallback) {
+        const note = tipNote(text);
+        return {
+            route: "legacy-scan",
+            fallback: fallback[1] as string,
+            ...(note ? { tip_note: note } : {}),
+        };
+    }
+    if (isError || text.startsWith("Error")) {
+        const lag = text.replace(BLOCK_TAG, "").trim() === LAG_ERROR;
+        return { route: "errored", ...(lag ? { lag_error: true as const } : {}) };
+    }
+    const note = tipNote(text);
+    return { route: "fused", ...(note ? { tip_note: note } : {}) };
 }
 
 const INJECTED =

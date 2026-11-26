@@ -180,6 +180,62 @@ function searchRoutes(runs: RunEvidence[]): string[] {
     return out;
 }
 
+/**
+ * Every arm's `eidnara_search` results, one row per run and arm whose transcripts hold one: the
+ * results by route, the answered ones read from the canonical tip by their freshness note, and
+ * the errored ones with the lag errors among them (`docs/hosts.md`).
+ */
+function searchAnswers(runs: RunEvidence[]): string[] {
+    const head = [
+        "run",
+        "arm",
+        "results",
+        "legacy scan",
+        "fused",
+        "read from the tip while a consumer lagged",
+        "read from the tip with no consumer",
+        "errored",
+        "lag errors",
+        "errored share",
+    ];
+    const out = [
+        "",
+        "### Explicit search answers",
+        "",
+        "Per arm, read by one rule from the host transcripts: the `eidnara_search` results, the ones the legacy snapshot scan answered with their fallback reasons, the ones the fused route ranked, the answered results that carry the note of a read from the canonical tip while a search consumer lagged (an answered search of its route, and a reported degraded note), the answered results that carry the note of a host with no consumer a search serves from, the errored results, the lag errors among them, and the errored share of all results.",
+        "",
+        row(head),
+        row(head.map(() => "---")),
+    ];
+    let any = false;
+    for (const r of runs) {
+        for (const [arm, data] of r.run.arms) {
+            const s = data.reviewer?.search;
+            if (!s) continue;
+            const results = s.legacy_scan.length + s.fused + s.errored;
+            if (results === 0) continue;
+            any = true;
+            const reasons = [...new Set(s.legacy_scan)].sort().join(", ");
+            out.push(
+                row([
+                    r.name,
+                    arm,
+                    results,
+                    s.legacy_scan.length === 0 ? 0 : `${s.legacy_scan.length} (${reasons})`,
+                    s.fused,
+                    s.tip_notes?.consumer_behind ?? "unread",
+                    s.tip_notes?.no_consumer ?? "unread",
+                    s.errored,
+                    s.errored_lag ?? "unread",
+                    `${((100 * s.errored) / results).toFixed(1)}%`,
+                ]),
+            );
+        }
+    }
+    if (!any) out.push(row(["none", ...head.slice(1).map(() => "")]));
+    return out;
+}
+
 /** The non-zero counts of a tally as `name n`, in the tally's order, or `0` with none. */
 const counts = (tally: Readonly<Record<string, number>>): string =>
     Object.entries(tally)
@@ -353,6 +409,7 @@ export function renderEvidence(runs: RunEvidence[]): string {
         }
     }
     out.push(...searchRoutes(runs));
+    out.push(...searchAnswers(runs));
     out.push(...memoryReviewer(runs));
     out.push(
         "",
