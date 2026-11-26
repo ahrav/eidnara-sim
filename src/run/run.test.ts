@@ -14,11 +14,12 @@ import { join } from "node:path";
 import type { SimConfig } from "../config/config";
 import { type ArmProfile, DAEMON_VARIANTS, W2_VARIANTS } from "../hosts/profiles";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
+import { qualificationHash } from "../prereg/qualification";
 import { preregistrationHash } from "../prereg/validate";
 import { Rng } from "../rng";
 import { GENERATOR_VERSION, type Scenario } from "../scenario/compile";
 import { type FaultEpisode, SEAMS, scheduleFaults } from "../scenario/faults";
-import { corpusInputsSha256, loadPrereg } from "../scenario/inputs";
+import { corpusInputsSha256, loadPrereg, loadQualification } from "../scenario/inputs";
 import { withUserTurns } from "./callviews";
 import { backgroundCachePointsOf } from "./capabilities";
 import type { Entry } from "./journal";
@@ -1068,6 +1069,77 @@ describe("run inputs", () => {
         await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
             /inputs changed since the run started: arms/,
         );
+    });
+
+    test("a WMP run binds the registration that names the wM and w2b builds and the stage-1 model, for the three arms and for the reference arm alone", async () => {
+        const checks: Preflight = {
+            launcher: "/launcher",
+            time_injection: [],
+            distortions: [],
+            hosts: [{ host: "pi", version: "0.80.2", transcript_paths: [] }],
+            upgrade: [],
+            toolchain: [],
+        };
+        const opus = "global.anthropic.claude-opus-5-5";
+        const haiku = "global.anthropic.claude-haiku-5-5";
+        const wmp = loadQualification("WMP");
+        const options = (out: string): RunOptions => ({
+            config: { ...config, agent_model: opus },
+            tier: "M",
+            seed: 204,
+            host: "pi",
+            out,
+            qualification: "WMP",
+        });
+        const out = dir();
+        const scenario = writeScenario(out, scenarioBody(204, "M"));
+        const { manifest } = await loadManifest(options(out), scenario, checks);
+        // The manifest names the registration by its hash, which covers the build pair and the side model.
+        expect(manifest.qualification).toEqual({
+            id: "WMP",
+            sha256: "52bfd1bd2bf98eacbafc30b260e5726c086c8412c40afd8c358be7c5b3926199",
+        });
+        expect(wmp.builds).toEqual({
+            current: { label: "eval/wM", commit: "26fa24760dd5544b037fc1515ef889e0e647e9be" },
+            reference: { label: "eval/w2b", commit: "ae1b673b77651ce8a3b95892fe27f90d9287d869" },
+            contrasts: [["eidnara", "eidnara"]],
+        });
+        const { builds: _pair, ...unpaired } = wmp;
+        expect(qualificationHash(unpaired as typeof wmp)).not.toBe(manifest.qualification?.sha256);
+        expect(manifest.order).toEqual(["host", "eidnara", "eidnara-reviewer"]);
+        expect([manifest.tier, manifest.seed, manifest.prompt_caching]).toEqual(["M", 204, "on"]);
+        expect(manifest.side_models).toEqual({ memory_reviewer_stage1: haiku });
+        expect(manifest.price_table.version).toBe("v3-opus-5-5-haiku-5-5-global-2026-11");
+        const reviewer = {
+            enabled: true,
+            apply: "contest",
+            model: `amazon-bedrock/${opus}`,
+            stage1_model: `amazon-bedrock/${haiku}`,
+        };
+        expect(manifest.arms["eidnara-reviewer"]?.daemon_config?.memory_reviewer).toEqual(reviewer);
+        expect(manifest.arms["eidnara-reviewer"]?.eidnara_config?.memory_reviewer).toEqual(
+            reviewer,
+        );
+        // The reference run on the w2b build is the same registration with the eidnara arm alone:
+        // the same hash, side model, and price table, and an arm configuration without the switch.
+        const ref = dir();
+        const again = writeScenario(ref, scenarioBody(204, "M"));
+        const reference = await loadManifest({ ...options(ref), arms: ["eidnara"] }, again, checks);
+        expect(reference.manifest.order).toEqual(["eidnara"]);
+        expect(reference.manifest.qualification).toEqual(manifest.qualification);
+        expect(reference.manifest.side_models).toEqual(manifest.side_models);
+        expect(reference.manifest.price_table).toEqual(manifest.price_table);
+        expect(reference.manifest.arms).toEqual({
+            eidnara: manifest.arms.eidnara,
+        } as typeof manifest.arms);
+        expect(JSON.stringify(reference.manifest.arms)).not.toContain("memory_reviewer");
+        // The seed is the pilot's alone: a campaign seed is outside the registration.
+        expect(() => armOrder({ tier: "M", seed: 213, qualification: "WMP" })).toThrow(
+            /seed 213 is not pre-registered for qualification WMP/,
+        );
+        expect(armOrder({ tier: "M", seed: 213, qualification: "WM", arms: ["eidnara"] })).toEqual([
+            "eidnara",
+        ]);
     });
 
     test("a caching-on run names only models its price table holds rates for", () => {

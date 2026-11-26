@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { auditedBuild, DAEMON_VARIANTS } from "../hosts/profiles";
+import { auditedBuild, capabilitiesOf, capabilityGaps, DAEMON_VARIANTS } from "../hosts/profiles";
 import { loadPrereg, loadQualification } from "../scenario/inputs";
 import {
     buildRefusal,
@@ -629,11 +629,15 @@ test("the registrations before side models keep their digests and name none", ()
     }
 });
 
-test("the W5 registrations name the reviewer's stage-1 model, and every other registration names no side model", () => {
+test("the W5 and WM registrations name the reviewer's stage-1 model, and every other registration names no side model", () => {
     const digests: Record<string, string> = {
         W5S: "deaa3f9ce91ca9e655de6953fa6b9c3c6293981c2c593629880c7e1723c36df9",
         W5SH: "4a6b613a64c37f88695ee0a531a3a4604f29ba2328e8d89d16e3a605a321c4e8",
         W5P: "c475c1e07c6cf33924061b0204f419f580f2b115cef900bc25acb2d19d5f36af",
+        WM: "b7c829b9bfd1ba4d407a5a582b71a7c6370f8565e9184dff072d88486104efd3",
+        WMH: "57cd02443e3a9184bd807e47acddf75df76ac3a282dfc6e004b24c037ab9e7a1",
+        WMP: "52bfd1bd2bf98eacbafc30b260e5726c086c8412c40afd8c358be7c5b3926199",
+        WMPH: "b7102e9cd342eec5f0559f32c450d94de386c9ba2e0ee31b7115f7ba1749f12f",
     };
     const stage1 = { memory_reviewer_stage1: "global.anthropic.claude-haiku-5-5" };
     for (const id of QUALIFICATIONS) {
@@ -648,7 +652,15 @@ test("the W5 registrations name the reviewer's stage-1 model, and every other re
             expect(sideModelsOf(q)).toBeNull();
         }
     }
-    expect(QUALIFICATIONS.filter((id) => id in digests)).toEqual(["W5S", "W5SH", "W5P"]);
+    expect(QUALIFICATIONS.filter((id) => id in digests)).toEqual([
+        "W5S",
+        "W5SH",
+        "W5P",
+        "WM",
+        "WMH",
+        "WMP",
+        "WMPH",
+    ]);
 });
 
 test("a registration names the bound on a fused arm's degraded search answers", () => {
@@ -968,6 +980,163 @@ test("W5P runs W5S's arms, builds and side model on W4P's held-out seed 605", ()
     expect(w5p.side_models).toEqual(w5s.side_models);
     expect(w5p.search_fallback).toBeUndefined();
     expect(w5p.no_source_control).toBe("host");
+});
+
+test("WM and WMH run the wM build against the w2b build with the reviewer arm at tier M, and WMP and WMPH are their one-seed pilots", () => {
+    const M = loadPrereg("M");
+    const wm = loadQualification("WM");
+    const wmh = loadQualification("WMH");
+    const wmp = loadQualification("WMP");
+    const wmph = loadQualification("WMPH");
+    const w5s = loadQualification("W5S");
+    const arms = ["host", "eidnara", "eidnara-reviewer"];
+    const wM = auditedBuild("eval/wM");
+    const w2b = auditedBuild("eval/w2b");
+    const w9 = auditedBuild("eval/w9");
+    if (!wM || !w2b || !w9) throw new Error("the wM, w2b, and w9 builds are registered");
+    expect(wM.commit).toBe("26fa24760dd5544b037fc1515ef889e0e647e9be");
+    expect(w2b.commit).toBe("ae1b673b77651ce8a3b95892fe27f90d9287d869");
+    for (const q of [wm, wmh, wmp, wmph]) {
+        expect([q.id, validateQualification(q, M)]).toEqual([q.id, []]);
+        expect([q.tier, q.revision, q.hosts, promptCachingOf(q)]).toEqual(["M", 1, ["pi"], "on"]);
+        expect(q.tier_preregistration_sha256).toBe(preregistrationHash(M));
+        // W5S's arms, contrasts, control, and no-source control, on the plain search route.
+        expect(q.arms.run).toEqual(arms);
+        expect(q.contrasts).toEqual(w5s.contrasts);
+        expect(q.controls).toEqual(w5s.controls);
+        expect(q.no_source_control).toBe("host");
+        expect(q.search_fallback).toBeUndefined();
+        expect(q.side_models).toEqual({
+            memory_reviewer_stage1: "global.anthropic.claude-haiku-5-5",
+        });
+        // The wM build is the treatment and the w2b build the reference, which runs `eidnara`.
+        expect(q.builds).toEqual({
+            current: { label: "eval/wM", commit: wM.commit },
+            reference: { label: "eval/w2b", commit: w2b.commit },
+            contrasts: [["eidnara", "eidnara"]],
+        });
+        expect(referenceBuildArms(q)).toEqual(["eidnara"]);
+        expect(buildRefusal(q, wM, arms)).toBeNull();
+        expect(buildRefusal(q, wM, ["eidnara"])).toBeNull();
+        expect(buildRefusal(q, w2b, ["eidnara"])).toBeNull();
+        // The reference build runs the eidnara arm alone, and any other audited build is outside the pair.
+        expect(buildRefusal(q, w2b, ["eidnara-reviewer"])).toBe(
+            `qualification ${q.id} runs eidnara on its reference build eval/w2b (${w2b.commit}); eidnara-reviewer runs on eval/wM (${wM.commit})`,
+        );
+        expect(buildRefusal(q, w2b, ["host", "eidnara"])).not.toBeNull();
+        expect(buildRefusal(q, w9, ["eidnara"])).toBe(
+            `qualification ${q.id} runs on eval/wM (${wM.commit}) and its reference arms on eval/w2b (${w2b.commit}); the build clone holds eval/w9 (${w9.commit})`,
+        );
+        // The registration without its side model is refused for the reviewer arm alone.
+        const { side_models: _stage1, ...unnamed } = q;
+        expect(validateQualification(unnamed, M)).toEqual([
+            "arms.run: eidnara-reviewer runs the memory reviewer, and side_models.memory_reviewer_stage1 names no stage-1 model",
+        ]);
+        // A reference that lacks the reviewer host cannot stand in for the current build.
+        const swapped = {
+            ...q,
+            builds: { ...q.builds, current: q.builds?.reference, reference: q.builds?.current },
+        };
+        expect(
+            validateQualification(swapped, M).some((e) => /needs memory_review=true/.test(e)),
+        ).toBe(true);
+        // Every seed's order holds the three arms once, and the orders differ by seed.
+        expect(q.arms.order_by_seed).toHaveLength(q.seeds.length);
+        for (const order of q.arms.order_by_seed) {
+            expect([...order].sort()).toEqual([...arms].sort());
+        }
+        expect(new Set(q.arms.order_by_seed.map((o) => o.join())).size).toBe(q.seeds.length);
+        // Every seed lies outside the tier's own, which compile from the diagnosed split.
+        expect(q.seeds.filter((seed) => M.seeds.includes(seed))).toEqual([]);
+    }
+    expect([wm.corpus, wm.fresh_seeds, wm.seeds]).toEqual([
+        "diagnosed",
+        true,
+        [213, 214, 215, 216],
+    ]);
+    expect([wmh.corpus, wmh.fresh_seeds, wmh.seeds]).toEqual(["held-out", undefined, [612, 616]]);
+    expect([wmp.corpus, wmp.fresh_seeds, wmp.seeds]).toEqual(["diagnosed", true, [204]]);
+    expect([wmph.corpus, wmph.fresh_seeds, wmph.seeds]).toEqual(["held-out", undefined, [605]]);
+    // The campaign's replicate: a second `eidnara` run on the two lowest diagnosed seeds.
+    expect(wm.replicates).toEqual({ seeds: [213, 214], arms: ["eidnara"] });
+    expect(wm.replicates?.seeds).toEqual([...wm.seeds].sort((a, b) => a - b).slice(0, 2));
+    for (const q of [wmh, wmp, wmph]) expect(q.replicates).toBeUndefined();
+    // The analysis plan: the run as the unit, W5S's harm probes, and a cost for each run arm.
+    expect(wm.analysis).toEqual({
+        unit: "run",
+        reference: { campaign: "w2-s5", level: "seed" },
+        harm_probes: w5s.analysis?.harm_probes as string[],
+        budget_usd: { low: 12000, high: 45000 },
+        cost_per_arm_seed_usd: { host: 700, eidnara: 1300, "eidnara-reviewer": 1500 },
+    });
+    expect(wmh.analysis).toEqual({
+        ...wm.analysis,
+        budget_usd: { low: 3000, high: 12000 },
+        cost_per_arm_seed_usd: { host: 350, eidnara: 650, "eidnara-reviewer": 750 },
+    } as typeof wmh.analysis);
+    expect(wm.analysis?.harm_probes).toEqual(["P2", "P5", "P9", "P10", "P11", "P8-twin"]);
+    expect([wmp.analysis, wmph.analysis]).toEqual([undefined, undefined]);
+    // No registration before WM lists a campaign seed; the pilots take a c8 seed each.
+    const earlier = QUALIFICATIONS.slice(0, QUALIFICATIONS.indexOf("WM")).flatMap((id) => {
+        const q = loadQualification(id);
+        return [...q.seeds, ...(q.holdout?.seeds ?? [])];
+    });
+    expect([...wm.seeds, ...wmh.seeds].filter((seed) => earlier.includes(seed))).toEqual([]);
+    expect(loadQualification("C8").seeds).toContain(204);
+    expect(loadQualification("C8H").seeds).toContain(605);
+    // The pilots hold their campaign's arms, builds, and side model on one seed.
+    for (const [pilot, campaign] of [
+        [wmp, wm],
+        [wmph, wmh],
+    ] as const) {
+        expect(pilot.arms.run).toEqual(campaign.arms.run);
+        expect(pilot.arms.order_by_seed).toEqual([arms]);
+        expect([pilot.corpus, pilot.builds, pilot.side_models]).toEqual([
+            campaign.corpus,
+            campaign.builds,
+            campaign.side_models,
+        ]);
+    }
+});
+
+test("the w2b build runs the eidnara arm as the WM reference with its own capability table", () => {
+    const w2b = auditedBuild("eval/w2b");
+    if (!w2b) throw new Error("the w2b build is registered");
+    // The reference arm needs nothing the w2b fixture lacks, and the reviewer arm cannot run there.
+    expect(capabilityGaps("eidnara", w2b)).toEqual([]);
+    expect(capabilityGaps("eidnara-reviewer", w2b)).toHaveLength(2);
+    const fixture = w2b.variants["direct-host-fixture"];
+    if (!fixture) throw new Error("the w2b build registers the legacy fixture");
+    // What the run's evidence checks hold that build to: no closing sentence, no named files, no
+    // lifetime classes, no current-work element, no reviewer, none of the wM behaviours, and a
+    // background call that carries Pi's two cache points, which the proxy leaves as they are.
+    expect(capabilitiesOf(fixture)).toMatchObject({
+        search: "legacy-scan",
+        side_calls: "proxy",
+        source_capture: true,
+        user_statement_delivery: true,
+        contested_statements: true,
+        statement_lineage: "per-message",
+        statement_lifetime: false,
+        current_work_delivery: false,
+        block_closing_sentence: false,
+        named_files: false,
+        replaced_observation_date: false,
+        failed_command_records: false,
+        memory_review: false,
+        memory_reviewer: false,
+        search_tip_read_while_lagging: false,
+        review_selection_by_delivery: false,
+        background_cache_points: "system-and-message",
+    });
+    // W3S and W4S registered the same reference with prompt caching on, so the pair is one S3 and S4 ran.
+    for (const id of ["W3S", "W4S"]) {
+        const earlier = loadQualification(id);
+        expect([promptCachingOf(earlier), earlier.builds?.reference]).toEqual([
+            "on",
+            { label: "eval/w2b", commit: w2b.commit },
+        ]);
+    }
 });
 
 test("a reviewer arm is contrasted with the eidnara arm beside a build contrast, and needs a registered stage-1 model", () => {

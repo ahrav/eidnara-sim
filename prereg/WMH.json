@@ -1,0 +1,98 @@
+{
+    "schema": "sim-qualification/v1",
+    "id": "WMH",
+    "revision": 1,
+    "frozen": true,
+    "tier": "M",
+    "tier_preregistration_sha256": "d1b8c9694586ff9fe2c3b55b0f98fa2e564da270d2f19d3c9d8eb8181398cd06",
+    "corpus": "held-out",
+    "seeds": [
+        612,
+        616
+    ],
+    "hosts": [
+        "pi"
+    ],
+    "arms": {
+        "run": [
+            "host",
+            "eidnara",
+            "eidnara-reviewer"
+        ],
+        "order_by_seed": [
+            [
+                "host",
+                "eidnara",
+                "eidnara-reviewer"
+            ],
+            [
+                "eidnara-reviewer",
+                "host",
+                "eidnara"
+            ]
+        ]
+    },
+    "contrasts": [
+        [
+            "eidnara",
+            "host"
+        ],
+        [
+            "eidnara-reviewer",
+            "eidnara"
+        ],
+        [
+            "eidnara-reviewer",
+            "host"
+        ]
+    ],
+    "controls": [
+        "wrong-project-lookup"
+    ],
+    "no_source_control": "host",
+    "prompt_caching": "on",
+    "builds": {
+        "current": {
+            "label": "eval/wM",
+            "commit": "26fa24760dd5544b037fc1515ef889e0e647e9be"
+        },
+        "reference": {
+            "label": "eval/w2b",
+            "commit": "ae1b673b77651ce8a3b95892fe27f90d9287d869"
+        },
+        "contrasts": [
+            [
+                "eidnara",
+                "eidnara"
+            ]
+        ]
+    },
+    "side_models": {
+        "memory_reviewer_stage1": "global.anthropic.claude-haiku-5-5"
+    },
+    "analysis": {
+        "unit": "run",
+        "reference": {
+            "campaign": "w2-s5",
+            "level": "seed"
+        },
+        "harm_probes": [
+            "P2",
+            "P5",
+            "P9",
+            "P10",
+            "P11",
+            "P8-twin"
+        ],
+        "budget_usd": {
+            "low": 3000,
+            "high": 12000
+        },
+        "cost_per_arm_seed_usd": {
+            "host": 350,
+            "eidnara": 650,
+            "eidnara-reviewer": 750
+        }
+    },
+    "claim": "descriptive"
+}
