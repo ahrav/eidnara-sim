@@ -77,7 +77,7 @@ model is the one the registration names under
 `side_models.memory_reviewer_stage1`, which the run records in its
 manifest's `side_models` and reads from there for the arm's configuration
 and the arm's capability check. A registration
-that runs the arm must name it (`docs/run-command.md`), and the W5
+that runs the arm must name it (`docs/run-command.md`), and the W5 and WM
 registrations name `global.anthropic.claude-haiku-5-5`. The configuration
 functions and the capability check take the registered model as an
 argument and hold no model of their own: a reviewer arm of a run that
@@ -516,7 +516,7 @@ the variants read there:
 | `main-ea12bff2a` | `ea12bff2a` | all three | the reference arm of the reviewer campaign (W5S, W5SH, W5P): `main` with the PRs of `eval/w4` as merged, plus #1233 (general talk classed `status`) and #1235 (a user's sentence approved by the speaker its extractor names) |
 | `eval/w4` | `6aabc77e1` | all three | the correctness retest (W4S, W4SH, W4P): `main` `228f9fb74` (which holds the merged Eidnara #1221 to #1224) plus the open heads of #1230, #1227, #1228, and #1229 |
 | `eval/w3-all` | `a996cc466` | all three | the caching-on retest (W3S, W3SH, W3P): `main` `2fbeb6059` (which holds #1220 as merged, three capture commits past the head in `eval/w2b`) plus the open heads of Eidnara #1223, #1224, #1221, and #1222 |
-| `eval/w2b` | `ae1b673b7` | all three | the S rerun (W2S2, W2S2H) and the reference arm of both retests: `main` `1bf1ae612` (which holds the merged heads of Eidnara #1209, #1212, #1213, #1214, and #1215) plus the open heads of #1220 and #1217 |
+| `eval/w2b` | `ae1b673b7` | all three | the S rerun (W2S2, W2S2H), the reference arm of both retests, and the reference arm of the tier M campaign (WM, WMH, WMP, WMPH): `main` `1bf1ae612` (which holds the merged heads of Eidnara #1209, #1212, #1213, #1214, and #1215) plus the open heads of #1220 and #1217 |
 | `eval/w2` | `7901aae39` | all three | the first focused S run (W2S, W2SH): `main` `da360026c` (which holds Eidnara #1210, #1211, and #1219) plus the open heads of #1209, #1212, #1213, #1214, #1215, #1217 |
 | `eval/c8` | `8e6265d2c` | `direct_host_fixture` (legacy route) | the c8 reference arm |
 
